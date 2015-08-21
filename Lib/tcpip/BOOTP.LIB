@@ -743,16 +743,35 @@ word _drfa;	// testing only.
 _bootp_nodebug int dhcp_init(word iface)
 {
    auto DHCPInfo * di;
+	auto word num_req_options;
+	auto byte * req_options;
+	auto int (*opt_callback)();
+	auto void * data;
+	auto word overall_timeout;
 	auto longword fallback;
 
    di = _if_tab[iface].dhcp;
    if (!di)
    	return IFCTL_OK;
 
+	//V27167
+	num_req_options = di->num_req_options;
+	req_options = di->req_options;
+	opt_callback = di->opt_callback;
+	data = di->data;
+	overall_timeout = di->overall_timeout;
+
 	//TT #81597
 	fallback = di->fallback_ip;
 
 	memset(di, 0, sizeof(DHCPInfo));
+
+	//V27167
+	di->num_req_options = num_req_options;
+	di->req_options = req_options;
+	di->opt_callback = opt_callback;
+	di->data = data;
+	di->overall_timeout = overall_timeout;
 
 	//TT #81597
 	di->fallback_ip = fallback;

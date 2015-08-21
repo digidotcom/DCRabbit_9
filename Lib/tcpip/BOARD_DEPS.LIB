@@ -198,8 +198,8 @@
 #elif _BOARD_TYPE_ == RCM3365 || _BOARD_TYPE_ == RCM3375 || \
       _BOARD_TYPE_ == RCM3305 || _BOARD_TYPE_ == RCM3315 || \
       _BOARD_TYPE_ == BL2600M || _BOARD_TYPE_ == BL2600N || \
-      RCM3900_SERIES
-	#if RCM3900_SERIES
+      _BOARD_TYPE_ == BL2600Q || RCM3900_SERIES
+	#if _BOARD_TYPE_ == BL2600Q || RCM3900_SERIES
 	   #define _AX88796B
 	#endif
    #define ASIX_PKTDRV_LIB       "asix.lib"

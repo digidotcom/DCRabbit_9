@@ -109,6 +109,9 @@ typedef struct
 	#define _DF_TYPE_SER    0
 #endif
 
+#ifndef BL2600Q
+	#define BL2600Q 0
+#endif
 #ifndef BL2600M
 	#define BL2600M 0
 #endif
@@ -210,7 +213,7 @@ typedef struct
  #endif
    #define FAT_NAND_DEVICE_USED
 
-#elif _BOARD_TYPE_ == RCM3900
+#elif _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == BL2600Q
 	#define _DRIVER_0 "NFLASH_FAT.LIB"
 	#define _DRIVER_0_INIT { "NF", nf_InitDriver, _DRIVER_CALLBACK, },
 

@@ -1,0 +1,230 @@
+********************************************************************************
+
+                        Dynamic C for Rabbit Patch Notes
+
+********************************************************************************
+********************************************************************************
+PATCH UPDATE 2 FOR DYNAMIC C 9.62
+
+NEW FEATURES
+
+- The Lib\NandFlash\nflash.lib driver library has been updated with support for
+  Micron/Numonyx/ST NANDxxxW3A nand flash devices. Previously supported nand
+  flash devices, used on e.g. RCM3365 and RCM3900 boards, have been discontinued
+  and are no longer available. As of 01-Dec-2012, new production e.g. RCM3365
+  and RCM3900 boards will have a Micron/Numonyx/ST NAND256W3A (32MB) nand flash
+  device installed.
+
+  Custom applications which use nand flash, whether based on e.g. RCM3365,
+  RCM3900 boards or a custom nand flash board design, should be recompiled using
+  Dynamic C 9.62 with this PATCH UPDATE 2 installed in order to support the new,
+  increased selection of small-block nand flash devices.
+
+BUG PATCHES
+
+Compiler Bugs
+
+GUI Bugs
+
+Library Bugs
+- Defect 20311 patched. On boards such as the OP6700 or TCP/IP Dev Kit, the MAC
+  address was not being read from the serial EEPROM.
+- Defect 20900 patched. When UDP send functionality's ARP resolution fails it
+  now correctly releases its ARP table handle.
+- Defect 31569 patched. When ARP.LIB functionality detects an IP conflict with
+  a remote host, the response is now correct for either gratuitous or normal
+  ARP requests.
+- Defect 31780 patched. Multicast ARP table entries are no longer purged.
+- Defect 42241 patched. Rabbit now responds correctly to ARP probes (i.e. "who
+  has IP w.x.y.z?" Ethernet broadcast) from source IP 0.0.0.0.
+- Defect 42695 patched. A two-flash (i.e. 2*256K flash devices on board) DLP now
+  has the full 256K secondary flash size available for program code.
+- Defect DC-4 patched. HTTPC.LIB's HTTPC post functionality, following a
+  successful post operation, sets HTTPC_STATE_HEADER state.
+- Defect DC-19 patched. The Asix PHY link-fail bug work-around, broken in PATCH
+  UPDATE 1 FOR DYNAMIC C, is fixed. Ethernet link is restored within a few
+  seconds of cable reconnection after either a lengthy (approximately 20 minutes
+  or more) cable disconnection or a series of repeated quick cable
+  disconnection, reconnection events.
+- Defect RCM-7 patched. Prevent reset of a TCP connection's keep-alive timer in
+  the case that a previously connected remote host attempts to establish a new
+  connection which re-uses its previous TCP connection's source and destination
+  IP addresses and port numbers.
+
+Sample Program Bugs
+- Defect 42746 patched. The Samples\xalloc_stats.c standard sample program no
+  longer reports an error due to calling xalloc_stats() with a zero parameter.
+
+RFU Bugs
+
+OTHER FUNCTIONAL CHANGES
+
+- In tcp_config.lib, the _PRIMARY_STATIC_IP and _PRIMARY_NETMASK macro
+  definitions are now conditional to prevent warnings when overridden by custom
+  definition(s). The default definitions remain the same, "10.10.6.100" and
+  "255.255.255.0" respectively.
+
+- Defining DO_NOT_WARN_ON_RT_FULLDUPLEX before "#use dcrtcp.lib" prevents a
+  warning in REALTEK.LIB when RT_FULLDUPLEX is also defined.
+
+********************************************************************************
+PATCH UPDATE 1 FOR DYNAMIC C 9.62
+
+NEW FEATURES
+
+- This patch includes a previous patch to add BL2600Q (an RCM3900 installed into
+  a BL2600 base board) support to Dynamic C 9.62. See README_BL2600Q_PATCH.TXT
+  in the main Dynamic C 9.62 installation folder for details.
+
+- Two different new behaviors are available after a BIN file is loaded to the
+  Rabbit target via the RFU:
+    1) When RFU_BIN_WAIT_FOR_RESET is defined, after the BIN file is loaded via
+       the RFU the application will not run until the programming cable is
+       disconnected and followed by a hardware reset.
+    2) When RFU_BIN_WAIT_FOR_RUN_MODE is defined and RFU_BIN_WAIT_FOR_RESET is
+       not defined, after the BIN file is loaded via the RFU the application
+       will not run until the programming cable is disconnected.
+  An easy place to define the desired new macro to control BIN file behavior is
+  in Dynamic C's Project Options' Defines box. Note that when neither
+  RFU_BIN_WAIT_FOR_RESET nor RFU_BIN_WAIT_FOR_RUN_MODE are defined, Dynamic C
+  9.62 behavior is per its usual. Also note that compiling in debug mode when
+  either of these macros is defined will result in a "helpful" error message.
+
+- Added HTTP client support via the new Lib\tcpip\httpc.lib library. See also
+  the new Samples\tcpip\http\http_client.c sample program.
+
+BUG PATCHES
+
+Compiler Bugs
+
+GUI Bugs
+
+Library Bugs
+- Defect 21640 patched. Stack(s) are now allocated more space-efficiently, using
+  _xalloc's alignment capability. Also, the correct value is assigned to the
+  global BaseOfStacks1 variable.
+- Defect 24080 patched. SERLINK.LIB's ppplink_asymap() function now respects the
+  peer's asynchronous serial escape character table setting.
+- Defect 24260 patched. Updated WIEGAND.LIB's wiegand_init function to always
+  call the appropriate SetVectExternX000 and the SetVectIntern functions.
+- Defect 24421 patched. The errmsg.ini file and the ERRNO.LIB and ERRORS.LIB
+  libraries are patched to add ESHAREDBUSY (240) and EFUNCBLK (243) error codes
+  and to make the EFATMUTEX (300) error code consistent throughout.
+- Defect 24430 patched. Corrected the OP68xx.LIB library's brdInit function help
+  descriptions of PC0,1 (serial port D, RS485) and PD4,5 (serial port B, RS232).
+- Defect 24474 patched. Improved the COSTATE.LIB library's DelayTicks, DelayMs
+  and DelaySec function help descriptions.
+- Defect 24475 patched. Improved the COSTATE.LIB library's IntervalTick,
+  IntervalMs, and IntervalSec function help descriptions.
+- Defect 24477 patched. The COSTATE.LIB library's DelayTicks function is patched
+  to accept a long type ticks delay parameter. This matches all other Delay* and
+  Interval* firsttime functions.
+- Defect 24743 patched. The PowerCoreFLEX.LIB library's switchIn function now
+  causes a -ERR_BADPARAMETER run time error to occur if its swin parameter is
+  invalid.
+- Defect 25077 patched. A work around in IP.LIB's internal is_nonlocal_subnet
+  function allows multiple PPP interfaces (e.g on serial ports B and D) to work
+  correctly.
+- Defect 25307 patched. SERLINK.LIB's serial ISR now preserves XPC.
+- Defect 25613 patched. The REALTEK.LIB's internal emu9346_clk function is
+  updated to prevent the possibility of an asm jump out of range error.
+- Defect 25727 patched. The RNET.LIB rn_find function now correctly searches for
+  Rabbitnet device(s) on the specified RabbitNet port(s).
+- Defect 25750 patched. The FAT.LIB library's fat_Truncate function's ordering
+  of FAT code checks is updated to work around a truncation bug caused by a
+  mixed-type comparison (long vs. unsigned long) of the negative FAT code vs.
+  the non-negative current file position.
+- Defect 25944 patched. The WEIGAND.LIB library's weigand_init function now
+  correctly supports either of the input capture 1 or 2 options on Rabbit 3000
+  targets.
+- Defect 26212 patched. The RNET_KEYIF.LIB library's rn_keyUnget void function
+  no longer attempts to return a value.
+- Defect 27167 patched. The BOOTP.LIB library's dhcp_init function now preserves
+  DHCP options requests.
+- Defect 27247 patched. Dynamic C's LIB.DIR file has been updated to remove the
+  reference to a non-existent RN_CFG_RCM39.LIB.
+- Defect 27384 patched. The Remote Application Update (RAU) now correctly
+  supports customizing the number of DLP images that may be stored.
+- Defect 27692 patched. The IX register's content is now preserved by SYS.LIB's
+  updateTimers function.
+- Defect 28314 patched. The STDIO.LIB library's snprintf function now always
+  null-terminates its output buffer.
+- Defect 28403 patched. The RCM3300 Remote Application Update (RAU) DLM / DLP
+  shared network information save / restore feature now works correctly.
+- Defect 28846 patched. Rabbit boards equipped with an ASIX 10/100 Ethernet
+  device and connected to some models of network switch (e.g. Foundry Fastedge
+  X448, Linksys EF3124, Linksys EZXS55W) now reliably recover link after the
+  Ethernet cable is disconnected then reconnected.
+- Defect 29196 patched. UCOS2.LIB's ISIntExit() is patched to prevent possible
+  errant task switching if OSLockNesting && --bios_intnesting == OSLockNesting.
+- Defect 30070 patched. Mem.lib's _rs_xalloc_init() function is patched to work
+  around a Dynamic C compiler ORG table problem with non-flagged battery
+  backable RAM in "Compile to Flash, Run in RAM" compile mode.
+- Defect 30489 patched. The BL26xx.LIB's brdInit function now handles PD2
+  correctly for the BL2600Q's SD card detect. (A previous patch to Dynamic C
+  9.62 was provided to support the BL2600Q - an RCM3900 core on a BL2600 base
+  board.)
+- Defect 31863 patched. The GRAPHIC.LIB's TextBorderInit() function help is
+  updated to reflect a GRAPHIC.LIB code patch to correctly handle either a NULL
+  or an empty (i.e. "") string passed in as the title parameter.
+- Defect 32281 patched. FTP_CLIENT.LIB is updated to work with the IIS FTP
+  server by discarding any extra arguments in the response to Rabbit's QUIT.
+- Defect 32434 patched. SDFLASH.LIB's sdspi_get_csd() function now supports SD
+  cards that use CRC7 instead of CRC16 in their CSD block.
+- Defect 32470 patched. Serial data flash sizes in SFLASH.LIB's sf_devtable[]
+  information array now reflect the full number of pages on each of the
+  supported devices.
+- Defect 32937 patched. Corrupted FAT MBR information no longer causes a divide
+  by zero run time exception.
+- Defect 33853 patched. All serial ports' initialization in SERLINK.LIB now
+  reads SxDR four times, which suffices to clear any possible pending data in
+  any serial port.
+- Defect 34017 patched. ZSERVER.LIB's sspec_changefv() no longer truncates
+  maximum-length string type form variables to be one less than the maximum
+  specified length.
+- Defect 34070 patched. In non-blocking FAT mode, a fat_Truncate() call to
+  within a file's first cluster followed by a fat_Close() call no longer hangs
+  with a permanent -EBUSY result.
+- Defect 35373 patched. Rabbit applications which do not have a battery-backed
+  RTC may see an incorrect result at start up from the BIOS's bios_divider19200
+  and freq_divider calculations. To prevent this baud rate miscalculation,
+  non-battery-backed RTC Rabbit applications should now be compiled with
+  ROBUST_NON_BB_BAUD_RATE_CALC added into Dynamic C's Project Options' Defines
+  box.
+- Defect 38754 patched. RS232.LIB's ISRs now perform ipres as the very last
+  op-code before returning to pre-interrupt code. This prevents any possibility
+  of contributing to gradual stack overflow.
+- Defect 38777 patched. When uC/OS-II is used, SERLINK.LIB's ISR now prevents
+  task switching while interrupt processing continues with reenabled interrupts.
+- Defect 39302 patched. In modbus_master.lib, custom _initMBMpacket()
+  functionality is restored for TCP-only Modbus master boards. A library
+  function stub is now provided, along with function help.
+- Defect 39386 patched. Updated HTTPC.LIB's httpc_post_ext() and
+  httpc_postx_ext() functions to prevent errant compile-time errors.
+
+Sample Program Bugs
+- Defect 25978 patched. The Samples\FileSystem\FAT\fat_write_mbr.c standard
+  sample program's instructions for erasing a serial flash's previous partition
+  information now specify clearing pages 0 through 5, inclusive.
+- Defect 26635 patched. The stock RabbitLink\clear_param.c (utility) and
+  RabbitLink\download.c (firmware) programs now compile cleanly, without
+  warnings or errors.
+- Defect 26636 patched. The RabbitLink\download.c (firmware) program now
+  compiles without error when its USE_DHCP macro is commented out.
+- Defect 27230 patched. The Modbus (former module) Samples\Modbus standard
+  sample programs and a Modbus-related executable utility program are supplied.
+- Defect 27289 patched. The Samples\FileSystem\FAT\fat_write_mbr.c standard
+  sample program now explicitly disallows partitioning of an SD card flash
+  memory device.
+- Defect 36077 patched. The Samples\OP7200\Calib_Save_Retrieve\savecalib.c
+  standard sample program's serial cable connection instructions now refer to
+  the appropriate header (J10).
+- Defect 38736 patched. The Samples\OP7200\LCD_TouchScreen\cal_touchscreen.c
+  standard sample program now enables the backlight and sets the screen contrast
+  to avoid a blank appearance.
+
+RFU Bugs
+
+OTHER FUNCTIONAL CHANGES
+
+********************************************************************************

@@ -24,6 +24,10 @@ DESCRIPTION:	Keypad support for RabbitNet RN1600 Display/Keypad
 SUPPORT LIBS:
 
 REVISION HISTORY:
+17-Apr-2008		This special library version, based on the Dynamic C 9.60
+					release, fixes a bug so that the void rn_keyUnget() function
+					no longer attempts to return a result value.
+
 02/05/04	pel	Initial creation.  This version supports one RN1600
                per system.
 
@@ -529,9 +533,6 @@ root int rn_keyProcess (int handle, int reserved)
 	ld		iy,rn_aacKey			; IY = aacKey (Raw Data) Arrays
 	ld		h,8						;  H = Row Counter
 .kP0:
-#endasm
-	;
-#asm
 	ld		a,(iy+0)					;  A =  aacKey[0][wRow]
 	or		a,(iy+8)					;  A =  aacKey[0][wRow] |  aacKey[1][wRow]
 	cpl								;  A = ~aacKey[0][wRow] & ~aacKey[1][wRow]
@@ -767,11 +768,13 @@ END DESCRIPTION **********************************************************/
 _keyif_nodebug
 void rn_keyUnget (int handle, char cKey, int reserved)
 {
-   auto rn_devstruct *devaddr;
+	auto rn_devstruct *devaddr;
 
-   devaddr = (rn_devstruct *)handle;
-
-	return cKey && !_rn_dqPush(&rn_sKeyQ, cKey);
+	if (cKey) {
+		// unget only non-zero key values
+		devaddr = (rn_devstruct *) handle;
+		_rn_dqPush(&rn_sKeyQ, cKey);
+	}
 }
 
 

@@ -405,6 +405,12 @@ void arpcache_purge_iface(word iface)
          if (ate->flags & ATE_ROUTER_ENT)
          	// Don't purge routers; just mark the ATE as unresolved
             ate->flags &= ~(ATE_RESOLVING | ATE_RESOLVED);
+#ifdef USE_MULTICAST
+			else if (ate->flags & ATE_MULTICAST)
+			{
+				// Don't purge multicast entries, just ignore them
+			}
+#endif
          else
 				ate->ath = 0;
          // Since interface is being purged, don't do refresh timeouts etc.
@@ -1925,7 +1931,7 @@ _retry_real:
 		if (siface != IF_ANY) {
 			if (IS_LOCAL_SUBNET(ipaddr, siface)) {
 #ifdef ARP_VERBOSE
-				printf("ARP: no router for %08lx on specific i/f: local subnet\n", ipaddr);
+				printf("ARP: no router for %08lX on specific i/f: local subnet\n", ipaddr);
 #endif
 				return ath;
 			}
@@ -1933,7 +1939,7 @@ _retry_real:
 		else for (iface2 = 0; iface2 < IF_MAX; iface2++)
 			if (_rs_ifstatus(iface2) && IS_LOCAL_SUBNET(ipaddr,iface2)) {
 #ifdef ARP_VERBOSE
-				printf("ARP: no router for %08lx: local subnet\n", ipaddr);
+				printf("ARP: no router for %08lX: local subnet\n", ipaddr);
 #endif
 				return ath;
 			}
@@ -2448,20 +2454,40 @@ _arp_nodebug ll_prefix * _arp_handler(ll_prefix * LL, byte * hdrbuf)
 	if (impersonate) {
 		// Uh oh, somebody else is impersonating us!  This indicates a misconfigured
 		// network.  Consult the application to determine what to do.
+		if (in->opcode == ARP_REQUEST) {
+			if (his_ip == dst_ip) {
+				// This is a gratuitous ARP: we are first with the address, so let's
+				// respond saying we have it, and do nothing else.
 #ifdef ARP_VERBOSE
-		printf("ARP: apparent conflict with our IP address on i/f %u\n", iface);
+				printf("ARP: responding to gratuitous ARP with apparent address " \
+				                                     "conflict on i/f %u\n", iface);
 #endif
-		if (in->opcode == ARP_REQUEST)
-			// This is a request: we are first with the address, so let's respond saying
-			// we have it, and do nothing else.
-			goto _arp_send_response;
+				goto _arp_send_response;
+			}
+			else {
+				// Someone is using our IP address, and is asking about some other
+				// address (his_ip matches our IP, but not dst_ip).  Send a
+				// gratuitous ARP so everyone knows that we're using that IP.
+#ifdef ARP_VERBOSE
+				printf("ARP: responding to apparent address conflict on i/f %u " \
+				                                    "with gratuitous ARP\n", iface);
+#endif
+				_arp_request(_if_tab[iface].ipaddr, iface);
+			}
+			return LL;
+		}
 
 		// If it's a reply, it is more serious for us.
+#ifdef ARP_VERBOSE
+		printf("ARP: someone else replying to REQUEST for my IP %08lX (i/f %u)\n",
+		       his_ip, iface);
+#endif
 #ifdef ARP_CONFLICT_CALLBACK
 		new_ip = ARP_CONFLICT_CALLBACK(in);
 		if (new_ip) {
 			if (new_ip != 0xFFFFFFFF) {
-				// Callback specified that we change our IP address.  Abort all open sockets.
+				// Callback specified that we change our IP address.  Abort all
+				// open sockets.
 				_abort_socks(NETERR_IPADDR_CHANGE, iface);
 				_if_tab[iface].ipaddr = new_ip;
 			}
@@ -2485,9 +2511,10 @@ _arp_nodebug ll_prefix * _arp_handler(ll_prefix * LL, byte * hdrbuf)
 #endif
 		ath = _rs_arpcache_load(ath, (byte *)&in->srcEthAddr, (byte)iface, flags | ATE_RESOLVED, 0);
    }
-   else if (query_me) {
-   	// If we are being queried, create a volatile entry if we can, since we will
-   	// probably be talking to him real soon.
+   else if (query_me && his_ip) {
+   	// If we are being queried from a valid IP (not 0.0.0.0), create a
+   	// volatile entry if we can, since we will probably be talking to him
+   	// real soon.
    	ath = arpcache_create_iface(his_ip, iface);
 #ifdef ARP_VERBOSE
 		printf("ARP: speculative loading because query_me\n");
@@ -2502,8 +2529,8 @@ _arp_send_response:
    	ep = (eth_Packet *)pkt_hdr;
    	ep->iface = (byte)iface;
    	ep->u.ether.type = ARP_TYPE;
-      memcpy(ep->u.ether.dest, &in->srcEthAddr, 6);
-      memcpy(ep->u.ether.src, my_eth_addr[iface], 6);
+      memcpy(ep->u.ether.dest, &in->srcEthAddr, sizeof(eth_address));
+      memcpy(ep->u.ether.src, my_eth_addr[iface], sizeof(eth_address));
    	op = (arp_Header *)ep->u.ether.data;
       op->hwType = arp_TypeEther;
       op->protType = IP_TYPE;
@@ -2515,7 +2542,8 @@ _arp_send_response:
       memcpy(&op->srcEthAddr, my_eth_addr[iface], sizeof(eth_address));
       memcpy(&op->dstEthAddr, &in->srcEthAddr, sizeof(eth_address));
 #ifdef ARP_VERBOSE
-		printf("ARP: telling %08lX that I have %08lX on i/f %u\n", his_ip, dst_ip, iface);
+		printf("ARP: telling %08lX that I have %08lX on i/f %u\n",
+		       his_ip, dst_ip, iface);
 #endif
 		memset(&g, 0, sizeof(g));
 		g.iface = (byte)iface;

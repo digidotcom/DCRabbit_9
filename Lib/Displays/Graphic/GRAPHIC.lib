@@ -1,6 +1,6 @@
 /*************************************************************************
 	High-Level Graphic Library for Rabbit based products
-	Copyright (c) 2001, Z-World Inc.
+	Copyright (c) 2001, Rabbit Semiconductor Inc.
 
 	Algorithms:
 	-----------
@@ -12,7 +12,7 @@
 	--------
 	* 	This code was ported from the OP71HW.LIB library design.
 
-	  	Copyright (c) 1999, CF Controls and Copyright (c) 2000, Z-World Inc.
+	  	Copyright (c) 1999, CF Controls and Copyright (c) 2000, Rabbit Semiconductor Inc.
 
 	 	Modified Jan 2000 by GVW, Woodley Associates
  	  	for compatibility with OP7100GE.
@@ -5123,10 +5123,21 @@ END DESCRIPTION **********************************************************/
 nodebug
 void TextPrintf(windowFrame *window, char *fmt, ...)
 {
-	glBuffLock();
-	doprnt(_TextPutChar, fmt, ((char*)&fmt+sizeof(fmt)),
-	        window, NULL, NULL);
-	glBuffUnlock();
+   glBuffLock();
+   doprnt(_TextPutChar, fmt, ((char *) &fmt + sizeof fmt), window, NULL, NULL);
+   glBuffUnlock();
+   #ifdef TEXTPRINTF_PLUS_STDIO_DEBUG_OUTPUT
+    #ifndef STDIO_DEBUG_SERIAL
+   // don't check OPMODE if sending stdio to serial port
+   if (OPMODE & 8)	// only use in debug mode
+    #endif
+   {
+      _printf(fmt,((char *) &fmt + sizeof fmt));
+      #ifdef TEXTPRINTF_PLUS_STDIO_DEBUG_NEWLINE
+      printf("\n");
+      #endif
+   }
+   #endif
 }
 
 
@@ -5155,8 +5166,8 @@ PARAMETER2:    Border style:
 					              around the Text Window.
 PARAMETER3:   	Title:
 					------
-					1. If a NULL string is detected then no title is written
-					to the Text MENU.
+					1. If a NULL or an empty (i.e. "") string is detected then
+					no title is written to the Text MENU.
 
 					2. If a string is detected then it will be written to the
 					top of the Text Menu Box as the title with center alignment.
@@ -5268,7 +5279,7 @@ void TextBorder(windowFrame *wPtr)
 	                 wPtr->startwinx+offset,
 	                 wPtr->startwiny+wPtr->winheight-1-offset);
 	}
-	if(strlen(wPtr->title))
+	if(wPtr->title && strlen(wPtr->title))
 	{
 		x  = (wPtr->winwidth - strlen(wPtr->title) * wPtr->pFont->pixWidth) /2;
 		x -= (wPtr->pFont->pixWidth>>1);

@@ -228,6 +228,11 @@ typedef struct {
 #define PD_INBAND			107			// ll_prefix *
 #define PD_DUMPREGS		108			// char* buffer must be large enough to hold all registers
 #define PD_GETHWALEN    109         // <none> - only used for RabbitSys user mode programs
+#define PD_NETWORK_MODE	110			// int, int (speed, duplex)
+												// speed:  0=Auto-Neg, 1=10Mbps, 2=100Mbps.
+												// duplex: 0 = Half-Duplex, 1 = Full-Duplex.
+												// Note: If set for auto-neg, then duplex is
+												//       a don't care value.
 
 //*CUSTOM*
 // When adding new ioctl() command words, it is best to have a unique numbering

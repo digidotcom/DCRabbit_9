@@ -338,51 +338,76 @@ END DESCRIPTION **********************************************************/
 
 /*** EndHeader */
 
-_sflash_nodebug int sfspi_write(char *buffer, int len)
+_sflash_nodebug
+int sfspi_write(char *buffer, int len)
 {
-
+	auto int rc;
 
 #ifdef SFLASH_VERBOSE
-	printf("writing buffer(0x%x) len %d\n", (unsigned int)buffer, len);
+	printf("writing buffer 0x%p, len 0x%X\n", buffer, len);
 #endif
-#asm
-	 ld	hl, (SP+@SP+len)
-    ld   c,h
-    ld	b,L
-    ld	a,b
-    or	a
-    jr	z,.noinc
-    inc	c
-.noinc:
-	 ld	 hl,(SP+@SP+buffer)
-	 ld	 a, (SF_SERPORT_CR_SHADOW)
-    or    SF_SPI_TXMASK
-    ld	 e, a							;E holds control reg value for receiving byte
-    exx
-    ld	de,SF_SERPORT + SF_CR_OFFSET
-    ld	hl,SF_SERPORT + SF_SR_OFFSET
-    exx
-sfspi_write_loop:
-	 ld	 a, (hl)
-    inc	hl
-ioi ld	 (SF_SERPORT), a				;load next byte to transmit
-	 ld	 a, e
-    exx
-ioi ld	 (de), a 		;start tx
-sfspi_write_wait:
-ioi bit	3,(hl)
-    jr	 nz, sfspi_write_wait		;wait until tx buffer empties
-    exx
-    djnz sfspi_write_loop
-    dec	c
-    jr	nz,sfspi_write_loop
-sfspi_write_done:
-ioi ld	 a, (SF_SERPORT + SF_SR_OFFSET)
-    and	 0x0C
-    jr	 nz, sfspi_write_done	;wait for tx to finish completely
 
+#asm
+		; get len parameter value
+		ld		hl, (SP+@SP+len)
+		; check for negative len (if so, go return -1 result)
+		bit	7, h						; test len's sign bit
+		jr		z, .continue			; continue if sign bit is Zero (non-negative)
+
+		ld		hl, -1					; set error (-1) result code
+		jr		.returnResultCode
+
+.continue:
+		; check for zero len (if so, nothing to do; go return 0 result)
+		ld		a, h
+		or		L
+		jr		z, .returnResultCode	; if both H and L contain zero then go return
+
+		ld		c, h						; put len MSB into C (outer loop count)
+		ld		b, L						; put len LSB into B (initial inner loop count)
+		ld		a, b						; if initial inner loop count is zero (i.e.
+		or		a							;  256) then no need to account for it by
+		jr		z, .noinc				;  incrementing the outer loop count
+
+		inc	c							; account for non-zero initial inner loop count
+.noinc:
+		ld		hl, (SP+@SP+buffer)
+		ld		a, (SF_SERPORT_CR_SHADOW)
+		or		SF_SPI_TXMASK
+		ld		e, a						; E holds control reg value for byte transmit
+		exx
+		ld		de, SF_SERPORT + SF_CR_OFFSET
+		ld		hl, SF_SERPORT + SF_SR_OFFSET
+		exx
+.sfspi_write_loop:
+		ld		a, (hl)
+		inc	hl
+ioi	ld		(SF_SERPORT), a		; load next byte to transmit
+		ld		a, e
+		exx
+ioi	ld		(de), a					; start tx
+.sfspi_write_wait:
+ioi	bit	3, (hl)
+		jr		nz, .sfspi_write_wait	; wait until tx buffer empties
+
+		exx
+		djnz	.sfspi_write_loop
+
+		dec	c
+		jr		nz, .sfspi_write_loop
+
+.sfspi_write_done:
+ioi	ld		a, (SF_SERPORT + SF_SR_OFFSET)
+		and	0x0C
+		jr		nz, .sfspi_write_done	; wait for tx to finish completely
+
+		; report 0 (OK) result code
+		bool	hl
+		ld		L, h
+.returnResultCode:
+		ld		(SP+@SP+rc), hl
 #endasm
-	return 0;
+	return rc;
 }
 
 /*** BeginHeader sfspi_xwrite */
@@ -407,20 +432,27 @@ END DESCRIPTION **********************************************************/
 
 _sflash_nodebug int sfspi_xwrite(long buffer, int len)
 {
-	// Do this 128 bytes at a time (xmem2root)
+	// Do this <= 128 bytes at a time via xmem2root.
 	auto char buf[128];
+	auto int rc, write_len;
 
-   while (len > 128) {
-   	xmem2root(buf, buffer, 128);
-      buffer += 128L;
-      len -= 128;
-      sfspi_write(buf, 128);
-   }
-   if (len) {
-   	xmem2root(buf, buffer, len);
-      sfspi_write(buf, len);
-   }
-	return 0;
+	if (0 > len)
+	{
+		rc = -1;	// negative len, set error result
+	}
+	else
+	{
+		rc = 0;	// default to OK result
+		while (!rc && len)
+		{
+			write_len = (len > (int) (sizeof buf)) ? (int) (sizeof buf) : len;
+			xmem2root(buf, buffer, (unsigned) write_len);
+			rc = sfspi_write(buf, write_len);
+			buffer += (long) write_len;
+			len -= write_len;
+		}
+	}
+	return rc;
 }
 
 
@@ -446,43 +478,72 @@ END DESCRIPTION **********************************************************/
 
 _sflash_nodebug int sfspi_read(char *buffer, int len)
 {
-#asm
-	 ld	hl, (SP+@SP+len)
-    ld   c,h
-    ld	b,L
-    ld	a,b
-    or	a
-    jr	z,.noinc
-    inc	c
-.noinc:
-	 ld	 hl,(SP+@SP+buffer)
-	 ld	 a, (SF_SERPORT_CR_SHADOW)
-    or    SF_SPI_RXMASK
-    ld	 e, a							;E holds control reg value for receiving byte
-    exx
-    ld	de,SF_SERPORT + SF_CR_OFFSET
-    ld	hl,SF_SERPORT + SF_SR_OFFSET
-    ld	bc,SF_SERPORT
-    exx
-sfspi_read_loop:
-	 ld	 a, e
-    exx
-ioi ld	 (de), a
-sfspi_read_wait:
-ioi bit	7,(hl)
-    jr	 z, sfspi_read_wait
-ioi ld	 a, (bc)					;get rx byte
-	 exx
-#ifdef SF_SPI_INVERT_RX
-	 cpl
+	auto int rc;
+
+#ifdef SFLASH_VERBOSE
+	printf("reading buffer 0x%p, len 0x%X\n", buffer, len);
 #endif
-	 ld	 (hl), a
-    inc	 hl
-    djnz  sfspi_read_loop
-    dec	c
-    jr	 nz, sfspi_read_loop
+
+#asm
+		; get len parameter value
+		ld		hl, (SP+@SP+len)
+		; check for negative len (if so, go return -1 result)
+		bit	7, h						; test len's sign bit
+		jr		z, .continue			; continue if sign bit is Zero (non-negative)
+
+		ld		hl, -1					; set error (-1) result code
+		jr		.returnResultCode
+
+.continue:
+		; check for zero len (if so, nothing to do; go return 0 result)
+		ld		a, h
+		or		L
+		jr		z, .returnResultCode	; if both H and L contain zero then go return
+
+		ld		c, h						; put len MSB into C (outer loop count)
+		ld		b, L						; put len LSB into B (initial inner loop count)
+		ld		a, b						; if initial inner loop count is zero (i.e.
+		or		a							;  256) then no need to account for it by
+		jr		z, .noinc				;  incrementing the outer loop count
+
+		inc	c							; account for non-zero initial inner loop count
+.noinc:
+		ld		hl, (SP+@SP+buffer)
+		ld		a, (SF_SERPORT_CR_SHADOW)
+		or		SF_SPI_RXMASK
+		ld		e, a						; E holds control reg value for byte receive
+		exx
+		ld		bc, SF_SERPORT
+		ld		de, SF_SERPORT + SF_CR_OFFSET
+		ld		hl, SF_SERPORT + SF_SR_OFFSET
+		exx
+.sfspi_read_loop:
+		ld		a, e
+		exx
+ioi	ld		(de), a					; start rx
+.sfspi_read_wait:
+ioi	bit	7, (hl)
+		jr		z, .sfspi_read_wait	; wait until rx buffer fills
+
+ioi	ld		a, (bc)					; get rx byte
+		exx
+#ifdef SF_SPI_INVERT_RX
+		cpl
+#endif
+		ld		(hl), a
+		inc	hl
+		djnz	.sfspi_read_loop
+
+		dec	c
+		jr		nz, .sfspi_read_loop
+
+		; report 0 (OK) result code
+		bool	hl
+		ld		L, h
+.returnResultCode:
+		ld		(SP+@SP+rc), hl
 #endasm
-	return 0;
+	return rc;
 }
 
 /*** BeginHeader sfspi_xread */
@@ -506,22 +567,30 @@ END DESCRIPTION **********************************************************/
 
 /*** EndHeader */
 
-_sflash_nodebug int sfspi_xread(long buffer, int len)
+_sflash_nodebug
+int sfspi_xread(long buffer, int len)
 {
-	// Do this 128 bytes at a time (root2xmem)
+	// Do this <= 128 bytes at a time via root2xmem.
 	auto char buf[128];
+	auto int rc, read_len;
 
-   while (len > 128) {
-      sfspi_read(buf, 128);
-   	root2xmem(buffer, buf, 128);
-      buffer += 128L;
-      len -= 128;
-   }
-   if (len) {
-      sfspi_read(buf, len);
-   	root2xmem(buffer, buf, len);
-   }
-	return 0;
+	if (0 > len)
+	{
+		rc = -1;	// negative len, set error result
+	}
+	else
+	{
+		rc = 0;	// default to OK result
+		while (!rc && len)
+		{
+			read_len = (len > (int) (sizeof buf)) ? (int) (sizeof buf) : len;
+			rc = sfspi_read(buf, read_len);
+			root2xmem(buffer, buf, (unsigned) read_len);
+			buffer += (long) read_len;
+			len -= read_len;
+		}
+	}
+	return rc;
 }
 
 
@@ -778,11 +847,11 @@ typedef struct {
 
 const sf_devtable_entry sf_devtable[SFLASH_DEVTABLE_SIZE] =
 {
-   {0x001C, 2047L, 264, 3, 9},	// AT45DB041B
-	{0x0024, 4095L, 264, 3, 9},	// AT45DB081B
-	{0x0034, 8191L, 528, 3, 10},	// AT45DB321
-	{0x003C, 8191L, 1056, 3, 11}, // AT45DB642
-	{0x0010, 16383L, 1056, 4, 11}, // AT45DB1282
+   {0x001C, 2048L, 264, 3, 9},	// AT45DB041B
+	{0x0024, 4096L, 264, 3, 9},	// AT45DB081B
+	{0x0034, 8192L, 528, 3, 10},	// AT45DB321
+	{0x003C, 8192L, 1056, 3, 11}, // AT45DB642
+	{0x0010, 16384L, 1056, 4, 11}, // AT45DB1282
 };
 
 

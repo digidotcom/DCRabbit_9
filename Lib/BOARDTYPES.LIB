@@ -127,7 +127,7 @@ END DESCRIPTION **********************************************************/
 #define 	BL2510A	0x1501		// Rabbitnet, RCM3110 (29MHz,256K/128K)
 #define 	BL2500B	0x1502		// Rabbitnet, RCM3000 (29MHz,2x256K/512K, ethernet)
 #define 	BL2510B	0x1503		// Rabbitnet, RCM3100 (29MHz,2x256K/512K)
-#define 	BL2500C	0x1504		// Rabbitnet, RCM3200 (44MHz,512K/512K+512K, 100BaseT ethernet)
+#define 	BL2500C	0x1504		// Rabbitnet, RCM3200 (44MHz,512K/512K+256K, 100BaseT ethernet)
 
 #define	RCM3400A	0x1600		// 29MHz, Microcore with analog, 512K flash, 512K SRAM
 #define	RCM3410X	0x1601		// reserved (formerly 29MHz, Microcore with analog, 256K/256k)
@@ -147,6 +147,8 @@ END DESCRIPTION **********************************************************/
 #define  BL2600M  0x170C 		// BL2600 44.2368 512 512 ASIX 3000A RCM3365, 512 FSRAM, 16 Mb Nand
 										// Flash, xD Connector
 #define  BL2600N  0x170D 		// BL2600 44.2368 512 512 ASIX 3000A RCM3375, 512 FSRAM, xD Connector
+#define  BL2600Q  0x170F 		// BL2600 44.2368 512 512 ASIX 3000A RCM3900, 512 FSRAM, 32 MB Nand
+										// Flash, SD Socket
 
 #define	EM1500A	0x1800		// Ethernet Modem, RCM3200
 
@@ -198,8 +200,8 @@ END DESCRIPTION **********************************************************/
 
 #define RCM3209	0x2D20	// RCM3200 replacement, 44MHz R3000, 10/100BaseT,
                	      	//  512K Flash, 256K SRAM + 512K FSRAM
-#define RCM3229	0x2D21	// RCM3220 replacement, 44MHz R3000, 10/100BaseT,
-               	      	//  512K Flash, 256K SRAM + 512K FSRAM
+#define RCM3229	0x2D21	// RCM3220 replacement, 44MHz R3000, 512K Flash,
+               	      	//  256K SRAM + 512K FSRAM
 #define RCM3309	0x2D30	// RCM3305 replacement, 44MHz R3000, 10/100BaseT,
                	      	//  512K Flash, 512K SRAM + 512K FSRAM, 8M sflash
 #define RCM3319	0x2D31	// RCM3315 replacement, 44MHz R3000, 10/100BaseT,
@@ -303,8 +305,8 @@ END DESCRIPTION **********************************************************/
         && ((_BOARD_TYPE_ < RCM3300A) || (_BOARD_TYPE_ > (RCM3300A+0x00FF))) \
         && (_BOARD_TYPE_ != BL2600A) && (_BOARD_TYPE_ != BL2600D) \
         && (_BOARD_TYPE_ != BL2600M) && (_BOARD_TYPE_ != BL2600N) \
-        && (_BOARD_TYPE_ != BL2600K) && (_BOARD_TYPE_ != BL2600L)) \
-        && !RCM3900_SERIES
+        && (_BOARD_TYPE_ != BL2600K) && (_BOARD_TYPE_ != BL2600L) \
+        && (_BOARD_TYPE_ != BL2600Q)) && !RCM3900_SERIES
 		// For now, only allow FAST_RAM_COMPILE for RCM3200 and similar boards
 		// Check to make sure 3800 or Flex SBC series board actually has 2 ram devices.
 		#if (((_DC_MD3_==0) && (RCM3800_SERIES || RABBITFLEX_SBC40_SERIES)) \
@@ -321,8 +323,8 @@ END DESCRIPTION **********************************************************/
      || RCM3800_SERIES || RABBITFLEX_SBC40_SERIES \
      || (_BOARD_TYPE_ == BL2600A) || (_BOARD_TYPE_ == BL2600D) \
      || (_BOARD_TYPE_ == BL2600M) || (_BOARD_TYPE_ == BL2600N) \
-     || (_BOARD_TYPE_ == BL2600K) || (_BOARD_TYPE_ == BL2600L)) \
-     || RCM3900_SERIES
+     || (_BOARD_TYPE_ == BL2600K) || (_BOARD_TYPE_ == BL2600L) \
+     || (_BOARD_TYPE_ == BL2600Q)) || RCM3900_SERIES
 	#ifdef _RAM_
 	   #if (!(RCM3800_SERIES || RABBITFLEX_SBC40_SERIES) || (_DC_MD3_==1))
 	      #error "Compile to RAM option programs the battery-backed RAM on CS1 and destroys any persistent data stored there."
@@ -475,6 +477,7 @@ END DESCRIPTION **********************************************************/
     RCM3800_SERIES || RABBITFLEX_SBC40_SERIES || _BOARD_TYPE_ == BL2600D || \
     _BOARD_TYPE_ == BL2600K || _BOARD_TYPE_ == BL2600L || \
     _BOARD_TYPE_ == BL2600M || _BOARD_TYPE_ == BL2600N || \
+    _BOARD_TYPE_ == BL2600Q || \
     _BOARD_TYPE_ == RCM3309 || _BOARD_TYPE_ == RCM3319 || \
     _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910 || \
     (_DC_BRD_OPT0_ & BRDOPT0_NANDFLASHMASK)	// w/ NAND
@@ -484,10 +487,13 @@ END DESCRIPTION **********************************************************/
 	    _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910 || \
 	    _BOARD_TYPE_ == BL2600K || _BOARD_TYPE_ == BL2600L || \
 	    _BOARD_TYPE_ == BL2600M || _BOARD_TYPE_ == BL2600N || \
-	    (_DC_BRD_OPT0_ & BRDOPT0_NANDFLASHMASK)	// w/ NAND
+	    _BOARD_TYPE_ == BL2600Q || \
+	    (_DC_BRD_OPT0_ & BRDOPT0_NANDFLASHMASK)
+	// w/ NAND
 	#define __BT__FAT_MAXBUFS	128	// Default maximum number of FAT buffers for
 												//  boards with built-in nand flash.
    #else
+   // w/o NAND but w/ serial flash or SD socket
 	#define __BT__FAT_MAXBUFS	8	// Default maximum number of FAT buffers for
 											//  boards with built-in serial flash.
 	#endif

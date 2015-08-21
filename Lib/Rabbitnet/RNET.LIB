@@ -1,12 +1,15 @@
 /* START LIBRARY DESCRIPTION *********************************************
 RNET.LIB
-Copyright (c) 2003 Z-World Inc
+Copyright (c) 2008 Digi International Inc.
 
 DESCRIPTION:	Support for RabbitNet boards.
 
 SUPPORT LIBS:
 
 REVISION HISTORY:
+16-Apr-2008		This special library version includes an rn_find() fix that
+					corrects a bug when searching for device by RabbitNet port.
+
 	02/23/04 pel	Added RN1600 timing and default to use original
    					microcode timing.	See _rn_enumerate_port().
 	01/20/04	pel	Added support for RN1100, RN1200, RN1300, RN1400 device
@@ -1310,7 +1313,7 @@ int rn_find(rn_search *srch)
   				switch (tflag&(srch->flags))
   				{
   					case RN_MATCH_PORT:		//port
-  						if (rn_devtable[dpna].portnum == srch->ports)
+  						if ((1 << rn_devtable[dpna].portnum) & srch->ports)
   						{
   							matchflag = matchflag^RN_MATCH_PORT;
   						}

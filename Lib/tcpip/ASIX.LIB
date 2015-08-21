@@ -65,6 +65,7 @@ typedef struct {
 														// work around a PHY bug)
 #define ASIX_FLAGS_PHYWORKAROUND	0x0002	// Do we need to perform the AX88796
 														// PHY workaround?
+#define ASIX_FLAGS_NOAUTONEG		0x0004	// has auto-negotiation been disabled?
 
 	int	(*io_init)();	// func-pointer to the code that sets up the IO strobes
 
@@ -763,7 +764,7 @@ asix_external_func int asix_drvinit(pld_eth_rscblk_t* rscblk)
    ld		ix,(sp+@sp+rscblk)
    ld		hl,(ix+[pld_eth_rscblk_t]+version)
    bool	hl
-   jr		nz,.asix_di2nd
+   jr		nz, .asix_di2nd
 .asix_di1st:
 	; fill in version field
 	ld		hl,PLD_ETH_ASIX_VER
@@ -776,7 +777,7 @@ asix_external_func int asix_drvinit(pld_eth_rscblk_t* rscblk)
 	bool	hl
    ld		hl,sizeof(_ASIXConfig) * 2
    ld    (ix+[pld_generic_resource]+ressize),hl
-	ld		l,h
+	ld		L,h
    ld    (ix+[pld_generic_resource]+ressize+2),hl
    ;fill in pointer to NetControllerDevice request
    ld		de,sizeof(pld_generic_resource)
@@ -787,12 +788,12 @@ asix_external_func int asix_drvinit(pld_eth_rscblk_t* rscblk)
 
 .asix_di2nd:
    ld		b,PLD_MAX_GENERIC_RES							; loop counter, ix=rscblk
-   ld		de,[pld_eth_rscblk_t]+res                ; de = res array offset
+   ld		de,[pld_eth_rscblk_t]+res                 ; de = res array offset
 .asix_dinextres:
    add	ix,de                                     ; ix = cur offset in res array
    ld		a,(ix+[pld_generic_resource]+resrc_id)    ; a = resource id
    cp		PLD_RES_TYPE_ETHCONTROLLER_PTR            ; check for pointer to NetControllerDevice
-   jr		z,.asix_dihaveptr                         ; jump if correct id
+   jr		z, .asix_dihaveptr                        ; jump if correct id
    ld		de,sizeof(pld_generic_resource)           ; de = size of res entry
    djnz  .asix_dinextres                           ; if not done, check next entry
 	jr		.asix_didone                              ; done - we've looked at all entries
@@ -805,7 +806,7 @@ asix_external_func int asix_drvinit(pld_eth_rscblk_t* rscblk)
 	#if PLD_ETH_COMPILING == 1
 .asix_dicopyloop:
    ldi
-   jp		v,.asix_dicopyloop
+   jp		v, .asix_dicopyloop
 	#else
    ldir
 	#endif
@@ -969,7 +970,7 @@ ioe	ld		(ix+ASIX_GPOC),0x10			; normal power, internal PHY
       push	hl
       sbc	hl,de
       pop	hl
-		jr		nz,.check_88796B_MR2
+		jr		nz, .check_88796B_MR2
 
       ; Check if MR3 is 0xbb10 - ASIX 88796
 		ld		hl,0x0003
@@ -982,7 +983,7 @@ ioe	ld		(ix+ASIX_GPOC),0x10			; normal power, internal PHY
 		or		a		; Clear carry flag
 		ld		de,0xbb10
       sbc	hl,de
-		jr		nz,.exit
+		jr		nz, .exit
 
       jr		.set_workaround
 
@@ -991,7 +992,7 @@ ioe	ld		(ix+ASIX_GPOC),0x10			; normal power, internal PHY
 		or		a		; Clear carry flag
 		ld		de,0x003B
       sbc	hl,de
-		jr		nz,.exit
+		jr		nz, .exit
 
       ; Check if MR3 is 0x1841 - ASIX 88796B
 		ld		hl,0x0003
@@ -1004,7 +1005,7 @@ ioe	ld		(ix+ASIX_GPOC),0x10			; normal power, internal PHY
 		or		a		; Clear carry flag
 		ld		de,0x1841
       sbc	hl,de
-		jr		nz,.exit
+		jr		nz, .exit
 
 .set_workaround:
       ; Enable the PHY workaround
@@ -1045,7 +1046,7 @@ int asix_resetinterface(_ASIXConfig * asix, word instance, int ifc)
    ld		hl,(sp+@sp+instance)
    ld		de,USING_ASIX
    sbc   hl,de
-   jr		c,.asix_instanceok
+   jr		c, .asix_instanceok
 	ld		hl,-6
    jp 	.doreturn
 .asix_instanceok:
@@ -1056,12 +1057,12 @@ int asix_resetinterface(_ASIXConfig * asix, word instance, int ifc)
 	ex		de,hl                           ; de = sizeof(_ASIXConfig)
    ld		hl,(sp+@sp+instance+2)          ; hl = instance
    ld		b,h
-   ld		c,l                             ; bc = instance
+   ld		c,L                             ; bc = instance
    mul                                   ; bc = instance * sizeof(_ASIXConfig)
    ld		hl,logical_addr(_asix_config)   ; hl = _asix_config
    ex		de,hl									  ; de = _asix_config
    ld		h,b
-   ld		l,c                             ; hl = instance * sizeof(_ASIXConfig)
+   ld		L,c                             ; hl = instance * sizeof(_ASIXConfig)
    add	hl,de                           ; hl = _ASIXConfig instance
 
    ex		de,hl
@@ -1070,7 +1071,7 @@ int asix_resetinterface(_ASIXConfig * asix, word instance, int ifc)
    ld		bc,sizeof(_ASIXConfig)
 .asix_ricopyloop:
    ldi
-   jp		v,.asix_ricopyloop
+   jp		v, .asix_ricopyloop
 #else
 	;memcpy(asix, _asix_config + instance, sizeof(*asix));
    ld		hl,sizeof(_ASIXConfig)
@@ -1079,12 +1080,12 @@ int asix_resetinterface(_ASIXConfig * asix, word instance, int ifc)
 	ex		de,hl                           ; de = sizeof(_ASIXConfig)
    ld		hl,(sp+@sp+instance+2)          ; hl = instance
    ld		b,h
-   ld		c,l                             ; bc = instance
+   ld		c,L                             ; bc = instance
    mul                                   ; bc = instance * sizeof(_ASIXConfig)
    ld		hl,_asix_config	              ; hl = _asix_config
    ex		de,hl									  ; de = _asix_config
    ld		h,b
-   ld		l,c                             ; hl = instance * sizeof(_ASIXConfig)
+   ld		L,c                             ; hl = instance * sizeof(_ASIXConfig)
    add	hl,de                           ; hl = _ASIXConfig instance
    push	hl
 
@@ -1121,12 +1122,12 @@ c	asix->pld_rscblock = res_block;
    ld		hl,(hl)
 
    ld		a,h
-   or		l
-   jp		z,.io_init_notset
+   or		L
+   jp		z, .io_init_notset
 	ex		de,hl
    ld		hl,(sp+@sp+asix)
    push	hl
-   ld		hl,.io_init_ret
+   ld		hl, .io_init_ret
    push	hl
    ex		de,hl
    jp		(hl)
@@ -1181,7 +1182,7 @@ c	j = 0;
 	;}
 	ld		hl,(sp+@sp+j)
 	bool	hl
-   jr		nz,.asix_noexecption
+   jr		nz, .asix_noexecption
 
    ld		hl,-ERR_INVALIDMACADDR
    push	hl
@@ -1212,7 +1213,7 @@ c	j = 0;
 
 	// return success!
 	bool	hl
-   ld		l,h
+   ld		L,h
 .doreturn:
 #endasm
 }
@@ -1277,95 +1278,123 @@ asix_external_func int asix_receive(_ASIXConfig * nic)
       ; time through this routine, the PHY is powered back up.
 
 		; Check if we should actually use the AX88796 PHY workaround
-      ld		hl,(ix+[nic]+flags)
-      ld    de,ASIX_FLAGS_PHYWORKAROUND
-      and	hl,de
-		jp		z,.end_link_check
+		ld		hl, (ix+[nic]+flags)
+		ld		de, _cexpr(ASIX_FLAGS_PHYWORKAROUND)
+		; transfer nic->flags into DE for possible repeated use
+		ex		de, hl
+		and	hl, de
+		jp		z, .end_link_check
 
-      ; Latch the RTC
-      ld    hl,RTC0R
-ioi   ld    (hl),0x00
-      ; Load the time of the last call of the link check
-      ld    a,(ix+[nic]+link_fail_timeout)
-      ; Load byte 2 of the RTC (counts 2 second increments)
-      ld    hl,RTC2R
-ioi   ld    b,(hl)
-      ; Load the link_fail_timeout with the time of this call
-      ld    (ix+[nic]+link_fail_timeout),b
-      ; Check if they are different
-      cp    b
-      jp    z,.end_link_check
-      ; 2 seconds have passed, so do the link checking
-      ; Check if the linkfail flag is alredy set
-      ld    hl,(ix+[nic]+flags)
-      ld    de,ASIX_FLAGS_LINKFAIL
-      and   hl,de
-      jr    z,.check_link_failed
-      ; It is already set--now clear the flag and power up the PHY
-      ; Clear the flag
-      ld    hl,(ix+[nic]+flags)
-      ld    a,h
-      xor   d
-      ld    h,a
-      ld    a,l
-      xor   e
-      ld    l,a
-      ld    (ix+[nic]+flags),hl
-      ; Power up the PHY
-      ; asix_writephy(nic, 0x10, 0, 0x1200)
-      ld    hl,0x1200
-      push  hl
-      bool  hl
-      ld    l,h
-      push  hl
-      ld    hl,0x0010
-      push  hl
-      push  ix
-      asix_internal_call(asix_writephy)
-      add   sp,8
-      jr    .end_link_check
+		; if autonegotiation is disabled, skip this workaround code
+		ld		hl, _cexpr(ASIX_FLAGS_NOAUTONEG)
+		and	hl, de
+		jp		nz, .end_link_check
+
+		ld		hl, _cexpr(RTC2R)
+.rtc_link_check:
+		; Latch the RTC registers' content
+ioi	ld		(RTC0R), a
+		; Load byte 2 of the RTC (counts in 2 second increments)
+ioi	ld		a, (hl)
+		; Re-latch the RTC registers' content
+ioi	ld		(RTC0R), a
+		; Verify byte 2 of the RTC (avoid RTC's asynchronous counter ripple)
+ioi	cp		(hl)
+		jr		nz, .rtc_link_check
+
+		; apply the 2-second mask to the latched RTC2R content
+		;  (don't bother, because RTC2R bit 0 is the 2 second counter)
+		;and	0xFF
+
+		; Compare the time of the last call of the link check
+		;  (skip link checking if still within the same timeout period)
+		cp		(ix+[nic]+link_fail_timeout)
+		jr		z, .skip_link_check
+
+		; Update the link_fail_timeout with the time of this call
+		ld		(ix+[nic]+link_fail_timeout), a
+
+		; a few seconds have passed, so do the link checking
+		; Check if the linkfail flag is already set
+		ld		hl, _cexpr(ASIX_FLAGS_LINKFAIL)
+		and	hl, de
+		jr		z, .check_link_failed
+
+		; It is already set--now clear the flag and power up the PHY
+		; Clear the flag
+		ld		hl, _cexpr(~ASIX_FLAGS_LINKFAIL)
+		and	hl, de
+		ld		(ix+[nic]+flags), hl
+		; Power up the PHY
+		; asix_writephy(nic, 0x10, 0, 0x1200)
+		ld		hl, 0x1200
+		push	hl
+		ld		h, L
+		push	hl
+		ld		L, 0x10
+		push	hl
+		ld		hl, ix
+		push	hl
+		asix_internal_call(asix_writephy)
+		add	sp, 8
+		jr		.end_link_check
+
 .check_link_failed:
-      ; Read MII Register 1 (Status Register)
-      ; asix_readphy(nic, 0x10, 1)
-      ld    hl,0x0001
-      push  hl
-      ld    hl,0x0010
-      push  hl
-      push  ix
-      asix_internal_call(asix_readphy)
-      add   sp,6
-      ; Bit 2 of HL contains the link status
-      bit   2,l
-      jr    nz,.end_link_check
-      ; The link is down--Read MII Register 1 again
-      ; asix_readphy(nic, 0x10, 1)
-      ld    hl,0x0001
-      push  hl
-      ld    hl,0x0010
-      push  hl
-      push  ix
-      asix_internal_call(asix_readphy)
-      add   sp,6
-      bit   2,l
-      jr    nz,.end_link_check
-      ; The link still shows as being down
-      ; Power down AX88796's PHY
-      ; asix_writephy(nic, 0x10, 0, 0x1a00)
-      ld    hl,0x1a00
-      push  hl
-      bool  hl
-      ld    l,h
-      push  hl
-      ld    hl,0x0010
-      push  hl
-      push  ix
-      asix_internal_call(asix_writephy)
-      add   sp,8
-      ; Set the linkfail flag
-      ld    hl,(ix+[nic]+flags)
-      ld    de,ASIX_FLAGS_LINKFAIL
-      or    hl,de
-      ld    (ix+[nic]+flags),hl
+		; initialize link check loop down-counter (register B content)
+		ld		b, 2
+.loop_link_failed:
+		; preserve the current link check loop down-count value
+		push	bc
+		; Read MII Register 1 (Status Register)
+		; asix_readphy(nic, 0x10, 1)
+		ld		hl, 0x0001
+		push	hl
+		ld		L, 0x10
+		push	hl
+		ld		hl, ix
+		push	hl
+		asix_internal_call(asix_readphy)
+		add	sp, 6
+		; recover the current link check loop down-count value
+		pop	bc
+		; Bit 2 of HL contains the link status
+		bit	2, L
+		jr		nz, .end_link_check
+
+		; done all link checks?
+		djnz	.loop_link_failed
+
+		; The link still shows as being down
+		; Power down AX88796's PHY
+		; asix_writephy(nic, 0x10, 0, 0x1a00)
+		ld		hl, 0x1a00
+		push	hl
+		ld		h, L
+		push	hl
+		ld		L, 0x10
+		push	hl
+		ld		hl, ix
+		push	hl
+		asix_internal_call(asix_writephy)
+		add	sp, 8
+		; Set the linkfail flag
+		ld		hl, (ix+[nic]+flags)
+		ld		de, ASIX_FLAGS_LINKFAIL
+		or		hl, de
+		ld		(ix+[nic]+flags), hl
+
+.exit_link_failed:
+		; no link, report error
+		ld		hl, 1
+		jp		.pdr_done
+
+.skip_link_check:
+		; Check if the linkfail flag is already set
+		;  (bail out if so)
+		ld		de, _cexpr(ASIX_FLAGS_LINKFAIL)
+		ld		hl, (ix+[nic]+flags)
+		and	hl, de
+		jr		nz, .exit_link_failed
 
 .end_link_check:
       ; This ends the ASIX PHY bug workaround code
@@ -1381,20 +1410,22 @@ ioe	ld		(ix+ASIX_CMDR),0x22			; page 1
 
 ioe	ld		a,(iy+ASIX_ISR)				; overflow	SJH
 		bit	4,a
-		jr		z,pdr_removepkt
+		jr		z, .pdr_checkpkt
 
+;BRI: Here, BUFFER RING OVERFLOW status is confirmed.
       push	ix
       ld		ix,(sp+@sp+nic+6)
-		ld		(ix+[nic]+overflow),0x01	; set overflow flag
+		ld		(ix+[nic]+overflow),0x01	; set overflow, reset retransmit flags
 		ld		hl,(ix+[nic]+pd_overruns)
 		inc	hl
 		ld		(ix+[nic]+pd_overruns),hl
       pop	ix
 
 ioe	ld		a,(iy+ASIX_CMDR)				; grab TXP bit
+;BRI: Here, BUFFER RING OVERFLOW recovery step 1 is complete.
 ioe	ld		(ix+ASIX_CMDR),0x21			; stop
-
-		ld		hl,3								; wait 1.5ms
+;BRI: Here, BUFFER RING OVERFLOW recovery step 2 is complete.
+		ld		hl,3								; wait at least 1.5ms (3 ticks ~ 2.93 mS)
 #if PLD_ETH_COMPILING == 1
 		push	ix
 		PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 6)
@@ -1402,53 +1433,68 @@ ioe	ld		(ix+ASIX_CMDR),0x21			; stop
 #else
       call	tickwait
 #endif
+;BRI: Here, BUFFER RING OVERFLOW recovery step 3 is complete.
 
-ioe	ld		(ix+PD_RMTBCNT0),0x00			; reset DMA byte counts
+ioe	ld		(ix+PD_RMTBCNT0),0x00		; reset DMA byte counts
 ioe	ld		(ix+PD_RMTBCNT1),0x00
+;BRI: Here, BUFFER RING OVERFLOW recovery step 4 is complete.
 
 		and	a,0x04							; transmit pending?
-		jr		z,pdr_removepkt
+;BRI:test!		jr		z, .pdr_checkpkt
+		jr		z, .pdr_setloopback			; if not, go set loopback mode;BRI:test!
 
 ioe	ld		a,(iy+ASIX_ISR)				; PTX or TXE set?
 		and	a,0x0a
-		jr		z,pdr_noretx
+;BRI:test!		jr		z,pdr_noretx
+		jr		nz, .pdr_setloopback			; if not, go set loopback mode;BRI:test!
 
       push	ix
       ld		ix,(sp+@sp+nic+6)
-		ld		(ix+[nic]+overflow),0x81  	; set retransmit bit
+		ld		(ix+[nic]+overflow),0x81	; set both overflow and retransmit flags
       pop	ix
-
-pdr_noretx:
+.pdr_setloopback:
+;BRI:test!pdr_noretx:
+;BRI: Here, BUFFER RING OVERFLOW recovery step 5 is complete.
 ioe	ld		(ix+ASIX_TCR),0x02			; loopback mode
+;BRI: Here, BUFFER RING OVERFLOW recovery step 6 is complete.
 ioe	ld		(ix+ASIX_CMDR),0x22			; start
+;BRI: Here, BUFFER RING OVERFLOW recovery step 7 is complete.
+		jr		.pdr_removepkt
+
 
 		;
 		; remove packet
 		;
 
-pdr_removepkt:
+.pdr_checkpkt:
 ioe	ld		(ix+ASIX_CMDR),0x22			; page 0, start
 ioe	ld		a,(iy+ASIX_BNDRY)
 
 		cp		a,b								; BNDRY should never equal CURR
-		jr		z,pdr_badpacket
+		jr		z, .pdr_badpacket
 
 		inc	a									; wrap from start to end
 		cp		ASIX_RX_BUF_Stop
-		jr		nz,pdr_ringwrap
+		jr		nz, .pdr_ringwrap
 		ld		a,ASIX_RX_BUF_Start
 
-pdr_ringwrap:
+.pdr_ringwrap:
 		ld		hl,0x0001						; return 1 if nothing to receive
 		cp		b
-		jp		z,pdr_done
+		jp		z, .pdr_done
+
+		;
+		; remove packet
+		;
+
+.pdr_removepkt:
 
 		;
 		; setup DMA
 		;
 
 ioe	ld		(ix+ASIX_CMDR),0x22			; reset remote DMA status
-ioe	ld		(ix+PD_RMTBCNT0),0xff			; bytes to read
+ioe	ld		(ix+PD_RMTBCNT0),0xff		; bytes to read
 ioe	ld		(ix+PD_RMTBCNT1),0xff
 
 ioe	ld		(ix+ASIX_RSAR0),0x00			; address on ASIX
@@ -1467,14 +1513,14 @@ ioe	ld		(ix+ASIX_CMDR),0x0a			; DMA read
 		ld		de,_PDHeader
 #endif
 		ld		hl,iy
-		ld		l,ASIX_DATA
+		ld		L,ASIX_DATA
 
 		ld		b,4								; read DMA header
-ar_3:
+.ar_3:
 ioe	ld		a,(hl)
 		ld		(de),a
 		inc	de
-		djnz	ar_3
+		djnz	.ar_3
 
 #if PLD_ETH_COMPILING == 1
       ld		hl,(sp+@sp+_PDHeader+4)
@@ -1484,13 +1530,13 @@ ioe	ld		a,(hl)
 #endif
 		and	0xdf
 		cp		a,0x01
-		jr		z,pdr_goodpacket
+		jr		z, .pdr_goodpacket
 
 		;
 		; bad received packet, dump ring
 		;
 
-pdr_badpacket:
+.pdr_badpacket:
 ioe	ld		a,(iy+ASIX_CMDR)				; grab TXP bit
 ioe	ld		(ix+ASIX_CMDR),0x21			; stop
 
@@ -1503,7 +1549,7 @@ ioe	ld		(ix+ASIX_CMDR),0x21			; stop
       call	tickwait
 #endif
 
-ioe	ld		(ix+PD_RMTBCNT0),0x00			; reset DMA byte counts
+ioe	ld		(ix+PD_RMTBCNT0),0x00		; reset DMA byte counts
 ioe	ld		(ix+PD_RMTBCNT1),0x00
 ioe	ld		(ix+ASIX_TCR),0x02			; loopback mode
 
@@ -1513,40 +1559,35 @@ ioe	ld		(ix+ASIX_CMDR),0x62			; start, page 1
 ioe	ld		a,(iy+ASIX_CURR)
 		dec	a
 		cp		a,ASIX_RX_BUF_Start
-		jr		nc,pdr_nowrapring
+		jr		nc, .pdr_nowrapring
 		ld		a,ASIX_RX_BUF_Stop-1
 
-pdr_nowrapring:
+.pdr_nowrapring:
 ioe	ld		(ix+ASIX_CMDR),0x22
 ioe	ld		(ix+ASIX_BNDRY),a
-
-
-ioe	ld		(ix+ASIX_ISR),0x10			; clear overflow
-ioe	ld		(ix+ASIX_TCR),0x00			; get out of loopback mode
-
 		ld		hl,0x0001						; return error
-		jp		pdr_done
+		jp		.pdr_donebadpacket
 
-pdr_goodpacket:
+.pdr_goodpacket:
 #if PLD_ETH_COMPILING == 1
 		ld		hl,(sp+@sp+_PDHeader+2+4)
       ld		b,h
-      ld		c,l                        ; bc=MIN(length,ETH_BUFSIZE)
+      ld		c,L                        ; bc=MIN(length,ETH_BUFSIZE)
 #else
 		ld		bc,(_PDHeader+2)				; bc=MIN(length,ETH_BUFSIZE)
 #endif
 		ld		hl,1+ETH_BUFSIZE
 		or		a
 		sbc	hl,bc
-		jr		nc,pdr_chkpointer
+		jr		nc, .pdr_chkpointer
 
 		ld		hl,1518							; make sure the length makes sense
 		sbc	hl,bc
-		jr		c,pdr_badpacket
+		jr		c, .pdr_badpacket
 
 		ld		bc,0+ETH_BUFSIZE
 
-pdr_chkpointer:
+.pdr_chkpointer:
 #if PLD_ETH_COMPILING == 1
 		ld		hl,(sp+@sp+_PDHeader+1+4)
       ld		a,L                        ; make sure the next pointer makes sense
@@ -1554,9 +1595,9 @@ pdr_chkpointer:
 		ld		a,(_PDHeader+1)				; make sure the next pointer makes sense
 #endif
 		cp		a,ASIX_RX_BUF_Start
-		jp		c,pdr_badpacket
+		jp		c, .pdr_badpacket
 		cp		a,ASIX_RX_BUF_Stop
-		jp		nc,pdr_badpacket
+		jp		nc, .pdr_badpacket
 
       push	ix
       push	iy									; Save I/O pointers
@@ -1568,23 +1609,23 @@ pdr_chkpointer:
 #endif
       pop	bc
 
-		jr		nc,.pdr_gotbuffer
+		jr		nc, .pdr_gotbuffer
 
 ; save the pkt for another time if no buffers
 		pop	iy
       ld		ix,(sp+@sp+nic+6)
-		ld		hl,(ix+[nic]+pd_nobufs)					; increment error counter
+		ld		hl,(ix+[nic]+pd_nobufs)		; increment error counter
 		inc	hl
 		ld		(ix+[nic]+pd_nobufs),hl
       pop	ix
-ioe	ld		(ix+ASIX_CMDR),0x22						; abort DMA
+ioe	ld		(ix+ASIX_CMDR),0x22			; abort DMA
 		ld		hl,0x0001
-		jp		pdr_done
+		jp		.pdr_done
 
 
 .pdr_gotbuffer:
 		ld		hl,(sp+0)						; I/O input base
-		ld		l,ASIX_DATA
+		ld		L,ASIX_DATA
       push	bc
 #if PLD_ETH_COMPILING == 1
 		PLD_IMPORT_CALL(res_block, PLD_ETH_PB_IOE2BUF, 10)
@@ -1595,7 +1636,7 @@ ioe	ld		(ix+ASIX_CMDR),0x22						; abort DMA
 
 		ld		hl,(sp+@sp+nic+8)
       ld		hl,(hl+[nic]+iface-1)		; Load interface number into H (not L, hence the -1)
-      ld		l,LL_READY					 	; Interface number in H, flags in L
+      ld		L,LL_READY					 	; Interface number in H, flags in L
 		ld		e,14								; Length of link-layer (ethernet) header
 #if PLD_ETH_COMPILING == 1
 		PLD_IMPORT_CALL(res_block, PLD_ETH_PB_FINISH, 8)
@@ -1615,39 +1656,43 @@ ioe	ld		(ix+ASIX_CMDR),0x22			; page 0
 #endif
 		dec	a
 		cp		a,ASIX_RX_BUF_Start
-		jr		nc,pdr_wrapring2
+		jr		nc, .pdr_wrapring2
 		ld		a,ASIX_RX_BUF_Stop-1
-pdr_wrapring2:
+.pdr_wrapring2:
 ioe	ld		(ix+ASIX_BNDRY),a
 
 
 		push	ix
       ld		ix,(sp+@sp+nic+6)
-		ld		hl,(ix+[nic]+pd_received)				; increment packet counter
+		ld		hl,(ix+[nic]+pd_received)	; increment packet counter
 		inc	hl
 		ld		(ix+[nic]+pd_received),hl
 
 		bool	hl									; return 0
-		ld		l,h
+		ld		L,h
 
-		ld		a,(ix+[nic]+overflow)					; overflow condition
+		ld		a,(ix+[nic]+overflow)		; overflow condition
 		bit	0,a
       pop	ix
-		jp		z,pdr_done
+		jp		z, .pdr_done
 
-ioe	ld		(ix+ASIX_ISR),0x10			; clear overflow
-ioe	ld		(ix+ASIX_TCR),0x00			; get out of loopback mode
-
-		bit	7,a								; transmit pending?
+.pdr_donebadpacket:
+;BRI: Here, BUFFER RING OVERFLOW recovery step 8 is complete.
+ioe	ld		(ix+ASIX_ISR), 0x10			; clear overflow
+;BRI: Here, BUFFER RING OVERFLOW recovery step 9 is complete.
+ioe	ld		(ix+ASIX_TCR), 0x00			; get out of loopback mode
+;BRI: Here, BUFFER RING OVERFLOW recovery step 10 is complete.
 		push	ix
-      ld		ix,(sp+@sp+nic+6)
-		ld		(ix+[nic]+overflow),0
-      pop	ix
-		jp		z,pdr_done
+		ld		ix, (sp+@sp+nic+6)
+		ld		a, (ix+[nic]+overflow)		; overflow condition
+		bit	7, a								; transmit pending?
+		ld		(ix+[nic]+overflow), 0
+		pop	ix
+		jp		z, .pdr_done
 
-ioe	ld		(ix+ASIX_CMDR),0x26			; restart transmit
-
-pdr_done:
+ioe	ld		(ix+ASIX_CMDR), 0x26			; restart transmit
+.pdr_done:
+;BRI: Here, BUFFER RING OVERFLOW recovery step 11 is complete.
 		bool	hl
 		pop	iy
 		pop	ix
@@ -1661,7 +1706,7 @@ pdr_done:
 	#xcodorg	defaultxcode		resume
 #endif
 
-/*** BeginHeader 	asix_ioctl */
+/*** BeginHeader asix_ioctl */
 
 asix_external_func int asix_ioctl(_ASIXConfig * nic, int cmd, ...);
 
@@ -1673,90 +1718,118 @@ asix_external_func int asix_ioctl(_ASIXConfig * nic, int cmd, ...);
 
 asix_external_func int asix_ioctl(_ASIXConfig * nic, int cmd, ...)
 {
-	auto char * stack;
+	auto char *stack;
 	auto int retval;
-   stack = (char *)(&cmd + 1);
+
+	stack = (char *) (&cmd + 1);
 #asm
 	;switch (cmd) {
-	ld		hl,(sp+@sp+cmd)      ; load command
-	ex		de,hl
-   ld		hl,PD_HASFEATURE     ; check for PD_HASFEATURE
-   xor	a
-   sbc   hl,de
-   jp		z,.asix_ioctl_hasfeature
-   ld		hl,PD_INITIALIZE
-   xor	a
-   sbc	hl,de
-   jp		z,.asix_ioctl_initialize
-   ld		hl,PD_HAVELINK
-   xor	a
-   sbc	hl,de
-   jp		z,.asix_ioctl_havelink
-   ld		hl,PD_POWER
-   xor	a
-   sbc	hl,de
-   jp		z,.asix_ioctl_power
-	ld		hl,PD_SETHWA
-   xor	a
-   sbc	hl,de
-   jp		z,.asix_ioctl_sethwa
-   ld		hl,PD_GETHWA
-   xor	a
-   sbc	hl,de
-   jp		z,.asix_ioctl_gethwa
+		ld		hl, (sp+@sp+cmd)					; load command
+		ex		de, hl
+	;case PD_HASFEATURE:
+		ld		hl, PD_HASFEATURE					; check for PD_HASFEATURE
+		xor	a
+		sbc	hl, de
+		jp		z, .asix_ioctl_hasfeature
+	;case PD_INITIALIZE:
+		ld		hl, PD_INITIALIZE
+		xor	a
+		sbc	hl, de
+		jp		z, .asix_ioctl_initialize
+	;case PD_HAVELINK:
+		ld		hl, PD_HAVELINK
+		xor	a
+		sbc	hl, de
+		jp		z, .asix_ioctl_havelink
+	;case PD_POWER:
+		ld		hl, PD_POWER
+		xor	a
+		sbc	hl, de
+		jp		z, .asix_ioctl_power
+	;case PD_SETHWA:
+		ld		hl, PD_SETHWA
+		xor	a
+		sbc	hl, de
+		jp		z, .asix_ioctl_sethwa
+	;case PD_GETHWA:
+		ld		hl, PD_GETHWA
+		xor	a
+		sbc	hl, de
+		jp		z, .asix_ioctl_gethwa
 #ifdef USE_MULTICAST
-	ld		hl,PD_ADDMULTICAST
-   xor	a
-   sbc	hl,de
-   jp		z,.asix_ioctl_addmulticast
-   ld		hl,PD_REMOVEMULTICAST
-   xor	a
-   sbc	hl,de
-   jp		z,.asix_ioctl_removemulticast
+	;case PD_ADDMULTICAST:
+		ld		hl, PD_ADDMULTICAST
+		xor	a
+		sbc	hl, de
+		jp		z, .asix_ioctl_addmulticast
+	;case PD_REMOVEMULTICAST:
+		ld		hl, PD_REMOVEMULTICAST
+		xor	a
+		sbc	hl, de
+		jp		z, .asix_ioctl_removemulticast
 #endif
-	ld		hl,PD_DUMPREGS
-   xor	a
-   sbc	hl,de
-   jp		z,.asix_ioctl_readreg
-   jp    .asix_ioctl_return
+	;case PD_DUMPREGS:
+		ld		hl, PD_DUMPREGS
+		xor	a
+		sbc	hl, de
+		jp		z, .asix_ioctl_readreg
+#ifdef PD_NETWORK_MODE
+	;case PD_NETWORK_MODE:
+		ld		hl, PD_NETWORK_MODE
+		xor	a
+		sbc	hl, de
+		jp		z, .asix_ioctl_networkmode
+#endif
+		jp		.asix_ioctl_return
 
 .asix_ioctl_hasfeature:
-   ;case PD_HASFEATURE:
+	;case PD_HASFEATURE:
+		;#ifdef USE_MULTICAST
+		;	#define PD_maxCmd PD_REMOVEMULTICAST
+		;#else
+		;	#define PD_maxCmd PD_GETHWA
+		;#endif
 		;cmd = *(int *)stack;
-      ;return cmd >= PD_HASFEATURE && cmd <=
-      ;  #ifdef USE_MULTICAST
-      ;  		PD_REMOVEMULTICAST
-      ;  #else
-      ;  		PD_GETHWA
-      ;  #endif
+		;return cmd == PD_NETWORK_MODE || cmd >= PD_HASFEATURE && cmd <= PD_maxCmd
 
-      ld    hl,(sp+@sp+stack)    ; point at first parameter
-      ld    hl,(hl)              ; derefernce first parameter
-      ld    b,h
-      ld    c,l                  ; save in bc for later
-   #ifdef USE_MULTICAST
-      ld    de,PD_REMOVEMULTICAST
-   #else
-      ld    de,PD_GETHWA
-   #endif
+		ld		hl, (sp+@sp+stack)				; point at first parameter
+		ld		hl, (hl)								; dereference first parameter
+		ld		b, h
+		ld		c, L									; save in bc for later
+
+#ifdef PD_NETWORK_MODE
+		ld		de, PD_NETWORK_MODE
 		xor	a
-      sbc   hl,de
-      jr		z,.asix_featuresupported
-      jr    nc,.asix_featurenotsupported
-      ld    h,b
-      ld    l,c
-      ld    de,PD_HASFEATURE
-      xor   a
-      sbc   hl,de
-      jr    nc,.asix_featuresupported
-      jr		z,.asix_featuresupported
-   .asix_featurenotsupported:
-      ld    hl,0x0000
-      jr		.asix_hasfeaturedone
-   .asix_featuresupported:
-   	ld		hl,0x0001
-   .asix_hasfeaturedone:
-      ld    (sp+@sp+retval),hl
+		sbc	hl, de
+		jr		z, .asix_featuresupported		; cmd == PD_NETWORK_MODE
+
+		ld		h, b
+		ld		L, c
+#endif
+#ifdef USE_MULTICAST
+		ld		de, PD_REMOVEMULTICAST
+#else
+		ld		de, PD_GETHWA
+#endif
+		xor	a
+		sbc	hl, de
+		jr		z, .asix_featuresupported		; cmd == PD_maxCmd
+		jr		nc, .asix_featurenotsupported	; cmd > PD_maxCmd
+
+		ld		h, b
+		ld		L, c
+		ld		de, PD_HASFEATURE
+		xor	a
+		sbc	hl, de
+		jr		nc, .asix_featuresupported		; cmd >= PD_HASFEATURE
+
+.asix_featurenotsupported:
+		ld		hl, 0x0000
+		jr		.asix_hasfeaturedone
+.asix_featuresupported:
+		ld		hl, 0x0001
+.asix_hasfeaturedone:
+		ld		(sp+@sp+retval), hl
 		jp		.asix_ioctl_return
 
 .asix_ioctl_initialize:
@@ -1773,7 +1846,6 @@ asix_external_func int asix_ioctl(_ASIXConfig * nic, int cmd, ...)
       asix_internal_call(asix_resetinterface)
       add   sp,6
       ld    (sp+@sp+retval),hl
-
       jp    .asix_ioctl_return
 
 .asix_ioctl_havelink:
@@ -1797,7 +1869,7 @@ asix_external_func int asix_ioctl(_ASIXConfig * nic, int cmd, ...)
       bool  hl
       ld    hl,(sp+@sp+nic)
       push  hl
-      jr    z,.asix_ioctl_powerdown
+      jr    z, .asix_ioctl_powerdown
       asix_internal_call(asix_powerup)
       jr    .asix_ioctl_powerdone
 	.asix_ioctl_powerdown:
@@ -1819,7 +1891,7 @@ asix_external_func int asix_ioctl(_ASIXConfig * nic, int cmd, ...)
       asix_internal_call(ne2k_sethwaddr)
       add   sp,4
       bool  hl
-      ld    l,h
+      ld    L,h
       ld    (sp+@sp+retval),hl
       jp    .asix_ioctl_return
 
@@ -1872,6 +1944,7 @@ asix_external_func int asix_ioctl(_ASIXConfig * nic, int cmd, ...)
       ld    (sp+@sp+retval),hl
       jp    .asix_ioctl_return
 #endif
+
 .asix_ioctl_readreg:
 	;case PD_DUMPREGS
    	;return asix_prt_readreg(nic, (char*)stack);
@@ -1884,9 +1957,27 @@ asix_external_func int asix_ioctl(_ASIXConfig * nic, int cmd, ...)
          add	sp,4
          ld		(sp+@sp+retval),hl
          jp		.asix_ioctl_return
-   ;}
+
+#ifdef PD_NETWORK_MODE
+.asix_ioctl_networkmode:
+	;case PD_NETWORK_MODE
+		;return asix_networkmode(nic, *(int *) stack, *(int *) (stack + sizeof(int)));
+		ld		hl, (sp+@sp+stack)
+		ld		hl, (hl+sizeof(int))
+		push	hl
+		ld		hl, (sp+@sp+stack+2)
+		ld		hl, (hl)
+		push	hl
+		ld		hl, (sp+@sp+nic+4)
+		push	hl
+		asix_internal_call(asix_networkmode)
+		add	sp, 6
+		ld		(sp+@sp+retval), hl
+		jr		.asix_ioctl_return
+#endif
+	;}
 .asix_ioctl_return:
-	ld		hl,(sp+@sp+retval)
+	ld		hl, (sp+@sp+retval)
 #endasm
    return retval;
 }
@@ -2086,7 +2177,7 @@ int asix_havelink(_ASIXConfig * nic)
 ioe	ld		a,(iy+ASIX_GPI)
 		and	a,0x01
 		bool	hl
-		ld		l,a
+		ld		L,a
 
 		pop	ix
 #endasm
@@ -2293,7 +2384,7 @@ ioe   ld    (iy+ASIX_MEMR),0x49
       ld    hl,(sp+@SP+phy)
       ld    b,5
 _asix_wp1:
-      bit   4,l
+      bit   4,L
       jr    z,_asix_wp1_0
       asix_internal_call(asix_writeonetophy)
       jr    _asix_wp1_1
@@ -2310,7 +2401,7 @@ _asix_wp1_1:
       ld    hl,(sp+@SP+reg)
       ld    b,5
 _asix_wp2:
-      bit   4,l
+      bit   4,L
       jr    z,_asix_wp2_0
       asix_internal_call(asix_writeonetophy)
       jr    _asix_wp2_1
@@ -2422,7 +2513,7 @@ ioe   ld    (iy+ASIX_MEMR),0x49
       ld    hl,(sp+@SP+phy+2)
       ld    b,5
 _asix_rp1:
-      bit   4,l
+      bit   4,L
       jr    z,_asix_rp1_0
       asix_internal_call(asix_writeonetophy)
       jr    _asix_rp1_1
@@ -2439,7 +2530,7 @@ _asix_rp1_1:
       ld    hl,(sp+@SP+reg+2)
       ld    b,5
 _asix_rp2:
-      bit   4,l
+      bit   4,L
       jr    z,_asix_rp2_0
       asix_internal_call(asix_writeonetophy)
       jr    _asix_rp2_1
@@ -2464,7 +2555,7 @@ ioe   ld    (iy+ASIX_MEMR),0x40
       ;
 
       bool  hl
-      ld    l,h
+      ld    L,h
       ld    b,16
 _asix_rp3:
       adc   hl,hl
@@ -2501,7 +2592,158 @@ _asix_rp3_0:
    #xcodorg defaultxcode   resume
 #endif
 
+/*** BeginHeader asix_link_status */
+// Needs to be modified to take an (_ASIXConfig *) parameter, but that would
+// require adding a pd_link_status() function and a new ioctl.
+asix_internal_func int asix_link_status (void);
+#define ASIX_LINK_UP   0x01
+#define ASIX_LINK_FDX  0x02
+#define ASIX_LINK_100  0x04
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+asix_internal_func
+int asix_link_status(void)
+{
+#asm
+ioe	ld		a, (ASIX_RDIO+ASIX_GPI)
+		bool	hl
+		ld		L, a
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader asix_networkmode */
+// netspeed = 0 for auto, 1 for 10Mbps, 2 for 100Mbps; netduplex = 0 for half, 1 for full
+asix_internal_func int asix_networkmode(_ASIXConfig * nic, int netspeed, int netduplex);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+asix_internal_func
+int asix_networkmode(_ASIXConfig * nic, int netspeed, int netduplex)
+{
+#asm
+		push	ix
+
+		ld		hl, (sp+@SP+nic+2)
+		ld		ix, hl
+
+		; load current setting into bc to start
+
+		; bc = asix_readphy(nic, 0x10, 0);
+		bool	hl
+		ld		L, h
+		push	hl
+		ld		L, 0x10
+		push	hl
+		push	ix
+		asix_internal_call(asix_readphy)
+		add	sp, 6
+		; clear lower 7 bits (read as "don't care", need to write as 0)
+		ld		de, 0xFF80
+		and	hl, de
+		ld		b, h
+		ld		c, L
+
+._asix_setspeed:
+		ld		hl, (sp+@SP+netspeed+2)
+
+		; if netspeed == 0, set autonegotiation
+		ld		a, h
+		or		L
+		jr		z, ._asix_autoneg
+
+		; if netspeed == 1, set 10Mbps
+		dec	hl
+		ld		a, h
+		or		L
+		jr		z, ._asix_10bt
+
+		; if netspeed == 2, set 100Mbps, else ignore invalid speed setting
+		dec	hl
+		ld		a, h
+		or		L
+		jr		nz, ._asix_setduplex			; invalid speed
+
+._asix_100bt:
+		res	4, b								; clear bit 12 (auto negotiation)
+		set	5, b								; set bit 13 (100Mbps)
+		jr		._asix_noauto
+
+._asix_autoneg:
+		set	4, b								; set bit 12 (auto negotiation)
+		set	1, b								; set bit 9 (restart auto negotiation)
+
+		; clear the autonegotiation disabled flag
+		; flags &= ~ASIX_FLAGS_NOAUTONEG
+		ld		hl, (ix+[nic]+flags)
+		ld		de, ~ASIX_FLAGS_NOAUTONEG
+		and	hl, de
+		ld		(ix+[nic]+flags), hl
+
+		jr		._asix_setduplex
+
+._asix_10bt:
+		res	4, b								; clear bit 12 (auto negotiation)
+		res	5, b								; clear bit 13 (10Mbps)
+
+._asix_noauto:
+		; set the autonegotiation disabled flag
+		ld		hl, (ix+[nic]+flags)
+		ld		de, ASIX_FLAGS_NOAUTONEG
+		or		hl, de
+		ld		(ix+[nic]+flags), hl
+
+._asix_setduplex:
+		ld		hl, (sp+@SP+netduplex+2)
+		; if netduplex == 0 set half duplex
+		ld		a, h
+		or		L
+		jr		z, ._asix_halfduplex
+
+		; if netduplex == 1, set full duplex, else ignore invalid duplex setting
+		dec	hl
+		ld		a, h
+		or		L
+		jr		nz, ._asix_setMR0
+
+._asix_fullduplex:
+		set	0, b								; set bit 8 on BC, full duplex
+		jr		._asix_setMR0
+
+._asix_halfduplex:
+		res	0, b								; clear bit 8 on BC, half duplex
+
+._asix_setMR0:
+		; Set MR0 on the phy
+		; asix_writephy(nic, 0x10, 0, [BC])
+		push	bc
+		bool	hl
+		ld		L, h
+		push	hl
+		ld		L, 0x10
+		push	hl
+		push	ix
+		asix_internal_call(asix_writephy)
+		add	sp, 8
+
+		pop	ix
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
 /*** BeginHeader */
 #endif /*__ASIX_LIB*/
 /*** EndHeader */
-

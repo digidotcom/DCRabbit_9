@@ -82,6 +82,7 @@
 void erase_MBR(int dev)
 {
 	auto int i, j, rc;
+	auto int sectors_to_clear_mbr;
 #ifdef USING_CHAR_FLASH_BUF
    static char flash_buf[1056];
 #endif
@@ -117,14 +118,17 @@ void erase_MBR(int dev)
       if (!strcmp(_fatConfig[i].type, "SD")) {
          // device is SD Card flash
          j = 1;
+         sectors_to_clear_mbr = 3;
       }
       else if (!strcmp(_fatConfig[i].type, "SF")) {
          // device is serial flash
          j = 2;
+         sectors_to_clear_mbr = 6;
       }
       else if (!strcmp(_fatConfig[i].type, "NF")) {
          // device is nand flash
          j = 3;
+         sectors_to_clear_mbr = 3;
       }
    }
    if (!j) {
@@ -132,7 +136,7 @@ void erase_MBR(int dev)
       exit(-ERR_BADPARAMETER);
    }
 
-   for (i = 0; i < 3; i++) {
+   for (i = 0; i < sectors_to_clear_mbr; i++) {
       switch (j) {
 
 #ifdef __SDFLASH_LIB__

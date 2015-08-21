@@ -347,7 +347,7 @@ SYNTAX:			int switchIn(int swin);
 DESCRIPTION:	Reads state of switch input.	This function is non-reentrant.
 
 					A runtime error will occur if brdInit() has not been
-					called first.
+					called first or if swin is not in the range [2,3].
 
 PARAMETER1:		switch input to read
 						2  = S2
@@ -365,10 +365,10 @@ int switchIn(int swin)
 {
 	#GLOBAL_INIT {__brdInitFlag   = FALSE;}
 
-	if	(__brdInitFlag == FALSE)
+	if	(__brdInitFlag == FALSE || swin < 2 || swin > 3)
 	{
-		exception(ERR_BADPARAMETER);
-		exit(ERR_BADPARAMETER);
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
 	}
 
 	if (swin==2)

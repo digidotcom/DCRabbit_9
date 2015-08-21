@@ -367,6 +367,7 @@ _dns_nodebug _system int _rs_resolve_name_start(char* hostname)
 		entry.timeout = MS_TIMER;
 		entry.flags = _DNS_COMPLETED | _DNS_SUCCEEDED;
 		root2xmem(addr, &entry, sizeof(_dns_table_type));
+		_dns_num_requests++;
 		UNLOCK_DNS();
 		return entry.id;
 	}
@@ -495,7 +496,8 @@ _dns_nodebug _system int _rs_resolve_name_check(int handle, longword* resolved_i
 				printf("DNS: check: resolve timed out\n");
 #endif
 				retval = RESOLVE_TIMEDOUT;
-				_dns_sock_open = 0;	// Force reopen of socket next time.
+				if (_dns_num_requests == 0)	// if there is no DNS query pending
+					_dns_sock_open = 0;			// Force reopen of socket next time.
 			// One of the above flags _must_ have been set, or else the
 			// world is strange indeed
 			} else {

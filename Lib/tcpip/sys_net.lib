@@ -183,6 +183,7 @@
    #define pd_powerdown						_rk_pd_powerdown
    #define pd_powerup                  _rk_pd_powerup
    #define pd_havelink						_rk_pd_havelink
+   #define pd_networkmode					_rk_pd_networkmode
    #define pd_addmulticast 				_rk_pd_addmulticast
    #define pd_removemulticast				_rk_pd_removemulticast
 

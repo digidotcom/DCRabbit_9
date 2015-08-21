@@ -121,14 +121,13 @@ void dlp_init()
 #endif
 
 #if RUPL_SAVE_RESTORE_NETWORK_PARAMS > 0
-	// Attempt to load network parameters saved to user block.  If network
-   // parameters have been saved, this function will restore them via ifconfig.
-   #if CC_VER < 0x0930
-	   if(rupl_loadnetworkparameters(&networkparams))
-	      ifconfig(IF_ANY, IFS_RESTORE, &networkparams.configuration, IFS_END);
-   #else
-   	ifs_restore(&networkparams.configuration);
-   #endif
+	// Attempt to load network parameters previously saved to user block.
+	if (rupl_loadnetworkparameters(&networkparams)) {
+		// Network parameters were saved, this function will restore them.
+		ifs_restore(&networkparams.configuration);
+		// Bring the default interface back up, since ifs_restore brought it down.
+		ifconfig(IF_DEFAULT, IFS_UP, IFS_END);
+	}
 #endif
 
 #ifdef DLP_VERBOSE
@@ -393,11 +392,11 @@ void dlp_startdlm()
 
 	unsigned long waittime;
 
-#ifdef RUPL_SAVE_RESTORE_NETWORK_PARAMS
+#if RUPL_SAVE_RESTORE_NETWORK_PARAMS > 0
 	// This function may write to flash and should be called before any of
-   // the loader parameters are set since the flash write will most likely
-   // overwrite the area in the flash transfer buffer where these lie.
-  	rupl_savenetworkparameters();
+	// the loader parameters are set since the flash write will most likely
+	// overwrite the area in the flash transfer buffer where these lie.
+	rupl_savenetworkparameters();
 #endif
 
    memset((void*)&startDLP, 0, sizeof(startDLP));

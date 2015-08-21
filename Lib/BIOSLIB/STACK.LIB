@@ -337,7 +337,7 @@ long xalloc(long sz)
 
 
 /*** BeginHeader _Init_Stacks, _Alloc_Stack, _Dealloc_Stack, _Get_Stack_Size */
-void _Init_Stacks();
+void _Init_Stacks(void);
 long _Alloc_Stack(unsigned);
 int _Dealloc_Stack(long);
 unsigned _Get_Stack_Size(long ptr);
@@ -418,13 +418,14 @@ KEYWORDS: _init_xalloc, xalloc, _Alloc_Stack, premain
 END DESCRIPTION **********************************************************/
 
 _stack_debug
-void _Init_Stacks()
+void _Init_Stacks(void)
 {
+	auto long allocatedForStacks;
 	auto long spaceLeft;
 	auto int i;
 	auto unsigned locCounts[STACKPOOLCOUNT];
 	auto unsigned int allocIndex;
-   auto unsigned totalStackCounts;
+	auto unsigned totalStackCounts;
 
 	locCounts[0] = STACK_CNT_256;
 	locCounts[1] = STACK_CNT_512;
@@ -440,16 +441,17 @@ void _Init_Stacks()
 		SizeOfStacks1 += locCounts[i]*(unsigned long)stackSizes[i];
 	}
 
-	// Allocate 4K more than needed, so that we can always align on a 4K
-	// boundary.  This ensures we can allocate all the space we need in a
-	// single xalloc() call and still get alignment.  Doing two separate
-	// xalloc()s (one for the stack space, and a second to align on a 4K
-	// boundary) was causing problems, since the second xalloc() was not
-	// guaranteed to be contiguous with the first.
-	spaceLeft = xalloc(SizeOfStacks1+4096);
-	spaceLeft += SizeOfStacks1-1+4096;
-   spaceLeft &= 0xFF000;
-	BaseOfStacks1 = spaceLeft - SizeOfStacks1+1; // sz now points to bottom of allocated space
+	// Use allocatedForStacks as the total size of stack(s) to be allocated, to
+	//  prevent _xalloc() from altering the value in SizeOfStacks1 and because
+	//  we'll need the (possibly) updated value later.
+	allocatedForStacks = SizeOfStacks1;
+	// Allocate required stack size plus possible additional size due to the
+	//  4 KByte (i.e 2^^12 byte) boundary alignment requirement for STACKSEG.
+	BaseOfStacks1 = _xalloc(&allocatedForStacks, 12, XALLOC_MAYBBB);
+	// Calculate the uppermost allocated 4 KByte boundary address, which is the
+	//  starting point for later fitting of individual stack(s) into the total
+	//  stack(s) allocation.
+	spaceLeft = BaseOfStacks1 + allocatedForStacks & 0xFFF000L;
 
 	while(totalStackCounts) {
 		for(i = STACKPOOLCOUNT-1; i>=0; i--) {
@@ -461,16 +463,16 @@ void _Init_Stacks()
 				totalStackCounts--;
 				freeStacks[allocIndex] = ((long)i<<24)+spaceLeft;
 				#if _USER
-           	if(0xfff == (freeStacks[allocIndex] & 0xfff)) {
-		   		freeStacks[allocIndex] -= 0x10; // Mask off lower bits to ensure stack doesn't start in system limit
-            }
-			   #endif
-            allocIndex++;
+				if(0xfff == (freeStacks[allocIndex] & 0xfff)) {
+					freeStacks[allocIndex] -= 0x10; // Mask off lower bits to ensure stack doesn't start in system limit
+				}
+				#endif
+				allocIndex++;
 				spaceLeft -= stackSizes[i];
 			}
 		}
-	   // if i< 0 then count not fit any more stacks in remaining space
-	   // move down to next 4k boundary
+		// if i< 0 then count not fit any more stacks in remaining space
+		// move down to next 4k boundary
 		if (i < 0 ) {
 			spaceLeft -= 0x1000;
 			spaceLeft |= 0xfff;

@@ -3010,17 +3010,26 @@ int _fat_PartCalc( fat_part * );
 /********************** >> INTERNAL FUNCTION << *************************
 	This function is calculating redundant partition data which is used
 	to increase performance. Important note about "fatlen", this is the
-   ACTUAL length of one FAT table in bytes.  This may not completely fill
-   the number of sectors allocated to each FAT table.
+	ACTUAL length of one FAT table in bytes.  This may not completely fill
+	the number of sectors allocated to each FAT table.
 
-   RETURNS:		0 on success
-   			-ENOSYS if FAT partition support is not available
+	RETURNS:
+		0 on success
+		-ENOSYS if FAT partition support is not available.
+		-EUNFORMAT if partition data from BPB is invalid.
 *************************************************************************/
 
 _fat_debug int _fat_PartCalc( fat_part *part )
 {
 	auto unsigned long c;
 	auto int rc;
+
+	/* sanity-check the fat_part information */
+	if (!part->byte_sec || !part->sec_clust || !part->fat_cnt ||
+	    !part->sec_fat || !part->root_cnt || !part->dev->byte_page)
+	{
+		return -EUNFORMAT;
+	}
 
 	/* FAT starts after the boot and hidden sectors. */
 	part->fatstart = part->mpart->startsector + (unsigned long)part->res_sec;
@@ -7721,11 +7730,18 @@ _fat_debug int fat_Truncate( FATfile * file, long where )
       case FAT_FILESTATE_IDLE:     // Start here from idle
 		case FAT_FILESTATE_SEEK:     // Seek states to accomodate fat_Seek call
 		case FAT_FILESTATE_SEEK1:
+			// check for current POSITION code
+			if (where == FAT_BRK_POS) {
+				where = file->pos;
+			}
       	// Check for EOF code or 'where' beyond EOF
-         if (where == FAT_BRK_END || where > file->de.fileSize)
+			// (The following mixed-type long vs. unsigned long comparison really
+			//  should generate a warning. But, it's OK until fileSize > LONG_MAX
+			//  because we first check for the negative value FAT codes before we
+			//  do the comparison.)
+			else if (where == FAT_BRK_END || where > file->de.fileSize) {
          	where = file->de.fileSize;
-         if (where == FAT_BRK_POS)
-  	      	where = file->pos;
+			}
          // Position to end of current file (in use portion)
       	if (rc = _fat_Seek(file, where, SEEK_SET ))
             return rc;
@@ -7748,7 +7764,10 @@ _fat_debug int fat_Truncate( FATfile * file, long where )
          			rc = fatrj_setmarker(file->dirent_mark, &file->de);
                }
                else
+               {
 						rc = 0;
+					}
+					file->part->opstate = FAT_IDLE;	// reset the deletion flag
             }
 	        	break;
          }

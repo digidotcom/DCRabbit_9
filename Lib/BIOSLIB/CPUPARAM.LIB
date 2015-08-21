@@ -117,6 +117,7 @@ _getDoublerSetting::
 // Don't allow below 6 if Core Module has a NAND flash or an xD-Card socket
   #if _BOARD_TYPE_ != BL2600K && _BOARD_TYPE_ != BL2600L && \
       _BOARD_TYPE_ != BL2600M && _BOARD_TYPE_ != BL2600N && \
+      _BOARD_TYPE_ != BL2600Q && \
       _BOARD_TYPE_ != RCM3360A && _BOARD_TYPE_ != RCM3360B && \
       _BOARD_TYPE_ != RCM3365 && _BOARD_TYPE_ != RCM3375 && \
       _BOARD_TYPE_ != RCM3900 && !NANDFLASH_ONBOARD

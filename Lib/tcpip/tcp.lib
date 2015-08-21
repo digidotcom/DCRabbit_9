@@ -1326,6 +1326,10 @@ _tcp_nodebug void tcp_Retransmitter( void )
 			if (ath != ATH_AGAIN) {
 				// Got an error.
 				_rs_sock_msg(s, NETERR_NOHOST_ARP);
+            #ifdef TCP_VERBOSE
+            printf("tcp_Retransmitter 1: tcp_abort %d %s\n",
+                                                            __LINE__, __FILE__);
+            #endif
 				_rs_tcp_abort(s);
 			}
         	UNLOCK_SOCK(s);
@@ -1397,7 +1401,13 @@ _tcp_nodebug void tcp_Retransmitter( void )
          }
 
          if( s->datatimer && chk_timeout( s->datatimer ))
+         {
+            #ifdef TCP_VERBOSE
+            printf("tcp_Retransmitter 2: tcp_abort %d %s\n",
+                                                            __LINE__, __FILE__);
+            #endif
             _rs_tcp_abort(s);
+         }
       }
 
 #ifndef ARP_MINIMAL
@@ -1419,6 +1429,10 @@ _tcp_nodebug void tcp_Retransmitter( void )
             break;
          } else if (!(s->state & tcp_StateESTAB)) {
 				_rs_sock_msg(s, NETERR_CONN_TIMEOUT);
+            #ifdef TCP_VERBOSE
+            printf("tcp_Retransmitter 3: tcp_abort %d %s\n",
+                                                            __LINE__, __FILE__);
+            #endif
             _rs_tcp_abort(s);
             UNLOCK_SOCK(s);
             break;
@@ -1435,6 +1449,10 @@ _tcp_nodebug void tcp_Retransmitter( void )
       		if(s->keepalive_state == 1) {
      				/* no response was received - kill the connection */
      				tcp_reset_keepalive(s);
+               #ifdef TCP_VERBOSE
+               printf("tcp_Retransmitter 4: tcp_abort %d %s\n",
+                                                            __LINE__, __FILE__);
+               #endif
      				_rs_tcp_abort(s);
       		} else {
       			/* no respose yet - reset the keepalive */
@@ -2248,6 +2266,9 @@ _tcp_nodebug int _tcp_process_ack(_rs_tcp_Socket * s, int diff)
       	printf("%s Peer ack'd more (%u) than we sent!\n", printsock(s), (word)diff - s->unacked);
 #endif
 		_rs_sock_msg(s, NETERR_PROTOCOL);
+      #ifdef TCP_VERBOSE
+      printf("_tcp_process_ack: tcp_abort %d %s\n", __LINE__, __FILE__);
+      #endif
 	   _rs_tcp_abort(s);
 		return 1;
    }
@@ -2495,7 +2516,12 @@ _tcp_nodebug ll_prefix * tcp_handler(ll_prefix * LL, byte * hdrbuf)
 #endif
 
       if(!(flags & tcp_FlagRST))
+      {
+         #ifdef TCP_VERBOSE
+         printf("tcp_handler 1: tcp_rst %d %s\n", __LINE__, __FILE__);
+         #endif
       	tcp_rst(LL, hdrbuf, tp);
+      }
 
 	   UNLOCK_GLOBAL(TCPGlobalLock);
       return LL;
@@ -2517,10 +2543,14 @@ _tcp_nodebug ll_prefix * tcp_handler(ll_prefix * LL, byte * hdrbuf)
          );
 #endif
 
-
-   /* got something from the remote host - reset the keepalive timer */
-   if (s->keepalive_time)
-   	tcp_reset_keepalive(s);
+	/*
+		Got something from the remote host, reset the keepalive timer if active
+		and a connection is either not yet established or it's not an attempt to
+		establish a bogus connection (e.g. a re-booted remote host has re-used its
+		previous port number and resends SYN) that should be timed out.
+	*/
+	if (s->keepalive_time && (s->state < tcp_StateESTAB || !(flags&tcp_FlagSYN)))
+		tcp_reset_keepalive(s);
 
 	/* reset code */
    if( flags & tcp_FlagRST ) {
@@ -2779,6 +2809,9 @@ _th_SYNDATA_JUMP:
       	//ath = arpcache_new(hisip, &((eth_Header *)hdrbuf)->source, iface);
    		ath = arpresolve_start_iface(hisip, iface);
       	if (ath <= 0) {
+            #ifdef TCP_VERBOSE
+            printf("tcp_handler 2: tcp_rst %d %s\n", __LINE__, __FILE__);
+            #endif
       		tcp_rst(LL, hdrbuf, tp);
       		goto _th_finish;
       	}
@@ -2816,8 +2849,12 @@ _th_SYNDATA_JUMP:
          s->timeout = _SET_TIMEOUT( TCP_CONNTIMEOUT );
       }
       else
+      {
+         #ifdef TCP_VERBOSE
+         printf("tcp_handler 3: tcp_rst %d %s\n", __LINE__, __FILE__);
+         #endif
          tcp_rst(LL, hdrbuf, tp);  /* send a reset */
-
+      }
    }
 	else if (s->state & tcp_StateSYNSENT) {
       if( flags & tcp_FlagSYN ) {
@@ -2839,6 +2876,9 @@ _th_SYNDATA_JUMP:
                tcp_ProcessData(s, tp, len, LL, &flags, hdrbuf);    /* someone may try it */
                send_ack = 1;
             } else {
+               #ifdef TCP_VERBOSE
+               printf("tcp_handler 4: tcp_rst %d %s\n", __LINE__, __FILE__);
+               #endif
                /* wrong ack, force a RST and resend SYN soon*/
                tcp_rst(LL, hdrbuf, tp);
                tcp_sendsoon( s, TCP_MINRTO, 63 );
@@ -2851,7 +2891,12 @@ _th_SYNDATA_JUMP:
             send_ack = 1;
          }
       } else
+      {
+         #ifdef TCP_VERBOSE
+         printf("tcp_handler 5: tcp_rst %d %s\n", __LINE__, __FILE__);
+         #endif
          tcp_rst(LL, hdrbuf, tp);
+      }
    }
 	else if (s->state & tcp_StateSYNREC) {   /* recSYNSENT, sentACK, waiting  EST */
       if( flags & tcp_FlagSYN && !(flags & tcp_FlagACK)) {
@@ -5068,7 +5113,13 @@ _tcp_nodebug void sock_sturdy( _rs_tcp_Socket *s, int level )
 {
 	LOCK_SOCK(s);
    s->rigid = level;
-   if( s->rigid < s->stress ) _rs_tcp_abort( s );
+   if( s->rigid < s->stress )
+   {
+      #ifdef TCP_VERBOSE
+      printf("sock_sturdy: tcp_abort %d %s\n", __LINE__, __FILE__);
+      #endif
+      _rs_tcp_abort( s );
+   }
    UNLOCK_SOCK(s);
 }
 

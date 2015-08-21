@@ -4,20 +4,20 @@
 
    Z-World, 2002
 	This sample program is for the OP7200 series controllers.
-	
+
 	This program demonstrates how to save-off your analog calibration
 	coefficients with using a serial port and a PC serial utility such
 	as Tera Term.
-		
+
 	Note: To retrieve the data and rewrite it to the controller, see
 	      sample program GetCalib.c
 
 	!!!This program must be compiled to Flash.
-	
+
 	The Tera Term serial utility can be downloaded from their WEB page
 	located at:
 	http://hp.vector.co.jp/authors/VA002416/teraterm.html
-	
+
 	Program setup:
 	--------------
 	1. Startup Tera Term on your PC.
@@ -29,9 +29,9 @@
 
   	Hardware setup:
 	---------------
-	1. Connect PC (tx) to OP7200 RXB on J4.   	
-  	2. Connect PC (rcv) to OP7200 TXB on J4.
-	3. Connect PC GND to OP7200 GND on J4.
+	1. Connect PC (tx) to OP7200 RXB on J10.
+  	2. Connect PC (rcv) to OP7200 TXB on J10.
+	3. Connect PC GND to OP7200 GND on J10.
 
 	Smaple Program Instructions:
    ----------------------------
@@ -43,22 +43,22 @@
    		2. Select the OPEN option at the right-hand side of dialog box.
    		3. Tera Term is now ready to write all data receieved on the serial
    		   port to your specified file.
-   	     	      
+
    2. Compile and run this program. (At this point you should see a
       message displayed in the Tera Term display window)
-       
+
    3. In the Tera Term display window enter the serial number of the controller,
       then press the ENTER key. (At this point you should see the calibration
       data being displayed in the Tera Term display window)
-   
+
 	!!! Attention this next step is important as Tera Term won't  		!!!
 	!!! complete writing and close the file until this step is done	!!!
-	
+
    4. Once the program is done executing, do the CLOSE option from the
       within the Tera Term: LOG window (A separate pop-up window that would
       probably be minimized at the bottom of your PC screen)
 
-   5. Open your data file and verify that the calibration data has been 
+   5. Open your data file and verify that the calibration data has been
       written properly. For example:
 
       !!!!! Start of Calibration Table !!!!!
@@ -66,7 +66,7 @@
 
 		:SN#
 		12345
-		
+
 		:ADC_SE
 		AD0 Gaincode 0-3, Float, int, Float, int, Float, int, Float, int
 		AD0 Gaincode 4-7, Float, int, Float, int, Float, int, Float, int
@@ -87,20 +87,20 @@
 		AD3 Gaincode 4-7, Float, int, Float, int, Float, int, Float, int
 
 		:ADC_mAMP
-		AD0 Gaincode 4, Float, int 
-		AD0 Gaincode 4, Float, int 
+		AD0 Gaincode 4, Float, int
+		AD0 Gaincode 4, Float, int
 		 :
 		 :
 		 v
-		AD7 Gaincode 4, Float, int 
+		AD7 Gaincode 4, Float, int
 		AD7 Gaincode 4, Float, int
 
 		:ADC_TouchScreen
 		X-Cal, Float, int
 		Y-Cal, Float, int
-		
+
 		!!!!! End of Calibration Table !!!!!
-     
+
 **************************************************************************/
 #class auto
 
@@ -124,13 +124,13 @@ void main()
 	brdInit();
 	serDopen(19200);	//set baud rates for the serial ports to be used
 	serMode(0);
-	serDwrFlush();		//clear Rx and Tx data buffers 
+	serDwrFlush();		//clear Rx and Tx data buffers
 	serDrdFlush();
-	
+
 	while(serDrdFree() != DINBUFSIZE) serDgetc();
-	
-	// Send data out the serial port to the PC 	
-	serDputs("\r\n    ");  // send out blank line to make the file more readable 
+
+	// Send data out the serial port to the PC
+	serDputs("\r\n    ");  // send out blank line to make the file more readable
 	serDputs("\r\n!!!!! Start of Calibration Table !!!!!");
 	serDputs("\r\nEnter the serial number of your controller = ");
 
@@ -144,13 +144,13 @@ void main()
 		while((ch = serDgetc()) == -1);
 		if(isalnum(ch))
 		{
-			serialNumber[i++] = ch;	
+			serialNumber[i++] = ch;
 		}
 		// Check for a BACKSPACE...allow editing of the serial number
 		if(ch == '\b' && i > 0)
 		{
 			--i;
-		}  
+		}
 	}
 	serialNumber[i] = '\0';
 	serDputs("\r\n:SN#\r\n");
@@ -170,7 +170,7 @@ void main()
 		sprintf(buffer, "AD%d Gaincode 0-3", channel);
 		serDputs(buffer);
 		for(gaincode=0; gaincode < 8; gaincode++)
-		{	
+		{
 			sprintf(buffer, ", %.8f" , _adcCalibSEND[channel][gaincode].gain);
 			serDputs(buffer);
 			sprintf(buffer, ", %x", _adcCalibSEND[channel][gaincode].offset);
@@ -180,7 +180,7 @@ void main()
 				serDputs("\r\n");
 				sprintf(buffer, "AD%d Gaincode 4-7", channel);
 				serDputs(buffer);
-			}	
+			}
 		}
 	}
 
@@ -192,7 +192,7 @@ void main()
 		sprintf(buffer, "AD%d Gaincode 0-3", channel);
 		serDputs(buffer);
 		for(gaincode=0; gaincode < 8; gaincode++)
-		{	
+		{
 			sprintf(buffer, ", %.8f" , _adcCalibDIFF[channel][gaincode].gain);
 			serDputs(buffer);
 			sprintf(buffer, ", %x", _adcCalibDIFF[channel][gaincode].offset);
@@ -202,7 +202,7 @@ void main()
 				serDputs("\r\n");
 				sprintf(buffer, "AD%d Gaincode 4-7", channel);
 				serDputs(buffer);
-			}	
+			}
 		}
 	}
 
@@ -222,7 +222,7 @@ void main()
 			serDputs("\r\n");
 			sprintf(buffer, "AD%d Gaincode 4", channel);
 			serDputs(buffer);
-		}	
+		}
 	}
 
 	serDputs("\r\n\n:ADC_TouchScreen");
@@ -234,7 +234,7 @@ void main()
 	serDputs(buffer);
 	serDputs("\r\n!!!!! End of Calibration Table !!!!!\r\n");
 
-	
+
 	// Make sure all data gets transmitted before exiting the program
 	while (serDwrFree() != DOUTBUFSIZE);
    while((RdPortI(SDSR)&0x08) || (RdPortI(SDSR)&0x04));

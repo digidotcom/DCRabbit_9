@@ -221,7 +221,7 @@ _ip_nodebug int is_nonlocal_subnet(longword ipaddr, byte iface)
  // then everything is considered to be 'local' since nothing can come to us
  // via a router.  This forestalls some chicken-and-egg problems in ARP etc.
 	auto longword x, iip, im;
- 	auto char isp2p;
+ 	auto word isp2p;
 
  	iip = _if_tab[iface].ipaddr;
  	if (!iip)

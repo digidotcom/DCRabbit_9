@@ -560,8 +560,8 @@ DESCRIPTION:	Call this function at the beginning of application code
 					PB.6  Out  Not used               Low
 					PB.7  Out  Connected to PB5		 Low
 
-					PC.0	Out  ATXB (RS232)				 Inactive high
-					PC.1	In	  ARXB (RS232)			 	 Inactive high
+					PC.0	Out  TXD  (RS485)				 Inactive high
+					PC.1	In	  RXD  (RS485)			 	 Inactive high
 					PC.2	Out  TXC  (RS232)				 Inactive high
 					PC.3	In   RXC  (RS232)				 Inactive high
 					PC.4	Out  Realtek reset	    	 Initial'ed by sock_init()
@@ -575,8 +575,8 @@ DESCRIPTION:	Call this function at the beginning of application code
 	      		 "		Out  Not used (RCM2300) 	 Low
 					PD.2	Out  Not used					 Low
 					PD.3	Out  Digital Output(OUT07)	 Low, Output Driver OFF
-					PD.4	Out  ATXB (RS485)				 Inactive high
-					PD.5	In	  ARXB (RS485)			    Inactive high
+					PD.4	Out  ATXB (RS232)				 Inactive high
+					PD.5	In	  ARXB (RS232)			    Inactive high
 					PD.6	Out  Not used					 Low
 					PD.7  Out  Not used					 Low
 

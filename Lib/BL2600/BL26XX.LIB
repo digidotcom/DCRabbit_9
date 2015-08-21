@@ -3924,100 +3924,105 @@ void brdInit(void);
 /*** EndHeader */
 
 /* START FUNCTION DESCRIPTION ********************************************
-brdInit						<BL26XX.LIB>
+brdInit                       <BL26XX.LIB>
 
-SYNTAX:			void brdInit(void);
+SYNTAX:
+   void brdInit(void);
 
-DESCRIPTION:	Call this function at the beginning of application code
-					to initialize the controller's I/O ports.
+DESCRIPTION:
+   Call this function at the beginning of application code to initialize
+   the controller's I/O ports.
 
-					Port	Function 		I/O		brdInit State
-					----- -------------  -------  ------------
-					PA0	ID0	 		   I/O	  	Pulled-up
-					PA1	ID1	 			I/O		Pulled-up
-					PA2	ID2	 			I/O		Pulled-up
-					PA3	ID3	 			I/O 		Pulled-up
-					PA4	ID4    			I/O 		Pulled-up
-					PA5	ID5    			I/O 		Pulled-up
-					PA6	ID6    			I/O 		Pulled-up
-					PA7	ID7    			I/O 		Pulled-up
-					PB0	N/C 				Input		Pulled-up
-					PB1	N/C 			 	Input		Pulled-up
-					PB2	IA0				Output	High
-					PB3	IA1				Output   High
-					PB4	IA2				Output   High
-					PB5	N/C				Output	High
-					PB6	N/C				Output	High
-					PB7	N/C				Output	High
-					PC0	TXD SPI			Output   High
-					PC1	RXD SPI        Input    Pulled-up
-               PC2	TXC UART       Output   High
-					PC3	RXC UART       Input    Pulled-up
-					PC4	N/C  				Output   High
-					PC5	N/C            Input    Pulled-up
-					PC6	Prog Port      Output   Low
-					PC7	Prog Port      Input    Pulled-up
-					PD0   ENET	         Output   See Note
-               PD1   ENET	         Output   See Note
-					PD2   N/C        		Output   Low
-					PD3   N/C	        	Output   Low
-					PD4   /LDAC 	      Output   Low
-					PD5   PD5_485_232    Output   Low
-					PD6   N/C				Output   Low
-					PD7   N/C            Output   Low
-					PE0   ENET           Output   See Note
-					PE1   PE1_IOST       Output   High
-					PE2 	ENET           Output   See Note
-					PE3 	485_Tx_En      Output   Low
-					PE4 	IN00           Input    Pulled-up
-					PE5 	IN01           Input    Pulled-up
-					PE6 	N/C        		Output	Low
-					PE7 	N/C            Output	Low
-					PF0 	Serial CLKD    Output	Low
-					PF1 	ADC_Busy       Input		Pulled-up
-               PF2 	IN02          	Input    Pulled-up
-					PF3 	IN03           Input    Pulled-up
-					PF4 	IN04           Input    Pulled-up
-					PF5	IN05           Input    Pulled-up
-					PF6 	IN06           Input    Pulled-up
-					PF7 	IN07           Input    Pulled-up
-					PG0 	EE_CLK         Output
-					PG1 	EE_Data        O.C      Pulled-up
-					PG2 	TXF            Output	High
-					PG3 	RXF            Input		Pulled-up
-					PG4 	PG4_OE         Output	Low
-					PG5 	N/C	         Output	Low
-					PG6 	TXE            Output	High
-					PG7 	RXE            Input		Pulled-up
+   Port   Function            I/O      brdInit State
+   ----   -----------------   ------   -------------
+   PA0    ID0                 I/O      Pulled-up
+   PA1    ID1                 I/O      Pulled-up
+   PA2    ID2                 I/O      Pulled-up
+   PA3    ID3                 I/O      Pulled-up
+   PA4    ID4                 I/O      Pulled-up
+   PA5    ID5                 I/O      Pulled-up
+   PA6    ID6                 I/O      Pulled-up
+   PA7    ID7                 I/O      Pulled-up
+   PB0    N/C                 Input    Pulled-up
+   PB1    N/C                 Input    Pulled-up
+   PB2    IA0                 Output   High
+   PB3    IA1                 Output   High
+   PB4    IA2                 Output   High
+   PB5    N/C                 Output   High
+   PB6    N/C                 Output   High
+   PB7    N/C                 Output   High
+   PC0    TXD SPI             Output   High
+   PC1    RXD SPI             Input    Pulled-up
+   PC2    TXC UART            Output   High
+   PC3    RXC UART            Input    Pulled-up
+   PC4    N/C                 Output   High
+   PC5    N/C                 Input    Pulled-up
+   PC6    Prog Port           Output   Low
+   PC7    Prog Port           Input    Pulled-up
+   PD0    ENET v N/C v xLED   Output   See Note
+   PD1    ENET v N/C v xLED   Output   See Note
+   PD2    N/C v SDCD          Out/In   See Note
+   PD3    N/C                 Output   Low
+   PD4    /LDAC               Output   Low
+   PD5    PD5_485_232         Output   Low
+   PD6    N/C                 Output   Low
+   PD7    N/C                 Output   Low
+   PE0    ENET v N/C          Output   See Note
+   PE1    PE1_IOST            Output   High
+   PE2    ENET v N/C          Output   See Note
+   PE3    485_Tx_En           Output   Low
+   PE4    IN00                Input    Pulled-up
+   PE5    IN01                Input    Pulled-up
+   PE6    N/C                 Output   Low
+   PE7    N/C                 Output   Low
+   PF0    Serial CLKD         Output   Low
+   PF1    ADC_Busy            Input    Pulled-up
+   PF2    IN02                Input    Pulled-up
+   PF3    IN03                Input    Pulled-up
+   PF4    IN04                Input    Pulled-up
+   PF5    IN05                Input    Pulled-up
+   PF6    IN06                Input    Pulled-up
+   PF7    IN07                Input    Pulled-up
+   PG0    EE_CLK              Output
+   PG1    EE_Data             O.C.     Pulled-up
+   PG2    TXF                 Output   High
+   PG3    RXF                 Input    Pulled-up
+   PG4    PG4_OE              Output   Low
+   PG5    N/C                 Output   Low
+   PG6    TXE                 Output   High
+   PG7    RXE                 Input    Pulled-up
 
+   Note:
+   -----
+   The following signals are configured depending on which core module is
+   being used. Refer to the column appropriate to your BL2600 model.
 
-               Note:
-               -----
-               The ethernet signals will be configured depending
-               on which core module is being used, here's a list
-               of the possible configuration.
+   Signal   RCM3000   RCM3100   RCM3200   RCM3360    RCM3365   RCM3900
+   ------   -------   -------   -------   --------   -------   -------
+   PD0      ENET      N/C Low   ENET      RLED Low   RLED      RLED
+   PD1      ENET      N/C Low   N/C Low   GLED Low   GLED      GLED
+   PD2      N/C Low   N/C Low   N/C Low   N/C Low    N/C Low   SDCD
+   PE0      ENET      N/C Low   ENET      ENET       ENET      ENET
+   PE2      ENET      N/C Low   ENET      ENET       ENET      ENET
 
-               Sig	RCM3000 RCM3100 RCM3200 RCM3300
-               ---   ------- ------- ------- -------
-               PD0   ENET 		OUT    ENET    OUT
-               PD1   ENET  	OUT 	 OUT     OUT
-               PE0   ENET 		OUT    ENET    ENET
-               PE2   ENET 		OUT    ENET    ENET
+   - ENET indicates the signal will be initialized by the ethernet driver.
 
-               - ENET indicates the signal will be initialized by
-               the ethernet driver.
+   - N/C Low or xLED Low indicates the signal will be set to be an output
+     and set to a logic low.
 
-               - OUT indicates the signal will be set to be an
-               output and set to a logic low.
+   - xLED or SDCD indicates the signal will be initialized by the mass
+     storage device driver.
 
-PARAMETER1:    None
+PARAMETER:
+   None.
 
-RETURN VALUE:	None
+RETURN VALUE:
+   None.
 
-SEE ALSO:		Please refer to the user manual for a complete listing
-					of all API functions for the BL2600 controller.
-
-END DESCRIPTION **********************************************************/
+SEE ALSO:
+   Please refer to the user manual for a complete listing of all API
+   functions for the BL2600 controller.
+END DESCRIPTION *********************************************************/
 
 _bl2600_nodebug
 void brdInit(void)
@@ -4093,103 +4098,103 @@ void brdInit(void)
    // Set the serial port B to be normal I/O pins
    WrPortI(PCFR, &PCFRShadow, (PCFRShadow&~0x10));
 
-	//---------------------------------------------------------------------
-	// Port D configuration
-	//
-   //	PD0   ENET	         Output   See Below
-   // PD1   ENET	         Output   See below
-	//	PD2   N/A        		Output   Low
-	//	PD3   N/A	        	Output   Low
-	//	PD4   /LDAC 	      Output   Low
-	//	PD5   Serial_Select  Output   Low
-	//	PD6   N/A				Output   Low
-	//	PD7   N/A            Output   Low
+   //---------------------------------------------------------------------
+   // Port D configuration
    //
-   //  Sig	RCM3000 RCM3100 RCM3200 RCM3300
-   //  ---  ------- ------- ------- -------
-   //  PD0   ENET 	OUT    ENET    OUT
-   //  PD1   ENET  	OUT 	 OUT     OUT
-   //  PE0   ENET 	OUT    ENET    ENET
-   //  PE2   ENET 	OUT    ENET    ENET
-	//---------------------------------------------------------------------
-   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  &~ 0xFC));
-   WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow  &~ 0xFF));
-   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0xFC));
-   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0xFC));
-   WrPortI(PDCR,  &PDCRShadow,  0x00);
+   // PD0   ENET v N/C v xLED   Output   See Below
+   // PD1   ENET v N/C v xLED   Output   See Below
+   // PD2   N/C v SDCD          Out/In   See Below
+   // PD3   N/C                 Output   Low
+   // PD4   /LDAC               Output   Low
+   // PD5   Serial_Select       Output   Low
+   // PD6   N/C                 Output   Low
+   // PD7   N/C                 Output   Low
+   //
+   // Signal   RCM3000   RCM3100   RCM3200   RCM3360    RCM3365   RCM3900
+   // ------   -------   -------   -------   --------   -------   -------
+   // PD0      ENET      N/C Low   ENET      RLED Low   RLED      RLED
+   // PD1      ENET      N/C Low   N/C Low   GLED Low   GLED      GLED
+   // PD2      N/C Low   N/C Low   N/C Low   N/C Low    N/C Low   SDCD
+   //---------------------------------------------------------------------
+   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  & ~0xF8));	// 00000XXX
+   WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow  & ~0xFF));	// 00000000
+   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0xF8));	// 11111XXX
+   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0xF8));	// 00000XXX
+   WrPortI(PDCR,  &PDCRShadow,  0x00);                 	// 00000000
 
-   #ifdef BL26_ENET_OPT0 // Core type is RCM3000
-   // Nothing to be done....
+   #if _BOARD_TYPE_ != BL2600Q // Core type is not RCM3900
+   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  & ~0x04));	// 000000XX
+   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0x04));	// 111111XX
+   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0x04));	// 000000XX
+   #endif
+
+   #ifdef BL26_ENET_OPT0 // Core type is RCM3000, RCM3365 or RCM3900
+   // Nothing more to be done...
    #endif
 
    #ifdef BL26_ENET_OPT1 // Core type is RCM3100
-   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  &~ 0x03));
-   WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow  &~ 0x03));
-   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0x03));
-   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0x03));
+   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  & ~0x03));	// 00000000
+   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0x03));	// 11111111
+   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0x03));	// 00000000
    #endif
 
    #ifdef BL26_ENET_OPT2 // Core type is RCM3200
-   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  &~ 0x02));
-   WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow  &~ 0x02));
-   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0x02));
-   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0x02));
+   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  & ~0x02));	// 0000000X
+   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0x02));	// 1111111X
+   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0x02));	// 0000000X
    #endif
 
-   #ifdef BL26_ENET_OPT3 // Core type is RCM3300
-   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  &~ 0x03));
-   WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow  &~ 0x03));
-   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0x03));
-   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0x03));
+   #ifdef BL26_ENET_OPT3 // Core type is RCM3360
+   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  & ~0x03));	// 00000000
+   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0x03));	// 11111111
+   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0x03));	// 00000000
    #endif
 
-	//---------------------------------------------------------------------
-	// Port E configuration
-	//
-   //	PE0   ENET           Output   See Below
-	//	PE1   Ext Strobe     Output   High
-	//	PE2 	ENET           Output   See Below
-	//	PE3 	485_Tx_En      Output   Low
-	//	PE4 	In0            Input    Pulled-up
-	//	PE5 	In1            Input    Pulled-up
-	//	PE6 	N/C	         Output	Low
-	//	PE7 	N/C            Output	Low
+   //---------------------------------------------------------------------
+   // Port E configuration
    //
-   //  Sig	RCM3000 RCM3100 RCM3200 RCM3300
-   //  ---  ------- ------- ------- -------
-   //  PD0   ENET 	OUT    ENET    OUT
-   //  PD1   ENET  	OUT 	 OUT     OUT
-   //  PE0   ENET 	OUT    ENET    ENET
-   //  PE2   ENET 	OUT    ENET    ENET
-	//---------------------------------------------------------------------
+   // PE0   ENET v N/C   Output   See Below
+   // PE1   Ext Strobe   Output   High
+   // PE2   ENET v N/C   Output   See Below
+   // PE3   485_Tx_En    Output   Low
+   // PE4   In0          Input    Pulled-up
+   // PE5   In1          Input    Pulled-up
+   // PE6   N/C          Output   Low
+   // PE7   N/C          Output   Low
+   //
+   //                                                    RCM3900
+   //   Signal   RCM3000   RCM3100   RCM3200   RCM3360   RCM3365
+   //   ------   -------   -------   -------   -------   -------
+   //   PE0      ENET      N/C Low   ENET      ENET      ENET
+   //   PE2      ENET      N/C Low   ENET      ENET      ENET
+   //---------------------------------------------------------------------
 
-   WrPortI(PEFR,  &PEFRShadow,  (PEFRShadow  &~ 0xF8));
-   WrPortI(PEFR,  &PEFRShadow,  (PEFRShadow  |  0x02));
-   WrPortI(PEDR,  &PEDRShadow,  (PEDRShadow  &~ 0xFA));
-   WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow |  0xCA));
-   WrPortI(PECR,  &PECRShadow,  0x00);
+   WrPortI(PEFR,  &PEFRShadow,  (PEFRShadow  & ~0xF8));	// 00000XXX
+   WrPortI(PEFR,  &PEFRShadow,  (PEFRShadow  |  0x02));	// 00000X1X
+   WrPortI(PEDR,  &PEDRShadow,  (PEDRShadow  & ~0xFA));	// 00000X0X
+   WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow |  0xCA));	// 11XX1X1X
+   WrPortI(PECR,  &PECRShadow,  0x00);                 	// 00000000
 
    // Set PE1....1 wait state, IORD & IOWR, with writes enabled
-	WrPortI(IB1CR, &IB1CRShadow, 0xF8);
+   WrPortI(IB1CR, &IB1CRShadow, 0xF8);
 
-   #ifdef BL26_ENET_OPT0 // Core type is RCM3000
-   // Nothing to be done....
+   #ifdef BL26_ENET_OPT0 // Core type is RCM3000, RCM3365 or RCM3900
+   // Nothing more to be done...
    #endif
 
    #ifdef BL26_ENET_OPT1 // Core type is RCM3100
-   WrPortI(PEFR,  &PEFRShadow,  (PEFRShadow  &~ 0x05));
-   WrPortI(PEDR,  &PEDRShadow,  (PEDRShadow  &~ 0x05));
-   WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow |  0x05));
-  	#endif
+   WrPortI(PEFR,  &PEFRShadow,  (PEFRShadow  & ~0x05));	// 00000010
+   WrPortI(PEDR,  &PEDRShadow,  (PEDRShadow  & ~0x05));	// 00000000
+   WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow |  0x05));	// 11XX1111
+   #endif
 
    #ifdef BL26_ENET_OPT2 // Core type is RCM3200
-   // Nothing to be done....
+   // Nothing more to be done...
    #endif
 
-   #ifdef BL26_ENET_OPT3 // Core type is RCM3300
-   // Nothing to be done....
+   #ifdef BL26_ENET_OPT3 // Core type is RCM3360
+   // Nothing more to be done...
    #endif
-
 
    //---------------------------------------------------------------------
 	// Port F configuration

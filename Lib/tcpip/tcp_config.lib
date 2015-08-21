@@ -136,8 +136,12 @@ END DESCRIPTION **********************************************************/
 	 * name server, and gateway here, and they will be used in each of
 	 * the individual configurations below.
 	 */
-	#define _PRIMARY_STATIC_IP		"10.10.6.100"
-	#define _PRIMARY_NETMASK		"255.255.255.0"
+	#ifndef _PRIMARY_STATIC_IP
+		#define _PRIMARY_STATIC_IP		"10.10.6.100"
+	#endif
+	#ifndef _PRIMARY_NETMASK
+		#define _PRIMARY_NETMASK		"255.255.255.0"
+	#endif
 	#ifndef MY_NAMESERVER
 		#define MY_NAMESERVER		"10.10.6.1"
 	#endif

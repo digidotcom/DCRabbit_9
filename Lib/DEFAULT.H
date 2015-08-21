@@ -173,13 +173,9 @@ END DESCRIPTION **********************************************************/
 	#use "lcd122key7.lib"
   #endif
 
-  #if (_BOARD_TYPE_ & 0xFF00) == (RCM3200 & 0xFF00)
+  #if (_BOARD_TYPE_ & 0xFF00) == (RCM3200 & 0xFF00) \
+      _BOARD_TYPE_ == RCM3209 || _BOARD_TYPE_ == RCM3229
 	#define USE_PORTA_AUX_IO
-	#use "rcm3200.lib"
-	#use "lcd122key7.lib"
-  #endif
-
-  #if _BOARD_TYPE_ == RCM3209 || _BOARD_TYPE_ == RCM3229
 	#use "rcm3200.lib"
 	#use "lcd122key7.lib"
   #endif
@@ -225,6 +221,9 @@ END DESCRIPTION **********************************************************/
 		#define BL26_ENET_OPT3
    #endif
    #if _BOARD_TYPE_ == BL2600M || _BOARD_TYPE_ == BL2600N
+		#define BL26_ENET_OPT0
+   #endif
+   #if _BOARD_TYPE_ == BL2600Q
 		#define BL26_ENET_OPT0
    #endif
 	#use "bl26xx.lib"

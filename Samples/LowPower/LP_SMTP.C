@@ -5,13 +5,13 @@
         This program demonstrates Low Power mode while
         using TCP/IP networking to send e-mails upon request.
 
-        When it is run, it will start off in minimum power (Mode 1)
+        When it is run, it will start off in minimum power (Mode 10)
         until Switch S2 (or "S1" on the RCM36/37xx) is pressed by the user.
 
         When the switch is pressed, the board switches to full power
-        (Mode 10), with CPU working at full speed, and an e-mail message
+        (Mode 1), with CPU working at full speed, and an e-mail message
         is sent. After the message has been sent, the board switches back
-        to minimal power usage (Mode 1) with the CPU running at only 2kHz.
+        to minimal power usage (Mode 10) with the CPU running at only 2kHz.
 
       For a detailed description of the above power modes, see function
       description for set_cpu_power_mode() in LOW_POWER.LIB.

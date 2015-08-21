@@ -365,6 +365,56 @@ _pktdrv_debug int _rk_pd_havelink(int iface)
 }
 
 
+/*** BeginHeader _rk_pd_networkmode */
+int _rk_pd_networkmode(int iface, int netspeed, int netduplex);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION *********************************************
+pd_networkmode                <PKTDRV.LIB>
+
+SYNTAX:
+   int pd_networkmode(int iface, int netspeed, int netduplex);
+
+KEYWORDS:
+   ethernet
+
+DESCRIPTION:
+   Sets the network speed and duplex mode of operation for the specified
+   interface.
+
+PARAMETER1:
+   Interface number.  Use one of the definitions:
+      IF_DEFAULT, IF_ETH0, IF_ETH1, IF_WIFI0, IF_PPPOE0, IF_PPPOE1,
+      IF_PPP0-5.
+   If the interface does not exist, then you will get a compile time error.
+   IF_DEFAULT refers to the default interface, which will be equivalent to
+   the first of the other interface identifiers in the above list which
+   exists.
+
+PARAMETER2:
+   Network Speed control:
+      0 = Set IF for auto-negotiation.
+      1 = Set IF for 10Mbs operation.
+      2 = Set IF for 100Mbs operation.
+      -1 = Don't change speed setting
+
+PARAMETER3:
+   Duplex control:
+      0 = Set IF for Half-Duplex operation.
+      1 = Set IF for Full-Duplex operation.
+      -1 = Don't change duplex setting
+
+RETURN VALUE:
+   0 on success, non-0 indicates option not supported.
+END DESCRIPTION **********************************************************/
+_pktdrv_debug int _rk_pd_networkmode(int iface, int netspeed, int netduplex)
+{
+	auto IFTEntry * i;
+
+	i = _if_tab + iface;
+	return i->ncd->ioctl(i->state, PD_NETWORK_MODE, netspeed, netduplex);
+}
+
+
 /*** BeginHeader _rk_pd_addmulticast */
 int _rk_pd_addmulticast(int iface, char* EthAddress, int* slot);
 /*** EndHeader */

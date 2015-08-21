@@ -92,6 +92,8 @@ SUPPORT LIB'S:
 #define _LCALL_RETBYTES 3		// number of bytes stacked for lcall return
 #endif
 
+#define NFLASH_SCANBAD 16   // Bad block scan option for nf_initDevice function
+
 typedef struct nf_device_st {
 	unsigned baseaddress;		// base external I/O address
 	sys_iopin_t cspin;			// internal /CS output pin information
@@ -222,6 +224,10 @@ extern const nf_devtable_entry nf_devtable[NFLASH_DEVTABLE_SIZE];
 ** table for NAND flash device configuration
 */
 const nf_devtable_entry nf_devtable[NFLASH_DEVTABLE_SIZE] = {
+	{0x7320L,  32768L, 528L, 3, 9, 14},	// Micron/Numonyx/ST NAND128W3A
+	{0x7520L,  65536L, 528L, 3, 9, 14},	// Micron/Numonyx/ST NAND256W3A
+	{0x7620L, 131072L, 528L, 4, 9, 14},	// Micron/Numonyx/ST NAND512W3A
+	{0x7920L, 262144L, 528L, 4, 9, 14},	// Micron/Numonyx/ST NAND01GW3A
 	{0x73ECL,  32768L, 528L, 3, 9, 14},	// Samsung K9F2808UOC
 	{0x75ECL,  65536L, 528L, 3, 9, 14},	// Samsung K9F5608UOC
 	{0x76ECL, 131072L, 528L, 4, 9, 14},	// Samsung K9F1208U0A/B/M
@@ -234,12 +240,12 @@ const nf_devtable_entry nf_devtable[NFLASH_DEVTABLE_SIZE] = {
 
 
 /*** BeginHeader nf_initDevice */
-int nf_initDevice(nf_device *dev, int which);
+int nf_initDevice(nf_device *dev, int options);
 /*** EndHeader */
 /* START FUNCTION DESCRIPTION ********************************************
 nf_initDevice                 <NFLASH.LIB>
 
-SYNTAX: int nf_initDevice(nf_device *dev, int which);
+SYNTAX: int nf_initDevice(nf_device *dev, int options);
 
 DESCRIPTION:  Initializes a particular nand flash device.  This function
               must be called before the particular nand flash device can
@@ -304,14 +310,20 @@ PARAMETER1: dev is a pointer to the nf_device struct that will be filled
             in.  The nf_device struct will then act as a handle for the
             NAND flash device.
 
-PARAMETER2: which is the number of the nand flash device to initialize.
-            Currently supported device numbers are 0 for the soldered-on
-            device or 1 for the socketed (xD Picture Card) device.
+PARAMETER2: options allows selection of the nand flash device to initialize
+            and selection of initial scanning of the device.
+            Currently the least significant bit (bit 0) is set to 0 for the
+            soldered-on device or 1 for the socketed (xD Card) device.
+            Bit 4 should be set if a bad block scan is desired.
+            This is defined as NFLASH_SCANBAD for convenience. A bad block
+            scan will error if more than 2 percent of the blocks are marked
+            bad. All other bits must be zero.
 
 RETURN VALUE: 0 if success,
               -1 if unknown index or bad internal I/O port information,
               -2 if error communicating with flash chip, or
               -3 if unknown flash chip type.
+              -4 if device has too many bad blocks (2 percent or higher)
 END DESCRIPTION *********************************************************/
 
 #if BBROOTDATASIZE
@@ -324,17 +336,19 @@ END DESCRIPTION *********************************************************/
 #endif
 
 _nflash_nodebug
-int nf_initDevice(nf_device *dev, int which)
+int nf_initDevice(nf_device *dev, int options)
 {
 #if _USER
 	auto char gocrshadow;
 #endif
-	auto int bitShiftDiff, i, myCRC;
-	auto long nandID, xramSize;
-   static long _nf_xallocBuffer[_NFLASH_MAXDEVICES];
+	auto int bitShiftDiff, i, scan, which, myCRC;
+	auto long  beginMS_TIMER, nandID, page, pagemax, xramSize;
+	static long _nf_xallocBuffer[_NFLASH_MAXDEVICES];
 
 	#GLOBAL_INIT { memset(_nf_xallocBuffer, 0, sizeof(_nf_xallocBuffer)); }
 
+	scan = options & NFLASH_SCANBAD;
+	which = options - scan;
 	switch (which) {
 	case 0:
 		dev->next = NULL;
@@ -420,16 +434,21 @@ int nf_initDevice(nf_device *dev, int which)
 	// reset the NAND flash to get it into a known state
 	_nf_deviceReset(dev);
 
-	// now check the NAND flash's internal status byte
+	// save the current MS_TIMER value for time-out comparison
+	beginMS_TIMER = (long) MS_TIMER;
+	// now check the NAND flash device's internal busy status
+	while (nf_isBusyStatus(dev)) {
+		if ((long) MS_TIMER - beginMS_TIMER > 1L) {
+			// device should not be busy for more than 0.5 millisecond after reset!
+#ifdef NFLASH_VERBOSE
+			printf("status = 0x%x\n", _nf_deviceStatus(dev));
+#endif
+			return -2;
+		}
+	}
 #ifdef NFLASH_VERBOSE
 	printf("status = 0x%x\n", _nf_deviceStatus(dev));
 #endif
-	if (0x3E & _nf_deviceStatus(dev)) {
-		return -2;	// impossible device status! (bad or no response?)
-	}
-	if (nf_isBusyStatus(dev)) {
-		return -2;	// device is busy? (should not be busy this long after reset!)
-	}
 
 	nandID = _nf_deviceID(dev);
 #ifdef NFLASH_VERBOSE
@@ -505,17 +524,37 @@ int nf_initDevice(nf_device *dev, int which)
 
 #ifndef NFLASH_CANERASEBADBLOCKS
 			// skip over bad blocks at start of NAND flash device
-			while (dev->pages) {
-				if (!_nf_deviceCheckBlock(dev, dev->startpage * dev->mainsize)) {
-					break;
-				}
 	#if NFLASH_USEERASEBLOCKSIZE
-				dev->startpage += 2L;
-				dev->pages -= 2L;
+			for (page = 0, pagemax = dev->pages; page < pagemax; page += 4L) {
 	#else
-				dev->startpage += 0x40L;
-				dev->pages -= 0x40L;
+			for (page = 0, pagemax = dev->pages; page < pagemax; page += 0x80L) {
 	#endif
+				if (_nf_deviceCheckBlock(dev, page * dev->mainsize)) {
+					// Bad block found, see if good start page found yet
+					if (dev->startpage == page) {
+						// Move start page and set next test page to be the next page
+	#if NFLASH_USEERASEBLOCKSIZE
+						dev->startpage += 1L;
+						page -= 3L;
+	#else
+						dev->startpage += 0x20L;
+						page -= 0x60L;
+	#endif
+					}
+	#if NFLASH_USEERASEBLOCKSIZE
+					dev->pages -= 1L;
+	#else
+					dev->pages -= 0x20L;
+	#endif
+					if (dev->pages < (pagemax - (pagemax / 50))) {
+						return -4;	// Too many bad blocks on the device
+					}
+				}
+				else {
+					if (!scan) {
+						break;
+					}
+				}
 			}
 #endif
 
@@ -1860,7 +1899,7 @@ PARAMETER1: dev is a pointer to an initialized nf_device structure.
 
 RETURN VALUE: The NAND flash device's status in the LSB of the result:
                 bit 0 is Pass (0) or Fail (1), and only valid when Ready;
-                bits 1 through 5 are not used (must be 0);
+                bits 1 through 5 are not used (forced to 0);
                 bit 6 is Busy (0) or Ready (1);
                 bit 7 is Write Protected (0) or Not Write Protected (1).
 END DESCRIPTION *********************************************************/
@@ -1945,7 +1984,9 @@ ioe	ld		e, (hl)				; get status byte
 ioi	ld		(hl), a				; deactivate this NAND's /CE
 #endif
 		bool	hl						; clear H (MSB of result)
-		ld		L, e					; put status byte into L (LSB of result)
+		ld		a, e					; copy status byte into A
+		and	0xC1					; ensure status bits 1:5 are all reset (clear)
+		ld		L, a					; put status byte into L (LSB of result)
 		pop	ix						; must not alter IX (for costates, cofuncs, etc.)
 		lret
 #endasm

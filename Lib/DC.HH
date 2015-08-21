@@ -72,7 +72,7 @@ struct tm
 {
 	char tm_sec;             // seconds 0-59
 	char tm_min;             // 0-59
-	char tm_hour;            // 0-59
+	char tm_hour;            // 0-23
 	char tm_mday;            // 1-31
 	char tm_mon;             // 1-12
 	char tm_year;            // 00-150 (1900-2050)

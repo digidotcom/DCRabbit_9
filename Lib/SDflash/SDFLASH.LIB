@@ -89,7 +89,7 @@ code
    #define SD_WP_PORT_DDRSHADOW NULL
    #define SD_WP_PIN            0
 
-   // CS for the RCM3900 uses the BUFFEN pin and requires
+   // CS for the BL2600Q, RCM39xx uses the BUFFEN pin and requires
    // specialized initialization
    #define SD_CS_PORT           GOCR
    #define SD_CS_PORT_DRSHADOW  &GOCRShadow
@@ -113,7 +113,7 @@ code
    #define SD_TX_PIN            4
    #define SD_TX_PORT_OD        0
 
-   #define SD_PWR_PORT_DR        0     // Power pin not used on RCM39xx
+   #define SD_PWR_PORT_DR        0     // Power pin not used on BL2600Q, RCM39xx
    #define SD_PWR_PORT_DRSHADOW  NULL
    #define SD_PWR_PORT_FR        0
    #define SD_PWR_PORT_FRSHADOW  NULL
@@ -125,7 +125,7 @@ code
    #define SD_PWR_PORT_OD        0
    #define SD_PWR_PORT_ON        1
 
-   #define SD_LED_PORT_DR        0      // LED Not on RCM39xx boards
+   #define SD_LED_PORT_DR        0      // LED Not on BL2600Q, RCM39xx boards
    #define SD_LED_PORT_DRSHADOW  NULL
    #define SD_LED_PORT_FR        0
    #define SD_LED_PORT_FRSHADOW  NULL
@@ -1597,7 +1597,7 @@ int sdspi_get_csd(sd_device *sd)
     int result, j, k;
     char *csd_buffer;
     SD_CSD_TYPE  *sd_csd;
-    unsigned short crc16, x;
+    unsigned short crc7, crc16, x;
     SD_CMD_REPLY cmd_reply;
     unsigned long temp, l;
 
@@ -1661,17 +1661,28 @@ int sdspi_get_csd(sd_device *sd)
 
     csd_buffer = &cmd_reply.rx_buffer[j + 1];
 
-    /* Get the CRC for CSD block and 2 byte CRC */
-    for (k = 0; k < CSD_BYTE_COUNT - 1; k++)
+    /* Get the crc16 for CSD block and 2 byte CRC */
+    for (k = 0; k < CSD_BYTE_COUNT - 1; ++k)
         crc16 = (crc16 << 8) ^ crc_table[(crc16 >> 8) ^ csd_buffer[k]];
 
-    /* Using the 2 CRC bytes in the CRC calculation results in 0 */
+    /*
+       Using the 2 CRC bytes in the crc16 calculation should result in 0;
+       if not 0 then try the crc7 calculation.
+    */
     if (crc16)
     {
+        /* The crc16 check failed, so compute crc7 for CSD data */
+        crc7 = 0;
+        for (k = 0; k < CSD_BYTE_COUNT - 4; ++k)
+            crc7 = _sd_crc7(crc7, csd_buffer[k]);
+
+        if (csd_buffer[CSD_BYTE_COUNT - 4] != (((crc7 << 1) | CMD_END) & 0xFF))
+        {
 #ifdef SDFLASH_VERBOSE
-        printf("sdspi_get_csd: CRC mismatch error\n");
+            printf("sdspi_get_csd: CRC mismatch error\n");
 #endif
-        return -EIO;
+            return -EIO;
+        }
     }
 
 

@@ -958,11 +958,17 @@ _system int _rs_udp_xsendto(_rs_udp_Socket* s, long buffer, int len,
    else {
    	if (s->sath)
    		ath = _rs_arpresolve_check(s->sath, udi.remip);
-   	if (!s->sath || ath == ATH_OBSOLETE || ath == ATH_MISMATCH) {
+   	// restart if we're not continuing, or the _check returned an error
+   	if (!s->sath || (ath < 0 && ath != ATH_AGAIN)) {
    		s->sath = _rs_arpresolve_start_iface(udi.remip, s->iface);
    		ath = _rs_arpresolve_check(s->sath, udi.remip);
    	}
    	if (ath < 0) {
+   		if (ath != ATH_AGAIN) {
+   			// resolve failed so reset handle to table entry
+   			// calling udp_send again will re-start ARP resolution of IP
+				s->sath = 0;
+   		}
    		// Failed the resolve, or not yet resolved, so can't send.
 #ifdef UDP_VERBOSE
 			if (debug_on > 4) printf("UDP: cannot send, not resolved\n");

@@ -602,6 +602,8 @@ RETURN VALUE:  1 if bits 6 and 7 are set which indicates a restart due to a
                0 if bits 6 and 7 are not set.
 
 END DESCRIPTION **********************************************************/
+
+int dlm_hardrestart(char gcsr_value);
 /*** EndHeader */
 
 _dlm_nodebug
@@ -1596,11 +1598,11 @@ void dlm_startdlp(unsigned long address, unsigned long length)
 
 	auto unsigned long waittime;
 
-#ifdef RUPL_SAVE_RESTORE_NETWORK_PARAMS
+#if RUPL_SAVE_RESTORE_NETWORK_PARAMS > 0
 	// This function may write to flash and should be called before any of
-   // the loader parameters are set since the flash write will most likely
-   // overwrite the area in the flash transfer buffer where these lie.
-  	rupl_savenetworkparameters();
+	// the loader parameters are set since the flash write will most likely
+	// overwrite the area in the flash transfer buffer where these lie.
+	rupl_savenetworkparameters();
 #endif
 
    memset((void*)&startDLP, 0, sizeof(startDLP));

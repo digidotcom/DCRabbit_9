@@ -1316,10 +1316,6 @@ errloadLogEntry::
 	ret
 #endasm
 
-/*** BeginHeader  ********************************************/
-#endif
-/*** EndHeader ***********************************************/
-
 
 /* START FUNCTION DESCRIPTION ********************************************
 error_message                             <ERRORS.LIB>
@@ -1423,7 +1419,9 @@ xstring errmsg_xstrings
 /*202*/ "Unexpected end-of-chain in file",
 /*203*/ "Not a data block (B-block)",
 /*204*/ "Bad file number in file",
-/*236*/ "FAT mutex error",
+/*240*/ "Shared port is not available",
+/*243*/ "CoData structure checksum error",
+/*300*/ "FAT mutex error",
 /*301*/ "Root directory full",
 /*302*/ "Not partitioned",
 /*303*/ "Partition bad or unrecognized",
@@ -1435,7 +1433,7 @@ xstring errmsg_xstrings
 /*309*/ "Driver level is busy new write not started",
 /*310*/ "Cannot flush enough entries from cache to perform next read.",
 /*311*/ "Parameter mismatch when registering a device.",
-/*312*/ "Ddevice not registered when _fatwtc_devwrite called.",
+/*312*/ "Device not registered when _fatwtc_devwrite called.",
 /*313*/ "Not writing full physical sector in _fatwtc_devwrite.",
 /*314*/ "Rollback journal overflow.  Transaction requires too much data to be stored.",
 /*315*/ "fatrj_transtart() called with transaction already open.",
@@ -1483,6 +1481,14 @@ xstring errmsg_xstrings
 /*435*/ "No memory for buffer",
 /*436*/ "IP address conflict detected",
 /*437*/ "Interface down or deactivated",
+/*438*/ "Timeout sending email",
+/*439*/ "Invalid response from SMTP server",
+/*440*/ "HTTP client: too many redirects",
+/*450*/ "Could not open network socket",
+/*451*/ "Cannot resolve hostname",
+/*452*/ "data handler aborted",
+/*453*/ "unable to attempt SMTP authentication",
+/*454*/ "SMTP authentication failed",
 /*501*/ "aton2() encountered non-digit in IP address",
 /*502*/ "aton2() encountered decimal field outside 0-255",
 /*503*/ "aton2() encountered delimiter not '.' or ','.",
@@ -1628,7 +1634,9 @@ const unsigned int errmsg_indices[] =
    202, // Unexpected end-of-chain in file
    203, // Not a data block (B-block)
    204, // Bad file number in file
-   236, // FAT mutex error
+   240, // Shared port is not available
+   243, // CoData structure checksum error
+   300, // FAT mutex error
    301, // Root directory full
    302, // Not partitioned
    303, // Partition bad or unrecognized
@@ -1640,7 +1648,7 @@ const unsigned int errmsg_indices[] =
    309, // Driver level is busy, new write not started
    310, // Cannot flush enough entries from cache to perform next read.
    311, // Parameter mismatch when registering a device.
-   312, // Ddevice not registered when _fatwtc_devwrite called.
+   312, // Device not registered when _fatwtc_devwrite called.
    313, // Not writing full physical sector in _fatwtc_devwrite.
    314, // Rollback journal overflow.  Transaction requires too much data to be stored.
    315, // fatrj_transtart() called with transaction already open.
@@ -1688,6 +1696,14 @@ const unsigned int errmsg_indices[] =
    435, // No memory for buffer
    436, // IP address conflict detected
    437, // Interface down or deactivated
+   438, // Timeout sending email
+   439, // Invalid response from SMTP server
+   440, // HTTP client: too many redirects
+   450, // Could not open network socket
+   451, // Cannot resolve hostname
+   452, // data handler aborted
+   453, // unable to attempt SMTP authentication
+   454, // SMTP authentication failed
    501, // aton2() encountered non-digit in IP address
    502, // aton2() encountered decimal field outside 0-255
    503, // aton2() encountered delimiter not '.' or ','.
@@ -1799,3 +1815,7 @@ nodebug root unsigned long error_message(int message)
 
    return actual_address;
 }
+
+/*** BeginHeader  ********************************************/
+#endif
+/*** EndHeader ***********************************************/

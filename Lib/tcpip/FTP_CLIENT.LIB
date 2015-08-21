@@ -749,7 +749,7 @@ int ftp_client_tick(void)
 		if (ftp.code != 150 && ftp.code != 125)
 			goto _ftp_client_bail;
 
-		if (!tcp_tick(ftp.dtp_s)) {
+		if (!sock_alive(ftp.dtp_s)) {
 		_ftp_dtp_was_aborted:
 #ifdef FTP_VERBOSE
 			printf("FTPC: data transfer port reset by peer.\n");
@@ -790,7 +790,7 @@ int ftp_client_tick(void)
 		if (ftp.code != 150 && ftp.code != 125)
 			goto _ftp_client_bail;
 
-		if (!tcp_tick(ftp.dtp_s))
+		if (!sock_alive(ftp.dtp_s))
 			goto _ftp_dtp_was_aborted;
 		if (!sock_established(ftp.dtp_s))
 			break;
@@ -850,13 +850,13 @@ int ftp_client_tick(void)
 #endif
 		ftp.timeout = _SET_TIMEOUT(FTP_TIMEOUT * 1000L);
 
-		if (tcp_tick(ftp.s)) {
+		if (sock_alive(ftp.s)) {
 #ifdef FTP_VERBOSE
 			printf("FTPC: Closing main socket.\n");
 #endif
 			sock_close(ftp.s);
 		}
-		if (tcp_tick(ftp.dtp_s)) {
+		if (sock_alive(ftp.dtp_s)) {
 #ifdef FTP_VERBOSE
 			printf("FTPC: Closing dtp socket.\n");
 #endif
@@ -866,6 +866,11 @@ int ftp_client_tick(void)
 		// fall thru
 
 	case FTP_DONE3:
+		// Discard any remaining data in socket(s)
+		if (sock_readable(ftp.s))
+			sock_fastread(ftp.s, NULL, 1000);
+		if (sock_readable(ftp.dtp_s))
+			sock_fastread(ftp.dtp_s, NULL, 1000);
 		if (chk_timeout(ftp.timeout)) {
 #ifdef FTP_VERBOSE
 			printf("FTPC: timeout on close\n");
@@ -874,7 +879,7 @@ int ftp_client_tick(void)
 			sock_abort(ftp.dtp_s);
 			return FTPC_TIMEOUT;
 		}
-		if( (0 == tcp_tick(ftp.s)) && (0 == tcp_tick(ftp.dtp_s)) ) {
+		if( !sock_alive(ftp.s) && !sock_alive(ftp.dtp_s) ) {
 #ifdef FTP_VERBOSE
 			printf("FTPC: done\n");
 #endif
@@ -891,7 +896,7 @@ int ftp_client_tick(void)
 #ifdef FTP_VERBOSE
 		printf("FTPC: bailing out\n");
 #endif
-		if (!ftp.buffer)
+		if (!ftp.buffer && ftp.dhnd)
 			ftp.dhnd(ftp.line, 0, ftp.offset, FTPDH_ABORT, ftp.dhnd_data);
 		sock_abort(ftp.s);
 		sock_abort(ftp.dtp_s);

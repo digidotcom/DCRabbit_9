@@ -412,80 +412,120 @@ putbin::
 	   ret
 #endasm
 
-/*** BeginHeader snprintf */
-int snprintf(char *buffer, int len, char *format, ...);
-/*** EndHeader   snprintf */
+/*** BeginHeader __qe_snprintf */
+void __qe_snprintf(int c, char *buf, int *cnt, void *instanceParam);
+/*** EndHeader  */
 
+nodebug
 void __qe_snprintf(int c, char *buf, int *cnt, void *instanceParam)
 {
 	auto int *len;
 
-	// The instanceParam is a pointer to the number of bytes remaining in
-	// the destination buffer.  Hence, if this value is 0, then we can't
-	// write any more characters.
-   len = (int *)instanceParam;
-   if (*len > 0) {
-   	buf[(*cnt)++] = c;
-	   (*len)--;
-   }
+	/*
+		instanceParam is a pointer to the number of bytes remaining in the
+		destination buffer and snprintf() guarantees a null-terminated buffer.
+		Hence, if 1 >= (int) *instanceParam then we can't write any more non-null
+		characters into buf[].
+	*/
+	len = (int *) instanceParam;
+	if (0 < *len) {
+		if (1 == *len) {
+			buf[*cnt] = 0;	// guaranteed null-termination in buf[]
+		} else {
+			buf[*cnt] = c;
+		}
+		--*len;
+	}
+	++*cnt;
 }
 
-/* START FUNCTION DESCRIPTION ********************************************
-snprintf                     <STDIO.LIB>
 
-SYNTAX: int snprintf(char *buffer, int len, char *format, ...);
+/*** BeginHeader snprintf */
+int snprintf(char *buffer, int len, char *format, ...);
+/*** EndHeader   snprintf */
+
+/* START FUNCTION DESCRIPTION ********************************************
+snprintf                      <STDIO.LIB>
+
+SYNTAX:
+   int snprintf(char *buffer, int len, char *format, ...);
 
 KEYWORDS:
 
-DESCRIPTION:  This function takes a "format" string (pointed to by "format"),
-arguments of the format, and output the formatted string to "buffer"
-(pointed to by "buffer").  snprintf() will only output up to len
-characters.  The user should make sure
+DESCRIPTION:
+   Output length limited version of sprintf. Encodes, according to the
+   format string and subsequent parameters, at most length - 1 non-null
+   characters into the output buffer. The output buffer is guaranteed to
+   be null-terminated. This function can be called by processes of
+   different priorities.
 
-(1) there are enough arguments after "format" to fill in the format
-    parameters in the format string
+   The user should make sure that:
+      1) there are enough arguments after "format" to fill in the format
+         specifiers in the format string, and
+      2) the types of arguments after "format" match the format specifiers
+         in the format string.
 
-(2) the types of arguments after "format" match the format fields in
-	 "format"
+   The following is an incomplete list of possible format specifiers in
+   the format string (for more details, please refer to most any C
+   language books):
+      %d    decimal integer (expects type int)
+      %ld   decimal integer (expects type long)
+      %u    decimal unsigned integer (expects type unsigned)
+      %lu   decimal unsigned integer (expects type unsigned long)
+      %x    hexadecimal integer (expects types int or unsigned)
+      %lx   hexadecimal integer (expects types long or unsigned long)
+      %s    string root pointer (not interpreted, expects type char *)
+      %ls   string physical address (not interpreted, expects types long
+            or unsigned long)
+      %p    root pointer (expects type void *)
+      %lp   physical address (expects types long or unsigned long)
+      %e    decimal with exponent floating point Real (expects type float)
+      %f    decimal floating point Real (expects type float)
+      %g    shorter of %e or %f floating point Real (expects type float)
 
-The following is a short list of possible format parameters in the
-format string.  For more details, please refer to any C language
-books.
+   Example:
+      snprintf(buffer, 15, "%s=%x", "variable x", 256);
+      should write the string "variable x=100" into buffer.
 
-%d    decimal integer (expects type int)
-%u    decimal unsigned integer (expects type unsigned int)
-%x    hexidecimal integer (expects type signed int or unsigned int)
-%s    a string (not interpreted, expects type (char *))
-%ls   physical address of NULL terminated string.
-%f    a float (expects type float)
-%p    a pointer (expects 16-bit pointer)
-%lp   a physical pointer (expected 32-bit pointer)
+   The macro STDIO_DISABLE_FLOATS can be defined if it is not necessary to
+   encode floating point numbers. If this macro is defined, %e, %f and %g
+   will not be recognized. This can save thousands of bytes of code space.
 
-Example: sprintf(buffer,"%s=%x","variable x",256) should put the
-string "variable x=100" into buffer.
+PARAMETER1:
+   The output buffer into which encoded characters are written.
 
-The macro STDIO_DISABLE_FLOATS can be defined if it is not necessary to format
-floating point numbers.  If this macro is defined, %e, %f and %g will not
-be recognized. This can save thousands of bytes of code space.
+PARAMETER2:
+   The maximum number of characters to encode into the output buffer. Note
+   that because the output buffer is guaranteed to be null-terminated, at
+   most N - 1 non-null characters can be encoded into the output buffer.
 
-This function can be called by processes of different priorities.
+PARAMETER3:
+   The format string which specifies the output encoding of the subsequent
+   (...) parameters.
 
-RETURN VALUE: The number of characters written.  If the output is
-truncated due to the len parameter, then this function returns the number
-of characters that would have been written had there been enough space.
-END DESCRIPTION **********************************************************/
+PARAMETER...:
+   Zero or more parameters to be encoded into the output buffer according
+   to the format string's format specifiers.
 
+RETURN VALUE:
+   Either the count of non-null characters encoded into the output buffer
+   or the count of non-null characters that would have been encoded into
+   the output buffer had not the length limitation truncated the encoding.
+END DESCRIPTION *********************************************************/
+
+nodebug
 int snprintf(char *buffer, int len, char *format, ...)
 {
-	auto count, __cnt;
-   auto int local_len;
+	auto int count, __cnt;
+	auto int local_len;
 
-   local_len = len;
+	local_len = len;
 	count = 0;
 
-	doprnt(__qe_snprintf, format, (char *) ((char *) &format + sizeof (format)), (void *)(&local_len), buffer, &count);
+	doprnt(__qe_snprintf, format, (char *) ((char *) &format + sizeof format),
+	       (void *) &local_len, buffer, &count);
 	__cnt = count;
-	__qe_snprintf(0, buffer, &count, (void *)(&local_len));  // Null Terminator
+	__qe_snprintf(0, buffer, &count, (void *) &local_len);	// null terminator
 	return __cnt;
 }
 
@@ -764,7 +804,8 @@ int printfwf(char *fmt, ...) {
 
 /*** BeginHeader doprnt */
 
-void doprnt(int (*putc) (), char *fmt, void *arg1, void *instanceParam, char *buf, int *cnt);
+void doprnt(int (*putc)(), char *fmt, void *arg1, void *instanceParam,
+            char *buf, int *cnt);
 
 /*** EndHeader   doprnt */
 
@@ -773,10 +814,12 @@ void doprnt(int (*putc) (), char *fmt, void *arg1, void *instanceParam, char *bu
 	   Copyright (c) 1989, Z-World
 \***************************************************************************/
 
-/* START FUNCTION DESCRIPTION ********************************************
+/* START FUNCTION DESCRIPTION *********************************************
 doprnt                       <STDIO.LIB>
 
-SYNTAX: void doprnt(int (*putc) (), char *fmt, void *arg1, void *instanceParam);
+SYNTAX:
+   void doprnt(int (*putc)(), char *fmt, void *arg1, void *instanceParam,
+               char *buf, int *cnt);
 
 KEYWORDS:
 
@@ -815,8 +858,9 @@ union   rra {
 				char        cround[4];
 			};      // 8-18-94, aoc
 
-nodebug nouseix
-void doprnt(int (*putc) (), char *fmt, void *arg1, void *instanceParam, char *buf, int* cnt)
+nouseix nodebug
+void doprnt(int (*putc)(), char *fmt, void *arg1, void *instanceParam,
+            char *buf, int *cnt)
 {
 	auto union dop_p p;
 	auto long int alnum;
@@ -948,54 +992,29 @@ __DC_loop:
 				plint(flag, code, width, putc, *p.largptr++,instanceParam, buf, cnt);
 			goto __DC_loop;
 #ifndef STDIO_DISABLE_FLOATS
+		case 'F' :
 		case 'f' :
+		case 'G' :
 		case 'g' :
-			if (prec<0) prec = DEFDECDIGITS;
-			r.round = *p.fargptr++;
-//			if (r.round != 0)
-//				if (FmtSpecified && prec < 9)
-//				{
-//					if (r.cround[3] & 0x80)
-//					{
-//						r.round = r.round - rounds[prec];
-//					}
-//					else
-//					{
-//						r.round = r.round + rounds[prec];
-//					}
-//				}
-			pflt(
-				flag,
-				code,
-				width,
-				prec,
-				putc,
-				r.round,
-				FmtSpecified,
-				instanceParam,
-				buf,
-				cnt);
-			goto __DC_loop;
+		case 'E' :
 		case 'e' :
-			if (prec<0) prec = DEFDECDIGITS;
+			if (prec < 0)
+			{
+				prec = DEFDECDIGITS;
+			}
 			r.round = *p.fargptr++;
-//			digits = log(abs(r.round));
-//				r.round +=
-//					((r.cround[3] & 0x80) ? -1 : 1) * rounds[prec] *
-//						pow10(floor(log10(fabs(r.round))));
-// better to round in function after ftoa conversion (round the long)
-// floating point operations lose precision
-			pflt(
-				flag,
-				code,
-				width,
-				prec,
-				putc,
-				r.round,
-				FmtSpecified,
-				instanceParam,
-				buf,
-				cnt);
+			// Better to round in function after ftoa conversion (i.e. round the
+			//  long) because floating point operations lose precision.
+			pflt(flag,
+			     code,
+			     width,
+			     prec,
+			     putc,
+			     r.round,
+			     FmtSpecified,
+			     instanceParam,
+			     buf,
+			     cnt);
 			goto __DC_loop;
 #endif
       case 'p' : 				// %p is 16-bit pointer, %lp is 32-bit pointer.
@@ -1161,7 +1180,7 @@ int ltoan(long num);
 char *gtoa(unsigned long num, char *ibuf);
 int gtoan(unsigned long num);
 char *_gltoa(unsigned long int num, char *ibuf, char neg);
-
+xmem int _gltoan(unsigned long num, int signed);
 /*** EndHeader   ltoa, ltoan */
 
 /*=========================================================================*\
@@ -1173,12 +1192,6 @@ char *_gltoa(unsigned long int num, char *ibuf, char neg);
 
  *** performance not checked under new version
 \*=========================================================================*/
-
-const unsigned long int __ltens[] =
-		 {
-			 1000000000, 100000000, 10000000, 1000000, 100000,
-			 10000, 1000, 100, 10, 1, 2
-		 };
 
 /* START _FUNCTION DESCRIPTION ********************************************
 _gltoa                       <STDIO.LIB>
@@ -1196,7 +1209,7 @@ pointed to by "ibuf" is large enough to hold the string.
 
 RETURN VALUE: Pointer to string.
 END DESCRIPTION **********************************************************/
-nodebug nouseix
+nouseix nodebug
 char *_gltoa(unsigned long int num, char *ibuf, char neg)
 {
 	auto unsigned long tmpL;   // 8-18-94, aoc unsigned long thisDigit;
@@ -1384,40 +1397,60 @@ char *_gltoa(unsigned long int num, char *ibuf, char neg)
 
 /* returns number of digits needed in field 1-11 for (un)signed long int */
 
-/* START _FUNCTION DESCRIPTION ********************************************
-_gltoan                      <STDIO.LIB>
+/* START_FUNCTION DESCRIPTION *********************************************
+_gltoan                       <STDIO.LIB>
 
-SYNTAX: int _gltoan(unsigned long num, char neg)
+SYNTAX:
+   int _gltoan(unsigned long num, int signed);
 
 KEYWORDS:
 
-DESCRIPTION:  This function determines how many decimal digits are
-required to display "num", "neg" indicates whether the number is negative
-or not.
+DESCRIPTION:
+   This function determines how many characters (possible sign character
+   plus digits) are required for decimal display of the supplied (un)signed
+   long integer given the specified signed or unsigned type.
 
-RETURN VALUE: Number of decimal digits needed in field 1-11 for (un)signed
-long int.
+PARAMETER1:
+   The possibly signed integer whose decimal display length is to be
+   returned.
+
+PARAMETER2:
+   1 to specify that the supplied integer's type is signed, or 0 to specify
+   unsigned type.
+
+RETURN VALUE:
+   The number of characters needed for decimal display of the supplied
+   (un)signed long integer, always in the range [1,11].
 END DESCRIPTION **********************************************************/
 
-nodebug int _gltoan(unsigned long num, char neg)
+xmem nodebug
+int _gltoan(unsigned long num, int signed)
 {
-	auto int dig, j;            // 8-18-94, aoc     int dig, j;
+	auto int j, len;
+	static const unsigned long __ltens[] = { 1000000000ul, 100000000ul,
+	                                         10000000ul, 1000000ul, 100000ul,
+	                                         10000ul, 1000ul, 100ul, 10ul, 1ul };
 
-	dig = 10;
-	if (neg && (((long) num) < 0))
+	// Initially ignoring the possible sign character, 32-bit (un)signed long
+	//  type display may require as many as 10 or as few as 1 decimal digit
+	//  characters.
+	len = sizeof __ltens / sizeof __ltens[0];
+	if (signed && ((long) num < 0L))
 	{
-		num = ~num + 1;
-		dig = 11;
+		num = labs(num);
+		++len;	// add one for the required sign character
 	}
-	for (j = 0; j < 10; j++)
+	// The j count maximum allows for the minimum 1 digit character required for
+	//  decimal display.
+	for (j = 0; j < sizeof __ltens / sizeof __ltens[0] - 1; ++j)
 	{
 		if (__ltens[j] <= num)
-			goto __DC_lt1;
-		dig--;
+		{
+			break;
+		}
+		--len;
 	}
-	dig++;                   // if zero
-__DC_lt1:
-	return (dig);
+	return len;
 }
 
 /* START _FUNCTION DESCRIPTION ********************************************
@@ -1552,10 +1585,10 @@ void plint(char left, char code, int n1, int (*putc) (), long int num,void *inst
 	}
 }
 
-/* START _FUNCTION DESCRIPTION ********************************************
-ftoa                         <STDIO.LIB>
+/* START_FUNCTION DESCRIPTION *********************************************
+__ftoa                        <STDIO.LIB>
 
-SYNTAX: int __ftoa(float f, char *buf);
+SYNTAX: int __ftoa(float f, long *rlng);
 
 KEYWORDS: convert
 
@@ -1563,10 +1596,10 @@ DESCRIPTION:  Converts the floating pointer number "f" to a long
 for use by the ftoa function.  This was code was separated out
 from ftoa so that pflt can handle mantissa rounding at the integer (long)
 level without performing additional string conversions.
-This function acts the same as ftoa except that it returns
-a pointer to a long instead of a string.
+This function acts the same as ftoa except that it returns the decimal
+exponent of the converted long instead of a pointer to the string.
 
-RETURN VALUE: the exponent of the number.
+RETURN VALUE: the decimal exponent of the number.
 END DESCRIPTION **********************************************************/
 
 /*** BeginHeader __ftoa */
@@ -1821,7 +1854,8 @@ void phex(char left, int n1, int (*putc) (), int num, void *instanceParam, char 
 
 /*** BeginHeader pint */
 
-void pint(char left, char code, int n1, int (*putc) (), int num, void *instanceParam, char *buf, int *cnt);
+xmem void pint(char left, char code, int n1, int (*putc)(), int num,
+               void *instanceParam, char *buf, int *cnt);
 
 /*** EndHeader */
 
@@ -1848,7 +1882,8 @@ unsigned ints.  Please refer to plint for details.
 RETURN VALUE: none.
 END DESCRIPTION **********************************************************/
 nodebug useix
-void pint(char left, char code, int n1, int (*putc) (), int num, void *instanceParam, char *buf, int *cnt)
+xmem void pint(char left, char code, int n1, int (*putc)(), int num,
+               void *instanceParam, char *buf, int *cnt)
 {
 	auto int spaces;
 	auto char array[7];         // 8-18-94, aoc     char array[7];
@@ -1886,8 +1921,9 @@ void pint(char left, char code, int n1, int (*putc) (), int num, void *instanceP
 
 /*** BeginHeader pflt */
 
-void pflt(char left, char code, int n1, int n2, int (*putc) (),
-	float f, int n3, void *instanceParam, char *buf, int *cnt);
+xmem void pflt(char left, char fmtS, int lenTotal, int digAfterDecPt,
+               int (*putc)(), float f, int precSpecified, void *instanceParam,
+               char *buffer, int *cnt);
 
 /*** EndHeader   pflt */
 
@@ -1896,232 +1932,363 @@ void pflt(char left, char code, int n1, int n2, int (*putc) (),
 	  Copyright (c) 1989, Z-World
 \*=========================================================================*/
 
-/* START _FUNCTION DESCRIPTION ********************************************
-pflt                         <STDIO.LIB>
+/* START_FUNCTION DESCRIPTION *********************************************
+pflt                          <STDIO.LIB>
 
-SYNTAX: void pflt(char left, char code, int n1, int n2, int (*putc)(),
-			float f, int n3, void *instanceParam);
+SYNTAX:
+   void pflt(char left, char fmtSpec, int lenTotal, int digAfterDecPt,
+             int (*putc)(), float f, int precSpecified,
+             void *instanceParam, char *buffer, int *cnt);
 
 KEYWORDS:
 
-DESCRIPTION:  This function outputs the ASCII representation of a floating
-point number using the passed in function "putc".  "putc" should take a
-character parameter.  "left" is the filler character to the left of the
-number.  "code" specifies how the floating point number should be printed.
-"n1" is the maximum total length of the output.  "n2" specifies the
-precision (digits after the decimal point), and "n3" indicates whether
-"n2" should be used as the precision (default is 6 if "n3" is zero).
-'g' format diverges from ANSI in that it doesn't remove trailing zeros
-from fractional part.
+DESCRIPTION:
+   This function outputs the ASCII decimal representation of a floating
+   point number using the passed in function pointer, "putc".
 
-RETURN VALUE: none.
+PARAMETER1:
+   "left" is the filler character to the left of the number.
+
+PARAMETER2:
+   "code" specifies how the floating point number should be printed.
+
+PARAMETER3:
+   "lenTotal" when non-zero is the maximum total length of the output.
+
+PARAMETER4:
+   "digAfterDecPt" optionally specifies the output precision, as the number
+   of digits following the decimal point.
+
+PARAMETER5:
+   "putc" is the single character output function pointer.
+
+PARAMETER6:
+   "f" is the floating point value to be output in ASCII decimal
+   representation.
+
+PARAMETER7:
+   "precSpecified" true (nonzero) indicates that "digAfterDecPt" should be
+   used as the output precision. When "precSpecified" is zero the default
+   output precision is 6 digits following the decimal point.
+
+PARAMETER8:
+   "instanceParam" when non-NULL is a pointer to an object, such as a data
+   structure or a buffer limit down counter, that the particular instance
+   of the putc function requires as a parameter. Note that "instanceParam"
+   is used only as a parameter that is passed either directly or indirectly
+   to putc.
+
+PARAMETER9:
+   "buffer" is a pointer to the output buffer. Note that "buffer" is used
+   only as a parameter that is passed either directly or indirectly to
+   putc.
+
+PARAMETER10:
+   "cnt" is a pointer to the count of output characters. Note that "cnt" is
+   used only as a parameter that is passed either directly or indirectly to
+   putc.
+
+RETURN VALUE:
+   None.
 END DESCRIPTION **********************************************************/
 
 #define DEFMANTISSA 12
+#define _LENOUT_FOR_E_FORMAT_SPECIFIER_ \
+        (sgnM + digPreDecPt + (digPostDecPt > 0) + digPostDecPt + 2 + \
+         ((2 > lenE) ? 2 : lenE))
+#define _LENOUT_FOR_F_FORMAT_SPECIFIER_ \
+        (sgnM + digPreDecPt + (digPostDecPt > 0) + digPostDecPt)
 
-nodebug nouseix
-void pflt(
-		char left,
-		char code,
-		int TotalLength,
-		int DigitsAfterDecPt,
-		int (*putc)(),
-		float f,
-		int FmtSpecified,
-		void *instanceParam,
-		char *buffer,
-		int *cnt)
-
+nouseix nodebug
+xmem void pflt(char left, char fmtSpec, int lenTotal, int digAfterDecPt,
+               int (*putc)(), float f, int precSpecified, void *instanceParam,
+               char *buffer, int *cnt)
 {
-	auto char buf[DEFMANTISSA+30];
-	auto int sgn, mdig, npow, prec;
-	auto int xcode, lenf, lene, expp;
-	auto int k, j, q, firstDigitNonZero;
-	auto long slng;
-	const static long round[]={50000000,5000000,500000,50000,5000,500,50,5};
+	auto char buf[DEFMANTISSA + 30], padC;
+	auto int expD, lenE, lenM, lenOut, lenPad, nPow, sgnE, sgnM, temp, xFmtS;
+	auto int digIndex, digPostDecPt, digPreDecPt;
+	auto int firstDigitIsZero, maxCalcRecalcCnt, okToRound, omitTrailingZeros;
+	auto long sLng;
+	const static long round[] = { 500000000L, 50000000L, 5000000L, 500000L,
+	                              50000L, 5000L, 500L, 50L, 5L };
 
-	firstDigitNonZero = 0;
-	if (FmtSpecified)
-		prec = DigitsAfterDecPt;
-	else
-		prec = DEFDECDIGITS;
-	npow = __ftoa(f, &slng);				//	know the exponent of f, and try print
-	// round the mantissa
-	xcode = code | 0x20;				//	change code to lower case
-	j = ltoan(slng>0?slng:-slng);
-	if(xcode == 'g') {
-		if(prec == 0) {
-			prec = 1;
-		}
-		if(npow<-j-3 || npow+j-1 >= prec) {// use 'e' if power is less than 4 (ANSI 'g')
-			xcode = 'e';
-		}
-	}
-	switch(xcode) {
-	case 'e':
-		q = prec+9-j;
-		break;
-	default: // 'g' or 'f'
-	 	q = j-(-npow-prec)+(8-j);
-		break;
-	}
- 	if(q >= 0 && q < 8) {
-		if(slng > 0) {
-			slng += round[q];
-		}
-		else {
-			slng -= round[q];
-		}
-	}
-	_gltoa((unsigned long)slng, buf, 1); // convert long mantissa to a string mantissa
-	if (buf[0] == '-')				//	negative number
-		sgn = 1;
-	else
-		sgn = 0;							//	or positive number
-	mdig = strlen(buf) - sgn;		//	actual mantissa digits
-
-
-
-	if ((k = mdig + npow) >= 0)	//	k is the actual exponent (10)
+	// get the decimal exponent of sLng (which is converted from f's mantissa)
+	nPow = __ftoa(f, &sLng);
+	// an initial calculation followed by a recalculation is the maximum allowed
+	maxCalcRecalcCnt = 2;
+	// only on the first time through is it OK to round the converted sLng value
+	okToRound = 1;
+	while (0 < maxCalcRecalcCnt)
 	{
-		lenf = sgn + k + prec + (prec > 0);	//	greater than or equal to 1
-	}
-	else
-		lenf = sgn + prec + 1;		//	less than 1
-	//	lenf stores the number of characters needed to display f
-	lene = prec + sgn + 6;			//	lene is the default
-	expp = npow + mdig - 1;			//	expp is k-1
-	if (expp < 10 && expp > -10)	//	out of normal range, exponent display
-		lene = lene - 1;
-	j = 0;
-	if (xcode == 'e') // make decision above now || (xcode == 'g' && lene < lenf))
-		goto __DC_eformat;
+		// reset or set the mantissa's sign flag as appropriate to sLng (and to f)
+		sgnM = sLng < 0L;
+		// get the output length of sLng's (i.e. f's mantissa's) absolute value
+		lenM = _gltoan((unsigned long) labs(sLng), 0);
+		// calculate f's actual (i.e. "x.y * 10^^z" format) decimal exponent
+		expD = nPow + lenM - 1;
+		// reset or set the exponents's sign flag as appropriate to f
+		sgnE = expD < 0;
+		// get the output length of f's decimal exponent's absolute value
+		lenE = _gltoan((unsigned long) abs(expD), 0);
+		// set the post decimal point precision (initial value, may change later)
+		digPostDecPt = (precSpecified) ? digAfterDecPt : DEFDECDIGITS;
 
-	lene = lenf;						//	not e-format, lenf is the required # char
-	if (TotalLength)								//	output field size
-	{
-		if (TotalLength < lenf)					//	is not big enough
-		{
-			outchrs('*', TotalLength, putc, instanceParam, buffer, cnt);
-			return;						//	and return
-		}
-		if (left != '-')
-		{
-			if (left == '0')
-			{
-				if (sgn)
-				{
-					(*putc)(buf[j++], buffer, cnt, instanceParam);
-					sgn = 0;
-				}
-				if( TotalLength > lene)
-				{
-					outchrs('0', TotalLength - lene, putc, instanceParam, buffer, cnt);
-				}
+		xFmtS = fmtSpec;
+		if (tolower(xFmtS) == 'g')
+		{	// 'G' and 'g' always omit trailing zeros following the decimal point,
+			//  and will also omit the decimal point on whole numbers.
+			omitTrailingZeros = 1;
+			// 'G' or 'g': Use 'E' or 'e' (respectively) if decimal exponent < -4
+			//  or if decimal exponent >= output precision.
+			if (-4 > expD || expD >= digPostDecPt)
+			{	// convert 'G' to 'E' or 'g' to 'e'
+				//  (assumes ASCII-like ordering of upper and lower case letters)
+				xFmtS -= 'g' - 'e';
 			}
 			else
-			{
-				if (k <= 0)
-					--TotalLength;
-				if( TotalLength > lene) outchrs(' ', TotalLength - lene, putc, instanceParam, buffer, cnt);
+			{	// convert 'G' to 'F' or 'g' to 'f'
+				//  (assumes ASCII-like ordering of upper and lower case letters)
+				xFmtS -= 'g' - 'f';
 			}
+		}
+		else
+		{	// 'E' or 'e' or 'F' or 'f' never omit trailing zeros following the
+			//  decimal point.
+			omitTrailingZeros = 0;
+		}
+		switch (xFmtS)
+		{
+		case 'E':	// [-]d[.dd*]E(+-)dd[d*]
+		case 'e':	// [-]d[.dd*]e(+-)dd[d*]
+			// 'E' and 'e' format specifiers have exactly 1 non-zero decimal digit
+			//  to the left of the decimal point.
+			firstDigitIsZero = 0;
+			digPreDecPt = 1;
+			// maximum output length is [-]d[.dd*]E(+-)dd[d*] or [-]de(+-)dd[d*]
+			lenOut = _LENOUT_FOR_E_FORMAT_SPECIFIER_;
+			if (0 < lenTotal && lenTotal < lenOut)
+			{	// 'E' or 'e' output must be truncated to fit the specified field
+				//  width and the mantissa is the only possibility for truncation.
+				digPostDecPt -= lenOut - lenTotal;
+				digPostDecPt = (digPostDecPt < 0) ? 0 : digPostDecPt;
+				// recalculate the output length
+				lenOut = _LENOUT_FOR_E_FORMAT_SPECIFIER_;
+			}
+			break;
+		case 'F':	// [-]dd*[.dd*]
+		case 'f':	// [-]dd*[.dd*]
+			// 'F' and 'f' format specifiers have at least 1 decimal digit to the
+			//  left of the decimal point.
+			firstDigitIsZero = 0 > expD;
+			digPreDecPt = firstDigitIsZero ? 1 : 1 + expD;
+			// maximum output length is [-]dd*[.dd*]
+			lenOut = _LENOUT_FOR_F_FORMAT_SPECIFIER_;
+			if (0 < lenTotal && lenTotal < lenOut)
+			{	// 'F' or 'f' output must be truncated to fit the specified field
+				//  width and the mantissa is the only possibility for truncation.
+				digPostDecPt -= lenOut - lenTotal;
+				digPostDecPt = (digPostDecPt < 0) ? 0 : digPostDecPt;
+				// recalculate the output length
+				lenOut = _LENOUT_FOR_F_FORMAT_SPECIFIER_;
+			}
+			break;
+		default:
+#ifdef STDIO_VERBOSE
+			printf("\npflt() format specifier error! (How is this possible?)\n");
+#endif
+			//break;
+		}
+
+		// Was sLng already rounded on a previous pass through this part of pflt?
+		if (okToRound)
+		{	// No, but we must prevent re-rounding in case there's another pass.
+			okToRound = 0;
+			// Calculate the index into the rounding array.
+			temp = (firstDigitIsZero ? 0 : digPreDecPt) + digPostDecPt +
+			       (sizeof round / sizeof round[0] - lenM);
+			// Is the output precision within range of a long round value?
+			if (0 <= temp && sizeof round / sizeof round[0] > temp)
+			{	// Within range, so round sLng to suit the output precision.
+				if (sgnM)
+				{	// f is a negative number
+					sLng -= round[temp];
+				}
+				else
+				{	// f is a non-negative number
+					sLng += round[temp];
+				}
+				// Did rounding change the mantissa length?
+				if (_gltoan((unsigned long) labs(sLng), 0) == lenM)
+				{	// No, we're done with output precision calculations.
+					break;
+				}
+			}
+		}
+		// If we get here  at all (see the "rounding" break immediately above)
+		//  then we've got one less calculation / recalculation pass to go.
+		--maxCalcRecalcCnt;
+	}
+
+	// Convert the long mantissa's absolute value to a string mantissa.
+	_gltoa((unsigned long) labs(sLng), buf, 0);
+
+	// May trailing zeros to the right of the decimal point, if any, be omitted?
+	if (omitTrailingZeros && 0 < digPostDecPt)
+	{	// Yes, omit trailing zeros (if any) by adjusting both digPostDecPt and
+		//  lenOut to suit.
+		// First, calculate the difference between the total output digits length
+		//  and the buffered mantissa length (and accounting for a possible
+		//  significant leading zero digit that is not in the mantissa buffer).
+		temp = digPreDecPt + digPostDecPt - firstDigitIsZero - lenM;
+		// Is the mantissa length shorter than the total output digits length?
+		if (0 < temp)
+		{	// Yes, immediately truncate the excess trailing zero digits. (At most,
+			//  we truncate all of the digits after the decimal point.)
+			temp = (temp < digPostDecPt) ? temp : digPostDecPt;
+			digPostDecPt -= temp;
+			lenOut -= temp;
+		}
+		// Now calculate the zero-based index of the remaining least significant
+		//  buffered mantissa digit.
+		temp = digPreDecPt + digPostDecPt - firstDigitIsZero - 1;
+		// Now truncate buffered trailing zero digits, if any, one at a time from
+		//  right to left.
+		while (0 < digPostDecPt && 0 <= temp && ('0' == buf[temp]))
+		{
+			--digPostDecPt;
+			--lenOut;
+			--temp;
+		}
+		// Have we omitted all digits after the decimal point?
+		if (!digPostDecPt)
+		{	// Yes, so omit the decimal point, too.
+			--lenOut;
 		}
 	}
 
-	if (sgn)
-		(*putc) (buf[j++], buffer, cnt, instanceParam);
-
-	if (k <= 0 && left != '0')
-	{
-		(*putc) ('0', buffer, cnt, instanceParam);
-	}
-	else
-	{
-		firstDigitNonZero = 1;
-	}
-
-	while (k > 0)
-	{
-		if (buf[j])
-			(*putc) (buf[j++], buffer, cnt, instanceParam);
-		else
-			(*putc) ('0', buffer, cnt, instanceParam);
-		k--;
-	}
-	if(prec > 0)
-		(*putc) ('.', buffer, cnt, instanceParam);
-
-	while (k < 0)
-	{
-		(*putc) ('0', buffer, cnt, instanceParam);
-		prec--;
-		k++;
-		if (prec <= 0)
-			break;
-	}
-	while (prec-- > 0)
-		if (buf[j])
-			(*putc) (buf[j++], buffer, cnt, instanceParam);
-		else
-			(*putc) ('0', buffer, cnt, instanceParam);
-
-	lene = lenf;
-	goto __DC_eformat2;
-
-__DC_eformat:
-	if (TotalLength)
-	{
-		if (TotalLength < lene)
-		{
-			outchrs('*', TotalLength, putc,instanceParam, buffer, cnt);
+	// Is there a specified field width?
+	if (0 < lenTotal)
+	{	// Yes, field width is specified. Will the output length fit?
+		if (lenTotal < lenOut)
+		{	// Won't fit, output the field width as '*' characters, then return.
+			outchrs('*', lenTotal, putc, instanceParam, buffer, cnt);
 			return;
 		}
-		if (left != '-')
-		{
-			if (left == '0')
-				if( TotalLength > lene) outchrs('0', TotalLength - lene, putc,instanceParam, buffer, cnt);
-			else
-				if( TotalLength > lene) outchrs(' ', TotalLength - lene, putc, instanceParam, buffer, cnt);
+		// Calculate the (left or right) padding length.
+		lenPad = lenTotal - lenOut;
+		// Is padding required?
+		if (lenPad > 0)
+		{	// Is this field not left justified?
+			if ('-' != left)
+			{	// Yes, it's not left justified. Is it zero-padded on the left?
+				if ('0' == left)
+				{	// Yes, zero padded on the left. Is f negative?
+					if (sgnM)
+					{	// Yes, f is negative, output the sign character now.
+						(*putc)('-', buffer, cnt, instanceParam);
+						// Prevent unwanted subsequent sign character output.
+						sgnM = 0;
+					}
+					padC = '0';
+				}
+				else
+				{
+					padC = ' ';
+				}
+				// Left pad with one or more (zero or space) characters.
+				outchrs(padC, lenPad, putc, instanceParam, buffer, cnt);
+			}
 		}
 	}
 
-	q = sgn + 1;
-	while (q-- > 0)
-		(*putc) (buf[j++], buffer, cnt, instanceParam);
+	// Is f negative and the leading sign character hasn't already been output?
+	if (sgnM)
+	{	// Yes, output the mantissa's sign character now.
+		(*putc)('-', buffer, cnt, instanceParam);
+	}
 
-	if(prec > 0)
-		(*putc) ('.', buffer, cnt, instanceParam);
-	while (prec-- > 0)
-		if (buf[j] != 0)
-			(*putc) (buf[j++], buffer, cnt, instanceParam);
+	// Is the first decimal digit a zero, separate from the digits buffer?
+	if (firstDigitIsZero)
+	{	// Yes, output the zero character now and decrement the 'before' count.
+		(*putc)('0', buffer, cnt, instanceParam);
+		--digPreDecPt;
+	}
+
+	// initialize the decimal digits buffer index
+	digIndex = 0;
+	while (0 < digPreDecPt)
+	{	// Output any / all remaining digits before the decimal point.
+		// Do any buffered decimal digits remain?
+		if (0 < lenM)
+		{	// Yes, output from the decimal digits buffer.
+			(*putc)(buf[digIndex], buffer, cnt, instanceParam);
+			--digPreDecPt;
+			++digIndex;
+			--lenM;
+		}
 		else
-			(*putc) ('0', buffer, cnt, instanceParam);
-
-	outstr("E", putc,instanceParam, buffer, cnt);
-	if (expp >= 0)
-		(*putc) ('+', buffer, cnt, instanceParam);
-	itoa(expp, buf);
-	if (expp < 10 && expp > -1) {
-		buf[1] = buf[0];
-		buf[0] = '0';
-		buf[2] = '\0';
-	}
-	if (expp > -10 && expp < 0) {
-		buf[2] = buf[1];
-		buf[1] = '0';
-		buf[3] = '\0';
-	}
-	outstr(buf, putc,instanceParam, buffer, cnt);
-
-__DC_eformat2:
-	if (left == '-' && TotalLength)
-	{
-		if( TotalLength > lene)
-		{
-			outchrs(' ', TotalLength - lene + prec + firstDigitNonZero, putc,instanceParam, buffer, cnt);
+		{	// No decimal digits remain, output the trailing zero characters.
+			outchrs('0', digPreDecPt, putc, instanceParam, buffer, cnt);
+			digPreDecPt = 0;
 		}
 	}
-	return;
+	// Any digits following the decimal point?
+	if (0 < digPostDecPt)
+	{	// Yes, output the decimal point now.
+		(*putc)('.', buffer, cnt, instanceParam);
+		// Is the decimal exponent < -1 and is this 'F' or 'f' format?
+		if (-1 > expD && 'f' == tolower(xFmtS))
+		{	// Yes, output the significant leading zero characters, the count of
+			//  which is one less than the absolute value of the decimal exponent.
+			//  (E.g. 1e-2 == 0.01 where there is one significant leading zero to
+			//  the right of the decimal point.)
+			temp = abs(expD) - 1;
+			temp = (temp < digPostDecPt) ? temp : digPostDecPt;
+			outchrs('0', temp, putc, instanceParam, buffer, cnt);
+			digPostDecPt -= temp;
+		}
+		while (0 < digPostDecPt)
+		{	// Output any / all remaining digits after the decimal point.
+			// Do any buffered decimal digits remain?
+			if (0 < lenM)
+			{	// Yes, output from the decimal digits buffer.
+				(*putc)(buf[digIndex], buffer, cnt, instanceParam);
+				--digPostDecPt;
+				++digIndex;
+				--lenM;
+			}
+			else
+			{	// No decimal digits remain, output the trailing zero characters.
+				outchrs('0', digPostDecPt, putc, instanceParam, buffer, cnt);
+				digPostDecPt = 0;
+			}
+		}
+	}
+
+	// Is this an 'E' or 'e' format specification?
+	if ('e' == tolower(xFmtS))
+	{	// Yes, output the exponent part now.
+		// convert the int exponent's absolute value to a string exponent
+		_gltoa((unsigned long) abs(expD), buf, 0);
+		// output the 'E' or 'e' exponent character
+		(*putc)((char) xFmtS, buffer, cnt, instanceParam);
+		// re-use padC as the exponent's sign character and output it
+		padC = sgnE ? '-' : '+';
+		(*putc)(padC, buffer, cnt, instanceParam);
+		// Is the exponent length less than 2?
+		if (2 > lenE)
+		{	// Yes, left pad the exponent with a single zero character.
+			(*putc)('0', buffer, cnt, instanceParam);
+		}
+		// output the remainder of the string exponent
+		outstr(buf, putc, instanceParam, buffer, cnt);
+	}
+
+	// Is a field width specified and padding required for left justified output?
+	if (0 < lenTotal && 0 < lenPad && '-' == left)
+	{	// Yes, output the right-side padding space characters.
+		outchrs(' ', lenPad, putc, instanceParam, buffer, cnt);
+	}
 }
 
 /*** BeginHeader itoa */
@@ -2426,17 +2593,17 @@ hltoa::
 		ret
 #endasm
 
-/*** BeginHeader outchrs,outstr */
-
-root char outchrs(char c, int n, int (*putc) (),void *instanceParam, char *buf, int *cnt);
-char *outstr(char *string, int (*putc) (),void *instanceParam, char *buf, int *cnt);
-
-/*** EndHeader   outchrs,outstr */
+/*** BeginHeader outchrs */
+root char outchrs(char c, int n, int (*putc)(), void *instanceParam, char *buf,
+                  int *cnt);
+/*** EndHeader */
 
 /* START _FUNCTION DESCRIPTION ********************************************
 outchrs                      <STDIO.LIB>
 
-SYNTAX: char outchrs(char c, int n, int (*putc) (), void *instanceParam);
+SYNTAX:
+   char outchrs(char c, int n, int (*putc)(), void *instanceParam,
+                char *buf, int *cnt);
 
 KEYWORDS:
 
@@ -2446,20 +2613,10 @@ function pointed to by "putc" should take a character parameter.
 RETURN VALUE: The character in parameter "c".
 END DESCRIPTION **********************************************************/
 
-/* START _FUNCTION DESCRIPTION ********************************************
-outstr                       <STDIO.LIB>
-
-SYNTAX: char *outstr(char *string, int (*putc)(), void *instanceParam );
-
-KEYWORDS:
-
-DESCRIPTION: Output the string pointed to by "string" via calls to "putc".
-"putc" should take one character parameter.
-
-RETURN VALUE: Pointer to null at end of string.
-END DESCRIPTION **********************************************************/
 nodebug root
-char outchrs(char c, int n, int (*putc) (),void *instanceParam, char *buf, int *cnt) {
+char outchrs(char c, int n, int (*putc)(), void *instanceParam, char *buf,
+             int *cnt)
+{
 #asm xmemok
 .repeatOut:
 	ld		hl,@SP+n
@@ -2468,8 +2625,10 @@ char outchrs(char c, int n, int (*putc) (),void *instanceParam, char *buf, int *
 	inc	hl
 	ld		d,(hl)
 	ld		a,d
+	or		a
+	jp		m, .endFunc				; negative count, nothing to do!
 	or		e
-	jr		z,.endFunc
+	jr		z, .endFunc				; zero count, nothing to do!
 
 	dec	de
 	ld		(hl),d
@@ -2525,7 +2684,29 @@ char outchrs(char c, int n, int (*putc) (),void *instanceParam, char *buf, int *
 	return c;
 }
 
-nodebug char *outstr(char *string, int (*putc) (),void *instanceParam, char *buf, int *cnt)
+/*** BeginHeader outstr */
+char *outstr(char *string, int (*putc)(), void *instanceParam, char *buf,
+             int *cnt);
+/*** EndHeader */
+
+/* START_FUNCTION DESCRIPTION *********************************************
+outstr                       <STDIO.LIB>
+
+SYNTAX:
+   char *outstr(char *string, int (*putc)(), void *instanceParam,
+                char *buf, int *cnt);
+
+KEYWORDS:
+
+DESCRIPTION: Output the string pointed to by "string" via calls to "putc".
+"putc" should take one character parameter.
+
+RETURN VALUE: Pointer to null at end of string.
+END DESCRIPTION **********************************************************/
+
+nodebug
+char *outstr(char *string, int (*putc)(), void *instanceParam, char *buf,
+             int *cnt)
 {
 	auto char *ptr;
 	ptr = string;
@@ -2611,11 +2792,11 @@ char * _tmtoa(long t, char *str) {
 
 /*** BeginHeader _dtmonname */
 
-extern const char *_dtmonname[13];
+extern const char * const _dtmonname[13];
 
 /*** EndHeader */
 
-const char *_dtmonname[13] = {
+const char * const _dtmonname[13] = {
 	"???","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"
 };
 

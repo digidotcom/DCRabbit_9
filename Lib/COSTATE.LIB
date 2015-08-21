@@ -63,7 +63,6 @@ hl0::
 /*** BeginHeader funcblk_entry, funcblk_exit, funcblk_init,CoBegin,CoReset,
 CoResume,CoPause,isCoRunning,isCoDone,funcblk_begin */
 
-#define EFUNCBLK 243
 root void CoBegin( CoData *p);
 root void CoReset( CoData *p);
 root void CoPause( CoData *p);
@@ -99,7 +98,7 @@ SYNTAX: void CoReset(CoData *p)
 KEYWORDS: funcblk, costate
 
 DESCRIPTION:   Initializes a costatement structure so the costatement will
-not be executed next time it is encountered. 
+not be executed next time it is encountered.
 
 PARAMETER1: address of costatement
 
@@ -241,10 +240,10 @@ __f100:
 ;
 ; error handling
 .fblk_error:
-		ld		hl, EFUNCBLK
+		ld		hl, -EFUNCBLK
 		push	hl
 		call	exception
-		add	sp, 2
+		pop	hl
 		call	exit			; if return from runtime err handler, exit out!
 
 ;;body of funcblk
@@ -361,211 +360,331 @@ isCoDone::
 	ret
 #endasm
 
-/*** BeginHeader IntervalTick, IntervalMs, IntervalSec */
-
+/*** BeginHeader IntervalTick */
 firsttime int IntervalTick(long tick);
-firsttime int IntervalMs(long ms);
-firsttime int IntervalSec(long sec);
-
-/*** EndHeader ********************************************************* */
-
-
-/* START FUNCTION DESCRIPTION ********************************************
-IntervalTick                 <COSTATE.LIB>
-
-SYNTAX: int IntervalTick( long tick );
-
-KEYWORDS:
-
-DESCRIPTION: Similar to DelayTick but provides a periodic delay based
-on the time from the previous call. Intended for use with waitfor.
-
-RETURN VALUE: 0 if not finished, 1 if delay has expired.
-END DESCRIPTION **********************************************************/
-
-extern shared unsigned long TICK_TIMER;
-firsttime nodebug int IntervalTick(CoData *data, long tick) {
-	if (data->firsttimeflag) {
-		if (!tick) {
-			return 1;
-		} else {
-			data->content.ul = TICK_TIMER;
-			data->content.ul += tick - (data->content.ul % tick);
-			data->firsttimeflag = 0;
-		}
-	}
-	else if (TICK_TIMER >= data->content.ul)
-		return 1;
-	return 0;
-}
-
-/* START FUNCTION DESCRIPTION ********************************************
-IntervalMs                   <COSTATE.LIB>
-
-SYNTAX: int IntervalMs( long ms );
-
-KEYWORDS:
-
-DESCRIPTION: Similar to DelayMs but provides a periodic delay based
-on the time from the previous call. Intended for use with waitfor.
-
-RETURN VALUE: 0 if not finished, 1 if delay has expired.
-END DESCRIPTION **********************************************************/
-
-extern shared unsigned long MS_TIMER;
-firsttime nodebug int IntervalMs(CoData *data, long ms) {
-	if (data->firsttimeflag) {
-		if (!ms) {
-			return 1;
-		} else {
-			data->content.ul = MS_TIMER;
-			data->content.ul += ms - (data->content.ul % ms);
-			data->firsttimeflag = 0;
-		}
-	}
-	else if (MS_TIMER >= data->content.ul)
-		return 1;
-	return 0;
-}
-
-/* START FUNCTION DESCRIPTION ********************************************
-IntervalSec                  <COSTATE.LIB>
-
-SYNTAX: int IntervalSec( long sec );
-
-KEYWORDS:
-
-DESCRIPTION: Similar to DelaySec but provides a periodic delay based
-on the time from the previous call. Intended for use with waitfor.
-
-RETURN VALUE: 0 if not finished, 1 if delay has expired.
-END DESCRIPTION **********************************************************/
-
-extern shared unsigned long SEC_TIMER;
-firsttime nodebug int IntervalSec(CoData *data, long sec) {
-	if (data->firsttimeflag) {
-		if (!sec) {
-			return 1;
-		} else {
-			data->content.ul = SEC_TIMER;
-			data->content.ul += ((unsigned long)sec) - (data->content.ul % sec);
-			data->firsttimeflag = 0;
-		}
-	}
-	else if ((long)(SEC_TIMER - data->content.ul) >= 0)
-		return 1;
-	return 0;
-}
-
-
-/*** BeginHeader DelayTicks */
-
-firsttime int DelayTicks(unsigned int ticks);
-
 /*** EndHeader */
 
 /* START FUNCTION DESCRIPTION ********************************************
-DelayTicks                      <COSTATE.LIB>
+IntervalTick                  <COSTATE.LIB>
 
-SYNTAX: int DelayTicks(unsigned ticks);
+SYNTAX:
+   int IntervalTick(long tick);
 
-KEYWORDS: costatement
+KEYWORDS:
+   costatement
 
-DESCRIPTION: Tick time mechanism for the costatement "waitfor" constructs.
-The initial call to this function starts the timing. The function returns 0
-and continues to return zero until the number of ticks specified has passed.
+DESCRIPTION:
+   Ticks time interval mechanism for the costatement "waitfor" construct.
+   The initial call to this function starts the interval timing. This
+   function is non-blocking and returns 0 (zero) until the specified ticks
+   interval has ended.
 
-1 tick = 1/1024 s.
+   Similar to DelayTicks but provides a periodic delay based on the
+   specified ticks interval. No timing creep is accumulated between
+   usage instances. For example, and with one exception, IntervalTick(5L)
+   returns 1 when TICK_TIMER next becomes one of 5, 10, 15, ...,
+   4294967295 no matter what TICK_TIMER's value was at the time of the
+   initial IntervalSec(5L) call.
 
-PARAMETER1: the number of ticks to wait
+   Exception:
+      Note that a seconds interval which does not evenly divide 2^^32 and
+      also crosses a SEC_TIMER roll-over event will end at an unusual
+      SEC_TIMER value.
 
-RETURN VALUE: 1, if the specified tick delay has lapsed since the initial call,
-else 0.
-END DESCRIPTION **********************************************************/
+   1 tick = 1/1024 second.
 
-shared extern unsigned long TICK_TIMER;
+PARAMETER1:
+   The ticks interval to wait for.
 
-firsttime nodebug int DelayTicks(CoData *pfb, unsigned int ticks){
+RETURN VALUE:
+   1 if the specified ticks interval has ended, else 0.
+END DESCRIPTION *********************************************************/
 
-	if(ticks==0) return 1;
-	if(pfb->firsttimeflag)
+extern shared unsigned long TICK_TIMER;
+
+firsttime nodebug int IntervalTick(CoData *data, long tick)
+{
+	if (data->firsttimeflag)
 	{
-		pfb->firsttimeflag=0;
-		pfb->content.ul=(unsigned long)TICK_TIMER;  // save current ticker
+		if (tick == 0)
+		{
+			return 1;
+		}
+		data->content.ul = TICK_TIMER;
+		data->content.ul += (unsigned long) tick - (data->content.ul % tick);
+		data->firsttimeflag = 0;
 	}
-	else if (TICK_TIMER - pfb->content.ul >= ticks)
+	else if ((long) (TICK_TIMER - data->content.ul) >= 0)
+	{
 		return 1;
+	}
 	return 0;
 }
 
+/*** BeginHeader IntervalMs */
+firsttime int IntervalMs(long ms);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+IntervalMs                    <COSTATE.LIB>
+
+SYNTAX:
+   int IntervalMs(long ms);
+
+KEYWORDS:
+   costatement
+
+DESCRIPTION:
+   Milliseconds time interval mechanism for the costatement "waitfor"
+   construct. The initial call to this function starts the interval
+   timing. This function is non-blocking and returns 0 (zero) until the
+   specified milliseconds interval has ended.
+
+   Similar to DelayMs but provides a periodic delay based on the
+   specified milliseconds interval. No timing creep is accumulated between
+   usage instances. For example, and with one exception, IntervalMs(5L)
+   returns 1 when MS_TIMER next becomes one of 5, 10, 15, ..., 4294967295
+   no matter what MS_TIMER's value was at the time of the initial
+   IntervalMs(5L) call.
+
+   Exception:
+      Note that a milliseconds interval which does not evenly divide 2^^32
+      and also crosses a MS_TIMER roll-over event will end at an unusual
+      MS_TIMER value.
+
+PARAMETER1:
+   The milliseconds interval to wait for.
+
+RETURN VALUE:
+   1 if the specified milliseconds interval has ended, else 0.
+END DESCRIPTION *********************************************************/
+
+extern shared unsigned long MS_TIMER;
+
+firsttime nodebug int IntervalMs(CoData *data, long ms)
+{
+	if (data->firsttimeflag)
+	{
+		if (ms == 0)
+		{
+			return 1;
+		}
+		data->content.ul = MS_TIMER;
+		data->content.ul += (unsigned long) ms - (data->content.ul % ms);
+		data->firsttimeflag = 0;
+	}
+	else if ((long) (MS_TIMER - data->content.ul) >= 0)
+	{
+		return 1;
+	}
+	return 0;
+}
+
+/*** BeginHeader IntervalSec */
+firsttime int IntervalSec(long sec);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+IntervalSec                   <COSTATE.LIB>
+
+SYNTAX:
+   int IntervalSec(long sec);
+
+KEYWORDS:
+   costatement
+
+DESCRIPTION:
+   Seconds time interval mechanism for the costatement "waitfor"
+   construct. The initial call to this function starts the interval
+   timing. This function is non-blocking and returns 0 (zero) until the
+   specified seconds interval has ended.
+
+   Similar to DelaySec but provides a periodic delay based on the
+   specified seconds interval. No timing creep is accumulated between
+   usage instances. For example, and with one exception, IntervalSec(5L)
+   returns 1 when SEC_TIMER next becomes one of 5, 10, 15, ..., 4294967295
+   no matter what SEC_TIMER's value was at the time of the initial
+   IntervalSec(5L) call.
+
+   Exception:
+      Note that a seconds interval which does not evenly divide 2^^32 and
+      also crosses a SEC_TIMER roll-over event will end at an unusual
+      SEC_TIMER value.
+
+PARAMETER1:
+   The seconds interval to wait for.
+
+RETURN VALUE:
+   1 if the specified seconds interval has ended, else 0.
+END DESCRIPTION *********************************************************/
+
+extern shared unsigned long SEC_TIMER;
+
+firsttime nodebug int IntervalSec(CoData *data, long sec)
+{
+	if (data->firsttimeflag)
+	{
+		if (sec == 0)
+		{
+			return 1;
+		}
+		data->content.ul = SEC_TIMER;
+		data->content.ul += (unsigned long) sec - (data->content.ul % sec);
+		data->firsttimeflag = 0;
+	}
+	else if ((long) (SEC_TIMER - data->content.ul) >= 0)
+	{
+		return 1;
+	}
+	return 0;
+}
+
+/*** BeginHeader DelayTicks */
+firsttime int DelayTicks(long ticks);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+DelayTicks                    <COSTATE.LIB>
+
+SYNTAX:
+   int DelayTicks(long ticks);
+
+KEYWORDS:
+   costatement
+
+DESCRIPTION:
+   Ticks time delay mechanism for the costatement "waitfor" construct. The
+   initial call to this function starts the delay timing. This function is
+   non-blocking and returns 0 (zero) until the specified number of ticks
+   have elapsed.
+
+   Note that calling DelayTicks() with a varying number of ticks will
+   change the delay accordingly.
+
+   1 tick = 1/1024 second.
+
+PARAMETER1:
+   The number of ticks to wait.
+
+RETURN VALUE:
+   1 if the specified ticks delay has elapsed, else 0.
+END DESCRIPTION *********************************************************/
+
+shared extern unsigned long TICK_TIMER;
+
+firsttime nodebug int DelayTicks(CoData *pfb, long ticks)
+{
+	if(pfb->firsttimeflag)
+	{
+		if (ticks == 0)
+		{
+			return 1;
+		}
+		pfb->content.ul = TICK_TIMER;
+		pfb->firsttimeflag = 0;
+	}
+	else if (TICK_TIMER - pfb->content.ul >= (unsigned long) ticks)
+	{
+		return 1;
+	}
+	return 0;
+}
 
 /*** BeginHeader DelayMs */
-
 firsttime int DelayMs(long delayms);
-
 /*** Endheader DelayMs */
 
 /* START FUNCTION DESCRIPTION ********************************************
-DelayMs                      <COSTATE.LIB>
+DelayMs                       <COSTATE.LIB>
 
-SYNTAX: int DelayMs(long delayms);
+SYNTAX:
+   int DelayMs(long delayms);
 
-KEYWORDS: costatement
+KEYWORDS:
+   costatement
 
-DESCRIPTION: millisecond time mechanism for the costatement "waitfor"
-constructs. The initial call to this function starts the timing. The function
-returns 0 and continues to return zero until the number of milliseconds
-specified has passed.
+DESCRIPTION:
+   Milliseconds time delay mechanism for the costatement "waitfor"
+   construct. The initial call to this function starts the delay timing.
+   This function is non-blocking and returns 0 (zero) until the specified
+   number of milliseconds have elapsed.
 
-PARAMETER1: the number of milliseconds to wait
+   Note that calling DelayMs() with a varying number of milliseconds will
+   change the delay accordingly.
 
-RETURN VALUE: 1, if the specified millisecond delay has lapsed; else 0.
-END DESCRIPTION **********************************************************/
+PARAMETER1:
+   The number of milliseconds to wait.
+
+RETURN VALUE:
+   1 if the specified millisecond delay has elapsed, else 0.
+END DESCRIPTION *********************************************************/
+
 extern shared unsigned long MS_TIMER;
+
 firsttime nodebug int DelayMs(CoData * pfb, long delayms)
 {
 	if (pfb->firsttimeflag)
 	{
+		if (delayms == 0)
+		{
+			return 1;
+		}
 		pfb->content.ul = MS_TIMER;
 		pfb->firsttimeflag = 0;
 	}
-	else if ((MS_TIMER - pfb->content.ul) >= (unsigned long)delayms)
+	else if ((MS_TIMER - pfb->content.ul) >= (unsigned long) delayms)
+	{
 		return 1;
+	}
 	return 0;
 }
 
 /*** BeginHeader DelaySec */
-
 firsttime int DelaySec(long delaysec);
-
 /*** Endheader DelaySec */
 
 /* START FUNCTION DESCRIPTION ********************************************
-DelaySec                     <COSTATE.LIB>
+DelaySec                      <COSTATE.LIB>
 
-SYNTAX: int DelaySec(long delaysec);
+SYNTAX:
+   int DelaySec(long delaysec);
 
-KEYWORDS: costatement
+KEYWORDS:
+   costatement
 
-DESCRIPTION: Second time mechanism for the costatement "waitfor" constructs.
-The initial call to this function starts the timing. The function returns 0
-and continues to return zero until the number of seconds specified has passed.
+DESCRIPTION:
+   Seconds time delay mechanism for the costatement "waitfor" construct.
+   The initial call to this function starts the delay timing. This
+   function is non-blocking and returns 0 (zero) until the specified
+   number of seconds have elapsed.
 
-PARAMETER1: the number of seconds to wait
+   Note that calling DelaySec() with a varying number of seconds will
+   change the delay accordingly.
 
-RETURN VALUE: 1, if the specified second delay has lapsed; else 0.
-END DESCRIPTION **********************************************************/
+PARAMETER1:
+   The number of seconds to wait.
+
+RETURN VALUE:
+   1 if the specified seconds delay has elapsed, else 0.
+END DESCRIPTION *********************************************************/
+
 extern shared unsigned long SEC_TIMER;
+
 firsttime nodebug int DelaySec(CoData *pfb, long delaysec)
 {
-
 	if (pfb->firsttimeflag)
 	{
+		if (delaysec == 0)
+		{
+			return 1;
+		}
 		pfb->content.ul = SEC_TIMER;
 		pfb->firsttimeflag = 0;
 	}
-	else if ((SEC_TIMER - pfb->content.ul) >= (unsigned long)delaysec)
+	else if ((SEC_TIMER - pfb->content.ul) >= (unsigned long) delaysec)
+	{
 		return 1;
+	}
 	return 0;
 }
 
@@ -611,6 +730,6 @@ nodebug unsigned int BigLoopTop(){
    return BigLoopTime;
  }
 
-/*** BeginHeader  ********************************************/
+/*** BeginHeader */
 #endif
-/*** EndHeader ***********************************************/
+/*** EndHeader */

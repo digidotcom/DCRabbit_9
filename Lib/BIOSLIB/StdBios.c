@@ -155,13 +155,6 @@
       #fatal "Must compile to RAM when using RAM-only BIOS!"
    #endif
 #endif
-///////////////////////////////////////////////////////////////////////
-//**** ID/User Blocks are almost always in the first flash, except in the case
-//****  of a 2 * 256K flash equipped board's DLP (IE: COMPILE_SECONDARY_PROG is
-//****  defined).  In this case, because the CS_FLASH and CS_FLASH2 definitions
-//****  are swapped, the ID/User Blocks appear to be located in the "second"
-//****  flash, and the macro is undefined and redefined appropriately below.
-#define IDUSERBLOCKS_FLASHNUM 1
 
 #use "TWOPROGRAMCONFIG.LIB"
 
@@ -355,17 +348,26 @@ struct _errLogInfo
 #endif
 
 #if FLASH_COMPILE
-	#ifdef USE_2NDFLASH_CODE
-		#define XMEMORYSIZE2      FLASH_SIZE*4096L
-	#endif
+ #ifdef USE_2NDFLASH_CODE
+  #ifdef COMPILE_PRIMARY_PROG
+   #error "USE_2NDFLASH_CODE is incompatible with COMPILE_PRIMARY_PROG."
+   #fatal "Undefine one or both of USE_2NDFLASH_CODE or COMPILE_PRIMARY_PROG."
+  #endif
+  #ifdef COMPILE_SECONDARY_PROG
+   #error "USE_2NDFLASH_CODE is incompatible with COMPILE_SECONDARY_PROG."
+   #fatal "Undefine one or both of USE_2NDFLASH_CODE or COMPILE_SECONDARY_PROG."
+  #endif
+   #define XMEMORYSIZE2      FLASH_SIZE*4096L
+ #endif
 
-	#ifdef USER_BLOCK_NOT_IN_PROG_SPACE
-   	#define FLASH_USERBLOCK_SIZE MAX_USERBLOCK_SIZE
-   #else
-   	#define FLASH_USERBLOCK_SIZE 0
-   #endif
+ #ifdef USER_BLOCK_NOT_IN_PROG_SPACE
+   #define FLASH_USERBLOCK_SIZE 0
+ #else
+   #define FLASH_USERBLOCK_SIZE MAX_USERBLOCK_SIZE
+ #endif
 
-	#define XMEMORYSIZE FLASH_SIZE*4096L-SID_64KADJUSTMENT-DATAORG-MAX_USERBLOCK_SIZE-XMEM_RESERVE_SIZE-WATCHCODESIZE
+   #define XMEMORYSIZE FLASH_SIZE * 4096L - SID_64KADJUSTMENT - DATAORG - \
+                        FLASH_USERBLOCK_SIZE - XMEM_RESERVE_SIZE - WATCHCODESIZE
 #endif
 
 #if RAM_COMPILE
@@ -1267,14 +1269,14 @@ ioi	ld		(SWDTR),a
 		ld		a, 0x44
 ioi	ld		(SWDTR),a
 
-#if _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910
-		;; RCM39xx's /BUFEN is SD card select, stop external I/O cycle toggling
-		;; set STATUS pin low, CLK pin off, /BUFEN pin high
+#if _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910 || _BOARD_TYPE_ == BL2600Q
+		;; BL2600Q's and RCM39xx's /BUFEN is SD card select, stop external I/O
+		;; cycle toggling, set STATUS pin low, CLK pin off, /BUFEN pin high
 		ld		a, 0xA3
-#else	// _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910
+#else	// _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910 || _BOARD_TYPE_ == BL2600Q
 		;; set STATUS pin low and CLK pin off
 		ld		a, 0xA0
-#endif	// _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910
+#endif	// _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910 || _BOARD_TYPE_ == BL2600Q
 ioi	ld		(GOCR), a
 		ld		a, 00001000b	; normal oscillator, processor and peri.
 									;  from main clock, no periodic interrupt
@@ -1341,14 +1343,14 @@ ioi	ld		a, (iy)
 		jr		z, loop
 		djnz	oloop				; loop until the first value reached
 
-#if _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910
-		;; RCM39xx's /BUFEN is SD card select, stop external I/O cycle toggling
-		;; set STATUS pin low, CLK pin off, /BUFEN pin high
+#if _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910 || _BOARD_TYPE_ == BL2600Q
+		;; BL2600Q's and RCM39xx's /BUFEN is SD card select, stop external I/O
+		;; cycle toggling, set STATUS pin low, CLK pin off, /BUFEN pin high
 		ld		a, 0xA3
-#else	// _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910
+#else	// _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910  || _BOARD_TYPE_ == BL2600Q
 		;; set STATUS pin low and CLK pin off
 		ld		a, 0xA0
-#endif	// _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910
+#endif	// _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910  || _BOARD_TYPE_ == BL2600Q
 ioi	ld		(GOCR), a
 		ld		a, 00001000b	; normal oscillator, processor and peri.
 									;  from main clock, no periodic interrupt
@@ -1651,6 +1653,16 @@ ioi	ld		(GCDR), a				; disable clock doubler (if enabled by pilot)
 		or		0x40						; enable 2 wait states
 ioi	ld		(MB0CR), a
 
+#ifdef ROBUST_NON_BB_BAUD_RATE_CALC
+		;; initialize baud rate calculation comparison value
+		;; (this comparison makes non-battery-backed applications' baud rate
+		;;  calculation much more robust, at the cost of adding at least 1/16
+		;;  second to Rabbit's startup time)
+		xor	a							; "impossible" initial comparison value
+.outer_timing_loop:
+		ld		(bios_divider19200), a	; save for next comparison (or later use)
+#endif
+
 		;; measure crystal frequency for baud rate calculations
 		ld		bc, 0000h				; our counter
 		ld		de, 07FFh				; mask for RTC bits
@@ -1663,6 +1675,7 @@ ioi	ld		(RTC0R), a				; fill RTC registers
 ioi	ld		hl, (RTC0R)				; get lowest two RTC regs
 		and	hl, de					; mask off bits
 		jr		nz, .wait_for_zero	; wait until bits 0-10 are zero
+
 .timing_loop:
 		inc	bc							; increment counter
 		push	bc							; save counter
@@ -1672,6 +1685,7 @@ ioi	ld		hl, (RTC0R)				; get lowest two RTC regs
 .delay_loop:
 ioi	ld		(hl), 5Ah				; hit watchdog
 		djnz	.delay_loop
+
 		pop	bc							; restore counter
 ioi	ld		(RTC0R), a				; fill RTC registers
 ioi	ld		hl, (RTC0R)				; get lowest two RTC regs
@@ -1690,7 +1704,14 @@ ioi	ld		hl, (RTC0R)				; get lowest two RTC regs
 		ld		a, l						; this is our divider for 57600 baud
 		add	a, l
 		add	a, l						; multiply by 3 to get 19200 baud
+
+#ifdef ROBUST_NON_BB_BAUD_RATE_CALC
+		ld		hl, bios_divider19200
+		cp		(hl)						; set Z flag if consecutive matching values
+		jr		nz, .outer_timing_loop	; if non-matching divider value then re-do
+#else
 		ld		(bios_divider19200), a	; save for later use
+#endif
 
 		ld		a, MB0CR_SETTING		; restore MB0CR_SETTING
 ioi	ld		(MB0CR), a
@@ -2404,14 +2425,14 @@ _init_IO_regs::
 // rate, stdio comm buffer
 
 _more_inits02::
-#if _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910
-		;; RCM39xx's /BUFEN is SD card select, stop external I/O cycle toggling
-		;; set STATUS pin low, CLK pin off, /BUFEN pin high
+#if _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910 || _BOARD_TYPE_ == BL2600Q
+		;; BL2600Q's and RCM39xx's /BUFEN is SD card select, stop external I/O
+		;; cycle toggling, set STATUS pin low, CLK pin off, /BUFEN pin high
 		ld		a, 0xA3
-#else	// _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910
+#else	// _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910 || _BOARD_TYPE_ == BL2600Q
 		;; set STATUS pin low and CLK pin off
 		ld		a, 0xA0
-#endif	// _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910
+#endif	// _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910 || _BOARD_TYPE_ == BL2600Q
    ld      hl, GOCRShadow
    ld      (hl), a
 

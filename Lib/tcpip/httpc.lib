@@ -1,0 +1,1452 @@
+/*** BeginHeader */
+#ifndef __HTTPC_LIB
+#define __HTTPC_LIB
+/*** EndHeader */
+/*
+	httpc.lib
+	(C)2008 Digi International, All Rights Reserved
+
+   HTTP client library, used for connecting to web servers.
+
+   See Samples/tcpip/http client.c for an example of using the library.
+
+	Define HTTP_USER_AGENT to a string you want HTTPC.LIB to send with all web
+	requests.  Added to headers as "User-Agent: {HTTP_USER_AGENT}".
+
+	ChangeLog:
+
+	2008-07-08 1.04 Updated to match Digi/Rabbit coding standards.
+
+	2008-04-18 1.03 Added support for Proxy-Authorization.
+
+  	Feature ideas:
+  		- a version of read_body that treats data as ASCII (see NAT check)
+  		- support for methods other than GET and POST (maybe HEAD?)
+  		- elegant way to follow redirects (301, 302)
+  		- some sort of cookie support (save and resend, possibly store in xmem)
+*/
+
+/*** BeginHeader */
+#define HTTPC_VERSION	0x0104
+#define HTTPC_VERSTR		"1.04"
+
+#if CC_VER < 0x0901
+	#fatal "This version of httpc.lib requires Dynamic C 9.01 or later."
+#endif
+
+#ifdef HTTPC_DEBUG
+	#define _httpc_nodebug debug
+#else
+	#define _httpc_nodebug nodebug
+#endif
+
+#use "BASE64.LIB"
+
+#define NETERR_DNSERROR NETERR_SMTP_DNSERROR
+
+// old error codes replaced with standard errors
+#define HTTPC_ERR_NOERR					-ENONE
+#define HTTPC_ERR_GENERAL				-EIO			// couldn't write to socket
+#define HTTPC_ERR_URL_PARSER			-EINVAL
+#define HTTPC_ERR_DNS_RESOLVER		-NETERR_DNSERROR
+#define HTTPC_ERR_ARP_RESOLVER		-NETERR_NOHOST_ARP
+#define HTTPC_ERR_SOCKET_CLOSED		-NETERR_REMOTE_RESET
+#define HTTPC_ERR_TOO_MANY_REDIRECT	-NETERR_HTTPC_REDIRECT
+
+typedef struct _httpc_socket {
+	tcp_Socket		*sock;		// pointer to underlying tcp socket
+	int            iface;      // interface to use for socket
+	int				state;
+#define HTTPC_STATE_CLOSED		0
+#define HTTPC_STATE_OPEN		1
+#define HTTPC_STATE_HEADER		2
+#define HTTPC_STATE_BODY		3
+#define HTTPC_STATE_TRAILER	4
+	int				response;	// response from HTTP server (200, 404, etc.)
+										// See RFC2616, section 10 for a full list
+	int				redirects;	// number of redirects followed
+	unsigned int	flags;
+#define HTTPC_FLAG_CHUNKED 0x0001		// body of response has chunked encoding
+#define HTTPC_FLAG_HTTP10	0x0002		// HTTP/1.0 response
+#define HTTPC_FLAG_HTTP11	0x0004		// HTTP/1.1 response
+#define HTTPC_FLAG_UNUSED3	0x0008
+#define HTTPC_FLAG_UNUSED4	0x0010
+#define HTTPC_FLAG_UNUSED5	0x0020
+#define HTTPC_FLAG_UNUSED6	0x0040
+#define HTTPC_FLAG_UNUSED7	0x0080
+	unsigned long	filesize;	// size of data, reported by headers (0=unknown)
+	unsigned long	bytesread;	// bytes read from body
+	unsigned long	currchunk;	// bytes left in the current chunk (if chunked)
+	long				skew;			// skew + SEC_TIMER is the server's time (in GMT)
+										// as # of seconds since 1/1/1980
+} httpc_Socket;
+/*** EndHeader */
+
+/*** BeginHeader httpc_proxy */
+#ifndef HTTPC_PROXY_AUTH_STRLEN
+	#define HTTPC_PROXY_AUTH_STRLEN 64
+#endif
+typedef struct {
+	unsigned long	ip;					// ip address of proxy server, or 0 for none
+	word				port;					// tcp port of proxy server
+	char				auth[HTTPC_PROXY_AUTH_STRLEN + 1];		// username:password
+} httpc_proxy_t;
+
+extern httpc_proxy_t httpc_proxy;
+/*** EndHeader */
+httpc_proxy_t httpc_proxy;				// global proxy settings for this device
+
+/*** BeginHeader httpc_init, httpc_init_if */
+int httpc_init (httpc_Socket *s, tcp_Socket *t);
+int httpc_init_if (httpc_Socket *s, tcp_Socket *t, int iface);
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_init                                                     <HTTPC.LIB>
+
+SYNTAX: int httpc_init (httpc_Socket *s, tcp_Socket *t);
+
+DESCRIPTION: 	This function initializes the http_Socket structure and
+               binds it to tcp_Socket t.
+
+PARAMETER 1:	Pointer to an httpc_Socket structure.
+PARAMETER 2:	Pointer to the tcp_Socket that the HTTP client will use for
+               its connections.
+
+RETURN VALUE:  Integer code as follows:
+						 0: OK
+						-EPARAM: NULL passed for one of the first two parameters,
+							or an invalid interface passed for iface.
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_init (httpc_Socket *s, tcp_Socket *t)
+{
+	return httpc_init_if (s, t, IF_ANY);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_init_if                                                  <HTTPC.LIB>
+
+SYNTAX: int httpc_init_if (httpc_Socket *s, tcp_Socket *t, int iface);
+
+DESCRIPTION: 	This function initializes the http_Socket structure, binds
+               it to tcp_Socket t and forces it to use interface iface.
+
+PARAMETER 1:	Pointer to an httpc_Socket structure.
+PARAMETER 2:	Pointer to the tcp_Socket that the HTTP client will use for
+               its connections.
+PARAMETER 3:	Interface to use for connection (if on a multi-interface device).
+
+RETURN VALUE:  Integer code as follows:
+						 0: OK
+						-EINVAL: NULL passed for one of the first two parameters,
+							or an invalid interface passed for iface.
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_init_if (httpc_Socket *s, tcp_Socket *t, int iface)
+{
+#GLOBAL_INIT {
+	memset (&httpc_proxy, 0, sizeof(httpc_proxy));
+}
+	if (!s || !t ||
+		((iface != IF_ANY) && ((iface < 0) || (iface >= IF_MAX+VIRTUAL_ETH))) ) {
+		return -EINVAL;
+	}
+
+	memset (s, 0, sizeof(httpc_Socket));
+	s->sock = t;
+	s->iface = iface;
+
+	return 0;
+}
+
+/*** BeginHeader httpc_open */
+int httpc_open (httpc_Socket *s, const char *host, unsigned int port);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_open                                                     <HTTPC.LIB>
+
+SYNTAX: int httpc_open (httpc_Socket *s, const char *host, unsigned int port);
+
+DESCRIPTION: 	Attempts to open a connection to a webserver.
+
+PARAMETER 1:   Pointer to socket structure to use for connection.
+PARAMETER 2:   Hostname (or dotted IP) to connect to.
+PARAMETER 3:   Port to connect to (typically 80).
+
+RETURN VALUE:  Integer code as follows:
+						 0: Success
+						-NETERR_DNSERROR: Can't resolve hostname.
+						-NETERR_NOHOST_ARP: Local host or gateway unreachable
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_open (httpc_Socket *s, const char *host, unsigned int port)
+{
+	longword ip;
+	unsigned int useport;
+	int err;
+
+	// reset the httpc socket structure
+	err = httpc_init (s, s->sock);
+	if (err) return err;
+
+	if (port == 0) {
+		port = 80;
+	}
+
+	if (httpc_proxy.ip) {
+		ip = httpc_proxy.ip;
+		useport = httpc_proxy.port;
+	} else {
+	   ip = resolve (host);
+	   if (ip == 0) {
+	   	return -NETERR_DNSERROR;
+	   }
+	   useport = port;
+	}
+
+	// close socket if it's still open
+	if (tcp_tick (s->sock) != 0) sock_abort (s->sock);
+
+	err = tcp_extopen (s->sock, s->iface, 0, ip, useport, NULL, 0, 0);
+	if (err == 0) {
+		tcp_tick(NULL);
+		err = tcp_extopen (s->sock, s->iface, 0, ip, useport, NULL, 0, 0);
+	}
+	if (err == 0) {
+		return -NETERR_NOHOST_ARP;
+	}
+
+	return 0;
+}
+
+/*** BeginHeader httpc_close */
+void httpc_close (httpc_Socket *s);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_close                                                    <HTTPC.LIB>
+
+SYNTAX: void httpc_close (httpc_Socket *s);
+
+DESCRIPTION: 	Closes an open socket to the web server.
+
+PARAMETER 1:   Pointer to socket structure to use for connection.
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+void httpc_close (httpc_Socket *s)
+{
+	sock_close (s->sock);
+	tcp_tick (s->sock);
+}
+
+/*** BeginHeader httpc_get */
+int httpc_get (httpc_Socket *s, const char *host, unsigned int port,
+	const char *file, const char *auth);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_get                                                      <HTTPC.LIB>
+
+SYNTAX: int httpc_get (httpc_Socket *s, const char *host, unsigned int port,
+                       const char *file, const char *auth);
+
+DESCRIPTION: 	Connect to 'host' and GET 'file' using 'auth' credentials.
+
+PARAMETER 1:   Pointer to socket structure to use for connection.
+PARAMETER 2:   Hostname (or dotted IP) to connect to.
+PARAMETER 3:   Port to connect to (typically 80).
+PARAMETER 4:	Filename to request (should start with "/")
+PARAMETER 5:	Optional username and password (separated with ':') to
+					authenticate with.
+
+RETURN VALUE:  Integer code as follows:
+						 0: Success
+						-NETERR_DNSERROR: Can't resolve hostname.
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_get (httpc_Socket *s, const char *host, unsigned int port,
+	const char *file, const char *auth)
+{
+	int err;
+
+#ifdef HTTPC_VERBOSE
+	printf ("httpc: opening socket\n");
+#endif
+	err = httpc_open (s, host, port);
+	if (err) return err;
+
+#ifdef HTTPC_VERBOSE
+	printf ("httpc: sending request\n");
+#endif
+	err = httpc_request (s->sock, host, port, file, auth);
+
+	if (err == 0) {
+		s->state = HTTPC_STATE_HEADER;
+	   tcp_tick(s->sock);
+	}
+
+	return err;
+}
+
+/*** BeginHeader httpc_request */
+_httpc_nodebug
+int httpc_request (tcp_Socket *t, const char *host, unsigned int port,
+	const char *file, const char *auth);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_request                                                  <HTTPC.LIB>
+
+SYNTAX: int httpc_request (tcp_Socket *t, const char *host, unsigned int port,
+                           const char *file, const char *auth);
+
+DESCRIPTION: 	Send HTTP GET for 'file' using 'auth' credentials.  Useful
+               for tasks that don't want to use httpc_get.
+               Works even if connected to a proxy server.
+
+PARAMETER 1:   Pointer to socket structure to use for connection.
+PARAMETER 2:   Hostname (or dotted IP) to connect to.
+PARAMETER 3:   Port to connect to (typically 80).
+PARAMETER 4:	Filename to request (must start with "/")
+PARAMETER 5:	Optional username and password (separated with ':') to
+					authenticate with.
+
+RETURN VALUE:  Integer code as follows:
+						 0: Success
+						 -EIO: unable to send request over socket
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_request (tcp_Socket *t, const char *host, unsigned int port,
+	const char *file, const char *auth)
+{
+	int i, j;
+	char buffer[512];
+
+	if (port == 0) {
+		port = 80;
+	}
+
+	if (httpc_proxy.ip) {
+	   i = sprintf (buffer, "GET http://%s:%u%s HTTP/1.1\r\nHost: %s\r\n",
+	      host, port, file, host);
+	} else {
+	   i = sprintf (buffer, "GET %s HTTP/1.1\r\nHost: %s\r\n", file, host);
+	}
+#ifdef HTTPC_USER_AGENT
+	i += sprintf (&buffer[i], "User-Agent: %s\r\n", HTTPC_USER_AGENT);
+#endif
+	i += sprintf (&buffer[i], "Connection: close\r\n");
+
+	if (*httpc_proxy.auth) {
+		i += sprintf (&buffer[i], "Proxy-Authorization: Basic ");
+		i += base64_encode(&buffer[i], httpc_proxy.auth,
+			strlen(httpc_proxy.auth));
+		i += sprintf (&buffer[i], "\r\n");
+	}
+
+	if (auth && *auth) {
+		i += sprintf (&buffer[i], "Authorization: Basic ");
+		i += base64_encode(&buffer[i], auth, strlen(auth));
+		i += sprintf (&buffer[i], "\r\n");
+	}
+
+	i += sprintf (&buffer[i], "\r\n");
+#ifdef HTTPC_VERBOSE
+	printf ("httpc request follows:\n%s\n---\n", buffer);
+#endif
+	do {
+		j = sock_write (t, buffer, i);
+		tcp_tick(NULL);
+	} while (j == 0);
+#ifdef HTTPC_VERBOSE
+	printf ("httpc: sock_write %d bytes, %d written\n", i, j);
+#endif
+	if (j == -1) {
+		return -EIO;
+	}
+	return 0;
+}
+
+/*** BeginHeader httpc_read_header */
+_httpc_nodebug
+int httpc_read_header (httpc_Socket *s, char *user_buffer, int user_buflen,
+	int follow_redirect);
+/*** EndHeader */
+
+char *httpc_headermatch (char *header, char *match)
+{
+	char *h, *m;
+
+	h = header;
+	m = match;
+	while (*m) {
+		if (tolower(*m) != tolower(*h)) return NULL;
+		m++;
+		h++;
+	}
+	if (*h == ':') h++;
+	if (*h == ' ') h++;
+
+	return h;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_read_header                                              <HTTPC.LIB>
+
+SYNTAX:	int httpc_read_header (httpc_Socket *s, char *buffer, int buflen,
+			                       int follow_redirect)
+
+DESCRIPTION: 	Read the next header from the socket.
+
+PARAMETER 1:   Pointer to socket structure to use for connection.
+PARAMETER 2:	Buffer to store the header in, recommend at least 128 bytes.
+					Header will be up to (buflen-1) bytes, followed by a null
+					terminator.
+PARAMETER 3:	Length of buffer for storing header.
+PARAMETER 4:   Set to 0 to ignore redirect headers or 1 to automatically
+					follow redirects.
+
+	NOTE: As of this release, redirect following has not been implemented.
+
+RETURN VALUE:	>0: length of header read (excluding null-terminator byte)
+					0: no more headers or incomplete header read from socket
+					-NETERR_REMOTE_RESET: connection closed before end of headers
+					-NETERR_HTTPC_REDIRECT: too many redirects
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_read_header (httpc_Socket *s, char *user_buffer, int user_buflen,
+	int follow_redirect)
+{
+	int i, j;
+	int err;
+	int bytesread;
+	int usestack;
+	char stackbuf[128];
+	char *buffer;
+	char *value;
+	int buflen;
+	struct tm t;
+	unsigned long longsec;
+	word tick_result;
+
+	if (s->state != HTTPC_STATE_HEADER) return 0;
+
+	err = 0;
+
+	// If the user supplies a small buffer, use our larger buffer instead.
+	//	(this is necessary to properly handle large redirects)
+	usestack = (user_buffer == NULL) || (user_buflen < 128);
+	if (usestack) {
+		buffer = stackbuf;
+		buflen = sizeof(stackbuf);
+	} else {
+		buffer = user_buffer;
+		buflen = user_buflen;
+	}
+
+	tick_result = tcp_tick(s->sock);
+
+	buffer[0] = '*';	// set first byte so we can tell if we read a blank line
+	buffer[1] = '\0';
+
+	// read up to next cr/lf into buffer
+	tcp_set_ascii (s->sock);
+	bytesread = httpc_sock_gets (s->sock, buffer, buflen);
+
+	if (bytesread == -2) {
+		// incomplete line, waiting for more data
+		return 0;
+	}
+
+	if (bytesread == -1) {
+		// error, not a socket
+		return -1;
+	}
+
+	if (bytesread == 0) {
+	   if (usestack && (user_buflen > 0)) {
+	   	*user_buffer = '\0';
+		}
+
+		if (tick_result == 0) {
+	      // connection closed before end of headers
+	      s->state = HTTPC_STATE_CLOSED;
+	      return -NETERR_REMOTE_RESET;
+		}
+
+		if (*buffer == '\0') {
+	      /* end of headers */
+	      if (s->response == 100) {
+	         // this blank line is part of a continue header; not in the body yet
+	         s->response = 0;
+	         s->flags &= ~(HTTPC_FLAG_HTTP11 | HTTPC_FLAG_HTTP10);
+	      } else {
+	         tcp_set_binary (s->sock);
+	         s->state = HTTPC_STATE_BODY;
+	      }
+	   }
+
+	   return 0;
+	}
+
+#ifdef HTTPC_VERBOSE
+	printf ("httpc: read header %s\n", buffer);
+#endif
+
+	// if it's the response code, log it
+   if (strncmpi (buffer, "HTTP/1.", 7) == 0)
+   {
+   	if (buffer[7] == '1') s->flags |= HTTPC_FLAG_HTTP11;
+   	else if (buffer[7] == '0') s->flags |= HTTPC_FLAG_HTTP10;
+      s->response = (int) strtol (buffer + 9, NULL, 10);
+   }
+   else if (strncmpi (buffer, "Date: ", 6) == 0)
+   {
+	   // if it's the date header (RFC1123), calculate skew from RTC
+	   // Format -- Date: Tue, 30 Aug 2005 17:19:44 GMT
+   	i = 14;		// point to start of month
+		t.tm_mon = 0;
+		for (j = 1; j < 13; j++) {
+			if (strncmpi (&buffer[i], _dtmonname[j], 3) == 0) {
+				t.tm_mon = j;
+				break;
+			}
+		}
+		// if the date lookup didn't work, no need to continue
+		if (t.tm_mon) {
+	      t.tm_year = 100 + 10 * (buffer[i+6]-'0') + (buffer[i+7]-'0');
+	      t.tm_mday = (buffer[i-2]-'0') + (buffer[i-3] == ' ' ? 0 : 10 * (buffer[i-3]-'0'));
+	      t.tm_hour = 10*(buffer[i+9]-'0') + (buffer[i+10]-'0');
+	      t.tm_min  = 10*(buffer[i+12]-'0') + (buffer[i+13]-'0');
+	      t.tm_sec  = 10*(buffer[i+15]-'0') + (buffer[i+16]-'0');
+			longsec = mktime(&t);
+			// Main program should init SEC_TIMER to at least 1/1/2000, in case RTC
+			// is not set.  This will avoid problem of a signed long not having
+			// enough precision to cover the gap between 1/1/1980 and ~1/1/2013.
+			if ((longsec > SEC_TIMER) && (longsec - SEC_TIMER > 0x7fffffff)) {
+				s->skew = 0x7fffffff;		// we'll get as close as possible
+			} else {
+				s->skew = longsec - SEC_TIMER;
+			}
+		}
+   }
+   else if ( (value = httpc_headermatch(buffer, "Content-Length:")) )
+   {
+	   // if it's content-length, log it
+      s->filesize = strtol (value, NULL, 10);
+   }
+   else if ( (value = httpc_headermatch(buffer, "Transfer-Encoding:")) )
+   {
+		// if it's transfer-encoding chunked, log it
+		if (strstr (value, "chunked") != NULL) s->flags |= HTTPC_FLAG_CHUNKED;
+	}
+	else if (follow_redirect &&
+		((value = httpc_headermatch(buffer, "Location:")) != NULL))
+	{
+	   // if it's a redirect, try to handle it?
+		// close the socket, parse the new location and try to open it?
+		// and then recursively call this function...
+		if (s->redirects++ > 5) {
+			err = -NETERR_HTTPC_REDIRECT;
+		}
+	}
+	else if (usestack && (user_buffer != NULL))
+	{
+		// copy read header back to user's buffer
+		if (bytesread >= user_buflen) {
+			bytesread = user_buflen - 1;
+		}
+		memcpy (user_buffer, buffer, bytesread);
+		user_buffer[bytesread] = '\0';
+	}
+
+	if (err != 0) {
+		return err;
+	}
+	else
+	{
+		return bytesread;
+	}
+}
+
+/*** BeginHeader httpc_skip_headers */
+int httpc_skip_headers (httpc_Socket *s, int follow_redirect);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_skip_headers                                             <HTTPC.LIB>
+
+SYNTAX:	int httpc_skip_headers (httpc_Socket *s, int follow_redirect);
+
+DESCRIPTION: 	Skip through the headers to get to the body.
+
+PARAMETER 1:   Pointer to socket structure to use for connection.
+PARAMETER 2:   Set to 0 to ignore redirect headers or 1 to automatically
+					follow redirects.
+
+               (This release doesn't support following redirect headers.)
+
+RETURN VALUE:	Total bytes in headers, or <0 for error.
+               -NETERR_INACTIVE_TIMEOUT: timed out due to inactivity
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_skip_headers (httpc_Socket *s, int follow_redirect)
+{
+	int err;
+	int bytecount;
+	unsigned long timeout;
+
+	bytecount = 0;
+	timeout = _SET_TIMEOUT (5 * 1024);
+	do {
+		err = httpc_read_header (s, NULL, 0, follow_redirect);
+		if (err > 0) {
+			bytecount += err;
+			timeout = _SET_TIMEOUT (5 * 1024);
+		}
+		if ((bytecount == 0) && _CHK_TIMEOUT(timeout)) {
+			err = -NETERR_INACTIVE_TIMEOUT;
+		}
+	} while ((s->state == HTTPC_STATE_HEADER) && (err >= 0)
+      #ifdef MCOS
+      	#if OS_TASK_DEL_EN > 0
+         	&& (OSTaskDelReq (OS_PRIO_SELF) != OS_TASK_DEL_REQ)
+         #endif
+      #endif
+		);
+
+   return (err >= 0) ? bytecount : err;
+}
+
+/*** BeginHeader httpc_read_body */
+int httpc_read_body (httpc_Socket *s, char *buffer, int buflen);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_read_body                                                <HTTPC.LIB>
+
+SYNTAX:	int httpc_read_body (httpc_Socket *s, char *buffer, int buflen);
+
+DESCRIPTION: 	Read some of the body returned by the HTTP server.
+
+PARAMETER 1:   Pointer to socket structure to use for connection.
+PARAMETER 2:	Buffer to store the data in.
+PARAMETER 3:	Length of buffer for storing data.
+
+RETURN VALUE:	>0: length of data read
+					0: waiting on data from socket
+					<0: some sort of error
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_read_body (httpc_Socket *s, char *buffer, int buflen)
+{
+	char chunksize[80];
+	int bytesread;
+
+	if (s->state == HTTPC_STATE_HEADER) httpc_skip_headers (s, 0);
+	if (s->state != HTTPC_STATE_BODY) return 0;
+
+	tcp_tick (s->sock);
+	if (s->flags & HTTPC_FLAG_CHUNKED) {
+		// the tricky code to read chunked data...
+		if (s->currchunk == 0) {
+			// need to read next chunksize
+	      tcp_set_ascii (s->sock);
+	      // first, read CRLF from end of last chunk
+	      // !!! possible problem here, what if that blank line hasn't arrived?
+	      bytesread = httpc_sock_gets (s->sock, chunksize, sizeof(chunksize));
+	      // now read size of next chunk
+			if (bytesread == 0) {
+				bytesread = httpc_sock_gets (s->sock, chunksize, sizeof(chunksize));
+			}
+	      tcp_set_binary (s->sock);
+			if (bytesread <= 0) {
+				tcp_tick(s->sock);
+				return 0;
+			}
+			s->currchunk = strtol (chunksize, NULL, 16);
+			if (s->currchunk == 0) {
+				// end of body
+				s->state = HTTPC_STATE_TRAILER;
+				return 0;
+			}
+		}
+		bytesread = sock_fastread (s->sock, buffer,
+			(s->currchunk < (unsigned long) buflen) ? (int) s->currchunk : buflen);
+		if (bytesread > 0) s->currchunk -= bytesread;
+	} else {
+		bytesread = sock_fastread (s->sock, buffer, buflen);
+		if ((s->filesize == 0) && (bytesread == -1)) {
+	      s->state = HTTPC_STATE_CLOSED;
+	      sock_close (s->sock);
+	      tcp_tick (s->sock);
+	      return 0;
+		}
+	}
+
+   if (bytesread > 0)
+   {
+   	s->bytesread += bytesread;
+   }
+   else if (bytesread == 0)
+   {
+      if (tcp_tick(s->sock) == 0) {
+      	s->state = HTTPC_STATE_CLOSED;
+      }
+   }
+   if ((s->filesize > 0) && (s->filesize == s->bytesread))
+   {
+		s->state = HTTPC_STATE_CLOSED;
+		tcp_tick(s->sock);
+   }
+
+   return bytesread;
+}
+
+/*** BeginHeader httpc_use_proxy */
+void httpc_use_proxy (unsigned long ip, unsigned int port, const char *auth);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_use_proxy                                                <HTTPC.LIB>
+
+SYNTAX:	void httpc_use_proxy (unsigned long ip, unsigned int port,
+                               const char *auth)
+
+DESCRIPTION: 	Configure the HTTPC library to use a proxy server for all
+               new connections.  Pass 0UL for the ip address to switch
+               back to the default behavior of making direct connections.
+
+PARAMETER 1:   IP address of the proxy server.
+PARAMETER 2:	Port number to connect to.
+PARAMETER 3:	Basic authentication credentials (in username:password format)
+					to use when connecting.  Use NULL or an empty string if
+					the proxy server does not require authentication.
+
+RETURN VALUE:	none
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+void httpc_use_proxy (unsigned long ip, unsigned int port, const char *auth)
+{
+	httpc_proxy.ip = ip;
+	httpc_proxy.port = port;
+	if (auth && *auth) {
+		snprintf (httpc_proxy.auth, sizeof(httpc_proxy.auth), "%s", auth);
+	} else {
+		*httpc_proxy.auth = '\0';
+	}
+}
+
+/*** BeginHeader snprinturl */
+int snprinturl (char *buffer, int buflen, const char *host, word port,
+	const char *file, const char *auth);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+snprinturl                                                     <HTTPC.LIB>
+
+SYNTAX:	int snprinturl (char *buffer, int buflen, const char *host, word port,
+                         const char *file, const char *auth)
+
+DESCRIPTION: 	Build a fully-formed URL up from <host>, <port>, <file> and
+               authentication credentials (<auth>).  Does not include the
+               scheme [http://].
+
+               [auth@]host[:port]/file
+
+PARAMETER 1:   Buffer to store URL.
+PARAMETER 2:	Length of buffer for storing URL.
+PARAMETER 3:	Hostname (or dotted ip address) of web server.
+PARAMETER 4:	Port (or 0 for default port 80).
+PARAMETER 5:	Filename to request.
+PARAMETER 6:	Basic authentication credentials (in username:password format).
+					Use NULL or an empty string if authentication is not required.
+
+RETURN VALUE:	none
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int snprinturl (char *buffer, int buflen, const char *host, word port,
+	const char *file, const char *auth)
+{
+	int i;
+
+	i = 0;
+	if (auth && *auth) {
+		i += snprintf (&buffer[i], buflen - i, "%s@", auth);
+	}
+	i += snprintf (&buffer[i], buflen - i, "%s", host);
+	if (port && (port != 80)) {
+		i += snprintf (&buffer[i], buflen - i, ":%u", port);
+	}
+	i += snprintf (&buffer[i], buflen - i, (*file == '/') ? "%s" : "/%s", file);
+
+	return i;
+}
+
+/*** BeginHeader httpc_decode_url */
+int httpc_decode_url (const char *url, char *buffer, int buflen,
+	char **host, unsigned int *port, char **file, char **auth);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_decode_url                                               <HTTPC.LIB>
+
+SYNTAX:        int httpc_decode_url (const char *url, char *buffer, int buflen,
+	              char **host, unsigned int *port, char **file, char **auth)
+
+DESCRIPTION: 	Breaks url up into hostname, auth credentials, port number
+               and file using specified buffer.
+
+PARAMETER 1:   URL, in the following format (items in [] are optional):
+                   [http://][user:pass@]hostname[:port]/filename
+PARAMETER 2:   Buffer to use for storing host and auth info
+PARAMETER 3:   Length of buffer passed for parameter 2
+PARAMETER 4:   Where to store a pointer to the host name
+PARAMETER 5:   Where to store the port number (or NULL to ignore)
+PARAMETER 6:   Where to store a pointer to the filename
+PARAMETER 7:   Where to store a pointer to the auth credentials (or NULL
+                 to ignore)
+
+RETURN VALUE:  Integer code as follows:
+						 0: Success
+					   -EINVAL: Error parsing URL
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_decode_url (const char *url, char *buffer, int buflen,
+	char **host, unsigned int *port, char **file, char **auth)
+{
+	char *p;
+	int i;
+
+	// set defaults
+	if (port) *port = 0;
+	if (auth) *auth = "";
+
+	*file = url;
+
+	// "http" is the scheme name
+
+	// if URL starts with [http://], skip over it
+	if (strncmpi ("http://", url, 7) == 0) {
+		*file += 7;
+	}
+
+	// check for other, unsupported URL types (like ftp://)
+	if (strstr (*file, "://")) {
+		return -EINVAL;
+	}
+
+   if (! **file) {
+   	// empty string, nothing to parse
+   	return -EINVAL;
+	}
+
+   i = 0;
+   while ( **file && (**file != '/') && (i < (buflen - 1)) ) {
+      buffer[i++] = **file;
+      *file += 1;
+   }
+   if (! **file) {
+		// url didn't include a file, send request for "/"
+		*file = "/";
+   }
+   buffer[i] = 0; // null terminate buffer
+
+   if (**file != '/') {
+   	return -EINVAL;
+	}
+
+	// at this point, *file is all set and the buffer contains the host
+	// and possibly auth credentials and an alternate port
+
+	p = buffer;
+	if (p = strchr (p, '@')) {	//user-specified credentials
+		if (auth) {
+			*auth = buffer;
+		}
+		*p++ = 0;		// null terminate credentials and point to host
+		*host = p;
+	} else {
+		*host = buffer;
+	}
+	if (p = strchr (*host, ':')) {	// user-specified port
+		*p++ = 0;		// null terminate hostname and point to port
+		if (port) {
+			*port = (unsigned int) atol (p);
+		}
+	}
+#ifdef HTTPC_VERBOSE
+	printf ("decode_url: url=%s\n", url);
+	printf ("\tauth=%s host=%s port=%u\n", *auth, *host, *port);
+	printf ("\tfile=%s\n", *file);
+#endif
+	return 0;
+}
+
+/*** BeginHeader httpc_get_url */
+int httpc_get_url (httpc_Socket *s, const char *url);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_get_url                                                  <HTTPC.LIB>
+
+SYNTAX: int httpc_get_url (httpc_Socket *s, const char *url);
+
+DESCRIPTION:	Like httpc_get, but with a URL instead of separate host,
+               auth, port and file parameters
+
+PARAMETER 1:   Pointer to socket structure to use for connection.
+PARAMETER 2:   URL, in the following format (items in [] are optional):
+                   [http://][user:pass@]hostname[:port]/filename
+
+RETURN VALUE:  Integer code as follows:
+						 0: Success
+					   -EINVAL: Error parsing URL
+					   See httpc_get for other possible error codes.
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_get_url (httpc_Socket *s, const char *url)
+{
+	char b[160];
+	unsigned int port;
+	char *host, *file, *auth;
+	int err;
+
+	err = httpc_decode_url (url, b, sizeof(b), &host, &port, &file, &auth);
+	if (err) {
+		return err;
+	}
+
+	return httpc_get (s, host, port, file, auth);
+}
+
+
+/*** BeginHeader httpc_post_url */
+int httpc_post_url (httpc_Socket *s, const char *url, const char *postdata,
+	word plen, char *contenttype);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_post_url                                                 <HTTPC.LIB>
+
+SYNTAX: int httpc_post_url (httpc_Socket *s, const char *url,
+                      const char *postdata, word plen, const char *contenttype);
+
+DESCRIPTION: 	Connect to 'host' and POST 'postdata' to 'file' using 'auth'
+					credentials.
+
+PARAMETER 1:   Pointer to socket structure to use for connection.
+PARAMETER 2:   URL, in the following format (items in [] are optional):
+                   [http://][user:pass@]hostname[:port]/filename
+PARAMETER 3:	Data to post
+PARAMETER 4:	Length of data to post (typically strlen(postdata))
+PARAMETER 5:	String to send as "Content-Type".  Use NULL for default of
+               "application/x-www-form-urlencoded".
+
+RETURN VALUE:  Integer code as follows:
+						 0: Success
+						-NETERR_DNSERROR: Can't resolve hostname.
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_post_url (httpc_Socket *s, const char *url, const char *postdata,
+	word plen, char *contenttype)
+{
+	char b[160];
+	unsigned int port;
+	char *host, *file, *auth;
+	int err;
+
+	err = httpc_decode_url (url, b, sizeof(b), &host, &port, &file, &auth);
+	if (!err) {
+		err = httpc_post_ext (s, host, port, file, auth, postdata, plen,
+			contenttype);
+	}
+
+	return err;
+}
+
+/*** BeginHeader httpc_post */
+int httpc_post (httpc_Socket *s, const char *host, unsigned int port,
+	const char *file, const char *auth, const char *postdata);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_post                                                     <HTTPC.LIB>
+
+SYNTAX: int httpc_post (httpc_Socket *s, const char *host, unsigned int port,
+           const char *file, const char *auth, const char *postdata);
+
+DESCRIPTION: 	Connect to 'host' and POST 'postdata' to 'file' using 'auth'
+					credentials.
+
+PARAMETER 1:   Pointer to socket structure to use for connection.
+PARAMETER 2:   Hostname (or dotted IP) to connect to.
+PARAMETER 3:   Port to connect to (typically 80).
+PARAMETER 4:	Filename to request (should start with "/")
+PARAMETER 5:	Optional username and password (separated with ':') to
+					authenticate with (or NULL for no authentication).
+PARAMETER 6:	Data to post (already URL-encoded and null terminated)
+
+RETURN VALUE:  Integer code as follows:
+						 0: Success
+						-NETERR_DNSERROR: Can't resolve hostname.
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_post (httpc_Socket *s, const char *host, unsigned int port,
+	const char *file, const char *auth, const char *postdata)
+{
+	return httpc_post_ext (s, host, port, file, auth, postdata,
+		postdata ? strlen(postdata) : 0, NULL);
+}
+
+/*** BeginHeader httpc_post_ext */
+int httpc_post_ext (httpc_Socket *s, const char *host, unsigned int port,
+	const char *file, const char *auth, const char *postdata, word plen,
+	const char *contenttype);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_post_ext                                                 <HTTPC.LIB>
+
+SYNTAX: int httpc_post_ext (httpc_Socket *s, const char *host,
+           unsigned int port, const char *file, const char *auth,
+           const char *postdata, word postlen, const char *contenttype);
+
+DESCRIPTION: 	Connect to 'host' on 'port' and POST 'postlen' bytes from
+               'postdata' to 'file' using 'auth' credentials.
+
+PARAMETER 1:   Pointer to socket structure to use for connection.
+PARAMETER 2:   Hostname (or dotted IP) to connect to.
+PARAMETER 3:   Port to connect to (typically 80).
+PARAMETER 4:	Filename to request (should start with "/")
+PARAMETER 5:	Optional username and password (separated with ':') to
+					authenticate with (or NULL for no authentication).
+PARAMETER 6:	Data to post
+PARAMETER 7:	Length of data to post
+PARAMETER 8:	String to send as "Content-Type".  Use NULL for default of
+               "application/x-www-form-urlencoded".
+
+RETURN VALUE:  Integer code as follows:
+						 0: Success
+						-EIO: couldn't write to socket
+						-NETERR_DNSERROR: Can't resolve hostname.
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_post_ext (httpc_Socket *s, const char *host, unsigned int port,
+	const char *file, const char *auth, const char *postdata, word plen,
+	const char *contenttype)
+{
+	int i;
+	char buffer[256];
+	int err;
+
+	err = httpc_open (s, host, port);
+	if (err) return err;
+
+	if (httpc_proxy.ip) {
+	   i = sprintf (buffer, "POST http://%s:%u%s HTTP/1.1\r\nHost: %s\r\n" \
+	   	"Connection: close\r\n", host, port, file, host);
+	} else {
+	   i = sprintf (buffer, "POST %s HTTP/1.1\r\nHost: %s\r\n" \
+	   	"Connection: close\r\n", file, host);
+	}
+#ifdef HTTPC_USER_AGENT
+	i += sprintf (&buffer[i], "User-Agent: %s\r\n", HTTPC_USER_AGENT);
+#endif
+
+	if (auth && *auth) {
+		i += sprintf (&buffer[i], "Authorization: Basic ");
+		i += base64_encode(&buffer[i], auth, strlen(auth));
+		i += sprintf (&buffer[i], "\r\n");
+	}
+	if (NULL == contenttype) {
+		contenttype = "application/x-www-form-urlencoded";
+	}
+	i += sprintf (&buffer[i], "Content-Type: %s\r\nContent-Length: %d\r\n",
+	              contenttype, plen);
+	i += sprintf (&buffer[i], "\r\n");
+
+	if (sock_write (s->sock, buffer, i) == -1) {
+		return -EIO;
+	}
+	if (sock_write (s->sock, postdata, plen) == -1) {
+		return -EIO;
+	}
+
+	tcp_tick (s->sock);
+
+	if (0 == err) {
+		s->state = HTTPC_STATE_HEADER;
+	}
+
+	return err;
+}
+
+/*** BeginHeader httpc_postx_url */
+int httpc_postx_url (httpc_Socket *s, const char *url, long xmempostdata,
+	long plen, const char *contenttype);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_postx_url                                                <HTTPC.LIB>
+
+SYNTAX: int httpc_postx_url (httpc_Socket *s, const char *url,
+           long xmempostdata, long plen, const char *contenttype);
+
+DESCRIPTION: 	Connect to 'host' and POST 'xmempostdata' (from far memory)
+               to 'file' using 'auth' credentials.
+
+PARAMETER 1:   Pointer to socket structure to use for connection.
+PARAMETER 2:   URL, in the following format (items in [] are optional):
+                   [http://][user:pass@]hostname[:port]/filename
+PARAMETER 3:	Data to post (stored in xmem)
+PARAMETER 4:	Length of data to post (typically strlen(postdata))
+PARAMETER 5:	String to send as "Content-Type".  Use NULL for default of
+               "application/x-www-form-urlencoded".
+
+RETURN VALUE:  Integer code as follows:
+						 0: Success
+						-NETERR_DNSERROR: Can't resolve hostname.
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_postx_url (httpc_Socket *s, const char *url, long xmempostdata,
+	long plen, const char *contenttype)
+{
+	char b[160];
+	unsigned int port;
+	char *host, *file, *auth;
+	int err;
+
+	err = httpc_decode_url (url, b, sizeof(b), &host, &port, &file, &auth);
+	if (!err) {
+		err = httpc_postx_ext (s, host, port, file, auth, xmempostdata, plen,
+			contenttype);
+	}
+
+	return err;
+}
+
+/*** BeginHeader httpc_postx_ext */
+int httpc_postx_ext (httpc_Socket *s, const char *host, unsigned int port,
+	const char *file, const char *auth, long xmempostdata, long plen,
+	const char *contenttype);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_postx_ext                                                <HTTPC.LIB>
+
+SYNTAX: int httpc_postx_ext (httpc_Socket *s, const char *host,
+           unsigned int port, const char *file, const char *auth,
+           long xmempostdata, long postlen, const char *contenttype);
+
+DESCRIPTION: 	Connect to 'host' and POST 'postdata' to 'file' using 'auth'
+					credentials.
+
+PARAMETER 1:   Pointer to socket structure to use for connection.
+PARAMETER 2:   Hostname (or dotted IP) to connect to.
+PARAMETER 3:   Port to connect to (typically 80).
+PARAMETER 4:	Filename to request (should start with "/")
+PARAMETER 5:	Optional username and password (separated with ':') to
+					authenticate with (or NULL for no authentication).
+PARAMETER 6:	Data to post, stored in xmem
+PARAMETER 7:	Length of data to post
+PARAMETER 8:	String to send as "Content-Type".  Use NULL for default of
+               "application/x-www-form-urlencoded".
+
+RETURN VALUE:  Integer code as follows:
+						 0: success
+						-EIO: couldn't write to socket
+						-NETERR_DNSERROR: can't resolve hostname
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int httpc_postx_ext (httpc_Socket *s, const char *host, unsigned int port,
+	const char *file, const char *auth, long xmempostdata, long plen,
+	const char *contenttype)
+{
+	int i;
+	char buffer[256];
+	int err;
+
+	// ---------------------- common code with httpc_post_ext
+	err = httpc_open (s, host, port);
+	if (err) return err;
+
+	if (httpc_proxy.ip) {
+	   i = sprintf (buffer, "POST http://%s:%u%s HTTP/1.1\r\nHost: %s\r\n" \
+	   	"Connection: close\r\n", host, port, file, host);
+	} else {
+	   i = sprintf (buffer, "POST %s HTTP/1.1\r\nHost: %s\r\n" \
+	   	"Connection: close\r\n", file, host);
+	}
+#ifdef HTTPC_USER_AGENT
+	i += sprintf (&buffer[i], "User-Agent: %s\r\n", HTTPC_USER_AGENT);
+#endif
+
+	if (auth && *auth) {
+		i += sprintf (&buffer[i], "Authorization: Basic ");
+		i += base64_encode(&buffer[i], auth, strlen(auth));
+		i += sprintf (&buffer[i], "\r\n");
+	}
+	if (NULL == contenttype) {
+		contenttype = "application/x-www-form-urlencoded";
+	}
+	i += sprintf (&buffer[i], "Content-Type: %s\r\nContent-Length: %d\r\n",
+	              contenttype, plen);
+	i += sprintf (&buffer[i], "\r\n");
+
+	if (sock_write (s->sock, buffer, i) == -1) {
+		return -EIO;
+	}
+	// --------------------- end common code
+
+	while (plen) {
+		i = (plen > 256) ? 256 : (int) plen;
+		xmem2root (buffer, xmempostdata, i);
+		if (sock_write (s->sock, buffer, i) == -1) {
+			return -EIO;
+		}
+		xmempostdata += i;
+		plen -= i;
+	}
+
+	tcp_tick (s->sock);
+
+	if (err == 0) s->state = HTTPC_STATE_HEADER;
+
+	return err;
+}
+
+/*** BeginHeader urlencodestr */
+int urlencodestr (char *buffer, const char *nonencode, const char *encode);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+urlencodestr                                                  <HTTPC.LIB>
+
+SYNTAX: int urlencodestr (char *buffer, const char *nonencode,
+									const char *encode);
+
+DESCRIPTION: 	Copy 'nonencode' to 'buffer', followed by 'encode' in
+               url-encoded format (convert space to +, non-alphanumeric to
+               %xx (where xx is ASCII value in hex)).  Returns the number
+               of characters written to 'buffer'.
+
+PARAMETER1: 	buffer to write the string into
+PARAMETER2: 	string to copy before encoded string (can be NULL or "")
+PARAMETER3: 	string to encode
+
+RETURN VALUE:  the number of characters written
+
+TYPICAL USAGE: i += urlencodestr (&buffer[i], "&value=", someStringVariable);
+
+END DESCRIPTION **********************************************************/
+_httpc_nodebug
+int urlencodestr (char *buffer, const char *nonencode, const char *encode)
+{
+	int i;
+
+	i = 0;
+	if (nonencode) while (*nonencode) {
+		buffer[i++] = *nonencode++;
+	}
+	if (encode) while (*encode) {
+		if (*encode == ' ') {
+			buffer[i++] = '+';
+		} else if (isalnum (*encode)) {
+			buffer[i++] = *encode;
+		} else {
+			buffer[i++] = '%';
+			// extra space in string below is to work around a bug in DC 9.50 & 10
+			// without the space, the array bounds checking throws an error
+			// when the index is 15.
+			buffer[i++] = "0123456789abcdef "[(*encode)>>4];
+			buffer[i++] = "0123456789abcdef "[(*encode)&0x000F];
+		}
+		encode++;
+	}
+	buffer[i] = 0;
+
+	return i;
+}
+
+/*** BeginHeader httpc_sock_gets */
+int httpc_sock_gets( tcp_Socket *s, byte *dp, int n );
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+httpc_sock_gets                              <HTTPC.LIB>
+
+SYNTAX: int httpc_sock_gets( tcp_Socket *s, byte* dp, int len );
+
+NOTE: This is a modified version of sock_gets() from TCP.LIB.  It returns
+      -2 on partial read, so we can tell the difference between reading
+      a blank line, and reading a partial line.
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	read a string from a socket and replace the CR or LF with
+               a '\0'.  If the string is longer than len, the string is
+               null terminated and the remaining characters in the string
+               are discarded.  This function is only valid for TCP
+               sockets.
+
+PARAMETER1: 	socket
+PARAMETER2: 	buffer to get the string into
+PARAMETER3: 	the maximum length of buffer
+
+RETURN VALUE:  0   if buffer is empty (read a blank line)
+					-2  if no '\r' or '\n' is read, but buffer had room *and*
+					    the connection can get more data!
+					> 0 is the length of the string
+					-1  error (not a TCP socket)
+
+SEE ALSO:      sock_puts, sock_putc, sock_getc, sock_read, sock_write
+
+END DESCRIPTION **********************************************************/
+
+/*
+ * sock_gets - read a string from any socket
+ *           - return length of returned string
+ *           - removes end of line terminator(s)
+ */
+_httpc_nodebug
+int httpc_sock_gets( tcp_Socket *s, byte *dp, int n )
+{
+	auto int buflen;
+	auto int len, rmax, frag;
+	auto unsigned * np;
+	auto byte *nl_p, *cr_p;
+	auto long src_p;
+	auto char src_c;
+	auto long ldiff;
+
+	LOCK_SOCK(s);
+
+	buflen = n;
+
+	/* Access the buffer pointer and length. */
+	if (s->ip_type == TCP_PROTO) {
+		src_p = s->rd.buf;
+		np = &s->rd.len;
+		rmax = (int) s->rd.maxlen;
+		frag=0;
+		if(s->kflags & TCP_KF_GAP) {
+			ldiff = s->ooosend - s->acknum;
+			frag = abs((int) ldiff);
+		}
+		if((s->sock_mode & TCP_SAWCR)) {
+			s->sock_mode &= ~TCP_SAWCR;
+			_tbuf_xread(paddrSS(&src_c), &s->rd, 0, 1);
+			if (*np && (src_c == '\n' || src_c == '\0')) {
+				_tbuf_delete(&s->rd, frag+((*np)--));
+			}
+		}
+	} else {
+		UNLOCK_SOCK(s);
+		return (-1);
+	}
+
+	/* Return if there is nothing in the buffer. */
+	if( *np == 0 ) {
+		UNLOCK_SOCK(s);
+		return( 0 );
+	}
+
+	/* If there is space for all the data, then copy all of it,
+		otherwise, only copy what the space will allow (taking
+		care to reserve space for the null terminator. */
+
+	if( --n > *np ) n = *np;
+	_tbuf_xread(paddr(dp), &s->rd, 0, n);	// copy everything
+	dp[ n ] = 0;                // terminate new string
+
+	/* At this point, dp is a null-terminated string,
+		containing as much of the data as is possible. */
+	len = n;
+
+	/* The rest of this code could be improved.  We should just step through
+	 * the string, one byte at a time, and do everything at once.
+	 *   1) zero out the line break
+	 *   2) determine the length
+	 *   3) return if line is incomplete (waiting for data)
+	 *   4) delete read data from the tcpip buffer
+	 *
+	 * Heck, we might even be able to integrate what _tbuf_xread does (if
+	 * it's simple enough) and then only copy the necessary data.
+	 */
+
+	/* Because we are in ASCII mode, we assume that the
+		sender will be consistent in which kind of CRLF is
+		sent (e.g. one and only one of \r\n, \r0, \r, or \n).
+		So if both \r and \n are found, we assume that they
+		are always next to each other, and \n\r is invalid. */
+
+	/* Zero the first occurance of \r and \n in dp. */
+	/* only take \r if it comes before \n */
+	nl_p = memchr( dp, '\n', n); if(nl_p) *nl_p = 0;
+	cr_p = memchr( dp, '\r', n);
+	if (cr_p) {
+		/* return must appear before newline
+		 * (this is to handle broken web server
+		 * that uses /n in headers, but /r/n in body
+		 */
+		if (nl_p && (nl_p < cr_p)) cr_p = NULL;
+		else *cr_p = 0;
+	}
+
+	/* Return if we did not find \r or \n yet, but still had room. */
+	// *and* the connection can get more data!
+	if( !cr_p && !nl_p && (buflen > *np) && (*np < rmax)
+	    && !(s->state & (tcp_StateCLOSWT | tcp_StateCLOSING | tcp_StateLASTACK |
+	                     tcp_StateTIMEWT | tcp_StateCLOSED))) {
+		*dp = 0;
+		UNLOCK_SOCK(s);
+		return( -2 );
+	}
+
+	/* If we did find a terminator, then stop there. */
+	if(cr_p || nl_p) {
+
+		// Find the length of the first line of data in dp. */
+		len = (int)
+		      (((nl_p && cr_p) ?
+		        min(FP_OFF(nl_p), FP_OFF(cr_p)) :
+		        (nl_p ? FP_OFF(nl_p) : FP_OFF(cr_p)))
+		       - FP_OFF(dp) );
+
+		/* We found a terminator character ... */
+		n = len + 1;
+
+		/* If \r at end of data, might get a \0 or \n in next packet */
+		if(cr_p && !nl_p && (*np == n))
+			s->sock_mode |= TCP_SAWCR;
+
+		/* ... and it could have been \r\0 or \r\n.*/
+		_tbuf_xread(paddrSS(&src_c), &s->rd, n, 1);
+		if((*np > n) &&
+		   (!src_c || (cr_p && src_c == '\n'))) n++;
+
+	}
+
+	/* Remove the first line from the buffer. */
+	*np -= n;
+	if(frag || *np > 0 ) {
+		_tbuf_delete(&s->rd, n);
+	}
+
+	sock_update(s);   /* new window */
+	UNLOCK_SOCK(s);
+	return( len );
+}
+
+/*** BeginHeader */
+#endif //__HTTPC_LIB
+/*** EndHeader */

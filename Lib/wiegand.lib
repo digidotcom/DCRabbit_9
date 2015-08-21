@@ -349,8 +349,8 @@ PARAMETER1:    For Rabbit 2000- or Rabbit 3000-based boards:
                       - PE0/1 are used for the zero bit line,
                       - PE4/5 are used for the one bit line.
                For Rabbit 3000-based boards only:
-                 2 : use input capture 0.
-                 3 : use input capture 1.
+                 2 : use input capture 1.
+                 3 : use input capture 2.
                Note that the A8 timer is not altered by this library
                since time stamping is not required.  Thus you are free
                to use the other input capture if you only have one
@@ -381,14 +381,16 @@ SEE ALSO:      wiegand_ready, wiegand_result
 
 END DESCRIPTION **********************************************************/
 
+#ifdef WIEGAND_USE_IC
 _wiegand_debug int wiegand_badport(int port, int bit)
 {
-	if (port != PCDR && port != PDDR && port != PFDR && port != PGDR)
+   if (port != PCDR && port != PDDR && port != PFDR && port != PGDR)
    	return 1;
    if (bit != 1 && bit != 3 && bit != 5 && bit != 7)
    	return 1;
    return 0;
 }
+#endif
 
 _wiegand_debug int wiegand_init(int which, int port_0, int bit_0, int port_1, int bit_1, int num_bits)
 {
@@ -424,39 +426,22 @@ _wiegand_debug int wiegand_init(int which, int port_0, int bit_0, int port_1, in
    wiegand_valid |= 1<<which;
 
    if (which == 0) {
-#if _USER
-	#if CPU_ID_MASK(_CPU_ID_) == R2000
+#if CPU_ID_MASK(_CPU_ID_) == R2000
 		SetVectExtern2000(EXT0_OFS/0x10, wiegand_isr_e0);
-   #endif
-   #if CPU_ID_MASK(_CPU_ID_) == R3000
+#endif
+#if CPU_ID_MASK(_CPU_ID_) == R3000
 		SetVectExtern3000(EXT0_OFS/0x10, wiegand_isr_e0);
-	#endif
-#else
-	   #asm
-	    ld   iy,XINTVEC_BASE+EXT0_OFS
-	    ld   hl,wiegand_isr_e0
-	    ld   (iy+1),hl      ; Our ISR address
-	   #endasm
 #endif
       BitWrPortI(PEDDR, &PEDDRShadow, 0, 0);	// Make inputs
       BitWrPortI(PEDDR, &PEDDRShadow, 0, 4);
       WrPortI(I0CR, &I0CRShadow, 0x14 + WIEGAND_IP);	// Both falling edge
    }
    if (which == 1) {
-#if _USER
-
-	#if CPU_ID_MASK(_CPU_ID_) == R2000
+#if CPU_ID_MASK(_CPU_ID_) == R2000
 		SetVectExtern2000(EXT1_OFS/0x10, wiegand_isr_e1);
-   #endif
-   #if CPU_ID_MASK(_CPU_ID_) == R3000
+#endif
+#if CPU_ID_MASK(_CPU_ID_) == R3000
 		SetVectExtern3000(EXT1_OFS/0x10, wiegand_isr_e1);
-	#endif
-#else
-	   #asm
-	    ld   iy,XINTVEC_BASE+EXT1_OFS
-	    ld   hl,wiegand_isr_e1
-	    ld   (iy+1),hl      ; Our ISR address
-	   #endasm
 #endif
       BitWrPortI(PEDDR, &PEDDRShadow, 0, 1);	// Make inputs
       BitWrPortI(PEDDR, &PEDDRShadow, 0, 5);
@@ -465,20 +450,13 @@ _wiegand_debug int wiegand_init(int which, int port_0, int bit_0, int port_1, in
 
 #ifdef WIEGAND_USE_IC
 	if (which >= 2) {
-#if _USER
 		SetVectIntern(INPUTCAP_OFS/0x10, wiegand_isr_ic);
-#else
-	   #asm
-	    ld   iy,INTVEC_BASE+INPUTCAP_OFS
-	    ld   hl,wiegand_isr_ic
-	    ld   (iy+1),hl      ; Our ISR address
-	   #endasm
-#endif
 	   WrPortI(ICCR, &ICCRShadow, WIEGAND_IP);
 	   switch (port_0) {
 	   case PCDR: icsxr = 0x00; break;
 	   case PDDR: icsxr = 0x40; break;
-	   case PFDR: icsxr = 0x80; break;
+      case PEDR: icsxr = 0x80; break;
+      case PFDR: icsxr = 0x80; break;
 	   case PGDR: icsxr = 0xC0; break;
 	   }
 	   switch (bit_0) {
@@ -490,6 +468,7 @@ _wiegand_debug int wiegand_init(int which, int port_0, int bit_0, int port_1, in
 	   switch (port_1) {
 	   case PCDR: icsxr |= 0x00; break;
 	   case PDDR: icsxr |= 0x04; break;
+      case PEDR: icsxr |= 0x08; break;
 	   case PFDR: icsxr |= 0x08; break;
 	   case PGDR: icsxr |= 0x0C; break;
 	   }
@@ -500,13 +479,15 @@ _wiegand_debug int wiegand_init(int which, int port_0, int bit_0, int port_1, in
 	   case 7: icsxr |= 0x03; break;
 	   }
 
-	   if (!which) {
+	   if (2 == which) {
+	      // 2 == which: use input capture 1
 	      WrPortI(ICT1R, &ICT1RShadow, 0xBA); // Freerun counter, latch both, both falling edge
 	      WrPortI(ICS1R, &ICS1RShadow, icsxr);
 	      BitWrPortI(ICCSR, &ICCSRShadow, 1, 5); // Enable start/stop interrupts
 	      BitWrPortI(ICCSR, &ICCSRShadow, 1, 4);
 	   }
 	   else {
+	      // 3 == which: use input capture 2
 	      WrPortI(ICT2R, &ICT2RShadow, 0xBA); // Freerun counter, latch both, both falling edge
 	      WrPortI(ICS2R, &ICS2RShadow, icsxr);
 	      BitWrPortI(ICCSR, &ICCSRShadow, 1, 7);

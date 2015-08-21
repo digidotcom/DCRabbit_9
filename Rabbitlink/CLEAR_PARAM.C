@@ -1,6 +1,6 @@
 #define DISABLE_FS_WARNING
 
-/************************************************************ 
+/************************************************************
 
 	clear_param.c
 	Z-World, 2001
@@ -11,8 +11,11 @@
 	To use this program, compile it to the RabbitLink board,
 	run it, then reload the RabbitLink with the DOWNLOAD.BIN
 	firmware image.
-	
+
  ************************************************************/
+
+#define TCPCONFIG 0
+#define USE_ETHERNET 1
 
 #define CONTROL_PORT		4244
 #define CONSOLE_BAUD		57600			// default console baud rate
@@ -45,7 +48,7 @@
 #define MAIL_FROM_SIZE 51
 #define MAIL_SERV_SIZE 51
 typedef struct {
-	char		top; // used to mark the top of the struct 
+	char		top; // used to mark the top of the struct
 	char		name[40];
 	char		passwd[16];
 	uint16	control_port;
@@ -74,7 +77,7 @@ long lookup_gateway(void)
 {
 	auto int i;
 	auto ATHandle ath;
-	
+
 	/* find the default gateway */
 	for (i = 0; i < ARP_ROUTER_TABLE_SIZE; i++) {
 		// Fixme: need to make documented interface for this data
@@ -107,7 +110,7 @@ void dtp_backup_id(void)
 	auto unsigned long temp;
 	auto File f, *F;
 	F = &f;
-	
+
 	main_id.top = 0xa5;
 	main_id._my_ip_addr = my_ip_addr;
 	main_id._sin_mask = sin_mask;
@@ -119,14 +122,14 @@ void dtp_backup_id(void)
 		/* Error! File allready exists? */
 		goto backup_error;
 	}
-	
+
 	/* write out the new version number */
 	BackupVersion++;
 	printf("\tBackupVersion == %ld\n",BackupVersion);
 	if(4 != fwrite(F, (char *)&BackupVersion, 4)) {
 		goto backup_error;
 	}
-	
+
 	/* write out the length of the config table */
 	temp = sizeof(main_id);
 	printf("\tsizeof(main_id) == %ld\n",temp);
@@ -174,15 +177,15 @@ void dtp_backup_id(void)
 		fdelete(255);
 		NextBackupFile = 255;
 	}
-	
-	return;	
+
+	return;
 
 backup_error:
 	fclose(F);
-	
+
 	/* should we format the fs here? */
 	printf("ERROR: No room to backup config table in flash FS!\n");
-	return; 
+	return;
 }
 
 /******************************************************************************/
@@ -213,7 +216,7 @@ main()
 	sspec_init();
 	fs_format(0, FS_NUM_BLOCKS, 1);
 
-	/* backup the reset data to flash */		
+	/* backup the reset data to flash */
 	dtp_backup_id();
 
 	printf("Parameters reset.\n");

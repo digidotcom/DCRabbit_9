@@ -1363,6 +1363,7 @@ nodebug char serAgetError()
 
 spaisr_start::
     call  spa_isr       ; 19
+    ipres               ; 4
     ret                 ; 8
 
 spa_dummyfunc::
@@ -1694,7 +1695,6 @@ spa_donomore:
 #if !(_USER)
 	IOWRITE_A(SASR)
 #endif
-    ipres               ; 4
     pop   hl            ; 7, 	restore registers needed by isr
     pop   de            ; 7
     pop   bc            ; 7
@@ -1797,7 +1797,6 @@ spa_overHi:					; turn off the RTS line
 	 ld	 hl, (a_rtsoff)
 	 jp	 (hl)
 spa_rx0:
-    ipres               ; 4
     pop   hl            ; 7,  restore registers needed by isr
     pop   de            ; 7
     pop   bc            ; 7
@@ -3063,6 +3062,7 @@ nodebug char serBgetError()
 
 spbisr_start::
     call  spb_isr       ; 19
+    ipres               ; 4
     ret                 ; 8
 
 spb_dummyfunc::
@@ -3386,7 +3386,6 @@ spb_donomore:
 #if !(_USER)
 	IOWRITE_A(SBSR)
 #endif
-    ipres               ; 4
     pop   hl            ; 7, 	restore registers needed by isr
     pop   de            ; 7
     pop   bc            ; 7
@@ -3489,7 +3488,6 @@ spb_overHi:					; turn off the RTS line
 	 ld	 hl, (b_rtsoff)
 	 jp	 (hl)
 spb_rx0:
-    ipres               ; 4
     pop   hl            ; 7,  restore registers needed by isr
     pop   de            ; 7
     pop   bc            ; 7
@@ -4741,6 +4739,7 @@ nodebug char serCgetError()
 
 spcisr_start::
     call  spc_isr       ; 19
+    ipres               ; 4
     ret                 ; 8
 
 spc_dummyfunc::
@@ -5016,7 +5015,6 @@ spc_donomore:
 #if !(_USER)
 	IOWRITE_A(SCSR)
 #endif
-    ipres               ; 4
     pop   hl            ; 7, 	restore registers needed by isr
     pop   de            ; 7
     pop   bc            ; 7
@@ -5120,7 +5118,6 @@ spc_overHi:    			; turn off the RTS line
 	 jp	 (hl)
 
 spc_rx0:
-    ipres               ; 4
     pop   hl            ; 7,  restore registers needed by isr
     pop   de            ; 7
     pop   bc            ; 7
@@ -6369,7 +6366,8 @@ nodebug char serDgetError()
 ;
 
 spdisr_start::
-    call	 spd_isr       ; 19
+    call  spd_isr       ; 19
+    ipres               ; 4
     ret                 ; 8
 
 spd_dummyfunc::
@@ -6645,7 +6643,6 @@ spd_donomore:
 #if !(_USER)
 	IOWRITE_A(SDSR)
 #endif
-    ipres               ; 4
     pop   hl            ; 7, 	restore registers needed by isr
     pop   de            ; 7
     pop   bc            ; 7
@@ -6748,7 +6745,6 @@ spd_overHi:					; turn off the RTS line
 	 ld	 hl, (d_rtsoff)
 	 jp	 (hl)
 spd_rx0:
-    ipres               ; 4
     pop   hl            ; 7,  restore registers needed by isr
     pop   de            ; 7
     pop   bc            ; 7
@@ -7996,6 +7992,7 @@ nodebug char serEgetError()
 
 speisr_start::
     call  spe_isr       ; 19
+    ipres               ; 4
     ret                 ; 8
 
 spe_dummyfunc::
@@ -8249,7 +8246,6 @@ spe_donomore:
 #if !(_USER)
 	IOWRITE_A(SESR)
 #endif
-    ipres               ; 4
     pop   hl            ; 7, 	restore registers needed by isr
     pop   de            ; 7
     pop   bc            ; 7
@@ -8352,7 +8348,6 @@ spe_overHi:					; turn off the RTS line
 	 ld	 hl, (e_rtsoff)
 	 jp	 (hl)
 spe_rx0:
-    ipres               ; 4
     pop   hl            ; 7,  restore registers needed by isr
     pop   de            ; 7
     pop   bc            ; 7
@@ -9601,6 +9596,7 @@ nodebug char serFgetError()
 
 spfisr_start::
     call  spf_isr       ; 19
+    ipres               ; 4
     ret                 ; 8
 
 spf_dummyfunc::
@@ -9852,7 +9848,6 @@ spf_donomore:
 #if !(_USER)
 	IOWRITE_A(SFSR)
 #endif
-    ipres               ; 4
     pop   hl            ; 7, 	restore registers needed by isr
     pop   de            ; 7
     pop   bc            ; 7
@@ -9956,7 +9951,6 @@ spf_overHi:					; turn off the RTS line
 	 ld	 hl, (f_rtsoff)
 	 jp	 (hl)
 spf_rx0:
-    ipres               ; 4
     pop   hl            ; 7,  restore registers needed by isr
     pop   de            ; 7
     pop   bc            ; 7

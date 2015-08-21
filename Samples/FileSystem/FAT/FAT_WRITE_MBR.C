@@ -22,7 +22,7 @@
         this sample will exit with an error message.
 
         You can erase a serial flash device by running sflash_inspect.c
-        and clearing the pages 0, 1 & 2.
+        and clearing the pages 0 through 5, inclusive.
 
         You can erase a NAND flash device by using nflash_inspect.c
         and clearing the pages 0 & 1.  Be aware that multiple
@@ -59,6 +59,28 @@
 // Call in the FAT filesystem support code.
 #use "fat.lib"
 
+#if 0 == MY_ENUM_DEVICE
+	#define FDDF_MOUNT_DEV_x FDDF_MOUNT_DEV_0
+	#define _DRIVER_x _DRIVER_0
+#elif 1 == MY_ENUM_DEVICE
+	#define FDDF_MOUNT_DEV_x FDDF_MOUNT_DEV_1
+	#define _DRIVER_x _DRIVER_1
+#elif 2 == MY_ENUM_DEVICE
+	#define FDDF_MOUNT_DEV_x FDDF_MOUNT_DEV_2
+	#define _DRIVER_x _DRIVER_2
+#elif 3 == MY_ENUM_DEVICE
+	#define FDDF_MOUNT_DEV_x FDDF_MOUNT_DEV_3
+	#define _DRIVER_x _DRIVER_3
+#else	// x == MY_ENUM_DEVICE
+	#fatal "Unsupported enumeration device; choose one in the range [0,3]."
+#endif	// x == MY_ENUM_DEVICE
+#ifdef FAT_SD_DEVICE
+ #if FAT_SD_DEVICE == FDDF_MOUNT_DEV_x
+	// SD card device partition attempt check
+	#fatal "Multiple partitions are not supported on SD cards."
+ #endif	// FAT_SD_DEVICE == FDDF_MOUNT_DEV_x
+#endif	// FAT_SD_DEVICE
+
 mbr_drvr  my_driver;    // Driver structure
 mbr_dev	 my_device;    // Device structure, this holds the partition table
 
@@ -71,13 +93,8 @@ void main(void)
    char i, buf[15], *ptr;
 	mbr_drvr  *root_driver;
 
- #ifdef FAT_SD_DEVICE
-   // Primary SD card device check
-   if (FAT_SD_DEVICE == FDDF_MOUNT_DEV_0) {
-      printf("Multiple partitions are not supported on SD cards, exiting.\n");
-      exit(-EPERM);
-   }
- #endif
+	// call out the driver we're working with
+	printf("Using driver '%s'.\n\n", _DRIVER_x);
 
 	// provide the root_driver reference required by the MBR_DRIVER_INIT macro
 	root_driver = &my_driver;

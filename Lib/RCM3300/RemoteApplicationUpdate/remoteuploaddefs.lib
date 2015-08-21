@@ -299,6 +299,7 @@ int ifs_restore (NetConfSave *ncs);
 #endif	// #ifdef DCRTCP
 /*** EndHeader */
 #ifdef DCRTCP
+_dlp_defs_nodebug
 int ifs_restore (NetConfSave *ncs)
 {
 	auto int i;
@@ -431,6 +432,7 @@ void repl_getCurrentNetworkConfig (NetConfSave *ncs);
 /*** EndHeader */
 
 #ifdef DCRTCP
+_dlp_defs_nodebug
 void repl_getCurrentNetworkConfig (NetConfSave *ncs)
 {
 	auto int i,j;
@@ -804,7 +806,7 @@ int rupl_valid_image(unsigned long address, unsigned long length,
    // order to run a crc on the entire image.  This loop takes care of reading
    // all of the blocks of size loadinfo.sfbufsize.  If there is any remaining
    // portion of the image, it will be accounted for after this loop is done.
-	for(i = 0; i < imgCrcBlocks; i++)
+	while ((imgPtr + loadinfo.sfbufsize) <= (address + length))
    {
       sfbufsize = firstpage ? fpglength : loadinfo.sfbufsize;
 
@@ -878,8 +880,7 @@ int rupl_valid_image(unsigned long address, unsigned long length,
       imgPtr                  += sfbufsize;
       firstpage                = 0;
    }
-   imgLeftOver = (int)((length + (loadinfo.sfbufsize - fpglength)) %
-                 (long)loadinfo.sfbufsize);
+	imgLeftOver = (unsigned) (address + length - imgPtr);
 
 	// If there is a non-full page of data left, read it into the flash buffer
 	if(imgLeftOver)

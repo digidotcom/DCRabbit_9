@@ -230,7 +230,7 @@ int  clear_to_enter;
 
 /* -------------------------------------------------------------------- */
 
-const char *Menu[] =
+const char * const Menu[] =
 {
 	"\x1b[2J",						// blank the screen
 	"Download Manager Menu",
@@ -241,7 +241,7 @@ const char *Menu[] =
 	""
 };
 
-const char *ErrMessage[] =
+const char * const ErrMessage[] =
 {
 	"",
 	"Checksum error",

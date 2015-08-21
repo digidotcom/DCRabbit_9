@@ -608,6 +608,7 @@ void updateTimers()
 	static unsigned long	rtc_val, delta_ticks;
 
 #asm
+	push	ix
 	ld		ix, rtc_val
 ;	ioi	ld (RTC0R), a
    IOWRITE_A(RTC0R)
@@ -615,6 +616,7 @@ void updateTimers()
 	ld		(ix+0), hl
 	ioi	ld hl, (RTC2R)
 	ld		(ix+2), hl
+	pop	ix
 #endasm
 
 	delta_ticks = (rtc_val - lastRTCVal)>>5ul;

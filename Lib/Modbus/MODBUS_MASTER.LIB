@@ -1,15 +1,66 @@
-/* MODBUS_master.c			Copyright January 2006, RabbitSemiconductor
+/*
+* Copyright (c) 2008 Digi International Inc., All Rights Reserved
+*
+* This software contains proprietary and confidential information of Digi
+* International Inc.  By accepting transfer of this copy, Recipient agrees
+* to retain this software in confidence, to prevent disclosure to others,
+* and to make no use of this software other than that for which it was
+* delivered.  This is a published copyrighted work of Digi International
+* Inc.  Except as permitted by federal law, 17 USC 117, copying is strictly
+* prohibited.
+*
+* Restricted Rights Legend
+*
+* Use, duplication, or disclosure by the Government is subject to
+* restrictions set forth in sub-paragraph (c)(1)(ii) of The Rights in
+* Technical Data and Computer Software clause at DFARS 252.227-7031 or
+* subparagraphs (c)(1) and (2) of the Commercial Computer Software -
+* Restricted Rights at 48 CFR 52.227-19, as applicable.
+*
+* Digi International Inc. 11001 Bren Road East, Minnetonka, MN 55343
+*/
+
+/* Modbus_Master.Lib
+	Modbus bundled with Dynamic C.
 
 Modifications:
-JLC	June 2006	added MODBUS_CRC
+JLC	Apr 2009 1.04	MBM_WriteCoils: fix incorrect parameter length for
+								byte count in PDU
+                     added function: MBM_WriteRegs (by Phaheerathan Thankarajah)
+JLC	Jun 2006	1.03	fix incorrect macro references in MBM_WriteCoils
+JLC 	Nov 2006	1.02	documentation, minor mods for serial interface
+								modified calculations to use &mbADU[0]
+								added _MODBUS_VERS
+
+JLC	Jun 2006			added MODBUS_CRC
 
 This library supports the following MODBUS commands:
 
-	0x01 Read Coils
-   0x03 Read Holding Registers
-   0x05 Write Single Coil
-   0x06 Write Single Register
-	0x0F Write multiple Coils
+0x01 Read Coils
+	int MBM_ReadCoils ( int MB_address, int* Result, unsigned Starting_Coil,
+	   	int Nbr_of-Coils );
+
+0x03 Read Holding Registers
+	int MBM_ReadRegs ( int MB_address, int* Result, unsigned Starting_Reg,
+   		int Nbr_of_Regs );
+
+0x04 Read Input Registers
+	int MBM_ReadInRegs ( int MB_address, int* Result, unsigned Starting_Reg,
+   		int Nbr_of_Regs );
+
+0x05 Write Single Coil
+	int MBM_WriteCoil ( int MB_address, unsigned CoilNbr, int CoilState );
+
+0x06 Write Single Register
+	int MBM_WriteReg ( int MB_address, unsigned RegNbr, int RegData );
+
+0x0F Write multiple Coils
+	int MBM_WriteCoils ( int MB_address, unsigned StartCoilNbr, int NbrCoils,
+	   	int CoilStates );
+
+0x10 Write multiple Registers
+	int MBM_WriteRegs (int MB_address, unsigned StartRegNbr, int Nbr_of_Regs,
+   		int *RegsData);
 
 It is independant of the communications method in use.  It is equally
 compatible with TCP and serial interfaces.  Its primary function is to
@@ -21,7 +72,10 @@ appropriate interface library/program:
       the response ADU from the slave into the same ADU buffer.
 */
 
+
+
 /*** BeginHeader */
+
 #ifndef __MBMASTER
 #define __MBMASTER
 
@@ -55,7 +109,7 @@ appropriate interface library/program:
 /*** BeginHeader _initADU, _insertWord */
 
 void _initADU ( int MB_address, int FunctionCode, int PDUbyteCount );
-void _insertWord	( int Value );
+void _insertWord	( unsigned Value );
 void _insertByte	( int Value );
 int  _getADUword	( int Offset );
 
@@ -78,19 +132,25 @@ PARAMETER1:		Modbus target address
 
 PARAMETER2:		Modbus function
 
-PARAMETER3:		nbr of data bytes in the PDU
+PARAMETER3:		nbr of data bytes in the PDU (ignored for serial master)
+
+The format of a MODBUS Protocol Data Unit (PDU) is: Function Code, Data
+The format of a MODBUS Application Data Unit (ADU) is: Address, PDU, CRC
 
 RETURN VALUE:	none
 
-The format of a MODBUS Protocol Data Unit (PDU) is: Function Code + Data
+NOTE: for a Modbus Serial Master #define the macro MODBUS_SERIAL_MASTER
 
+Note: This function is not re-entrant.
 END DESCRIPTION **********************************************************/
 
 MODBUS_DEBUG
 void _initADU ( int MB_address, int FunctionCode, int PDUbyteCount )
 {
 	pmbADU = mbADU;							// init pointer
-	_initMBMpacket ( PDUbyteCount+1 );	//  include Function code byte
+	#ifndef MODBUS_SERIAL_MASTER
+	_initMBMpacket ( PDUbyteCount+1 );	// include Function code byte - TCP only!
+	#endif
    *pmbADU++ = MB_address;					// insert target address
 	*pmbADU++ = FunctionCode;				// and Function Code
 	return;
@@ -99,8 +159,9 @@ void _initADU ( int MB_address, int FunctionCode, int PDUbyteCount )
 
 // insert a word - MSByte first - into the transmit ADU
 MODBUS_DEBUG
-void _insertWord ( int Value )
-{	*pmbADU++ = Value >> 8;					// insert high byte
+void _insertWord ( unsigned Value )
+{
+	*pmbADU++ = Value >> 8;					// insert high byte
 	*pmbADU++ = Value;						// and low byte
    return;
 }
@@ -108,16 +169,18 @@ void _insertWord ( int Value )
 // insert a byte into the transmit ADU
 MODBUS_DEBUG
 void _insertByte ( int Value )
-{	*pmbADU++ = Value;
+{
+	*pmbADU++ = Value;
    return;
 }
 
 // retrieve a word - MSByte first - from the received ADU
+// Offset is the BYTE offset (0 relative) into the rcvd packet
 MODBUS_DEBUG
 int _getADUword ( int Offset )
 {	auto ADUword;
 	ADUword = mbADU[Offset]<<8;			// get MSByte
-   ADUword |= mbADU[Offset+1];				// and LSByte
+   ADUword |= mbADU[Offset+1];			// and LSByte
    return ADUword;
 }
 
@@ -125,11 +188,9 @@ int _getADUword ( int Offset )
 MBM_ReadCoils 0x01
 
 SYNTAX:			int MBM_ReadCoils ( int MB_address, int* Result,
-						int Starting_Coil, int Nbr_of-Coils );
+						unsigned Starting_Coil, int Nbr_of-Coils );
 
-DESCRIPTION:	Read the state of the specified coils.  The function will
-					create the MODBUS ADU, in mbADU, with the target address
-               pre-pended.
+DESCRIPTION:	Read the state of the specified coils.
 
 PARAMETER1:		MODBUS addresss of the target device
 
@@ -147,36 +208,53 @@ RETURN VALUE:	MB_SUCCESS
                MBM_PACKET_ERROR
                MBM_BAD_ADDRESS
 
+Note: This function is not re-entrant.
 END DESCRIPTION **********************************************************/
 
 /*** BeginHeader MBM_ReadCoils */
-int MBM_ReadCoils ( int MB_address, int* Result, int Starting_Coil,
+int MBM_ReadCoils ( int MB_address, int* Result, unsigned Starting_Coil,
 	int Nbr_of_Coils );
 /*** EndHeader */
 
 MODBUS_DEBUG
-int MBM_ReadCoils ( int MB_address, int* Result, int Starting_Coil,
+int MBM_ReadCoils ( int MB_address, int* Result, unsigned Starting_Coil,
 	int Nbr_of_Coils )
 {
 	auto int ADUStatus;
 	auto int CoilStatus;
 
-	if ( Starting_Coil < 0 ) return MBM_INVALID_PARAMETER;
-	if ( Nbr_of_Coils > 16  ||  Nbr_of_Coils < 0 ) return MBM_INVALID_PARAMETER;
+	if ( Nbr_of_Coils > 16  ||  Nbr_of_Coils < 0 )
+	{
+		return MBM_INVALID_PARAMETER;
+	}
 
 	_initADU( MB_address, 0x01, 4 );
    _insertWord ( Starting_Coil );
    _insertWord ( Nbr_of_Coils );
 
-   ADUStatus = MBM_Send_ADU ( mbADU, pmbADU - mbADU );
+   ADUStatus = MBM_Send_ADU ( mbADU, pmbADU - &mbADU[0] );
 
-   if ( ADUStatus != MB_SUCCESS ) return ADUStatus;
-   if ( mbADU[ADU_OFF_ADDRESS] != MB_address ) return MBM_BAD_ADDRESS;
-   if ( mbADU[ADU_OFF_FUNCTION] & 0x80 ) return (int)mbADU[ADU_OFF_EXCEPTION];
-   if ( mbADU[ADU_OFF_BYTECOUNT] > 2 ) return MBM_BAD_BYTECOUNT;
+   if ( ADUStatus != MB_SUCCESS )
+	{
+		return ADUStatus;
+	}
+   if ( mbADU[ADU_OFF_ADDRESS] != MB_address )
+	{
+		return MBM_BAD_ADDRESS;
+	}
+   if ( mbADU[ADU_OFF_FUNCTION] & 0x80 )
+	{
+		return (int)mbADU[ADU_OFF_EXCEPTION];
+	}
 
-	if ( Nbr_of_Coils > 8 ) CoilStatus = _getADUword (3);
-   else CoilStatus = (int)mbADU[3] & 0xFF;
+	if ( Nbr_of_Coils > 8 )
+	{
+		CoilStatus = _getADUword (3);
+	}
+   else
+	{
+		CoilStatus = (int)mbADU[3] & 0xFF;
+	}
 
 	*Result = CoilStatus;
 	return MB_SUCCESS;
@@ -187,11 +265,9 @@ int MBM_ReadCoils ( int MB_address, int* Result, int Starting_Coil,
 MBM_ReadRegs 0x03
 
 SYNTAX:			int MBM_ReadRegs ( int MB_address, int* Result,
-						int Starting_Reg, int Nbr_of_Regs );
+						unsigned Starting_Reg, int Nbr_of_Regs );
 
-DESCRIPTION:	Read the specified registers.  The function will
-					create the MODBUS ADU, in mbADU, with the target address
-               pre-pended.
+DESCRIPTION:	Read the specified registers.
 
 PARAMETER1:		MODBUS addresss of the target device
 
@@ -206,36 +282,50 @@ RETURN VALUE:	MB_SUCCESS
                MBM_PACKET_ERROR
                MBM_BAD_ADDRESS
 
+Note: This function is not re-entrant.
 END DESCRIPTION **********************************************************/
 
 /*** BeginHeader MBM_ReadRegs */
-int MBM_ReadRegs ( int MB_address, int* Result, int Starting_Reg,
+int MBM_ReadRegs ( int MB_address, int* Result, unsigned Starting_Reg,
 	int Nbr_of_Regs );
 /*** EndHeader */
 
 MODBUS_DEBUG
-int MBM_ReadRegs ( int MB_address, int* Result, int Starting_Reg,
+int MBM_ReadRegs ( int MB_address, int* Result, unsigned Starting_Reg,
 	int Nbr_of_Regs )
 {
 	auto int ADUStatus;
 	auto int RegValue;
    auto int Count;
 
-	if ( Starting_Reg < 0 ) return MBM_INVALID_PARAMETER;
-	if ( Nbr_of_Regs <= 0  ||  Nbr_of_Regs > 125 ) return MBM_INVALID_PARAMETER;
+	if ( Nbr_of_Regs <= 0  ||  Nbr_of_Regs > 125 )
+	{
+		return MBM_INVALID_PARAMETER;
+	}
 
 	_initADU( MB_address, 0x03, 4 );
    _insertWord ( Starting_Reg );
    _insertWord ( Nbr_of_Regs );
 
-   ADUStatus = MBM_Send_ADU ( mbADU, pmbADU - mbADU );
+   ADUStatus = MBM_Send_ADU ( mbADU, pmbADU - &mbADU[0] );
 
-   if ( ADUStatus != MB_SUCCESS ) return ADUStatus;
-   if ( mbADU[ADU_OFF_ADDRESS] != MB_address ) return MBM_BAD_ADDRESS;
-   if ( mbADU[ADU_OFF_FUNCTION] & 0x80 ) return (int)mbADU[ADU_OFF_EXCEPTION];
+   if ( ADUStatus != MB_SUCCESS )
+	{
+		return ADUStatus;
+	}
+   if ( mbADU[ADU_OFF_ADDRESS] != MB_address )
+	{
+		return MBM_BAD_ADDRESS;
+	}
+   if ( mbADU[ADU_OFF_FUNCTION] & 0x80 )
+	{
+		return (int)mbADU[ADU_OFF_EXCEPTION];
+	}
 
    for ( Count=0; Count<Nbr_of_Regs; Count+=1 )
+	{
    	*Result++ = _getADUword(3+(Count*2));
+	}
 
 	return MB_SUCCESS;
 } // MBM_ReadRegs
@@ -245,11 +335,9 @@ int MBM_ReadRegs ( int MB_address, int* Result, int Starting_Reg,
 MBM_ReadInRegs 0x04
 
 SYNTAX:			int MBM_ReadInRegs ( int MB_address, int* Result,
-						int Starting_Reg, int Nbr_of_Regs );
+						unsigned Starting_Reg, int Nbr_of_Regs );
 
-DESCRIPTION:	Read the specified input registers.  The function will
-					create the MODBUS ADU, in mbADU, with the target address
-               pre-pended.
+DESCRIPTION:	Read the specified input registers.
 
 PARAMETER1:		MODBUS addresss of the target device
 
@@ -264,36 +352,51 @@ RETURN VALUE:	MB_SUCCESS
                MBM_PACKET_ERROR
                MBM_BAD_ADDRESS
 
+Note: This function is not re-entrant.
 END DESCRIPTION **********************************************************/
 
 /*** BeginHeader MBM_ReadInRegs */
-int MBM_ReadInRegs ( int MB_address, int* Result, int Starting_Reg,
+int MBM_ReadInRegs ( int MB_address, int* Result, unsigned Starting_Reg,
 	int Nbr_of_Regs );
 /*** EndHeader */
 
 MODBUS_DEBUG
-int MBM_ReadInRegs ( int MB_address, int* Result, int Starting_Reg,
+int MBM_ReadInRegs ( int MB_address, int* Result, unsigned Starting_Reg,
 	int Nbr_of_Regs )
+
 {
 	auto int ADUStatus;
 	auto int RegValue;
    auto int Count;
 
-	if ( Starting_Reg < 0 ) return MBM_INVALID_PARAMETER;
-	if ( Nbr_of_Regs <= 0  ||  Nbr_of_Regs > 125 ) return MBM_INVALID_PARAMETER;
+	if ( Nbr_of_Regs <= 0  ||  Nbr_of_Regs > 125 )
+	{
+		return MBM_INVALID_PARAMETER;
+	}
 
 	_initADU( MB_address, 0x04, 4 );
    _insertWord ( Starting_Reg );
    _insertWord ( Nbr_of_Regs );
 
-   ADUStatus = MBM_Send_ADU ( mbADU, pmbADU - mbADU );
+   ADUStatus = MBM_Send_ADU ( mbADU, pmbADU - &mbADU[0] );
 
-   if ( ADUStatus != MB_SUCCESS ) return ADUStatus;
-   if ( mbADU[ADU_OFF_ADDRESS] != MB_address ) return MBM_BAD_ADDRESS;
-   if ( mbADU[ADU_OFF_FUNCTION] & 0x80 ) return (int)mbADU[ADU_OFF_EXCEPTION];
+   if ( ADUStatus != MB_SUCCESS )
+	{
+		return ADUStatus;
+	}
+   if ( mbADU[ADU_OFF_ADDRESS] != MB_address )
+	{
+		return MBM_BAD_ADDRESS;
+	}
+   if ( mbADU[ADU_OFF_FUNCTION] & 0x80 )
+	{
+		return (int)mbADU[ADU_OFF_EXCEPTION];
+	}
 
    for ( Count=0; Count<Nbr_of_Regs; Count+=1 )
-   	*Result++ = _getADUword(3+(Count*2));
+   {
+		*Result++ = _getADUword(3+(Count*2));
+	}
 
 	return MB_SUCCESS;
 } // MBM_ReadInRegs
@@ -302,7 +405,7 @@ int MBM_ReadInRegs ( int MB_address, int* Result, int Starting_Reg,
 /* START FUNCTION DESCRIPTION ********************************************
 MBM_WriteCoil 0x05
 
-SYNTAX:        int MBM_WriteCoil ( int MB_address, int CoilNbr,
+SYNTAX:        int MBM_WriteCoil ( int MB_address, unsigned CoilNbr,
 						int CoilState );
 
 DESCRIPTION:	write a value to a single coil
@@ -318,27 +421,44 @@ RETURN VALUE:	MB_SUCCESS
                MBM_PACKET_ERROR
                MBM_BAD_ADDRESS
 
+Note: This function is not re-entrant.
 END DESCRIPTION **********************************************************/
 
 /*** BeginHeader MBM_WriteCoil */
-int MBM_WriteCoil ( int MB_address, int CoilNbr, int CoilState );
+int MBM_WriteCoil ( int MB_address, unsigned CoilNbr, int CoilState );
 /*** EndHeader */
 
 MODBUS_DEBUG
-int MBM_WriteCoil ( int MB_address, int CoilNbr, int CoilState )
+int MBM_WriteCoil ( int MB_address, unsigned CoilNbr, int CoilState )
 {
 	auto int ADUStatus;
 
-	if ( CoilState & 0xFFFE ) return MBM_INVALID_PARAMETER;
+	if ( CoilState & 0xFFFE )
+	{
+		return MBM_INVALID_PARAMETER;
+	}
 	_initADU( MB_address, 0x05, 4 );
    _insertWord ( CoilNbr );
+   if (CoilState)
+	{
+   	CoilState = 0xFF00;	// Modbus "coil on"
+	}
    _insertWord ( CoilState );
 
-   ADUStatus = MBM_Send_ADU ( mbADU, pmbADU - mbADU );
+   ADUStatus = MBM_Send_ADU ( mbADU, pmbADU - &mbADU[0] );
 
-   if ( ADUStatus != MB_SUCCESS ) return MBM_PACKET_ERROR;
-   if ( mbADU[ADU_OFF_ADDRESS] != MB_address ) return MBM_BAD_ADDRESS;
-   if ( mbADU[ADU_OFF_FUNCTION] & 0x80 ) return (int)mbADU[ADU_OFF_EXCEPTION];
+   if ( ADUStatus != MB_SUCCESS )
+	{
+		return MBM_PACKET_ERROR;
+	}
+   if ( mbADU[ADU_OFF_ADDRESS] != MB_address )
+	{
+		return MBM_BAD_ADDRESS;
+	}
+   if ( mbADU[ADU_OFF_FUNCTION] & 0x80 )
+	{
+		return (int)mbADU[ADU_OFF_EXCEPTION];
+	}
 
 	return MB_SUCCESS;
 } // MBM_WriteCoil
@@ -347,7 +467,7 @@ int MBM_WriteCoil ( int MB_address, int CoilNbr, int CoilState )
 /* START FUNCTION DESCRIPTION ********************************************
 MBM_WriteReg 0x06
 
-SYNTAX:        int MBM_WriteReg ( int MB_address, int RegNbr, int RegData );
+SYNTAX:        int MBM_WriteReg ( int MB_address, unsigned RegNbr, int RegData );
 
 DESCRIPTION:	write a value to a single register
 
@@ -362,14 +482,15 @@ RETURN VALUE:	MB_SUCCESS
                MBM_PACKET_ERROR
                MBM_BAD_ADDRESS
 
+Note: This function is not re-entrant.
 END DESCRIPTION **********************************************************/
 
 /*** BeginHeader MBM_WriteReg */
-int MBM_WriteReg ( int MB_address, int RegNbr, int RegData );
+int MBM_WriteReg ( int MB_address, unsigned RegNbr, int RegData );
 /*** EndHeader */
 
 MODBUS_DEBUG
-int MBM_WriteReg ( int MB_address, int RegNbr, int RegData )
+int MBM_WriteReg ( int MB_address, unsigned RegNbr, int RegData )
 {
 	auto int ADUStatus;
 
@@ -377,11 +498,20 @@ int MBM_WriteReg ( int MB_address, int RegNbr, int RegData )
    _insertWord ( RegNbr );
    _insertWord ( RegData );
 
-   ADUStatus = MBM_Send_ADU ( mbADU, pmbADU - mbADU );
+   ADUStatus = MBM_Send_ADU ( mbADU, pmbADU - &mbADU[0] );
 
-   if ( ADUStatus != MB_SUCCESS ) return MBM_PACKET_ERROR;
-   if ( mbADU[ADU_OFF_ADDRESS] != MB_address ) return MBM_BAD_ADDRESS;
-   if ( mbADU[ADU_OFF_FUNCTION] & 0x80 ) return (int)mbADU[ADU_OFF_EXCEPTION];
+   if ( ADUStatus != MB_SUCCESS )
+	{
+		return MBM_PACKET_ERROR;
+	}
+   if ( mbADU[ADU_OFF_ADDRESS] != MB_address )
+	{
+		return MBM_BAD_ADDRESS;
+	}
+   if ( mbADU[ADU_OFF_FUNCTION] & 0x80 )
+	{
+		return (int)mbADU[ADU_OFF_EXCEPTION];
+	}
 
 	return MB_SUCCESS;
 } // MBM_WriteReg
@@ -390,7 +520,7 @@ int MBM_WriteReg ( int MB_address, int RegNbr, int RegData )
 /* START FUNCTION DESCRIPTION ********************************************
 MBM_WriteCoils 0x0F
 
-SYNTAX:        int MBM_WriteCoils ( int MB_address, int StartCoilNbr,
+SYNTAX:        int MBM_WriteCoils ( int MB_address, unsigned StartCoilNbr,
 						int NbrCoils, int CoilStates );
 
 DESCRIPTION:	write a values to coils
@@ -408,33 +538,103 @@ RETURN VALUE:	MB_SUCCESS
                MBM_PACKET_ERROR
                MBM_BAD_ADDRESS
 
+Note: This function is not re-entrant.
 END DESCRIPTION **********************************************************/
 
 /*** BeginHeader MBM_WriteCoils */
-int MBM_WriteCoils ( int MB_address, int StartCoilNbr, int NbrCoils, int CoilStates );
+int MBM_WriteCoils ( int MB_address, unsigned StartCoilNbr,
+		int NbrCoils, int CoilStates );
 /*** EndHeader */
 
 MODBUS_DEBUG
-int MBM_WriteCoils ( int MB_address, int StartCoilNbr, int NbrCoils, int CoilStates )
+int MBM_WriteCoils ( int MB_address, unsigned StartCoilNbr,
+		int NbrCoils, int CoilStates )
 {
 	auto int ADUStatus;
 
-	if ( CoilState & 0xFFFE ) return MBM_INVALID_PARAMETER;
-
-	_initADU( MB_address, 0x0F, 8 );
+	_initADU( MB_address, 0x0F, 7 );
    _insertWord ( StartCoilNbr );
    _insertWord ( NbrCoils );
-	_insertWord ( 2 );						// byte count for up to 16 coils
+	_insertByte ( 2 );						// byte count for up to 16 coils
    _insertWord ( CoilStates );
+
+   ADUStatus = MBM_Send_ADU ( mbADU, pmbADU - &mbADU[0] );
+
+   if ( ADUStatus != MB_SUCCESS )
+	{
+		return MBM_PACKET_ERROR;
+	}
+   if ( mbADU[ADU_OFF_ADDRESS] != MB_address )
+	{
+		return MBM_BAD_ADDRESS;
+	}
+   if ( mbADU[ADU_OFF_FUNCTION] & 0x80 )
+	{
+		return (int)mbADU[ADU_OFF_EXCEPTION];
+	}
+
+	return MB_SUCCESS;
+} // MBM_WriteCoils
+
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+MBM_WriteRegs 0x10
+
+SYNTAX:        int MBM_WriteRegs (int MB_address, unsigned StartRegNbr,
+						int Nbr_of_Regs, int *RegsData);
+
+DESCRIPTION:	write a values to registers
+
+PARAMETER1:		MODBUS addresss of the target device
+
+PARAMETER2:		Starting Register number
+
+PARAMETER3:		Number of Registers - maximum of 123
+
+PARAMETER4:		Address of values for registers - 1 word per register
+
+RETURN VALUE:	MB_SUCCESS
+					MBM_INVALID_PARAMETER
+               MBM_PACKET_ERROR
+               MBM_BAD_ADDRESS
+
+Note: This function is not re-entrant.
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader MBM_WriteRegs */
+int MBM_WriteRegs (int MB_address, unsigned StartRegNbr, int Nbr_of_Regs,
+		int *RegsData);
+/*** EndHeader */
+
+MODBUS_DEBUG
+int MBM_WriteRegs (int MB_address, unsigned StartRegNbr, int Nbr_of_Regs,
+		int *RegsData)
+{
+   auto int ADUStatus;
+   auto int i;
+
+   if (Nbr_of_Regs > 123) return MBM_INVALID_PARAMETER;
+
+   _initADU( MB_address, 0x10, 5 + (Nbr_of_Regs*2) );
+   _insertWord ( StartRegNbr );
+   _insertWord ( Nbr_of_Regs );
+   _insertByte ( Nbr_of_Regs * 2 );
+
+	for (i = 0; i < Nbr_of_Regs; i++)
+	{
+		_insertWord ( *RegsData++ );
+	}
 
    ADUStatus = MBM_Send_ADU ( mbADU, pmbADU - mbADU );
 
    if ( ADUStatus != MB_SUCCESS ) return MBM_PACKET_ERROR;
-   if ( mbADU[MBM_OFF_ADDRESS] != MB_address ) return MBM_BAD_ADDRESS;
-   if ( mbADU[MBM_OFF_FUNCTION] & 0x80 ) return (int)mbADU[ADU_OFF_EXCEPTION];
+   if ( mbADU[ADU_OFF_ADDRESS] != MB_address ) return MBM_BAD_ADDRESS;
+   if ( mbADU[ADU_OFF_FUNCTION] & 0x80 ) return (int)mbADU[ADU_OFF_EXCEPTION];
 
 	return MB_SUCCESS;
 }
+
 
 /* START FUNCTION DESCRIPTION ********************************************
 MODBUS_CRC		<MODBUS_Slave.LIB>
@@ -449,14 +649,12 @@ PARAMETER2:		number of bytes in paraameter1
 
 RETURN VALUE:	CRC value
 
-Note: to use this alternate CRC function you must insert
-#define USE_MODBUS_CRC
-before the #use directives for the modbus libraries.
-
 END DESCRIPTION **********************************************************/
 
-/*** BeginHeader MODBUS_CRC */
+/*** BeginHeader MODBUS_CRC, MODBUS_CRC_MSB, MODBUS_CRC_LSB */
 unsigned MODBUS_CRC(unsigned char *pcMess, unsigned wLen);
+extern const unsigned char MODBUS_CRC_MSB[];
+extern const unsigned char MODBUS_CRC_LSB[];
 /*** EndHeader */
 
 /*=========================================================================*\
@@ -501,7 +699,7 @@ const unsigned char MODBUS_CRC_LSB[] ={
 	0x44,0x84,0x85,0x45,	0x87,0x47,0x46,0x86,	0x82,0x42,0x43,0x83,	0x41,0x81,0x80,0x40
 };
 
-MODBUS_SLAVE_DEBUG
+MODBUS_DEBUG
 unsigned MODBUS_CRC(unsigned char *pcMess, unsigned wLen)
 {
 	auto unsigned char cHi,cLo;			//	CRC Accumulators (MSB & LSB)
@@ -516,6 +714,47 @@ unsigned MODBUS_CRC(unsigned char *pcMess, unsigned wLen)
 	}
 	return ((unsigned) cHi << 8) | cLo;	//	merge the bytes and return
 }
+
+
+/*** BeginHeader _initMBMpacket */
+void _initMBMpacket(int bytecount);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_initMBMpacket                <Modbus_Master.LIB>
+
+SYNTAX:
+   _initMBMpacket(int bytecount);
+
+DESCRIPTION:
+   Library function stub which exits with -ENOSYS, "Function not
+   implemented." The User must provide in TCP-only application code a
+   custom initMBMpacket() function to initialize the MODBUS PDU.
+
+   The format of a MODBUS Protocol Data Unit (PDU) is:
+      Function Code, Data.
+
+   The format of a MODBUS Application Data Unit (ADU) is:
+      Address, PDU, CRC.
+
+PARAMETER1:
+   Number of bytes in the PDU, i.e. function code byte plus data bytes.
+
+RETURN VALUE:
+   None.
+
+NOTE: For a Modbus Serial Master #define the macro MODBUS_SERIAL_MASTER.
+
+Note: This function is not re-entrant.
+END DESCRIPTION *********************************************************/
+
+MODBUS_DEBUG
+void _initMBMpacket(int bytecount)
+{
+	// This library function stub exits with "Function not implemented."
+	exit(-ENOSYS);
+}
+
 
 /*** BeginHeader */
 #endif // __MBMASTER

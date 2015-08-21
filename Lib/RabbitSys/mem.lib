@@ -177,7 +177,14 @@ _system void _rs_xalloc_init(_sys_mem_origin_t *orgtbl, uint16 orgtblsize) {
          xsbreak.limit = left_marker + _RK_XBREAK_T_ADJ;
          xsbreak.sbreak = left_marker + available_bytes;
          xsbreak.next = next_xsbreak_paddr;
+#if FAST_RAM_COMPILE//BRI:test!
+         // This patch works around a compiler bug where sometimes for a RAM
+         //  origin the wrong 'flags' value is stored in the origins table.
+         xsbreak.flags = (xsbreak.limit>=0x80000L && xsbreak.sbreak<=0xC0000L) ?
+                         XALLOC_BB : current_origin->flags;
+#else//BRI:test!
          xsbreak.flags = current_origin->flags;
+#endif//BRI:test!
          xsbreak.chksum = _rk_alloc_calc_chksum(&xsbreak, sizeof(xsbreak));
 
          // Write the xalloc region record:

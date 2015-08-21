@@ -962,9 +962,9 @@ tcloader_nodebug int targetproc_loader_buildchallenge(char type)
 #asm nodebug
 		ld		hl,TargetProcLoader_state+md5entropy
 ;		ioi	ld	(RTC0R),a		; transfer the RTC to the holding registers
-		IOWRITE_A(RTCOR)
+		IOWRITE_A(RTC0R)
 ;		ioi	ld	a,(RTC0R)
-		IOREAD_A(RTCOR)
+		IOREAD_A(RTC0R)
 		ld		(hl),a
 ;		ioi	ld	a,(RTC1R)
 		IOREAD_A(RTC1R)

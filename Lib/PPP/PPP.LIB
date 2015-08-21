@@ -32,9 +32,15 @@ PPP driver for serial and PPPoE links.
 // then again after NAK).  However, packets may be dropped and peers may be buggy.  So we allow twice
 // the theoretical.  PAP is restricted to 3, however.  These counters apply to our sending of the
 // config-request packet, and hopefully cut short any negotiation loops.
-#define LCP_MAX_RETRY	6
-#define PAP_MAX_RETRY	3
-#define IPCP_MAX_RETRY	6
+#ifndef LCP_MAX_RETRY
+	#define LCP_MAX_RETRY	6
+#endif
+#ifndef PAP_MAX_RETRY
+	#define PAP_MAX_RETRY	3
+#endif
+#ifndef IPCP_MAX_RETRY
+	#define IPCP_MAX_RETRY	6
+#endif
 
 #ifdef LCP_TIMEOUT
 	//backward compatibility
@@ -43,7 +49,10 @@ PPP driver for serial and PPPoE links.
 	#define PPP_TIMEOUT		3000		// ms
 #endif
 
-
+#ifndef PPP_TIMEOUT_AUTHENTICATION
+	// by default, allow 1 second longer than the usual PPP time-out
+	#define PPP_TIMEOUT_AUTHENTICATION ((PPP_TIMEOUT) + 1000L)
+#endif
 
 #define PPP_SENDFREE 0
 #define PPP_SENDLOCKED 1
@@ -1482,7 +1491,7 @@ _ppp_nodebug void PAPsendAuth(PPPState *ppp)
 	pos += 1 + _ppp_tempbuf[pos];
 	PPPsendCtl(ppp, PPPST_PAP | PAP_AUTH_REQ, ppp->pap.current_id++, pos, "auth");
 	ppp->pap.sent_auth++;
-	ppp->timeout = _SET_TIMEOUT(4000);
+	ppp->timeout = _SET_TIMEOUT(PPP_TIMEOUT_AUTHENTICATION);
 }
 
 /*** BeginHeader PAPsendAck */

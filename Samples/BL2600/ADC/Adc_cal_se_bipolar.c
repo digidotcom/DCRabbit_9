@@ -38,15 +38,16 @@
 //  Set a default of declaring all local variables "auto" (on stack)
 #class auto
 
+// macro yields number of array elements
+#define NELEMENTS(x) (sizeof x / sizeof x[0])
+
 const float vmax[] = {
 	10.0,
 	5.0,
-	4.0,
 	2.5,
 	2.0,
 	1.25,
 	1.00,
-   0.5
 };
 
 // set the STDIO cursor location and display a string
@@ -59,17 +60,14 @@ void DispStr(int x, int y, char *s)
 
 void printrange( void )
 {
+	auto int i;
+
 	printf("\n gain_code\tVoltage range\n");
 	printf("-----------\t-------------\n");
-	printf("\t0\t +- 10.0v\n");
-	printf("\t1\t +- 5.00v\n");
- 	printf("\t2\t +- 2.50v\n");
-	printf("\t3\t +- 2.00v\n");
-	printf("\t4\t +- 1.25v\n");
-	printf("\t5\t +- 1.00v\n");
-
+	for (i = 0; i < NELEMENTS(vmax); ++i) {
+		printf("\t%d\t +- %5.2fv\n", i, vmax[i]);
+	}
 }
-
 
 void main ()
 {

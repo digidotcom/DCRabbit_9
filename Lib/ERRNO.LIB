@@ -145,6 +145,9 @@ extern int _errno;
 // Codes specific to Dynamic C driver level libraries
 #define  ESHAREDBUSY    240   /* FF10 Shared port is not available */
 
+// Codes specific to Dynamic C function blocks (costatements, cofunctions)
+#define	EFUNCBLK			243	/* FF0D CoData structure checksum error */
+
 // Codes specific to FAT filesystem...
 #define  EFATMUTEX      300   /* FED4 FAT Mutex error (uC/OS) */
 #define	EROOTFULL		301	/* FED3 Root directory full */
@@ -244,6 +247,7 @@ extern int _errno;
 #define NETERR_IFDOWN						437	// FE4B Interface down or deactivated
 #define NETERR_SMTP_TIME					438	// FE4A email sending timeout
 #define NETERR_SMTP_UNEXPECTED			439	// FE49 invalid response from SMTP server
+#define NETERR_HTTPC_REDIRECT				440	// FE48 too many redirects
 #define NETERR_SMTP_NOSOCK 				450   // FE3E could not open network socket
 #define NETERR_SMTP_DNSERROR			   451	// FE3D cannot resolve server name
 #define NETERR_SMTP_ABORTED				452	// FE3C transaction aborted data handler

@@ -755,11 +755,6 @@ END DESCRIPTION **********************************************************/
  */
 
 #ifdef MULTI_IF
-#if _USER
-	#define IS_MY_ADDR(ip, iface)					((ip) == (get_if_tab_addr())[iface].ipaddr)
-#else
-	#define IS_MY_ADDR(ip, iface)					((ip) == _if_tab[iface].ipaddr)
-#endif
 	#define IS_ANY_MY_ADDR(ip)						is_any_my_addr(ip)
 	#define IS_NONLOCAL_SUBNET(ip, iface)		is_nonlocal_subnet(ip, iface)
 	#define IS_ALL_NONLOCAL_SUBNET(ip)			is_all_nonlocal_subnet(ip)
@@ -776,11 +771,6 @@ END DESCRIPTION **********************************************************/
 #endif
 
 #else
-#if _USER
-	#define IS_MY_ADDR(ip, iface)					((ip) == (get_if_tab_addr())[IF_DEFAULT].ipaddr)
-#else
-	#define IS_MY_ADDR(ip, iface)					((ip) == _if_tab[IF_DEFAULT].ipaddr)
-#endif
 	#define IS_ANY_MY_ADDR(ip)						IS_MY_ADDR(ip,IF_DEFAULT)
 	#define IS_NONLOCAL_SUBNET(ip, iface)		is_nonlocal_subnet(ip, IF_DEFAULT)
 	#define IS_ALL_NONLOCAL_SUBNET(ip)			IS_NONLOCAL_SUBNET(ip, IF_DEFAULT)
@@ -797,6 +787,7 @@ END DESCRIPTION **********************************************************/
 #endif
 #endif
 
+#define IS_MY_ADDR(ip, iface)			((ip) && (ip) == MY_ADDR(iface))
 #define IS_LOCAL_SUBNET(ip, iface) 	(!IS_NONLOCAL_SUBNET(ip, iface))
 #define IS_ANY_LOCAL_SUBNET(ip) 		(!IS_ANY_NONLOCAL_SUBNET(ip))
 #define IS_MULTICAST_ADDR(ip)			(((ip) & 0xF0000000) == 0xE0000000)
@@ -1697,6 +1688,112 @@ int _chk_socket( _rs_sock_type *s )
    return( 0 );
 }
 
+
+/*** BeginHeader sock_init_or_exit */
+void sock_init_or_exit(int verbose);
+#ifndef NET_SIOE_TIMEOUT
+	// Default timeout for message interval.  Message seen if takes this
+	// long to bring default interface up.
+	#define NET_SIOE_TIMEOUT 5000L
+#endif
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sock_init_or_exit                   <NET.LIB>
+
+SYNTAX: void sock_init_or_exit(int verbose);
+
+KEYWORDS:		tcpip
+
+DESCRIPTION: 	This is a convenience function intended mainly for sample
+               code which starts a network interface.  It is equivalent
+               to the following sequence:
+
+                 if (sock_init() != 0)
+                    exit(-NETERR_IFDOWN);
+                 while (ifpending(IF_DEFAULT) == IF_COMING_UP)
+                    tcp_tick(NULL);
+                 if (ifpending(IF_DEFAULT) != IF_UP)
+                    exit(-NETERR_IFDOWN);
+
+               In other words, it attempts to initialize the network stack
+               via sock_init().  It then waits for the default interface
+               to come active (or fail).  If the default interface fails
+               to start, then exit() is called.
+
+               This function is primarily for debugging and sample code,
+               since there is an indeterminate wait for
+               the interface to start.  Production applications may not
+               wish to incur this delay at startup, and also they should
+               handle network errors in a manner other that exit() since
+               exit() is really only useful in a debug environment.
+
+               In particular, if the interface is a WiFi interface, then
+               this function will wait until the interface is associated
+               with an access point.  If it appears to wait indefinitely,
+               then there is probably an error in the configuration such
+               as a mis-typed SSID, or incorrect security keys.
+
+               NOTE: don't use this function if you intend the network
+               interface to be down after sock_init().
+
+PARAMETER1:    non-zero to print handy message on success.  Message shows
+					IP address and netmask of default interface.  Also will
+					print messages at intervals while the interface is in a
+					pending state.  This can happen if the interface takes
+					a long time to come up.  In the case of an ethernet interface,
+					if you accidentally leave the cable unplugged then this
+					function will loop forever, printing messages at a default
+					5 second interval.
+
+RETURN VALUE:  none.  May exit(-NETERR_IFDOWN) if error.
+
+SEE ALSO:      sock_init, ifpending, tcp_tick
+
+END DESCRIPTION **********************************************************/
+
+debug
+void sock_init_or_exit(int verbose)
+{
+	auto char ip[16], netmask[16];
+	auto longword tmo;
+
+	if (verbose)
+		printf("sock_init_or_exit: hit any key to terminate\n");
+	if (sock_init()) {
+		if (verbose)
+			printf("sock_init_or_exit: sock_init() failed\n");
+		exit(-NETERR_IFDOWN);
+	}
+	tmo = _SET_TIMEOUT(NET_SIOE_TIMEOUT);
+	while (ifpending(IF_DEFAULT) == IF_COMING_UP) {
+		tcp_tick(NULL);
+		if (_CHK_TIMEOUT(tmo)) {
+			if (verbose)
+				printf("sock_init_or_exit: waiting for interface...\n");
+			tmo = _SET_TIMEOUT(NET_SIOE_TIMEOUT);
+		}
+		if (kbhit()) {
+			if (verbose)
+				ip_print_ifs();
+			return;
+		}
+	}
+	if (ifpending(IF_DEFAULT) != IF_UP) {
+		if (verbose)
+			printf("sock_init_or_exit: interface failed to start\n");
+		exit(-NETERR_IFDOWN);
+	}
+	if (verbose) {
+		inet_ntoa(ip, _if_tab[IF_DEFAULT].ipaddr);
+		inet_ntoa(netmask, _if_tab[IF_DEFAULT].mask);
+		printf("Network default interface up at IP=%s  mask=%s\n", ip, netmask);
+		#ifdef MULTI_IF
+		ip_print_ifs();
+		#endif
+	}
+
+}
 
 
 /*** BeginHeader */
@@ -4618,7 +4715,12 @@ _net_nodebug void tcp_shutdown( void )
 #ifndef DISABLE_TCP
 	auto tcp_Pending *p;
    while(tcp_allsocs)
+   {
+      #ifdef TCP_VERBOSE
+      printf("tcp_shutdown: tcp_abort %d %s\n", __LINE__, __FILE__);
+      #endif
       _rs_tcp_abort( tcp_allsocs );
+   }
 	for( p = tcp_allpending;p;p = p->next)
 		tcp_abortpending(p);
 #endif
@@ -4744,7 +4846,12 @@ _system void _rs_sock_abort( void *s )
 	_SYS_CALL_VARS
 #ifndef DISABLE_TCP
    if( ((_rs_sock_type*)s)->tcp.ip_type == TCP_PROTO )
+   {
+      #ifdef TCP_VERBOSE
+      printf("_rs_sock_abort: tcp_abort %d %s\n", __LINE__, __FILE__);
+      #endif
       _rs_tcp_abort( (_rs_tcp_Socket *)s );
+   }
 #endif
 #ifndef DISABLE_UDP
    if ( ((_rs_sock_type*)s)->tcp.ip_type == UDP_PROTO )
@@ -4830,6 +4937,9 @@ _system int _rs_abort_socks(word reason, byte iface)
    	for (t = tcp_allsocs; t; t = t->next)
       	if (t->hisaddr && t->hisaddr != ~0UL &&
           	 (iface == IF_ANY || _rs_ip_iface(t->hisaddr, 0) == iface)) {
+            #ifdef TCP_VERBOSE
+            printf("_rs_abort_socks: tcp_abort %d %s\n", __LINE__, __FILE__);
+            #endif
 	   		_rs_tcp_abort(t);
    			_rs_sock_msg(t, reason);
       		break;

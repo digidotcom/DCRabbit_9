@@ -1,0 +1,304 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+  <title>Modbus TCP Master Web Interface</title>
+  <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1" />
+  <style type="text/css" media="screen">@import "basic.css";</style>
+  <style type="text/css" media="screen">@import "tabs.css";</style>
+  <script type="text/javascript" >
+
+    // Global variables used by the javascript functions located in functions.js
+    var d_type = "dev.ta ";	// active device type, must end with a space
+    var d_num  = "1 ";        // active device, must end with a space
+    var dioc = <?z echo($dev.ta[1].diox.cfg) ?>;
+    var diov = <?z echo($dev.ta[1].diox.val) ?>;
+    var dinx = <?z echo($dev.ta[1].dinx) ?>;
+    var hcoc = <?z echo($dev.ta[1].hcox.cfg) ?>;
+    var hcov = <?z echo($dev.ta[1].hcox.val) ?>;
+
+    <?z for($A=0;$A<count($dev.ta[1].adc_cfg,0);$A++) { ?><?z } ?>
+    var max_adc_cfg_boxes = <?z echo($A) ?>;	// number of adc_cfg input selectboxes
+
+  </script>
+  <script type="text/javascript" src="functions.js" ></script>
+
+</head>
+
+<body onload="Setup()">
+<h1>Modbus TCP Gateway</h1>
+
+<!-- *************** START: CREATE TABS HEADERS **************************** -->
+<div id="header">
+  <ul id="primary">
+    <li><form id="form0" method="POST" action="type_a1.zhtml" >
+      <input type="hidden" name="dev.tabs" value="<?z print_opt($dev.tabs,0) ?>" />
+      <a href="javascript:document.forms[0].submit()"><?z print_opt($dev.tabs,0) ?></a>
+      </form></li>
+    <li><span><?z print_opt($dev.tabs,1) ?></span></li>
+    <li><form id="form1" method="POST" action="type_b1.zhtml" >
+      <input type="hidden" name="dev.tabs" value="<?z print_opt($dev.tabs,2) ?>" />
+      <a href="javascript:document.forms[1].submit()"><?z print_opt($dev.tabs,2) ?></a>
+    </form></li>
+    <li><form id="form2" method="POST" action="type_b2.zhtml" >
+      <input type="hidden" name="dev.tabs" value="<?z print_opt($dev.tabs,3) ?>" />
+      <a href="javascript:document.forms[2].submit()"><?z print_opt($dev.tabs,3) ?></a>
+    </form></li>
+  </ul>
+</div>
+<!-- *************** END: CREATE THE TABS ********************************** -->
+
+<!-- *************** START: MAIN CONTENTS OF SELECTED TAB ****************** -->
+<div id="main" >
+  <div id="contents">
+    <form id="mform" method="POST" action="type_a2.zhtml" >
+      <table>
+        <tr>
+          <td style="width: 300px;">
+            <h2>
+              <?z print_opt($dev.tabs,1) ?>
+            </h2>
+          </td>
+          <td>
+         	<input id="submitm" type="submit" value="Update" style="color: green;" onclick="MyUpdate()"/>
+            <?z if(error($dev.addr[1].val)) { ?>
+                <a style="color: red;"><?z echo(error($dev.addr[1].val)) ?></a>
+            <?z } ?>
+            <a style="color: red;"><?z echo($dev.status) ?></a>
+          </td>
+        </tr>
+      </table>
+      <table>
+        <tr>
+        	 <td>
+            <h2>
+              Modbus Address:
+              <input type="text" size="3" name ="<?z varname($dev.addr[1].val) ?>"
+               value="<?z echo($dev.addr[1].val) ?>" style="width: 25px;" />
+            </h2>
+          </td>
+        </tr>
+      </table>
+      <br>
+      <a style="font-weight: bold;">Digital I/O:</a>
+      <table>
+        <tr>
+          <td>
+            <table>
+              <tr>
+                <td>
+                	&nbsp;&nbsp;Config:
+                  <input type="hidden" id="<?z varname($dev.ta[1].diox.cfg) ?>"
+                   name="<?z varname($dev.ta[1].diox.cfg) ?>" value="<?z echo($dev.ta[1].diox.cfg) ?>" />
+                </td>
+                <?z for($B=15;$B>=0;$B--) { ?>
+                <td >
+                  <a id="dioc<?z echo($B) ?>"></a>
+                </td>
+                <?z } ?>
+                <td>&nbsp;&nbsp;(Checked = Output &nbsp;&nbsp; Unchecked = Input)</td>
+              </tr>
+              <tr>
+                <td></td>
+            	 <?z for($B=15;$B>=0;$B--) { ?>
+                  <td align="center"><?z echo($B) ?></td>
+                <?z } ?>
+              </tr>
+              <tr>
+                <td>
+                	&nbsp;&nbsp;State:
+                  <input type="hidden" id="<?z varname($dev.ta[1].diox.val) ?>"
+                   name="<?z varname($dev.ta[1].diox.val) ?>" value="<?z echo($dev.ta[1].diox.val) ?>" />
+                </td>
+                <?z for($B=15;$B>=0;$B--) { ?>
+                <td >
+                  <a id="diov<?z echo($B) ?>"></a>
+                </td>
+                <?z } ?>
+                <td>&nbsp;&nbsp;(Checked = On &nbsp;&nbsp; Unchecked = Off)</td>
+              </tr>
+           </table>
+          </td>
+        </tr>
+      </table>
+
+      <a style="font-weight: bold;">Digital Inputs:</a>
+      <table>
+        <tr>
+          <td>
+            <table>
+              <tr>
+                <td>
+                	&nbsp;&nbsp;State:&nbsp;
+                  <input type="hidden" id="<?z varname($dev.ta[1].dinx) ?>"
+                   name="<?z varname($dev.ta[1].dinx) ?>" value="<?z echo($dev.ta[1].dinx) ?>" />
+                </td>
+                <?z for($B=15;$B>=0;$B--) { ?>
+                <td >
+                  <a id="dinx<?z echo($B) ?>"></a>
+                </td>
+                <?z } ?>
+                <td>&nbsp;&nbsp;(Checked = On &nbsp;&nbsp; Unchecked = Off)</td>
+              </tr>
+              <tr>
+                <td></td>
+            	 <?z for($B=15;$B>=0;$B--) { ?>
+                  <td align="center"><?z echo($B) ?></td>
+                <?z } ?>
+              </tr>
+           </table>
+          </td>
+        </tr>
+      </table>
+
+      <a style="font-weight: bold;">High Current Outputs:</a>
+      <table>
+        <tr>
+          <td>
+            <table>
+              <tr>
+                <td>
+                	&nbsp;&nbsp;Config:
+                  <input type="hidden" id="<?z varname($dev.ta[1].hcox.cfg) ?>"
+                   name="<?z varname($dev.ta[1].hcox.cfg) ?>" value="<?z echo($dev.ta[1].hcox.cfg) ?>" />
+                </td>
+                <?z for($B=3;$B>=0;$B--) { ?>
+                <td >
+                  <a id="hcoc<?z echo($B) ?>"></a>
+                </td>
+                <?z } ?>
+                <td>&nbsp;&nbsp;(Checked = Sourcing &nbsp;&nbsp; Unchecked = Sinking)</td>
+              </tr>
+              <tr>
+                <td></td>
+            	 <?z for($B=3;$B>=0;$B--) { ?>
+                  <td align="center"><?z echo($B) ?></td>
+                <?z } ?>
+              </tr>
+              <tr>
+                <td>
+                	&nbsp;&nbsp;State:
+                  <input type="hidden" id="<?z varname($dev.ta[1].hcox.val) ?>"
+                   name="<?z varname($dev.ta[1].hcox.val) ?>" value="<?z echo($dev.ta[1].hcox.val) ?>" />
+                </td>
+                <?z for($B=3;$B>=0;$B--) { ?>
+                <td >
+                  <a id="hcov<?z echo($B) ?>"></a>
+                </td>
+                <?z } ?>
+                <td>&nbsp;&nbsp;(Checked = On &nbsp;&nbsp; Unchecked = Off)</td>
+              </tr>
+           </table>
+          </td>
+        </tr>
+      </table>
+
+      <a style="font-weight: bold;">Analog Outputs:</a>
+      <table>
+        <tr>
+          <td>
+            <table>
+              <tr>
+                <?z for($B=0;$B<count($dev.ta[1].dac,0);$B++) { ?>
+                <td >&nbsp;&nbsp;DAC<?z echo($B) ?>:</td>
+                <td>
+                  <input type="text" size="6" name="<?z varname($dev.ta[1].dac[$B].val) ?>"
+                  value="<?z echo($dev.ta[1].dac[$B].val) ?>" />
+                </td>
+                <td>
+                  <select name="<?z varname($dev.ta[1].dac[$B].unt) ?>">
+                    <?z for($C=0;$C<count($dev.ta[1].dac[$B].unt);$C++) { ?>
+                    <option <?z if(selected($dev.ta[1].dac[$B].unt,$C)) { ?>
+                      selected="selected"<?z } ?>><?z print_opt($dev.ta[1].dac[$B].unt,$C) ?>
+                    </option><?z } ?>
+                  </select>
+                </td>
+                <?z } ?>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+
+      <a style="font-weight: bold;">Analog Inputs:</a>
+      <table>
+	     <tr>
+          <td>
+            <table>
+              <tr>
+                <?z for($B=0;$B<count($dev.ta[1].adc_cfg,0);$B++) { ?>
+                <td align="right" style="width: 85px;">
+                  <script> var adc="ADC["+(<?z echo($B) ?>*2)+"&"+(<?z echo($B) ?>*2+1)+"]:";
+                    document.write(adc);
+                  </script>
+                </td>
+                <td>
+                  <select name="<?z varname($dev.ta[1].adc_cfg[$B]) ?>"
+                    id="<?z varname($dev.ta[1].adc_cfg[$B]) ?>"
+                    onchange="AdcConfig(<?z echo($B) ?>)" >
+                    <?z for($C=0;$C<count($dev.ta[1].adc_cfg[$B]);$C++) { ?>
+                    <option
+                      <?z if(selected($dev.ta[1].adc_cfg[$B],$C)) { ?>
+                      selected="selected"<?z } ?>> <?z print_opt($dev.ta[1].adc_cfg[$B],$C) ?>
+                    </option><?z } ?>
+                  </select>
+                </td>
+              <?z } ?>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td>
+          	 <table>
+              <tr>
+              <?z for($B=0;$B<count($dev.ta[1].adc,0);$B+=2) { ?>
+                <td>&nbsp;&nbsp;ADC<?z echo($B) ?>:</td>
+                <td>
+                  <input type="text" size="6" name="<?z varname($dev.ta[1].adc[$B].val) ?>"
+                  id="<?z varname($dev.ta[1].adc[$B].val) ?>" value="<?z echo($dev.ta[1].adc[$B].val) ?>"
+                  $style="background-color: gainsboro" readonly="readOnly" />
+                </td>
+                <td>
+                  <select name="<?z varname($dev.ta[1].adc[$B].unt) ?>"
+                    id="<?z varname($dev.ta[1].adc[$B].unt) ?>" >
+                    <?z for($C=0;$C<count($dev.ta[1].adc[$B].unt);$C++) { ?>
+                    <option <?z if(selected($dev.ta[1].adc[$B].unt,$C)) { ?>
+                      selected="selected"<?z } ?>> <?z print_opt($dev.ta[1].adc[$B].unt,$C) ?>
+                    </option><?z } ?>
+                  </select>
+                </td>
+              <?z } ?>
+              </tr>
+              <tr>
+                <?z for($B=1;$B<count($dev.ta[1].adc,0);$B+=2) { ?>
+                <td>&nbsp;&nbsp;ADC<?z echo($B) ?>:</td>
+                <td>
+                  <input type="text" size="6" name="<?z varname($dev.ta[1].adc[$B].val) ?>"
+                  id="<?z varname($dev.ta[1].adc[$B].val) ?>" value="<?z echo($dev.ta[1].adc[$B].val) ?>"
+                  $style="background-color: gainsboro" readonly="readOnly" />
+                </td>
+                <td>
+                  <select name="<?z varname($dev.ta[1].adc[$B].unt) ?>"
+                    id="<?z varname($dev.ta[1].adc[$B].unt) ?>" >
+                    <?z for($C=0;$C<count($dev.ta[1].adc[$B].unt);$C++) { ?>
+                    <option
+                      <?z if(selected($dev.ta[1].adc[$B].unt,$C)) { ?>
+                      selected="selected"<?z } ?>> <?z print_opt($dev.ta[1].adc[$B].unt,$C) ?>
+                    </option><?z } ?>
+                  </select>
+                </td>
+                <?z } ?>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+      <input type="hidden" name="dev.update" value="<?z echo($dev.update) ?>" id="dev.update" />
+      <input type="hidden" name="dev.tabs"   value="<?z print_opt($dev.tabs,1) ?>" />
+    </form>
+  </div>
+</div>
+<!-- *************** END: MAIN CONTENTS OF SELECTED TAB ******************** -->
+
+</body>
+</html>

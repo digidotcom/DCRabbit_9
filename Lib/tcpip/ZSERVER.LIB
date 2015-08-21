@@ -5451,7 +5451,7 @@ _zserver_nodebug int sspec_changefv(int form, int var, char* value)
 	case PTR16:
 		strncpy((char *)vssp->addr, value, fv->varlen);
 		// Ensure NULL-termination
-		((char *)vssp->addr)[fv->varlen - 1] = '\0';
+		((char *)vssp->addr)[fv->varlen] = '\0';
 		break;
 
 	default:

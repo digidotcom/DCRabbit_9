@@ -6,7 +6,7 @@
  *
  * 	SW_EMULATE_PULLUP -- In current designs the EEPROM Data In line is
  *   			connected to a line on the Rabbit MPU.  However, you can lift
- *     		pine 77 and wire it to pullup resister to free this I/O line.
+ *     		pin 77 and wire it to a pullup resister to free this I/O line.
  *    		Setting SW_EMULATE_PULLUP will reconfigure the RealTek CONFIG
  *    		registers to compenstate for this.
  */
@@ -15,8 +15,10 @@
 #ifndef __REALTEK_LIB
 #define __REALTEK_LIB
 
-#ifdef RT_FULLDUPLEX
-#warns "Full duplex operation not recommended. See Technical Note 237"
+#ifndef DO_NOT_WARN_ON_RT_FULLDUPLEX
+	#ifdef RT_FULLDUPLEX
+		#warns "Full duplex operation not recommended. See Technical Note 237"
+	#endif
 #endif
 
 #use "ne2000.lib"
@@ -925,9 +927,10 @@ rtk_internal_func void emu9346_clk()
       ; subroutine to catch the rising then falling
       ; edge of EESK.
       ;
+.emu9346_clk_0:
 ioi	ld		a,(hl)
 		and	e
-		jr		z,emu9346_clk
+		jr		z,.emu9346_clk_0
 .emu9346_clk_1:
 ioi	ld		a,(hl)
 		and	e
@@ -2639,6 +2642,8 @@ c	rt->pld_rscblock = res_block;
    inc	hl
    djnz  .rt_check_mac
 
+   bool	hl
+   ld		L, a
    ld		(sp+@sp+j),hl
 
    // if (rt->flags & RT_FLAGS_TWOIF) {

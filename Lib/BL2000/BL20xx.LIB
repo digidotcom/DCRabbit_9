@@ -1167,7 +1167,7 @@ int anaInEERd(unsigned int channel)
 
 	//	Calculate the offset into the user block of where the calibration
 	// constants are stored for a given A/D channel.
-	offset = ADC_CALIB_ADDR + ((&_adcCalib[channel][0] - _adcCalib[0])*4);
+	offset = ADC_CALIB_ADDR + ((&_adcCalib[channel][0] - &_adcCalib[0][0]) * 4u);
 
 	// read calibration constants from flash
 	status = readUserBlock( _adcCalib[channel], offset,
@@ -1210,7 +1210,7 @@ int anaInEEWr(unsigned int channel)
 
 	// Calculate the offset into the user block of where the calibration
 	// constants are stored for a given A/D channel.
-	offset = ADC_CALIB_ADDR + ((&_adcCalib[channel][0] - _adcCalib)*4);
+	offset = ADC_CALIB_ADDR + ((&_adcCalib[channel][0] - &_adcCalib[0][0]) * 4u);
 
 	// write calibration constants to flash
 	status = writeUserBlock(offset, &_adcCalib[channel][0],
@@ -1251,7 +1251,7 @@ int anaOutEERd(unsigned int channel)
 
 	// Calculate the offset into the user block of where the calibration
 	// constants are stored for a given DAC channel.
-	offset = DAC_CALIB_ADDR + ((&_dacCalib[channel][0] - _dacCalib[0])*4);
+	offset = DAC_CALIB_ADDR + ((&_dacCalib[channel][0] - &_dacCalib[0][0]) * 4u);
 
 	// read calibration constants from flash
 	status = readUserBlock( _dacCalib[channel], offset,
@@ -1293,7 +1293,7 @@ int anaOutEEWr(unsigned int channel)
 
 	// Calculate the offset into the user block of where the calibration
 	// constants are stored for a given DAC channel.
-	offset = DAC_CALIB_ADDR + ((&_dacCalib[channel][0] - _dacCalib)*4);
+	offset = DAC_CALIB_ADDR + ((&_dacCalib[channel][0] - &_dacCalib[0][0]) * 4u);
 
 	// write calibration constants to flash
 	status = writeUserBlock(offset, &_dacCalib[channel][0],

@@ -1,11 +1,11 @@
 [Targetless Compile]
-Board ID=0x1400
+Board ID=0x1408
 CPU ID=3000
 CPU Revision=1
 Crystal Speed MHz=22.1184
 RAM Size KBytes=512
 Flash Size KBytes=512
-Description=44MHz RCM3300, 512K+512K SRAM, 512K Flash, 8Mb serial flash
+Description=44MHz RCM3305, 512K+512K SRAM, 512K Flash, 8Mb serial flash
 [COMM]
 port=1
 coldload baud=2400
@@ -25,12 +25,31 @@ Serial Poll Interval=3000
 Ethernet Poll Interval=30000
 Disable Baud Negotiation=0
 Verify DSR=1
-Use USB to Serial Converter=0
+Use USB to Serial Converter=1
 USB to Serial Delay=2000
 Pilot Bios Physical Address=0x4000
 Flash erase timeout=10000
 port list=COM1,COM2,COM3,COM4,COM5,COM6,COM7,COM8
 Debug Tag RAM Offset=0x1002
+RS Console newline=\r\n
+RS Console greeting msg=220 Z-World RabbitSys Console
+RS Console username prompt=Username:
+RS Console password msg=331 Password required
+RS Console password prompt=Password:
+RS Console logged in msg=230 User logged in.
+RS Console bad uname msg=530 Bad Username/Password
+RS Console prompt=CON:
+RS Console targetmd command=targetmd
+RS Console targetmd msg=200 targetmd
+RS Console User Name=
+RS Console Password=
+Use RabbitLink=0
+RabbitLink Port=0
+RabbitLink Address=
+RabbitLink Name=
+Use RabbitSys=1
+RabbitSys Port=32023
+RabbitSys Address=
 [Compiler Options]
 All Serious None=A
 RTC Indices=0
@@ -47,6 +66,11 @@ Max Errors Shown=10
 Max Warnings Shown=10
 BIOS Memory Mode=0
 Restrict Watch Expressions=1
+RabbitSys Manual Detect=0
+RabbitSys Mode=0
+RabbitSys system binary=C:\DCRABBIT_9.62\Applications\RabbitSys\FastRAM\system.bin
+RabbitSys RFU path=C:\DCRABBIT_9.62\utilities\clrfu.exe
+RabbitSys Protected IO=0
 [Dynamic C Files]
 Use Lib File=0
 Use BIOS File=1
@@ -56,6 +80,7 @@ BIOS File=Applications\RCM3300\RemoteApplicationUpdate\loaderBIOS.c
 Default Source File=
 Cold Loader File=bios\coldload.bin
 Pilot BIOS File=bios\pilot.bin
+Start Dir=C:\DCRABBIT_9.62\
 [Include BIOS]
 Include BIOS=0
 [MRU Files]

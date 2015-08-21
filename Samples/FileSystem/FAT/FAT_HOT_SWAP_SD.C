@@ -4,8 +4,8 @@
 
   Requires the FAT filesystem module be installed.
 
-  Also requires that you run this on a RCM3900 or RCM3910
-  core module.
+  Also requires that you run this on a BL2600Q SBC or an RCM3900
+  or RCM3910 core module.
 
   Demonstrate hot swapping an SD card.
 

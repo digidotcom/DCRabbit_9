@@ -606,7 +606,9 @@ void UseStaticIPSettings(void)
 {
 	auto char buf[16];
 
+#ifdef USE_DHCP
 	ifconfig(IF_ETH0, IFS_DHCP, 0, IFS_END);
+#endif
 
 	ifconfig(IF_ETH0, IFS_IPADDR, main_id.ip_addr,
 	         IFS_NETMASK, main_id.sinmask, IFS_ROUTER_SET, main_id.gate_ip,
@@ -2577,18 +2579,13 @@ void InitAllState(void)
 #endif
 #ifdef USE_DHCP
 	main_id.use_dhcp = 1;
+#else
+	main_id.use_dhcp = 0;
 #endif
 }
 
 main()
 {
-#ifdef USE_DHCP
-	static int status;
-#ifdef BOOTP_DEBUG
-	static char ip_buf[32];
-#endif
-#endif
-
 #ifdef USE_WATCHDOG
 	/* init the watchdog timer */
 	wd = VdGetFreeWd(WATCHDOG_TIMEOUT);
@@ -2611,7 +2608,7 @@ main()
 	}
 
 	HIT_WATCHDOG;
-	status = sock_init();
+	sock_init();
 
 	/* check for duplicate files for our ID stuff, and load the tables */
 	HIT_WATCHDOG;
@@ -2621,6 +2618,7 @@ main()
 	                  ((int)FS_BLOCK_SIZE - FS_HEADER) + 1) * 2);
 #endif
 
+#ifdef USE_DHCP
 	/* restore a static configuration? */
 	if(!main_id.use_dhcp) {
 		UseStaticIPSettings();
@@ -2628,6 +2626,9 @@ main()
 	else {
 		ifconfig(IF_ETH0, IFS_DHCP, 1, IFS_END);
 	}
+#else
+	UseStaticIPSettings();
+#endif
 
 	/* init the main daemons */
 	HIT_WATCHDOG;

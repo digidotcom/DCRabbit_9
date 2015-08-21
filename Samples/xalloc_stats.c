@@ -57,6 +57,6 @@ int main()
       addr = _xalloc(&sz, a, XALLOC_MAYBBB);
       printf("Got %ld bytes (%ld more than requested) at addr = %08lx\n\n",
       	sz, sz - szo, addr);
-      xalloc_stats(0);
+      xalloc_stats(_rk_xubreak);
    }
 }

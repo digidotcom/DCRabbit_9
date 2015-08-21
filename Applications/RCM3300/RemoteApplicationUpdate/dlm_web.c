@@ -42,7 +42,7 @@
 //////////////////////////////////
 
 // By default, debug information is turned off in this file.  To enable
-// debugging, undefine the following macro.
+// debugging, uncomment the following macro.
 //#define DLM_APP_DEBUG
 
 //	Uncomment to turn on some printf() output.
@@ -1571,10 +1571,13 @@ void main()
    }
 
 #if RUPL_SAVE_RESTORE_NETWORK_PARAMS > 0
-	// Attempt to load network parameters saved to user block.  If network
-   // parameters have been saved, this function will restore them via ifconfig.
-   if(rupl_loadnetworkparameters(&networkparams))
-   	ifconfig(IF_ANY, IFS_RESTORE, &networkparams.configuration, IFS_END);
+	// Attempt to load network parameters previously saved to user block.
+	if(rupl_loadnetworkparameters(&networkparams)) {
+		// Network parameters have been saved, this function will restore them.
+		ifs_restore(&networkparams.configuration);
+		// Bring the default interface back up, since ifs_restore brought it down.
+		ifconfig(IF_DEFAULT, IFS_UP, IFS_END);
+	}
 #endif
 
 	dlm_init();

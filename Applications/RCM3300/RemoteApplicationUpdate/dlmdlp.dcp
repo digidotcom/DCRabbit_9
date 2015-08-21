@@ -1,11 +1,11 @@
 [Targetless Compile]
-Board ID=0x1400
+Board ID=0x1408
 CPU ID=3000
 CPU Revision=1
 Crystal Speed MHz=22.1184
 RAM Size KBytes=512
 Flash Size KBytes=512
-Description=44MHz RCM3300, 512K+512K SRAM, 512K Flash, 8Mb serial flash
+Description=44MHz RCM3305, 512K+512K SRAM, 512K Flash, 8Mb serial flash
 [COMM]
 port=1
 coldload baud=2400
@@ -25,11 +25,30 @@ Serial Poll Interval=3000
 Ethernet Poll Interval=30000
 Disable Baud Negotiation=0
 Verify DSR=1
-Use USB to Serial Converter=0
+Use USB to Serial Converter=1
 USB to Serial Delay=2000
 Pilot Bios Physical Address=0x4000
 Flash erase timeout=10000
 port list=COM1,COM2,COM3,COM4,COM5,COM6,COM7,COM8
+RS Console newline=\r\n
+RS Console greeting msg=220 Z-World RabbitSys Console
+RS Console username prompt=Username:
+RS Console password msg=331 Password required
+RS Console password prompt=Password:
+RS Console logged in msg=230 User logged in.
+RS Console bad uname msg=530 Bad Username/Password
+RS Console prompt=CON:
+RS Console targetmd command=targetmd
+RS Console targetmd msg=200 targetmd
+RS Console User Name=
+RS Console Password=
+Use RabbitLink=0
+RabbitLink Port=0
+RabbitLink Address=
+RabbitLink Name=
+Use RabbitSys=1
+RabbitSys Port=32023
+RabbitSys Address=
 [Compiler Options]
 All Serious None=A
 RTC Indices=1
@@ -46,6 +65,11 @@ Max Errors Shown=64
 Max Warnings Shown=64
 BIOS Memory Mode=2
 Restrict Watch Expressions=0
+RabbitSys Manual Detect=0
+RabbitSys Mode=0
+RabbitSys system binary=C:\DCRABBIT_9.62\Applications\RabbitSys\FastRAM\system.bin
+RabbitSys RFU path=C:\DCRABBIT_9.62\utilities\clrfu.exe
+RabbitSys Protected IO=0
 [Dynamic C Files]
 Use Lib File=0
 Use BIOS File=0
@@ -55,12 +79,13 @@ BIOS File=
 Default Source File=
 Cold Loader File=bios\coldload.bin
 Pilot BIOS File=bios\pilot.bin
+Start Dir=C:\Documents and Settings\bisted.DIGI\My Documents\Rabbit\TECH_SUP\David_Terra\V27384\
 [Include BIOS]
 Include BIOS=1
 [Include RST 28]
 Include RST=1
 [DEFINES]
-Defines=
+Defines=RUPL_SAVE_RESTORE_NETWORK_PARAMS=1
 [Debug Options]
 Enable Breakpoints=0
 Enable Instruction Level Single Step=0
@@ -86,10 +111,90 @@ Enable Stack Tracing=0
 Stack Tracing Memory=4096
 Enable debug kernel=0
 [MRU Files]
-FileCount=0
+FileCount=4
 [Open Files]
 Number Open=0
 [Poll Target]
 Poll target while running=0
 [Compression Utility]
 Zimport External Utility=ZCOMPRESS.EXE
+[MRU 1]
+MRU 1 Path=C:\DCRABBIT_9.62\Applications\RCM3300\RemoteApplicationUpdate\dlm_web.c
+MRU 1 X=220
+MRU 1 Y=290
+MRU 1 W=1176
+MRU 1 H=662
+MRU 1 Top Row=1559
+MRU 1 WindowState=0
+MRU 1 Cursor Row=1576
+MRU 1 Cursor Col=48
+[MRU 2]
+MRU 2 Path=C:\Documents and Settings\bisted.DIGI\My Documents\Rabbit\TECH_SUP\David_Terra\V27384\dlm_web.c
+MRU 2 X=698
+MRU 2 Y=0
+MRU 2 W=698
+MRU 2 H=952
+MRU 2 Top Row=1544
+MRU 2 WindowState=0
+MRU 2 Cursor Row=1572
+MRU 2 Cursor Col=17
+[MRU 3]
+MRU 3 Path=C:\Documents and Settings\bisted.DIGI\My Documents\Rabbit\TECH_SUP\David_Terra\V27384\remoteuploaddefs.lib
+MRU 3 X=0
+MRU 3 Y=0
+MRU 3 W=698
+MRU 3 H=952
+MRU 3 Top Row=0
+MRU 3 WindowState=0
+MRU 3 Cursor Row=0
+MRU 3 Cursor Col=0
+[MRU 4]
+MRU 4 Path=C:\DCRABBIT_9.62\ReadMe.txt
+MRU 4 X=88
+MRU 4 Y=116
+MRU 4 W=1176
+MRU 4 H=662
+MRU 4 Top Row=154
+MRU 4 WindowState=0
+MRU 4 Cursor Row=171
+MRU 4 Cursor Col=51
+[MRU 5]
+MRU 5 Path=C:\Documents and Settings\bisted.DIGI\My Documents\Rabbit\TECH_SUP\David_Terra\V28403\RUPL_SAVE_RESTORE_NETWORK_PARAMS\Lib\RCM3300\RemoteApplicationUpdate\REMOTEUPLOADDEFS.LIB
+MRU 5 X=22
+MRU 5 Y=29
+MRU 5 W=1176
+MRU 5 H=662
+MRU 5 Top Row=847
+MRU 5 WindowState=0
+MRU 5 Cursor Row=880
+MRU 5 Cursor Col=43
+[MRU 6]
+MRU 6 Path=C:\Documents and Settings\bisted.DIGI\My Documents\Rabbit\TECH_SUP\David_Terra\V27384\dlm_web.c
+MRU 6 X=698
+MRU 6 Y=0
+MRU 6 W=698
+MRU 6 H=952
+MRU 6 Top Row=1544
+MRU 6 WindowState=0
+MRU 6 Cursor Row=1572
+MRU 6 Cursor Col=17
+[MRU 7]
+MRU 7 Path=C:\Documents and Settings\bisted.DIGI\My Documents\Rabbit\TECH_SUP\David_Terra\V27384\remoteuploaddefs.lib
+MRU 7 X=0
+MRU 7 Y=0
+MRU 7 W=698
+MRU 7 H=952
+MRU 7 Top Row=0
+MRU 7 WindowState=0
+MRU 7 Cursor Row=0
+MRU 7 Cursor Col=0
+[MRU 8]
+MRU 8 Path=C:\DCRABBIT_9.62\ReadMe.txt
+MRU 8 X=88
+MRU 8 Y=116
+MRU 8 W=1176
+MRU 8 H=662
+MRU 8 Top Row=154
+MRU 8 WindowState=0
+MRU 8 Cursor Row=171
+MRU 8 Cursor Col=51

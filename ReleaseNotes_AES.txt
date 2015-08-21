@@ -1,0 +1,84 @@
+*****************************************************************
+
+	AES Release Notes
+
+*****************************************************************
+*****************************************************************
+VERSION 1.04
+
+BUG FIXES
+
+Library Bugs
+- Defect #81595 fixed.  Compiling Rabbit 4000 specific code in
+  AES_CRYPT.LIB generates unexpected token error messages.
+
+CLARIFICATION
+- AES samples and applications from Dynamic C version 9.25 and
+  earlier that call the AESexpandKey() function will generate
+  warnings when compiled with AES_CRYPT.LIB from the AES module,
+  version 1.03 and later.  The warnings refer to a deprecated
+  5th and final parameter, and can be safely ignored.
+
+*****************************************************************
+*****************************************************************
+VERSION 1.03
+
+NEW FEATURES
+
+  #define AES_ONLY
+
+    You can define this macro in order to save code
+    space by not supporting non-standard Rijndael 
+    options.
+    Standard AES only allows block sizes of 16 bytes,
+    and key sizes of 16, 24 or 32 bytes.
+
+  AESinitStream
+
+    Two additional versions of this function have been
+    added to support longer key lengths:
+     AESinitStream192() and
+     AESinitStream256()
+    for 24- and 32-byte keys respectively.
+
+  AESencrypt
+  AESdecrypt
+
+    Additional block cypher functions have been defined
+    top optimize efficiency in the most common case
+    (by far) of 16-byte blocks.  These functions are
+    called
+      AESencrypt4 and
+      AESdecrypt4.
+
+BUG FIXES
+
+OTHER FUNCTIONAL CHANGES
+
+- Numerous efficiency improvements.  Support for 
+  upcoming Rabbit 4000 processor.
+- Original AES samples updated to eliminate warning 
+  messages.
+
+*****************************************************************
+*****************************************************************
+VERSION 1.02
+
+NEW FEATURES
+
+BUG FIXES
+
+OTHER FUNCTIONAL CHANGES
+Unnecessary static variables removed to allow for reentrancy.
+
+*****************************************************************
+*****************************************************************
+VERSION 1.01
+
+NEW FEATURES
+
+BUG FIXES
+
+OTHER FUNCTIONAL CHANGES
+
+*****************************************************************

@@ -1,0 +1,61 @@
+******************************************************
+
+	SSL Release Notes
+
+******************************************************
+******************************************************
+VERSION 1.04
+
+NEW FEATURES
+- Added _SSL_VERS macro for module versioning.
+- Encrypted files now contain readable headers that
+  contain version information.
+
+BUG FIXES
+
+OTHER FUNCTIONAL CHANGES
+- Added changes for RabbitSys compatibility.
+
+******************************************************
+******************************************************
+VERSION 1.03
+
+NEW FEATURES
+
+BUG FIXES
+- Fixed defect #81350. An internal buffer calculation 
+  was incorrect, resulting in occasional SSL socket 
+  problems.
+- Fixed defect #81359 - Cosmetic issue with certificate 
+  generation error message (the error message indicated
+  the wrong file could not be opened for writing).
+
+OTHER FUNCTIONAL CHANGES
+
+******************************************************
+******************************************************
+VERSION 1.02
+
+NEW FEATURES
+
+BUG FIXES
+- Fixed issue with Internet Explorer and user-created
+  root CA certificates. If a user signed a device
+  certificate with a custom CA certificate, and 
+  installed the CA certificate in IE, then IE would 
+  have intermittent problems communicating with the 
+  Rabbit device.
+
+OTHER FUNCTIONAL CHANGES
+
+******************************************************
+******************************************************
+VERSION 1.01
+
+NEW FEATURES
+
+BUG FIXES
+
+OTHER FUNCTIONAL CHANGES
+
+******************************************************

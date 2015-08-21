@@ -897,18 +897,31 @@ SSL_uint16_t _ssl_choose_suite(long, SSL_uint16_t);
 
 // Selection uses pre-defined constant priorities for each suite.
 // Priorities are in increasing order, with 0 being the lowest
-// priority (which is also the error condition)
-// The length parameter is the number of elements in suites
-// which is a pointer to an xmem buffer
+// priority (which is also the error condition).
+// The suites parameter is the physical address of an xmem buffer.
+// The length parameter is the number of bytes in suites.
 __SSL_DEBUG__
 SSL_uint16_t _ssl_choose_suite(long suites, SSL_uint16_t length) {
    auto int i;
    auto int priority;	// Priority level of the current suite
    auto SSL_uint16_t cur_suite, temp; // Currently selected suite
 
+#if _SSL_PRINTF_DEBUG
+	printf("Client supported suites:\n");
+
+	// Process the ciphersuite choices
+   for(i = 0; i < length - (sizeof temp - 1u); ++i) {
+   	temp = ntohs(xgetint(suites + (long) i));
+		// Only print if a known suite
+		if(strcmp(_ssl_get_suite_str(temp), "Unknown ciphersuite")) {
+			printf("%s\n", _ssl_get_suite_str(temp));
+      }
+   }
+#endif
+
    priority = 0;
    cur_suite = TLS_NULL_WITH_NULL_NULL; // If we return this, error
-   for(i = 0; i < length; i++) {
+   for(i = 0; i < length - (sizeof temp - 1u); ++i) {
    	// the suite number is still in network short form, so convert
       temp = ntohs(xgetint(suites + i));
 
@@ -1125,30 +1138,15 @@ int _ssl_server_cipher_init(ssl_Socket* state, SSL_ClientHello* cli_hello_ptr)
 
    ret_val = 0;
 
-#if _SSL_PRINTF_DEBUG
-	printf("Client supported suites:\n");
-
-	// Process the ciphersuite choices
-   for(i = 0; i < cli_hello_ptr->ciphersuite_length/2; i++) {
-   	suite_number = ntohs(xgetint(cli_hello_ptr->cipher_suites + i));
-		// Only print if a known suite
-		if(strcmp(_ssl_get_suite_str(suite_number), "Unknown ciphersuite")) {
-			printf("%s\n", _ssl_get_suite_str(suite_number));
-      }
-   }
-#endif
-
 	// Access to state members
    cipher = state->cipher_state;
    suite = cipher->suite;
 
    // Set up the cipher suite, based on the suite selection
    // from the client offer (ciphersuite_length is the number of BYTES
-   // in the ciphersuite array, so we need to divide by the size of
-   // the suite numbers)
+   // in the ciphersuite array)
 	suite_number = _ssl_choose_suite(cli_hello_ptr->cipher_suites,
-                                   cli_hello_ptr->ciphersuite_length /
-                                   sizeof(SSL_uint16_t));
+                                    cli_hello_ptr->ciphersuite_length);
 
    // Check the suite choice
 	if(TLS_NULL_WITH_NULL_NULL == suite_number) {

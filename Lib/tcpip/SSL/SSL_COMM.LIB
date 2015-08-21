@@ -2500,7 +2500,9 @@ void _ssl_send_fatal_alert(ssl_Socket* state, TLS_AlertDescription_t desc) {
    _ssl_assert(state != NULL);
 
    // Setup the alert
-	alert.level = TLS_fatal;
+	alert.level = (desc == TLS_ALRT_close_notify ||
+	               desc == TLS_ALRT_no_renegotiation ||
+	               desc == TLS_ALRT_user_cancelled) ? TLS_warning : TLS_fatal;
    alert.description = desc;
 
    // Set error state so ssl_write sends the correct record type

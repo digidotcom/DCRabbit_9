@@ -1,7 +1,13 @@
+/*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
 /* START LIBRARY DESCRIPTION *********************************************
 SSL.LIB
 	SSL Module, v. 1.04
-	Copyright (c) 2003, ZWorld.
 
 DESCRIPTION: Primary Secure Sockets Layer (SSL) library for Dynamic C.
  This library contains the high-level API functions, as well as relevant
@@ -86,8 +92,7 @@ DESCRIPTION: Primary Secure Sockets Layer (SSL) library for Dynamic C.
  Dec 2003    - Final revisions (including splitting this library into 3)
 
  The code in this library was tested using the OpenSSL (www.openssl.org)
- Open-Source SSL implementation, Copyright (C) 1995-1998 Eric Young
- (eay@cryptsoft.com).
+ Open-Source SSL implementation.
 
 END DESCRIPTION **********************************************************/
 

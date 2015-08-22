@@ -1,11 +1,16 @@
+/*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
 /*** BeginHeader */
 #ifndef __FS2_LIB
 #define __FS2_LIB
 /*** EndHeader */
 /*
  * fs2.lib
- *
- * Copyright (C) Z-World, Inc. All rights reserved.
  *
  * Filesystem Mk II
  *
@@ -37,7 +42,6 @@
 
 /* START LIBRARY DESCRIPTION *********************************************
 FILESYSTEM.LIB
-	Copyright (c) 2001, ZWorld.
 
 DESCRIPTION:
 	Filesystem Mk II.

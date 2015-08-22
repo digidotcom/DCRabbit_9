@@ -1,3 +1,10 @@
+/*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
 /* dm_tcp.lib
  * Contains target-side TCP/IP subsystem.  Target calls these routines to
  * get the DeviceMate to do various external network communications.
@@ -6,7 +13,6 @@
 
 /* START LIBRARY DESCRIPTION *********************************************
 DM_TCP.LIB
-	Copyright (c) 2001, ZWorld.
 
 DESCRIPTION:
    This library contains target-side routines for communication with a

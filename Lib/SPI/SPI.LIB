@@ -1,7 +1,12 @@
+/*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
 /* START LIBRARY DESCRIPTION **************************************************
 SPI.LIB 2.16
-
-Copyright Z-World Inc. 2001
 
 This library contains several functions which allow connection to an
 SPI device via either a serial or a parallel interface.  It is the

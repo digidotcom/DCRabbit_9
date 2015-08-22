@@ -1,11 +1,16 @@
+/*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
 /*** BeginHeader */
 #ifndef __FS_DEV_LIB
 #define __FS_DEV_LIB
 /*** EndHeader */
 /*
  * fs_dev.lib
- *
- * Copyright (C) Z-World, Inc. All rights reserved.
  *
  * Filesystem Mk II: Low-level device interfaces.
  *
@@ -28,7 +33,6 @@
 
 /* START LIBRARY DESCRIPTION *********************************************
 FILESYSTEM.LIB
-	Copyright (c) 2001, ZWorld.
 
 DESCRIPTION:
 	Default filesystem Mk II device interfaces, for devices up to 512K.

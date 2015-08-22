@@ -1,3 +1,10 @@
+/*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
 /*** BeginHeader */
 #ifndef __MUTIL_LIB
 #define __MUTIL_LIB
@@ -332,7 +339,6 @@ root void L_and();
 root void G_and();
 /*** endheader */
 #asm nodebug
-; utilities for long operations (c) 1988, 1989 Z-World, Davis, CA
 ; long argument passed in bcde. if 2 arguments first on stack
 ; second in bcde
 ; results returned in bcde

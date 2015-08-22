@@ -1,3 +1,10 @@
+/*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
 /*** BeginHeader */
 #ifndef MPARITH_H
 #define MPARITH_H
@@ -6,7 +13,6 @@
 /* START LIBRARY DESCRIPTION ***************************************************
 mparith.lib
 	SSL Module, v. 1.04
-	Copyright (c) 2002, Z-World.
 
 DESCRIPTION: Multiple precision arithmetic for cryptography support.
 

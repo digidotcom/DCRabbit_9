@@ -1,7 +1,6 @@
 ######################################
 #
 # 	Samples\LCD_Keypad\UNIX\Makefile
-#	Z-World, 2002
 #
 
 CC = gcc

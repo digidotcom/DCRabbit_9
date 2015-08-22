@@ -1,3 +1,10 @@
+/*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
 /*** BeginHeader */
 #ifndef __DCHH_LIB
 #define __DCHH_LIB
@@ -5,7 +12,6 @@
 
 /***************************************************************************\
 	Function Prototypes for Dynamic C RunTime Library
-		Copyright (c) 1999, Z-World.
 \***************************************************************************/
 
 /*** BeginHeader main */

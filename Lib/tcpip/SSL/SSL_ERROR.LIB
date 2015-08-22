@@ -1,7 +1,13 @@
+/*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
 /* START LIBRARY DESCRIPTION *********************************************
 SSL_ERROR.LIB
 	SSL Module, v. 1.04
-	Copyright (c) 2003, ZWorld.
 
 DESCRIPTION: Internal error handling for TLS. Due to the large number of
              potential internal errors for TLS, including memory-

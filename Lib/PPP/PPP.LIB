@@ -1,10 +1,15 @@
+/*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
 /*******************
 PPP.LIB
 
 Module:  PPP
 Version: 2.02
-
-Copyright (C) Z-World, Inc. All rights reserved.
 
 PPP driver for serial and PPPoE links.
 *********************/

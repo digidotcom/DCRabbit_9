@@ -1,3 +1,10 @@
+/*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
 /*** BeginHeader  ********************************************/
 #ifndef __STDIO_LIB
 #define __STDIO_LIB
@@ -5,7 +12,6 @@
 
 /* START LIBRARY DESCRIPTION *********************************************
 STDIO.LIB
-	Copyright (c) 1994, ZWorld.
 
 DESCRIPTION:
 	Standard I/O (with Dynamic C terminal window) functions
@@ -660,7 +666,6 @@ int _printf(char *fmt, char *args);
 
 /***************************************************************************\
    Buffered Printf for Dynamic C
-	   Copyright (c) 1989, Z-World
 \***************************************************************************/
 
 // This macro should not be defined to be more than 128, as a buffer any larger
@@ -811,7 +816,6 @@ void doprnt(int (*putc)(), char *fmt, void *arg1, void *instanceParam,
 
 /***************************************************************************\
    DOPRNT - Formatted Output Routine
-	   Copyright (c) 1989, Z-World
 \***************************************************************************/
 
 /* START FUNCTION DESCRIPTION *********************************************
@@ -1929,7 +1933,6 @@ xmem void pflt(char left, char fmtS, int lenTotal, int digAfterDecPt,
 
 /*=========================================================================*\
    PFLT - Formatted Output of Floating Point Numbers
-	  Copyright (c) 1989, Z-World
 \*=========================================================================*/
 
 /* START_FUNCTION DESCRIPTION *********************************************

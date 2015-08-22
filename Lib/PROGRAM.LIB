@@ -1,3 +1,10 @@
+/*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
 /*** BeginHeader */
 #ifndef __PROGRAM_LIB
 #define __PROGRAM_LIB
@@ -8,7 +15,6 @@
 
 /* START LIBRARY DESCRIPTION *********************************************
 PROGRAM.LIB
-	Copyright (c) 1999, ZWorld.
 
 DESCRIPTION:  This library must be used when the program is compiled (as
 opposed to when the BIOS is compiled).  This would also be a

@@ -1,7 +1,6 @@
 /* START LIBRARY DESCRIPTION *********************************************
 SSL_COMM.LIB
 	SSL Module, v. 1.04
-	Copyright (c) 2003, ZWorld.
 
 DESCRIPTION: SSL Communications functions and API
              This library is intended to only be included by SSL.LIB

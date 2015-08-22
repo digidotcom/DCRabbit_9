@@ -1,8 +1,13 @@
 /*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
+/*
  *    https.lib
  *  	SSL Module, v. 1.04
- *
- *    Copyright (C) Z-World, Inc. All rights reserved.
  *
  *    - To use HTTPS, define the USE_HTTP_SSL and HTTP_SSL_SOCKETS
  *      macros.

@@ -1,6 +1,12 @@
+/*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
 /*************************************************************************
 	High-Level Graphic Library for Rabbit based products
-	Copyright (c) 2001, Rabbit Semiconductor Inc.
 
 	Algorithms:
 	-----------
@@ -11,8 +17,6 @@
 	History:
 	--------
 	* 	This code was ported from the OP71HW.LIB library design.
-
-	  	Copyright (c) 1999, CF Controls and Copyright (c) 2000, Rabbit Semiconductor Inc.
 
 	 	Modified Jan 2000 by GVW, Woodley Associates
  	  	for compatibility with OP7100GE.

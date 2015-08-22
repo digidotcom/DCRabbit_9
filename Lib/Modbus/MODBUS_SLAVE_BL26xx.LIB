@@ -1,6 +1,11 @@
-/* START LIBRARY DESCRIPTION *********************************************
+/*
+   Copyright (c) 2015 Digi International Inc.
 
-Copyright January 2006, RabbitSemiconductor
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
+/* START LIBRARY DESCRIPTION *********************************************
 
 Modbus_Slave_BL26xx					Ver 1.00
 
@@ -8,10 +13,6 @@ Modifications:
 JLC	June 2006	added code for USE_MODBUS_CRC
 
 DESCRIPTION:	Dynamic C MODBus Slave user functions for a BL26xx.
-
-		Copyright (c) 2005 	RabbitSemiconductor
-		Copyright (c) 2000 	Z-World, Inc.
-		Copyright (c) 1997  	CFControls.
 
 This library contains functions specific to the targeted device.  The user
 must complete each of the functions in this library based on the hardware

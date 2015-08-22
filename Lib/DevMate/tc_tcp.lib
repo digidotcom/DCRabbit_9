@@ -1,3 +1,10 @@
+/*
+   Copyright (c) 2015 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
 /* tc_tcp.lib.
  * There must not be any executable code in this library.  It is only
  * structure definitions for TCP tunneling over XTC.  These structures
@@ -6,7 +13,6 @@
 
 /* START LIBRARY DESCRIPTION *********************************************
 TC_TCP.LIB
-	Copyright (c) 2001, ZWorld.
 
 DESCRIPTION:
    This library contains structure and object definitions which are

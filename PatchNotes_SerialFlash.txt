@@ -1,0 +1,52 @@
+********************************************************************************
+   Patch Notes for Serial Flash Support Update                      19-May-2015
+********************************************************************************
+
+   Effective May 2015, several Rabbit brand boards are impacted by a serial 
+   flash end of life. For the boards in the table shown below, the replacement 
+   serial flash part requires applications to be recompiled with a patched 
+   version of Dynamic C. The table below shows the boards impacted, the first
+   board revision impacted, and the required patch version of Dynamic C.
+   
+   | Rabbit Product |     Part No | Rev+ | Patch Part #   | Software Version |
+   |----------------+-------------+------+----------------+------------------|
+   | RCM6700        | 20-101-1318 | G    | 40002882_A.zip | Dynamic C 10.72  |
+   | RCM6710        | 20-101-1319 | G    |                |                  |
+   | RCM6750        | 20-101-1320 | H    |                |                  |
+   | RCM6760        | 20-101-1321 | H    |                |                  |
+   | RCM6600W       | 20-101-1322 | F    |                |                  |
+   | RCM6650W       | 20-101-1323 | F    |                |                  |
+   | RCM4200        | 20-101-1131 | G    |                |                  |
+   | RCM4210        | 20-101-1132 | G    |                |                  |
+   | RCM5400W       | 20-101-1246 | K    |                |                  |
+   | BL5S220        | 20-101-1260 | H    |                |                  |
+   | BL4S110        | 20-101-1256 | G    |                |                  |
+   |----------------+-------------+------+----------------+------------------|
+   | RCM3305        | 20-101-1067 | E    | 40002882_A.zip | Dynamic C 9.62   |
+   | RCM3315        | 20-101-1068 | E    |                |                  |
+   | RCM3319        | 20-101-1195 | G    |                |                  |
+
+
+   Installation
+
+   Unzip the archive to a location on your hard drive. The patch is structured
+   by Dynamic C version and as an overlay to your existing installation. 
+   To use the patch, simply copy the patch over your existing version of 
+   Dynamic C to replace your existing files with the patched versions of the 
+   same.
+
+   Recompililation Required
+
+   Recompilation of your existing application is required for all affected
+   products listed in the table above. In other words, if your product's part 
+   number is at the revision listed or a later revision, then you will need to
+   build a new binary image with the patched version of Dynamic C. Note that
+   the binary image will work with both new revision and older revisions of the
+   products.
+
+   Previous Versions of Dynamic C
+
+   Customers using previous versions of Dynamic C must upgrade to the 
+   version listed in the table above in order to use the patch.
+
+********************************************************************************

@@ -1,0 +1,27 @@
+/*** BeginHeader inst2data_ldir */
+	root	void inst2data_ldir();
+/*** EndHeader */
+
+// performs an ldir from code to data space
+// at most 4k can be copied
+// de is address in data
+// hl is address in code
+// bc is size of code to be copied
+#asm root nodebug
+inst2data_ldir::
+	ld a, xpc
+	push af
+	push bc
+	push de
+	ld	a, TC_SYSREAD_LOGICAL_CODE
+   call dkcLogicalToPhysical        ; convert code address in HL to phy in BCDE
+	call dkcPhysicalToLogical			; convert BCDE address into XPC:EXXX format
+	ld xpc, a
+	pop de
+	pop bc
+	ldir
+	pop af
+	ld xpc, a
+	ret
+#endasm
+

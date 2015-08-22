@@ -1,0 +1,892 @@
+/*** BeginHeader */
+#ifndef __JRIO_LIB
+#define __JRIO_LIB
+
+#if (_BOARD_TYPE_ > 0x01FF)
+#error	"JRIO.LIB only supports BL18xx boards."
+#endif
+/*** EndHeader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+JRIO.LIB
+Copyright (c) 1999 Z-World Inc.
+
+DESCRIPTION: Library for I/O drivers on Jackrabbit.
+
+SUPPORT LIB'S:
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader PWM_SIZE, PWM_MIN, PWM_MAX0, PWM_MAX1 */
+
+#define PWM_SIZE	1024			// maximum cycle value for PWM (0-1024)
+#define PWM_MIN	123			// minimum allowed value for PWM (12% duty cycle)
+#define PWM_MAX0	901			// maximum allowed value for DA0 PWM (88% duty cycle)
+#define PWM_MAX1	742			// maximum allowed value for DA1 PWM (72% duty cycle)
+
+/*** EndHeader */
+
+////////////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader _pwmStop, _pwm0Mark, _pwm1Mark, pwmCycle */
+
+extern shared int _pwmStop;	// "off" transition point for longer cycle
+extern shared int _pwm0Mark;	// "off" transition point for DA0
+extern shared int _pwm1Mark;	// "off" transition point for DA0
+
+extern int pwmCycle[2];			// current PWM cycles for D/A
+
+/*** EndHeader */
+
+shared int _pwmStop;
+shared int _pwm0Mark;
+shared int _pwm1Mark;
+
+int pwmCycle[2];
+
+
+////////////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader jrioInit */
+
+// initialization for I/O on Jackrabbit - will be in BIOS eventually
+void jrioInit();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+jrioInit								<JRIO.LIB>
+
+SYNTAX:	void jrioInit();
+
+DESCRIPTION:	Initializes I/O drivers for Jackrabbit.  In particular, it sets
+up parallel port D for analog input/output, port E for digital output, and
+starts up the pulse-width modulation routines for the A/D and D/A channels.
+Note that these routines typically consume about 20% of the CPU's time, and
+use timer B and the B1 and B2 match registers.
+
+RETURN VALUE:	none.
+END DESCRIPTION ***************************************************************/
+
+nodebug void jrioInit()
+{
+#asm xmemok
+
+disable_timerB:
+	xor	a						; disable timer B
+	ioi	ld (TBCSR), a		; timer B control/status register
+	ld		(TBCSRShadow), a	; shadow register in BIOS
+
+setup_portE:
+	xor	a						; all as in/outputs only
+	ioi	ld (PEFR), a		; all as in/outputs
+	ld		(PEFRShadow), a	; shadow register in BIOS
+
+	ld		hl, PEDDR			; port E data direction register
+	ld		a, (PEDDRShadow)
+	or		0x0F					; program port E bits 0-3 as outputs (set to 1)
+	and	0x3F					; program port E bits 6,7 as inputs (set to 0)
+	ioi	ld (hl), a
+	ld		(PEDDRShadow), a	; shadow register in BIOS
+
+	xor	a						; set all outputs to zero
+	ioi	ld (PEDR), a		; set all outputs to zero
+	ld		(PEDRShadow), a	; shadow register in BIOS
+
+	xor	a						; program port E to clock on perclk/2
+	ioi	ld (PECR), a		; port E control register
+	ld		(PECRShadow), a	; shadow register in BIOS
+
+setup_portD:
+	xor	a						; make sure bits 4, 6 NOT alternate serial ports!
+	ioi	ld (PDFR), a		; port D alternate function register
+	ld		(PDFRShadow), a	; shadow register in BIOS
+
+	xor	a						; program port D to NOT be in open-drain mode
+	ioi	ld (PDDCR), a
+	ld		(PDDCRShadow), a	; shadow register in BIOS
+
+	xor	a
+	ioi	ld (PDDR), a		; set all outputs to zero
+	ld		(PDDRShadow), a	; shadow register in BIOS
+
+	ld		a, 12h				; turn on bits 1 and 4 as outputs
+	ioi	ld (PDDDR), a		; port D data direction register
+	ld		(PDDDRShadow), a	; shadow register in BIOS
+
+	xor	a						; program port D to clock on perclk/2 to clear it now
+	ioi	ld (PDCR), a		; port d control register
+	ld		(PDCRShadow), a	; shadow register in BIOS
+
+	ld		a, 0x20				; set all outputs to zero EXCEPT PD5 which controls RS485
+	ioi	ld (PDDR), a		; port D data register
+	ld		(PDDRShadow), a	; shadow register in BIOS
+
+	ld		a, 032h				; program port D to output upper nibble on B2 and lower on B1
+	ioi	ld (PDCR), a
+	ld		(PDCRShadow), a	; shadow register in BIOS
+
+#endasm
+
+	_pwmStop = 0;
+	pwmCycle[0] = pwmCycle[1] = 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader digOut */
+void digOut(int, int);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+digOut								<JRIO.LIB>
+
+SYNTAX:	void digOut(int channel, int value);
+
+PARAMETER1:		channel is the output channel number (0-3 on the Jackrabbit).
+
+PARAMETER2:		value is the output value (0 or 1).
+
+DESCRIPTION:	Sets the state of a digital output bit.  jrioInit must be
+called first.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		digOn, digOff, jrioInit
+END DESCRIPTION ***************************************************************/
+
+nodebug void digOut(int channel, int value)
+{
+	static char v;
+
+	if ((channel < 0) || (channel > 3) || (value < 0) || (value > 1)) {
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// cover all possible output bits
+	v = value * 0xFF;
+
+#asm xmemok
+	ld		a, PEB0R				; load register for first port E bit
+
+	ld		hl, @SP+channel	; increment it by "channel" from stack
+	add	hl, sp				;
+	add	a, (hl)				;
+	ld		b, 00h
+	ld		c, a					; bc now equals address of port E bit we want
+
+	ld		a, (v)				; get "value" we want to write
+	ioi	ld	(bc), a			; write value to given channel
+
+#endasm
+}
+
+/*** BeginHeader digOn */
+void digOn(int);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+digOn									<JRIO.LIB>
+
+SYNTAX:	void digOn(int channel);
+
+PARAMETER1:		channel is the output channel number (0-3 on the Jackrabbit).
+
+DESCRIPTION:	Sets the state of a digital output bit to on (1).  jrioInit must
+be called first.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		digOut, digOff, jrioInit
+END DESCRIPTION ***************************************************************/
+
+nodebug void digOn(int channel)
+{
+	// this should probably be a macro, but then it won't be in the list
+	// of library functions...
+
+	digOut(channel, 1);
+}
+
+
+/*** BeginHeader digOff */
+void digOff(int);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+digOff								<JRIO.LIB>
+
+SYNTAX:	void digOff(int channel);
+
+PARAMETER1:		channel is the output channel number (0-3 on the Jackrabbit).
+
+DESCRIPTION:	Sets the state of a digital output bit to off (0).  channel is
+the output channel number (0-3).  jrioInit must be called first.
+
+RETURN VALUE:	0 for success, nonzero for an error.
+
+SEE ALSO:		digOn, digOff, jrioInit
+END DESCRIPTION ***************************************************************/
+
+nodebug void digOff(int channel)
+{
+	// this should probably be a macro, but then it won't be in the list
+	// of library functions...
+
+	digOut(channel, 0);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader anaOut */
+void anaOut(int, int);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+anaOut								<JRIO.LIB>
+
+SYNTAX:	void anaOut(int channel, int value);
+
+PARAMETER1:		channel is the output channel number (0 or 1 on the Jackrabbit).
+
+PARAMETER2:		value is an integer from 0-1024 that corresponds to an output
+voltage between 0.1 and 3.0 volts for channel 0, and 0.1 and 3.6 volts for
+channel 1.
+
+DESCRIPTION:	Sets the state of an analog output channel.  On the Jackrabbit
+the analog input/output uses Timer B, port D bits 1, 2, and 4, and port E,
+bits 6 and 7.  Note that calling this function with a value other than 0 or 1024
+will start the D/A driver, using 15-20% of the available CPU.  To stop this, call
+it again with value set to 0 (or 1024).  jrioInit must be called to initialize
+the drivers before using this function.
+
+Here are the detailed voltage ranges for the two D/A channels.  The region
+between PWM_MIN and PWM_MAX0 for DA0 (PWM_MAX1 for DA1) is the sensitive
+region that can be selected by varying the input value.  Values above
+PWM_MAX0/1 will be rounded up to 1024, and values below PWM_MIN will be rounded
+down to zero.
+							----------------value-------------
+			Channel		0		 PWM_MIN		PWM_MAX0/1	1024
+			-----------------------------------------------
+			DA0			130mV	 165mV		3.0V			3.4V
+			DA1			90mV	 630mV		3.7V			3.7V
+
+
+WARNINGS:	The stability of the voltage outputs depends on the ability of
+the driver to respond quickly to interrupt requests.  Dynamic C debugging,
+using printf, or serial communications can disrupt the pulse-width modulation
+utilized by the driver and cause fluctuations in the voltage outputs.  Avoid
+using serial communications or printf statements during times that the voltage
+must remain very steady.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		anaIn, jrioInit
+END DESCRIPTION ***************************************************************/
+
+nodebug void anaOut(int channel, int value)
+{
+	static char clocking, intrEnable;
+	static char longest;
+	static void *isr_ptr;
+	static int  delta;
+
+	if ((channel < 0) || (channel > 1) || (value < 0) || (value > PWM_SIZE)) {
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// truncate off regions the PWM can't cover...
+	if (value < PWM_MIN)		value = 0;
+	if ((channel == 0) && (value > PWM_MAX0))		value = PWM_SIZE;
+	if ((channel == 1) && (value > PWM_MAX1))		value = PWM_SIZE;
+
+#asm xmemok
+	ld		a, (PDDDRShadow)	; get current state of port D I/O
+	and	a, 0xE9				; set bits 1, 2, and 4 to inputs (high impedance)
+	ioi	ld	(PDDDR), a		; port D data direction register
+	ld		(PDDDRShadow), a	; shadow register
+
+	ld		a, 01h				; disable B1, B2 interrupts
+	ioi	ld (TBCSR), a		; timer B control/status register
+	ld		(TBCSRShadow), a	; shadow register
+
+	; delay long enough for matches to stop (one timer B rollover)
+	ld		b, 0xE4
+.loop1:
+	nop
+	nop
+	djnz	.loop1
+
+	xor	a						; disable timer B and B1, B2 interrupts
+	ioi	ld (TBCSR), a		; timer B control/status register
+	ld		(TBCSRShadow), a	; shadow register
+#endasm
+
+	// some default values...
+	intrEnable = 0x07;		// default = all interrupts (should NOT happen!)
+	clocking = 0x32;			// default = both channels enabled
+	longest = 0;
+
+	// start processing new input cycle
+	if (channel == 0) {
+		delta = pwmCycle[channel] - value;
+		if (delta < 0)		delta = -delta;
+	} else	delta = 0;
+
+	pwmCycle[channel] = value;
+	longest = (pwmCycle[0] < pwmCycle[1]);		// longest = 0 or 1
+
+	if (pwmCycle[longest] == 1024)
+		longest = !longest;			// if longest is length 1024, select the other one!
+
+
+	// enable necessary interrupts and load registers
+#asm xmemok
+	bool	hl
+	ld		l, h					; hl = 0000h
+	ioi ld	(TBM1R), hl	; load preload register for DA0
+	ioi ld	(TBM2R), hl	; load preload register for DA1
+
+	ld		hl, PDB1R			; port D bit 1 output register
+	ioi	ld (hl), 0FFh		; set next output for DA0
+	ld		hl, PDB4R			; port D bit 4 output register
+	ioi	ld (hl), 0FFh		; set next output for DA1
+	inc	hl						; port D bit 5 output register
+	ioi	ld (hl), 0FFh		; set high to avoid breaking RS485
+#endasm
+
+
+	// what if a special case, i.e. 0 or 1024?
+	if (pwmCycle[0] == 0) {
+		intrEnable &= (~0x02);		// disable interrupt for channel 0
+		clocking &= (~0x02);			// set channel 0 clocking to (perclk/2)
+#asm xmemok
+		ld		hl, PDB1R			; port D bit 1 output register
+		ioi	ld (hl), 00h		; set output to zero now
+		inc	hl						; port D bit 2 output register
+		ioi	ld (hl), 00h		; set output to zero now
+#endasm
+	} else if (pwmCycle[0] == PWM_SIZE) {
+		intrEnable &= (~0x02);		// disable interrupt for channel 0
+		clocking &= (~0x02);			// set channel 0 clocking to (perclk/2)
+#asm xmemok
+		ld		hl, PDB1R			; port D bit 1 output register
+		ioi	ld (hl), 0FFh		; set output to one now
+		inc	hl						; port D bit 2 output register
+		ioi	ld (hl), 0FFh		; set output to one now
+#endasm
+	}
+
+	if (pwmCycle[1] == 0) {
+		intrEnable &= (~0x04);		// disable interrupt for channel 1
+		clocking &= (~0x30);			// ste channel 1 clocking to (perclk/2)
+#asm xmemok
+		ld		hl, PDB4R			; port D bit 4 output register
+		ioi	ld (hl), 00h		; set output to zero now
+		inc	hl						; port D bit 5 output register
+		ioi	ld (hl), 0FFh		; set output to 1 to avoid breaking RS485
+#endasm
+	} else if (pwmCycle[1] == PWM_SIZE) {
+		intrEnable &= (~0x04);		// disable interrupt for channel 1
+		clocking &= (~0x30);			// ste channel 1 clocking to (perclk/2)
+#asm xmemok
+		ld		hl, PDB4R			; port D bit 4 output register
+		ioi	ld (hl), 0FFh		; set output to one now
+		inc	hl						; port D bit 5 output register
+		ioi	ld (hl), 0FFh		; set output to 1 to avoid breaking RS486
+#endasm
+	}
+
+	// swap bits around to fit register layout...
+	//		hl should equal [b7 b6 b5 b4 b3 b2 b1 b0] [b9 b8 . . . . . .]
+	_pwm0Mark = (pwmCycle[0] & 0x0300)/4 + (pwmCycle[0] & 0x00FF)*256;
+	_pwm1Mark = (pwmCycle[1] & 0x0300)/4 + (pwmCycle[1] & 0x00FF)*256;
+
+	// set "pulse off" match to larger cycle
+	if (longest == 0)		_pwmStop = _pwm0Mark;
+	else						_pwmStop = _pwm1Mark;
+
+
+	// decide which ISR to use (depends on which channels running)
+	if ((pwmCycle[1] != 0) && (pwmCycle[1] != PWM_SIZE)) {
+		if ((pwmCycle[0] == 0) || (pwmCycle[0] == PWM_SIZE))
+			isr_ptr = _pwm_isr1;
+		else
+			isr_ptr = _pwm_isrB;
+	} else
+		isr_ptr = _pwm_isr0;
+
+	if (intrEnable == 0x07)		// both channels running PWM
+		intrEnable = 0x01 | (0x2 << longest);		// turn on longer one only!
+
+
+#asm xmemok
+.write_timerB_vector:
+	ld		hl, (isr_ptr)
+	ld 	A, 0C3h										; the JP opcode.
+	ld		(INTVEC_BASE + TBCSR), A
+	ld		(INTVEC_BASE + TBCSR+1), HL			; where to jump to
+
+
+	ioi	ld a, (TBCSR)		; clear the interrupt flags?
+
+	ld		a, 01h				; clock timer B with (perclk/2), and set interrupt level to 1
+	ioi	ld (TBCR), a
+	ld		(TBCRShadow), a	; shadow register
+
+	ld		a, (clocking)
+	ioi	ld (PDCR), a		; program port D to output with either perclk/2 or B1, B2 interrupts
+	ld		(PDCRShadow), a	; shadow register
+
+	ld		a, (intrEnable)
+	ioi	ld (TBCSR), a		; enable timer B and B1, B2 interrupts
+	ld		(TBCSRShadow), a	; shadow register
+
+	ld		hl, (delta)			; get difference in old and new DA0 values
+	ld		l, 00h
+	bool	hl						; if < 256, skip the fast RC setup
+	jr		z, .skipFastBit
+
+	ld		a, (PDDDRShadow)
+	or		a, 14h				; reenable outputs bits (from high impedance mode)
+	ioi	ld (PDDDR), a		; Note that "fast" bit set for DA0
+	ld		(PDDDRShadow), a	; shadow register
+
+	ld		b, 017h				; delay for ~250 usec so "fast" bit can quickly adjust voltage
+.delayLoop0:
+	push	bc
+	ld		b, 020h				; 020h here -> ~250us total delay
+.delayLoop:
+	djnz	.delayLoop
+	pop	bc
+	djnz	.delayLoop0
+
+.skipFastBit:
+
+	ld		a, (PDDDRShadow)
+	and	a, 0xF9				; disable bit 2
+	or		a, 0x12				; enable bits 1 and 4
+	ioi	ld (PDDDR), a		; enable "slow" bit on DA0
+	ld		(PDDDRShadow), a	; shadow register
+
+#endasm
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader anaIn */
+void anaIn(int channel, int *value);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+anaIn								<JRIO.LIB>
+
+SYNTAX:	void anaIn(int channel, int *value);
+
+PARAMETER1:		channel is the input channel number (0 only on the Jackrabbit).
+
+PARAMETER2:		An integer between 0 and 1024 will be returned in value,
+corresponding to a voltage between 0.0 and 3.0 volts.  If a value is found but
+the voltage has not appeared to fully settle, the value will be negative (but
+equal in magnitude to the found voltage).
+
+DESCRIPTION:	Analog input for Jackrabbit analog input channel (AD0).  Uses
+D/A channel DA0 to scan through the full voltage range for a match to the input
+voltage on AD0.  jrioInit must be called to initialize the driver before this
+function is used.  For a cofunction version, see cof_anaIn.
+
+WARNINGS:	All restrictions mentioned in the anaIn function description apply
+here as well.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		cof_anaIn, anaOut, jrioInit
+END DESCRIPTION ***************************************************************/
+
+nodebug void anaIn(int channel, int *value)
+{
+	static int step;
+	static char bits;
+
+
+	if (channel != 0) {
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	step = 256;			// initial step size
+	*value = 512;		// start location
+	bits = 0xFF;		// start out nonzero
+
+	while (step > 0) {
+		anaOut(0, *value);
+
+#asm xmemok
+		ld		b, 0A3h				; delay for a while to let voltage settle...
+.loop0:
+		push	bc
+		ld		b, 0FFh
+.loop1:
+		djnz	.loop1
+		pop	bc
+		djnz	.loop0
+
+
+									;; read bits until they match twice in a row...
+		ioi	ld	a, (PEDR)		; read in port E bits
+		and	a, 0C0h				; mask off other bits
+.read_loop:
+		ld		c, a					; save bits in c
+		ioi	ld a, (PEDR)		; read in bits again
+		and	a, 0C0h
+		xor	a, c					; compare the two!
+		jr		nz, .read_loop
+.read_ok:
+		ld		a, c
+		ld		(bits), a			; save value of bits
+#endasm
+
+		if (bits == 0x40)				// too high
+			*value -= step;
+		else if (bits == 0x80)		// too low
+			*value += step;
+		else if (bits == 0xC0) {	// error occurred? (should NOT happen)
+			*value = 1;					// will be set negative before returning
+			step = 0;					// break out of loop
+		}
+
+		step /= 2;						// next step
+	}
+
+	// is value bad?
+	if ((*value < PWM_MIN) || (*value > PWM_MAX0))
+		*value = -(*value);				// let user know by setting value negative
+
+	anaOut(0, 0);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader cof_anaIn */
+cofunc int cof_anaIn(int channel, int *value);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+cof_anaIn							<JRIO.LIB>
+
+SYNTAX:	void cof_anaIn(int channel, int *value);
+
+PARAMETER1:		channel is the input channel number (0 only on the Jackrabbit).
+
+PARAMETER2:		An integer between 0 and 1024 will be returned in value,
+corresponding to a voltage between 0.0 and 3.0 volts.  If a value is found but
+the voltage has not appeared to fully settle, the value will be negative (but
+equal in magnitude to the found voltage).
+
+DESCRIPTION:	Cofunction version of the analog input for Jackrabbit analog input
+channel (AD0).  See anaIn for details on how it works.  This version will do one
+step for each call in a costate, and will take ten steps to complete the A/D
+conversion.
+
+WARNINGS:	All restrictions mentioned in the anaIn function description apply
+here as well.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		anaIn, anaOut, jrioInit
+END DESCRIPTION ***************************************************************/
+
+nodebug
+cofunc int cof_anaIn(int channel, int *value)
+{
+	int step;
+	char bits;
+	int	okflag;
+
+
+	okflag = 0;
+
+	if (channel != 0) {
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	step = 256;			// initial step size
+	*value = 512;		// start location
+	bits = 0xFF;		// start out nonzero
+
+	while (step > 0) {
+		anaOut(0, *value);
+
+#asm xmemok
+		ld		b, 0A3h				; delay for awhile to let voltage settle...
+.loop0:
+		push	bc
+		ld		b, 0FFh
+.loop1:
+		djnz	.loop1
+		pop	bc
+		djnz	.loop0
+
+
+									;; read bits until they match twice in a row...
+		ioi	ld	a, (PEDR)		; read in port E bits
+		and	a, 0C0h				; mask off other bits
+.read_loop:
+		ld		c, a					; save bits in c
+		ioi	ld a, (PEDR)		; read in bits again
+		and	a, 0C0h
+		xor	a, c					; compare the two!
+		jr		nz, .read_loop
+.read_ok:
+		ld		a, c
+		ld		(ix-3), a			; save value in "bits" (referenced via ix)
+#endasm
+
+		if (bits == 0x40)				// too high
+			*value -= step;
+		else if (bits == 0x80)		// too low
+			*value += step;
+		else if (bits == 0xC0) {		// error occurred? (should NOT happen)
+			*value = 1;						// will be set negative before returning
+			step = 0;						// break out of loop
+		}
+
+		if (bits == 0x00)	okflag = 1;
+
+		step /= 2;
+		yield;
+	}
+
+	if ((bits != 0x00) && !okflag)				// is value uncertain?
+		*value = -(*value);				// let user know by setting value negative
+
+	anaOut(0, 0);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader _pwm_isr0, _pwm_isr1, _pwm_isrB */
+
+// ISRs for PWM on Jackrabbit
+void _pwm_isr0();			// DA0 only
+void _pwm_isr1();			// DA1 only
+void _pwm_isrB();			// both DA0 and DA1
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION **************************************************
+_pwm_isr0, _pwm_isr1, _pwm_isrB		<JRIO.LIB>
+
+SYNTAX:	void _pwm_isr0();
+			void _pwm_isr1();
+			void_pwm_isrB();
+
+KEYWORDS:	analog, ADC, PWM
+
+DESCRIPTION:	Interrupt routines for pulse-width modulation for D/A, A/D channels
+on the Jackrabbit.  To minimize CPU use, _pwm_isr0 is used when only DA0 is
+running (~15% CPU use), _pwm_isr1 is used when only DA1 is running (~15% CPU use),
+and _pwm_isrB is used when both channels are running (~18% CPU use).
+
+RETURN VALUE:	none
+END DESCRIPTION ***************************************************************/
+
+#asm nodebug
+_pwm_isr0::
+	push	af							; save registers
+	push	hl
+	push	de
+
+
+.clear_B1_interrupt:
+	ioi	ld a, (TBCSR)			; load B1, B2 interrupt flags
+
+.get_time:
+	ioi	ld a, (TBCLR)			; get current time (lowest 8 bits)
+	ioi	ld hl, (TBCMR)			; get current time again (all 10 bits)
+	bit	7, a						; is a>80h?
+	jr		z, .time_ok				; if not, a rollover didn't occur
+	bit	7, h						; is h<80h?
+	jr		nz, .time_ok				; if so, a rollover occurred!
+	ioi	ld hl, (TBCMR)			; read the time again
+.time_ok:
+	ld		a, l
+	ld		l, h						; swap upper, lower bytes
+	ld		h, a
+	ld		de, (_pwmStop)			; get stop time (largest cycle)
+	ld		a, e
+	ld		e, d						; swap upper, lower bytes
+	ld		d, a
+
+	sbc	hl, de					; (time - mark) = ?
+	jr		c, .setup_zero			; if (time - mark) < 0, must be match=000
+										; otherwise match=mark
+.setup_mark:
+	bool	hl
+	ld		l, h						; hl = 0000h
+	ioi	ld (TBM1R), hl			; set preload for channel 0
+	ld		hl, PDB1R				; port D bit 1 register
+	ioi	ld (hl), 0FFh			; set next output for DA0, 1st bit
+	inc	hl							; set hl to port D bit 2 register
+	ioi	ld (hl), 0FFh			; set next output for DA0, 2nd bit - this will change!
+	jr .done
+
+.setup_zero:
+	ld		hl, (_pwm0Mark)		; get mark for channel 0
+	ioi	ld (TBM1R), hl			; set preload for channel 0
+	ld		hl, PDB1R				; port D bit 1 register
+	ioi	ld (hl), 00h			; set next output for DA0, 1st bit
+	inc	hl							; set hl to port D bit 2 register
+	ioi	ld (hl), 00h			; set next output for DA0, 2nd bit
+
+.done:
+	pop	de
+	pop	hl							; restore registers
+	pop	af
+
+	ipres								; restore interrupts
+	ret
+
+#endasm
+
+////////////////////////////////////////////////////////////////////////////////
+
+#asm nodebug
+_pwm_isr1::
+	push	af							; save registers
+	push	hl
+	push	de
+
+
+.clear_B1_interrupt:
+	ioi	ld a, (TBCSR)			; load B1, B2 interrupt flags
+
+.get_time:
+	ioi	ld a, (TBCLR)			; get current time (lowest 8 bits)
+	ioi	ld hl, (TBCMR)			; get current time again (all 10 bits)
+	bit	7, a						; is a>80h?
+	jr		z, .time_ok				; if not, a rollover didn't occur
+	bit	7, h						; is h<80h?
+	jr		nz, .time_ok				; if so, a rollover occurred!
+	ioi	ld hl, (TBCMR)			; read the time again
+.time_ok:
+	ld		a, l
+	ld		l, h						; swap upper, lower bytes
+	ld		h, a
+	ld		de, (_pwmStop)			; get stop time (largest cycle)
+	ld		a, e
+	ld		e, d						; swap upper, lower bytes
+	ld		d, a
+
+	sbc	hl, de					; (time - mark) = ?
+	jr		c, .setup_zero			; if (time - mark) < 0, must be match=000
+										; otherwise match=mark
+.setup_mark:
+	bool	hl
+	ld		l, h						; hl = 0000h
+	ioi	ld (TBM2R), hl			; set preload for channel 1
+	ld		hl, PDB4R				; port D bit 4 register
+	ioi	ld (hl), 0FFh			; set next output on DA1
+	inc	hl							; port D bit 5 register
+	ioi	ld (hl), 0FFh			; set PD5 always high to avoid breaking RS485
+	jr .done
+
+.setup_zero:
+	ld		hl, (_pwm1Mark)		; get mark for channel 1
+	ioi	ld (TBM2R), hl			; set preload for channel 1
+	ld		hl, PDB4R				; port D bit 4 register
+	ioi	ld (hl), 00h			; set next output on DA1
+	inc	hl							; port D bit 5 register
+	ioi	ld (hl), 0FFh			; set PD5 always high to avoid breaking RS485
+
+.done:
+	pop	de
+	pop	hl							; restore registers
+	pop	af
+
+	ipres								; restore interrupts
+	ret
+
+#endasm
+
+////////////////////////////////////////////////////////////////////////////////
+
+#asm nodebug
+_pwm_isrB::
+	push	af							; save registers
+	push	hl
+	push	de
+
+
+.clear_B1_interrupt:
+	ioi	ld a, (TBCSR)			; load B1, B2 interrupt flags
+
+.get_time:
+	ioi	ld a, (TBCLR)			; get current time (lowest 8 bits)
+	ioi	ld hl, (TBCMR)			; get current time again (all 10 bits)
+	bit	7, a						; is a>80h?
+	jr		z, .time_ok				; if not, a rollover didn't occur
+	bit	7, h						; is h<80h?
+	jr		nz, .time_ok				; if so, a rollover occurred!
+	ioi	ld hl, (TBCMR)			; read the time again
+.time_ok:
+	ld		a, l
+	ld		l, h						; swap upper, lower bytes
+	ld		h, a
+	ld		de, (_pwmStop)			; get stop time (largest cycle)
+	ld		a, e
+	ld		e, d						; swap upper, lower bytes
+	ld		d, a
+
+	sbc	hl, de					; (time - mark) = ?
+	jr		c, .setup_zero			; if (time - mark) < 0, must be match=000
+										; otherwise match=mark
+.setup_mark:
+	bool	hl
+	ld		l, h						; hl = 0000h
+	ioi	ld (TBM1R), hl			; set preload for DA0
+	ioi	ld (TBM2R), hl			; set preload for DA1
+	ld		hl, PDB1R				; port D bit 1 register
+	ioi	ld (hl), 0FFh			; set next output for DA0, 1st bit
+	inc	hl							; set hl to port D bit 2 register
+	ioi	ld (hl), 0FFh			; set next output for DA0, 2nd bit - this will change!
+	inc	hl							;
+	inc	hl							; set hl to port D bit 4 register
+	ioi	ld (hl), 0FFh			; set next output for DA1
+	inc	hl							; port D bit 5 register
+	ioi	ld (hl), 0FFh			; set PD5 always high to avoid breaking RS485
+	jr .done
+
+.setup_zero:
+	ld		hl, (_pwm0Mark)		; get mark for DA0
+	ioi	ld (TBM1R), hl			; set preload for DA0
+	ld		hl, (_pwm1Mark)		; get mark for DA1
+	ioi	ld (TBM2R), hl			; set preload for DA1
+	ld		hl, PDB1R				; port D bit 1 register
+	ioi	ld (hl), 00h			; set next output for DA0, 1st bit
+	inc	hl							; set hl to port D bit 2 register
+	ioi	ld (hl), 00h			; set next output for DA0, 2nd bit - this will change!
+	inc	hl
+	inc	hl							; set hl to port D bit 4 register
+	ioi	ld (hl), 00h			; set next output for DA1
+	inc	hl							; port D bit 5 register
+	ioi	ld (hl), 0FFh			; set PD5 always high to avoid breaking RS485
+
+.done:
+	pop	de
+	pop	hl							; restore registers
+	pop	af
+
+	ipres								; restore interrupts
+	ret
+
+#endasm
+
+////////////////////////////////////////////////////////////////////////////////
+/*** BeginHeader */
+#endif
+/*** EndHeader */

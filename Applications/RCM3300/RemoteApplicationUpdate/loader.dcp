@@ -1,0 +1,96 @@
+[Targetless Compile]
+Board ID=0x1400
+CPU ID=3000
+CPU Revision=1
+Crystal Speed MHz=22.1184
+RAM Size KBytes=512
+Flash Size KBytes=512
+Description=44MHz RCM3300, 512K+512K SRAM, 512K Flash, 8Mb serial flash
+[COMM]
+port=1
+coldload baud=2400
+pilot baud=57600
+bios baud=115200
+Max Negotiated Baud=460800
+stop bits=2
+use TCP=0
+TCP Port=0
+Serial Response Timeout=200
+Ethernet Response Timeout=8000
+Serial Retry Count=10
+Ethernet Retry Count=0
+TCP Name=
+Net Address=
+Serial Poll Interval=3000
+Ethernet Poll Interval=30000
+Disable Baud Negotiation=0
+Verify DSR=1
+Use USB to Serial Converter=0
+USB to Serial Delay=2000
+Pilot Bios Physical Address=0x4000
+Flash erase timeout=10000
+port list=COM1,COM2,COM3,COM4,COM5,COM6,COM7,COM8
+Debug Tag RAM Offset=0x1002
+[Compiler Options]
+All Serious None=A
+RTC Indices=0
+RTC Pointers=0
+Optimize For Size=0
+Prototypes=1
+Demotion=1
+Pointers=1
+Default Compile Mode=1
+Separate Instruction and Data=0
+Generate List Files=0
+Inline Internal IO Functions=1
+Max Errors Shown=10
+Max Warnings Shown=10
+BIOS Memory Mode=0
+Restrict Watch Expressions=1
+[Dynamic C Files]
+Use Lib File=0
+Use BIOS File=1
+Use Default Source File=0
+LIB File=
+BIOS File=Applications\RCM3300\RemoteApplicationUpdate\loaderBIOS.c
+Default Source File=
+Cold Loader File=bios\coldload.bin
+Pilot BIOS File=bios\pilot.bin
+[Include BIOS]
+Include BIOS=0
+[MRU Files]
+FileCount=0
+[Open Files]
+Number Open=0
+[Include RST 28]
+Include RST=0
+[Debug Options]
+Enable Breakpoints=0
+Enable Instruction Level Single Step=0
+Enable Watch Expressions=0
+Max Breakpoints=32
+Max Watch Expressions=8
+Watch Memory for Structs=0
+Enable Tracing=0
+Trace Buf Size=8
+Enable Trace Buf Wrap=0
+Enable Trace RST=1
+Enable Trace Functions=1
+Trace Info Func=1
+Trace Info Action=1
+Trace Info Time=1
+Trace Info File=1
+Trace Info Line/Col=1
+Trace Info Repeat=0
+Trace Info Reg=1
+Enable Trace Auto Save=0
+Trace Auto Save File=
+Enable Stack Tracing=0
+Stack Tracing Memory=4096
+Enable debug kernel=0
+[Poll Target]
+Poll target while running=1
+[Compression Utility]
+Zimport External Utility=ZCOMPRESS.EXE
+[DEFINES]
+Defines=_REMOTEAPPLICATIONUPDATE_LOADER

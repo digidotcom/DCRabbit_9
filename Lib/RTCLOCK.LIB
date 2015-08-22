@@ -1,0 +1,767 @@
+/*** BeginHeader  ********************************************/
+#ifndef __RTCLOCK_LIB
+#define __RTCLOCK_LIB
+/*** EndHeader ***********************************************/
+
+/* START LIBRARY DESCRIPTION *********************************************
+RTCLOCK.LIB
+Copyright (c) 1999 Z-World Inc.
+
+DESCRIPTION: Library for real-time clock drivers on Rabbit processor.
+
+void write_rtc(unsigned long int time); 	// writes seconds to RTC
+unsigned long int read_rtc(void);       	// reads seconds from RTC
+unsigned long int read_rtc_32kHz(void);  	// reads seconds from RTC when using 32kHz clock
+unsigned long mktime(struct tm *timeptr);	// converts time structure to seconds
+unsigned int mktm(struct tm *timeptr, unsigned long time); // secs to structure
+int tm_wr(struct tm *t);						// writes tm struct to RTC
+int tm_rd(struct tm *t);						// reads tm struct from SEC_TIMER NOT
+														// from RTC, see function description)
+
+
+The format of the tm structure used is:
+
+struct tm
+{
+	char tm_sec;             // seconds 0-59
+	char tm_min;             // 0-59
+	char tm_hour;            // 0-59
+	char tm_mday;            // 1-31
+	char tm_mon;             // 1-12
+	char tm_year;            // 80-147	(1980-2047)
+	char tm_wday;            // 0-6 0==sunday
+};
+
+
+Note: UTC versus local time.
+----------------------------
+
+Prior to 8.05, it was assumed that the RTC was set to "local time".  This is
+still the case by default.  If, however, the macro RTC_IS_UTC is defined,
+then the library assumes the RTC is set to co-ordinated universal time (UTC)
+a.k.a "GMT".
+
+This does not have much relevance to the basic RTC library routines, however
+some of the TCP/IP servers (such as HTTP) need to make the distinction in
+order to correctly report the server's time to the client.
+
+Whether or not RTC_IS_UTC is defined, the symbol TIMEZONE may be defined
+to a floating point (but usually integer) value representing hours east of
+Greenwich of the local time zone.  If not defined, then the difference is
+assumed to be zero.  Otherwise, the given value is used as a default time
+zone difference by the library routines which need to make a distinction.
+[None of the functions in RTCLOCK.LIB make use of RTC_IS_UTC.  The
+distinction is only important to libraries which need to communicate with
+external users with unambiguous representation of date/time.]
+
+If defined, it is recommended that TIMEZONE be defined to the name of a
+floating point _variable_ which will make it easier to adjust the timezone
+twice per year to account for daylight saving time -- without recompiling
+the firmware.
+
+The function rtc_timezone() is a new function which should be used
+consistently to obtain the current timezone offset.
+
+In addition to the timezone offset (in seconds), this function can
+optionally return a timezone name of between 0 and 6 characters, as
+defined by the TZNAME macro.  TZNAME should either be defined to an
+ascii string, or not defined at all.  As with TIMEZONE, this macro should
+be defined to be the name of a string (char[]) variable so that the
+timezone name can be updated programatically.
+
+END DESCRIPTION **********************************************************/
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+write_rtc                       <RTCLOCK.LIB>
+
+SYNTAX: void write_rtc(unsigned long int time);
+
+KEYWORDS: Real-time clock
+
+DESCRIPTION: Writes a 32 bit seconds value to the RTC, zeros other bits. This
+function does not stop or delay periodic interrupt. This function does not
+affect the SEC_TIMER or MS_TIMER variables.
+
+PARAMETER1:	unsigned long int representing the number of seconds since
+January 1, 1980.
+
+RETURN VALUE: none
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader write_rtc */
+
+void write_rtc(unsigned long int time);
+
+/*** EndHeader */
+
+
+nodebug
+void write_rtc(unsigned long int time)
+{
+#if _USER
+	int handle;
+#endif
+	static char k,b1,b2,b3,b4,b5; // the bytes of the clock
+	static int j;
+
+	b5=(char)((time & 0xFE000000)>>25);
+	b4=(char)((time & 0x01FE0000)>>17);
+	b3=(char)((time & 0x0001FE00)>>9);
+	b2=(char)((time & 0x000001FE)>>1);
+	b1=(char)((time & 0x00000001)<<7);
+
+#if _USER
+   if ( ( handle = _sys_open(_SYS_OPEN_INTERFACE,RTCCR)) < 0 )
+   	return;
+   _sys_write(handle, 0x40);
+   _sys_write(handle, 0xC0);
+#else
+	WrPortI(RTCCR,NULL,0x40); // arm real time clock
+	WrPortI(RTCCR,NULL,0xc0); // enter byte increment mode
+#endif
+	for(j=0; j<257; j++) {
+		k=0x40;
+		if(b5) {k=k+32; --b5;}
+		if(b4) {k=k+16; --b4;}
+		if(b3) {k=k+8; --b3;}
+		if(b2) {k=k+4; --b2;}
+		if(b1) {k=k+2; --b1;}
+#if _USER
+		if(k != 0x040)
+			_sys_write(handle,k); // dec. bytes, increment counters
+		else
+		{
+			_sys_write(handle,0);
+         _sys_close(handle);
+			return;
+		} // end byte increment mode
+#else
+		if(k != 0x040)
+			WrPortI(RTCCR,NULL,k); // dec. bytes, increment counters
+		else
+		{
+			WrPortI(RTCCR,NULL,0);
+			return;
+		} // end byte increment mode
+#endif
+  	}
+#if _USER
+	_sys_close(handle);
+#endif
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+read_rtc                       <RTCLOCK.LIB>
+
+SYNTAX: unsigned long read_rtc(void);
+
+KEYWORDS: Real-time clock
+
+DESCRIPTION: Reads seconds (32-bits) directly from RTC - use with caution!
+In most cases use long variable SEC_TIMER which contains same result,
+unless the RTC has been changed since the start of the program.
+
+RETURN VALUE: Time in seconds since January 1, 1980 (if RTC set correctly).
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader read_rtc */
+
+unsigned long int read_rtc(void);
+
+/*** EndHeader */
+
+nodebug
+unsigned long int read_rtc(void)
+{
+#asm xmemok
+; returns long with seconds since 1 jan 80 directly from rtc
+	push	ix
+	ld		ix,RTC0R  		; address of base register
+.read_rtc0:
+	xor	a					; must write 0 to unused bits (special behavior reg)
+	ioi	ld (ix), a  	; copy to holding registers
+	ioi	ld a, (ix+1) 	; top bit is seconds
+	and	80h				; ignore LSbits
+	ld		h, a
+	ioi	ld e, (ix+2)
+	ioi	ld d, (ix+3)
+	ioi	ld c, (ix+4)
+	ioi	ld b, (ix+5) 	; most sig
+
+	xor	a					; must write 0 to unused bits (special behavior reg)
+	ioi	ld (ix), a   	; copy to holding registers again
+	ioi	ld a, (ix+1)	; get least again
+	and	80h				; ignore LSbits
+	cp		a, h      		; must not have changed
+	jr		nz, .read_rtc0	; if changed do it all again
+	ioi	ld a, (ix+2)	; get next byte
+	cp		a, e      		; must not have changed
+	jr		nz, .read_rtc0	; if changed do it all again
+	ioi	ld a, (ix+3)	; get next byte
+	cp		a, d      		; must not have changed
+	jr		nz, .read_rtc0	; if changed do it all again
+	ioi	ld a, (ix+4)	; get next byte
+	cp		a, c      		; must not have changed
+	jr		nz, .read_rtc0	; if changed do it all again
+	ioi	ld a, (ix+5)	; get last byte
+	cp		a, b      		; must not have changed
+	jr		nz, .read_rtc0	; if changed do it all again
+
+	; now shift seconds into bc:de place
+	sla	h					; move seconds LSbit (MSbit of h) into carry
+	rl		de					; rotate carry --> seconds LSBs --> carry
+	rl		c					; rotate carry --> seconds 3rd byte --> carry
+	rl		b					; rotate carry --> seconds 4th byte --> carry (lost)
+	pop	ix					; return value in bc:de
+#endasm
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+read_rtc_32kHz                  <RTCLOCK.LIB>
+
+SYNTAX: unsigned long read_rtc_32kHz(void);
+
+KEYWORDS: Real-time clock
+
+DESCRIPTION:  This is a deprecated function, use read_rtc instead.
+Reads the real-time clock directly when the Rabbit processor is running
+off the 32kHz oscillator.  See read_rtc() for more details.
+
+RETURN VALUE: Time in seconds since January 1, 1980 (if RTC set correctly).
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader read_rtc_32kHz */
+
+unsigned long int read_rtc_32kHz(void);
+
+/*** EndHeader */
+
+nodebug
+unsigned long int read_rtc_32kHz(void)
+{
+	return read_rtc();
+}
+
+
+/*** BeginHeader _mktime_date */
+
+unsigned long _mktime_date(struct tm *timeptr);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_mktime_date                       <RTCLOCK.LIB>
+
+SYNTAX: unsigned long _mktime_date(struct tm *timeptr);
+
+KEYWORDS: Real-time clock
+
+DESCRIPTION: Converts the month, day and year of timeptr into days.
+
+PARAMETER1: Address of tm struct to read time from.
+
+RETURN VALUE: Number of days since January 1, 1980.
+END DESCRIPTION **********************************************************/
+nodebug
+unsigned long _mktime_date(struct tm *timeptr)
+{
+static const unsigned int __jom[2][12] =
+		{
+		{0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335},
+		{0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334}
+		};
+#asm xmemok
+	push	hl
+	push	iy
+
+	ld		iy,(sp+timeptr+4)
+	ld		a,(iy+5)				;get the years
+	sub	STARTYR				;calc years past 1980
+
+	ld		bc,016Dh				;change years to 365 days/year
+	ld		e,a
+	ld		d,0
+	mul							;year days in hl:bc
+	push	hl
+
+	ld		h,0
+	ld		l,a
+	ld		a,0
+	srl	l
+	rl		a
+	srl	l
+	rl		a
+	add	hl,bc
+
+	cp		0
+	jr		z,__DC_inleap
+	inc	hl						;if e>0 then add another leap year
+__DC_inleap:
+	push	hl
+
+	ld		bc,0					;setup to get total days from months
+	cp		0						;zero indicates in a leap year
+	jr		z,__DC_getmonths
+	ld		c,24
+__DC_getmonths:
+	ld		a,(iy+4)				;get the month
+	dec	a						;and setup array position
+	add	a,a
+	add	a,c
+	ld		c,a
+
+	ld		hl,__jom
+	add	hl,bc
+	ld		hl,(hl+0)			;load value from array
+
+	ld		e,(iy+3)				;get the day of month
+	dec	e
+	ld		d,0
+	add	hl,de					;add days to month
+
+	pop	de						;get lower year
+	add	hl,de
+	ex		de,hl
+	pop	hl						;get upper year
+	ld		bc,0
+	adc	hl,bc
+	push	hl
+	pop	bc						;total days in bc:de
+
+	pop	iy
+	pop	hl
+
+#endasm
+}
+
+
+/*** Beginheader mktime  */
+
+unsigned long mktime(struct tm *timeptr);
+
+/*** Endheader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+mktime                       <RTCLOCK.LIB>
+
+SYNTAX: unsigned long mktime(struct tm *timeptr);
+
+KEYWORDS: Real-time clock
+
+DESCRIPTION: Converts the contents of timeptr into seconds.
+
+PARAMETER1: Address of tm struct to read time from.
+
+RETURN VALUE: Time in seconds since January 1, 1980.
+END DESCRIPTION **********************************************************/
+
+nodebug
+unsigned long mktime(struct tm *timeptr)
+{
+#asm xmemok
+	push	hl
+	push	iy
+
+	ld		iy,(sp+timeptr+4)
+
+	push	iy
+	call	_mktime_date		;returns days since 1/1/80 in bc:de reg
+	pop	iy
+
+	ld		bc,05180h
+	mul
+	add	hl,de
+	bit	7,d
+	jr		z,.unsigned1
+	ld		de,05180h
+	add	hl,de
+.unsigned1:
+	push	hl
+	push	bc
+
+	ld		d,0
+	ld		e,(iy+2)				;convert hours to seconds
+	ld		bc,0e10h				;3600
+	mul							;hour seconds in hl:bc
+	push	hl
+	push	bc
+
+	ld		d,0
+	ld		e,(iy+1)				;convert minutes to seconds
+	ld		bc,03ch				;60
+	mul							;minute seconds in hl
+	push	bc
+
+	ld		h,0
+	ld		l,(iy+0)				;get seconds
+	pop	de						;get minutes
+	add	hl,de					;add to seconds
+
+	pop	de						;get lower hours
+	pop	bc						;get upper hours
+	adc	hl,de
+	jr		nc, __DC_nocarry
+	inc	bc						; if carry set, increment bc
+	ccf
+__DC_nocarry:
+	ex		de,hl					;total seconds in bc:de
+
+	pop	hl						;get lower days
+	adc	hl,de
+	ex		de,hl
+
+	pop	hl						;get upper days
+	adc	hl,bc
+	push	hl
+	pop	bc						;total seconds in bc:de
+
+	pop	iy
+	pop	hl
+#endasm
+}
+
+
+/*** BeginHeader _mktm_date */
+
+void _mktm_date(struct tm *timeptr, unsigned int day);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_mktm_date                       <RTCLOCK.LIB>
+
+SYNTAX: void _mktm_date(struct tm *timeptr, unsigned int day)
+
+KEYWORDS: Real-time clock
+
+DESCRIPTION: Converts days into the month, day and year into timeptr.
+
+PARAMETER1: Address of tm struct to store month, day, year and day of week.
+PARAMETER2: Number of days since January 1, 1980.
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+
+nodebug
+void _mktm_date(struct tm *timeptr, unsigned int day)
+{
+	static const char __dom[2][12] =
+		{
+		{31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31},
+		{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+		};
+#asm xmemok
+	push	hl
+	push	bc
+	push	de
+	push	ix
+	push	iy
+
+	ld		ix,(sp+timeptr+10)
+	ld		iy,(sp+day+10)
+	push	iy
+	inc	iy
+	inc	iy
+	ld		bc,0
+	push	bc
+	push	iy
+
+	ld		de,07h			;bc:de = 7
+	call	G_div				;remainder in hl
+	ld		(ix+6),l			;store weekday
+	pop	iy
+
+	xor	0					;clear carry flag
+	ld		de,05b5h			;1461 days (4 years)
+	ld		hl,iy
+	ld		a,STARTYR
+.calcbyleaps:
+	sbc	hl,de
+	jr		c,__DC_moreyears
+	add	a,4
+	jp		.calcbyleaps
+__DC_moreyears:
+	add	hl,de
+	xor	0					;clear carry flag
+	ld		b,0
+	ld		de,016eh			;366 days
+	sbc	hl,de
+	jr		c,__DC_calcmonths
+	inc	a
+	inc	b
+	ld		de,016dh			;365 days
+.calcbyyears:
+	sbc	hl,de
+	jr		c,__DC_calcmonths
+	inc	a
+	jp		.calcbyyears
+__DC_calcmonths:
+	ld		(ix+5),a			;store the year
+	add	hl,de
+
+	xor	0					;clear carry flag
+	ld		de,0				;setup months
+	ld		a,b
+	cp		0					;check if in leap year
+	jr		z,__DC_getmonths
+	ld		e,12
+__DC_getmonths:
+	ld		iy,__dom
+	add	iy,de
+	ld		a,1
+.calcbymonths:
+	ld		e,(iy+0)			;load value from array
+	sbc	hl,de
+	jr		c,.getdays
+	inc	a
+	inc	iy
+;	inc	iy
+	jp		.calcbymonths
+.getdays:
+	ld		(ix+4),a			;store the month
+	add	hl,de
+	inc	l
+	ld		(ix+3),l			;store the day
+
+	pop	iy
+	pop	ix
+	pop	de
+	pop	bc
+	pop	hl
+#endasm
+}
+
+/*** Beginheader mktm  */
+
+unsigned int mktm(struct tm *timeptr, unsigned long time);
+#define STARTYR 80		//start year=number of years since 1900
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+mktm                       <RTCLOCK.LIB>
+
+SYNTAX: unsigned int mktm(struct tm *timeptr, unsigned long time)
+
+KEYWORDS: Real-time clock
+
+DESCRIPTION: Converts the seconds to date and time.
+
+PARAMETER1: Address of tm struct to store date and time.
+PARAMETER2: Seconds since January 1, 1980.
+
+RETURN VALUE: Zero.
+
+NOTE: the structure tm is defined as
+	struct tm
+	{
+	   char tm_sec;             // seconds 0-59
+	   char tm_min;             // 0-59
+	   char tm_hour;            // 0-59
+	   char tm_mday;            // 1-31
+	   char tm_mon;             // 1-12
+	   char tm_year;            // 80-147  (1980-2047)
+	   char tm_wday;            // 0-6 0==sunday
+	};
+
+END DESCRIPTION **********************************************************/
+
+nodebug unsigned int mktm(struct tm *timeptr, unsigned long time)
+{
+#asm xmemok
+	push	bc
+	push	de
+	push	ix
+	push	iy
+
+	ld		hl,(sp+time+10)
+	ld		iy,(sp+time+8)
+	push	hl
+	push	iy
+	ld		bc,01h
+	ld		de,05180h		;bc:de = 86400
+	call	G_div				;return in bc:de, remainder in hl':hl
+	exx
+	push	hl
+	exx
+	push	hl
+
+	ld		ix,(sp+timeptr+12)
+	push	de
+	push	ix
+	call	_mktm_date		;turn days into month,day,year,dow and store
+	pop	ix
+	pop	de
+
+	ld		bc,0				;calc the hour using remainder
+	ld		de,0e10h			;bc:de = 3600
+	call	G_div
+	ex		de,hl				;remainder in de
+	ld		(ix+2),l			;store the hour
+
+	ld		bc,0				;calc the minutes using remainder
+	push	bc
+	push	de
+	ld		de,03ch			;bc:de = 60
+	call	G_div
+	ld		(ix+1),e			;store the minutes
+	ld		(ix+0),l			;store the seconds
+
+	ld		hl,0
+	pop	iy
+	pop	ix
+	pop	de
+	pop	bc
+#endasm
+}
+
+
+/*** BeginHeader tm_wr  */
+
+int tm_wr(struct tm *t);
+
+/*** EndHeader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+tm_wr                        <RTCLOCK.LIB>
+
+SYNTAX: int tm_wr(struct tm *t);
+
+KEYWORDS: Real-time clock
+
+DESCRIPTION: Sets the system time from a tm struct. It is important to note
+that although tm_rd() reads the SEC_TIMER variable, not the RTC, tm_wr()
+writes to the RTC directly, and SEC_TIMER is not changed until the program
+is restarted. The reason for this is so that the DelaySec() function
+continues to work correctly after setting the system time. To make tm_rd()
+match the new time written to the RTC without restarting the program, the
+following should be done:
+
+	tm_wr(tm);
+	SEC_TIMER = mktime(tm);
+
+But this could cause problems if a waitfor(DelaySec(n)) is pending
+completion in a cooperative multitasking program or if the SEC_TIMER
+variable is being used in another way the user, so user beware.
+
+PARAMETER1:	tm struct to read date and time from.
+
+RETURN VALUE: 0 if successful. -1 if clock write failed.
+END DESCRIPTION **********************************************************/
+
+nodebug
+int tm_wr(struct tm *t)
+{
+	static unsigned long secs;
+
+	secs = mktime(t);			// convert struct tm to seconds since 1980
+	write_rtc(secs);			// write time to RTC
+}
+
+
+/*** BeginHeader tm_rd */
+
+int tm_rd(struct tm *t);
+
+/*** Endheader    */
+
+/* START FUNCTION DESCRIPTION ********************************************
+tm_rd                        <RTCLOCK.LIB>
+
+SYNTAX: int tm_rd(struct tm *t);
+
+KEYWORDS: Real-time clock
+
+DESCRIPTION: Reads the current system time from virtual driver variable
+SEC_TIMER into the structure t.
+
+PARAMETER1: Address of tm struct save date and time in.
+
+WARNING:	The variable SEC_TIMER is initialized when a program is first
+started.  If you change the RTC, this variable will not be updated until
+you restart a program, and the tm_rd function will not return the time
+that the RTC has been reset to.  The read_rtc function will read the
+actual RTC and can be used if necessary.
+
+RETURN VALUE: 0 if successful. -1 if clock read failed.
+END DESCRIPTION **********************************************************/
+
+nodebug
+int tm_rd(struct tm *t)
+{
+	mktm(t, SEC_TIMER);		// get SEC_TIMER which contains current time in secs
+}
+
+/*** BeginHeader rtc_timezone */
+int rtc_timezone(long * seconds, char * tzname);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+rtc_timezone                       <RTCLOCK.LIB>
+
+SYNTAX: int rtc_timezone(long * seconds, char * tzname);
+
+KEYWORDS:		Real-time clock
+
+DESCRIPTION: 	This function returns the timezone offset as known by the
+               library.
+
+               The timezone is obtained from the following sources, in
+               order of preference:
+
+               1. The DHCP server.  This can only be used if the TCP/IP
+               stack is in use, and USE_DHCP is defined.
+
+               2. The TIMEZONE macro.  This should be defined by the
+               program to an _hour_ offset - may be floating point.
+
+PARAMETER1:    Pointer to result longword.  This will be set to the number
+               of seconds offset from Coordinated Universal Time (UTC).
+               The value will be negative for west; positive for east of
+               Greenwich.
+PARAMETER2:    If NULL, no timezone name is returned.  Otherwise, this
+               must point to a buffer of at least 7 bytes.  The buffer
+               is set to a null-terminated string of between 0 and 6
+               characters in length, according to the value of the
+               TZNAME macro.  If TZNAME is not defined, then the returned
+               string is zero length ("").
+
+RETURN VALUE:  0 - timezone obtained from DHCP.
+               -1 - timezone obtained from TIMEZONE macro.  The value of
+                   this macro (which may be int, float or a variable name)
+                   is multiplied by 3600 to form the return value.
+       			-2 - timezone is zero since the TIMEZONE macro was not
+                   defined.
+END DESCRIPTION **********************************************************/
+
+nodebug int rtc_timezone(long * seconds, char * tzname)
+{
+	// Currently, timezone name is only obtainable from the TZNAME macro.
+   // Future implementations may be able to get this from a server etc.
+	if (tzname)
+#ifdef TZNAME
+   	strcpy(tzname, TZNAME);
+#else
+  		*tzname = 0;
+#endif
+#ifdef USE_DHCP
+	return dhcp_get_timezone(seconds);
+#else
+	#ifdef TIMEZONE
+	*seconds = (long)((TIMEZONE) * 3600L);
+	return -1;
+	#else
+	*seconds = 0;
+	return -2;
+	#endif
+#endif
+}
+
+// missing endif
+/*** BeginHeader  ********************************************/
+#endif
+/*** EndHeader ***********************************************/

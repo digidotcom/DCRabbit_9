@@ -1,0 +1,299 @@
+*****************************************************************
+
+	FAT Release Notes
+
+*****************************************************************
+*****************************************************************
+VERSION 2.15
+
+NEW FEATURES
+ - Added SD support for Rabbit 3000 based cores.
+ - Added new core modules (RCM3309, RCM3319, RCM3900 & RCM3910)
+
+OTHER FUNCTIONAL CHANGES
+ - Added automatic setting of SSPEC_MAX_FATDEVS within fat_config, it
+   is no longer necessary to set SSPEC_MAX_FATDEVS when using zserver
+
+BUG FIXES
+ - Defect #25305 fixed. Samples updpages.c & filesystem.c sets SSPEC_MAX_FATDEVS
+                        incorrectly ssi2_fat.c.  See 21914 fix.
+ - Defect #25303 fixed. Sample updpages.c doesn't allow access to secondary FAT
+                        devices. See 21914 fix.
+ - Defect #25073 fixed. Check in fat_FormatPartiton incorrectly identifies SD
+                        driver as NAND driver.
+ - Defect #25050 fixed. Sample integration_fat_setup.c fails when serial flash
+                        partitioned for RAU DLM.
+ - Defect #21914 fixed. Added automatic setting of SSPEC_MAX_FATDEVS within
+                        fat_config which fixes zserver mount issue on
+                        dual FAT device cores.
+
+*****************************************************************
+*****************************************************************
+VERSION 2.14
+
+NEW FEATURES
+ - Fixed SD and XD card Hot Swap support.
+
+OTHER FUNCTIONAL CHANGES
+
+BUG FIXES
+ - Defect #81684 fixed. Intermittent Fat initialization failure in
+                        ssi2_fat.c
+ - Defect #81712 fixed. FAT XD card Hot Swap errors with changing cards. It is
+                        recommended you shut the system down to change to a
+                        different card.  Hot removal and re-insertion of the
+                        same card currently works.
+ - Defect #23643 fixed. Formatting issue was fixed in 2.13, a count of free
+                        space issue was still possible, which has been fixed.
+
+*****************************************************************
+*****************************************************************
+VERSION 2.13
+
+NEW FEATURES
+ - Added SD card support.
+ - Added fat_Write_MBR sample to create multiple partitions.
+ - Added support for RCM4020, RCM4300 and RCM4310 core modules.
+
+OTHER FUNCTIONAL CHANGES
+ - Sample fmt_device.c was changed to allow individual partition
+   formatting and erasure of devices that contain no FAT12/16
+   partitions before creating single partition for all space.
+
+BUG FIXES
+
+ - Defect #20202 fixed. Type mismatch if USE_FAR_LIB_API is defined when
+                        running FAT_shell.c
+ - Defect #20941 fixed. Command "mount" failed to remount a FAT partition
+                        when running filesystem.c
+ - Defect #23004 fixed. Problem formatting partitions B-D in fat_shell.c
+ - Defect #23143 fixed. Fmt_device.c returns code -5 when formatting a device
+ - Defect #23487 fixed. fat_AutoMount call in fat_nb_costate.c is not in
+                        a -EBUSY loop.
+ - Defect #23503 fixed. fat_ucos and fat_write_mbr do not handle 'no media'
+                        condition properly.
+ - Defect #23863 fixed. format in non-blocking
+ - Defect #23471 fixed. fat_Automount returns -22 error in non-blocking mode.
+ - Defect #23550 fixed. Multiple forward fat_seek calls may give wrong position.
+ - Defect #23636 fixed. Problem in formating of multiple partitions.
+ - Defect #23643 fixed. Problem formating in non-blocking mode.
+ - Defect #23648 fixed. fat_CreateFile can corrupt filestate in non-blocking
+                        mode.
+ - Defect #23797 fixed. UCOS fails with multiple partitions
+ - Defect #23864 fixed. Problem formating multiple partitions in non-blocking
+                        mode.
+
+
+*****************************************************************
+*****************************************************************
+VERSION 2.12
+
+NEW FEATURES
+ - Added PC compatible support for FAT 12 partitions.
+ - Added support for DC10.xx compiler system.
+ - Added support for RCM4000 and RCM4200 core modules.
+
+OTHER FUNCTIONAL CHANGES
+
+BUG FIXES
+
+ - Defect #1 (DC9.50) fixed. Divide by zero caused by underlying
+   serial flash initialization bug.  Added error checking to
+   FAT_shell.c sample.
+ - Defect #25 (DC9.50) fixed. Divide by zero caused by underlying
+   serial flash initialization bug.  Added error checking to
+   FAT_shell.c sample.
+ - Defect #29 (DC9.50) fixed. Serial flash initialization bug
+   caused by recent addition of ipreg setting/storage to the
+   sf_enable and sf_disable routines. This addition caused
+   corruption of the SP reg within these routines. Added a local
+   variable to save ipreg in and SP adjustment to correct issue.
+ - Defect #81503 fixed. Corrected FAT 12/16 cluster calculations
+   to correct problem with certain partition sizes being assigned
+   FAT 16 status when they should have been FAT 12.  Added check
+   to allow existing partitions that had this issue to continue
+   to be accessed as FAT 16 until they are re-formatted.
+ - Defect #81594 fixed. Corrected file pointer calculation within
+   fat_seek function.
+ - Defect #81637 fixed. Corrected auto struct problem.
+ - Defect #81654 fixed. Same as Defect #29 above.
+ - Defect #81691 fixed. Changed 2nd device recognition in samples
+ - Defect #81694 fixed. Corrected recognition problem of new or
+   newly formatted Nflash or xD card within fat_automount.
+ - Defect #81713 fixed. Corrected definition errors and warnings.
+ - Defect #20202 fixed. Added far string usage detection and implicit
+   near string function calls if detected.
+
+*****************************************************************
+*****************************************************************
+VERSION 2.11
+
+NEW FEATURES
+ - Added support for RCM3305 and RCM3315.
+
+OTHER FUNCTIONAL CHANGES
+
+BUG FIXES
+
+ - Defect #81467 fixed. NFLASH_FAT.LIB's nf_XD_Detect function now
+   always updates the correct IBxCR register shadow."
+ - Defect #81489 fixed. Cache layer caused errant writes to the
+   storage device whenever a marker header (used with directory
+   entries) was released.  This caused writes to occur during
+   read operations in several frequently occuring situations.
+
+*****************************************************************
+*****************************************************************
+VERSION 2.10
+
+NEW FEATURES
+ - Added support for BL2600 variants equipped with nand flash.
+ - Added support for RCM3365 and RCM3375 with hotswap-safe
+   hardware.
+ - Added unique volume labeling for xD cards and other changes to
+   allow hot-swapping using fat_autoMount().
+ - Addded transparent mutex function wrappers to allow more than
+   one uC/OS-II task to do FAT operations. This includes a new
+   API function fat_InitUCOSMutex().
+ - Added new API function nf_XD_Detect() to detect xD card
+   presence.
+ - Added samples to demonstrate hot-swapping and FAT - uC/OS-II
+   usage.
+
+OTHER FUNCTIONAL CHANGES
+ - PC_COMPATIBLE mode is now enabled by default for RCM3370A.
+
+BUG FIXES (Library)
+ - Defect #81408 fixed. FAT can now access RCM3370's socketed xD
+   card nand flash.
+ - Defect #81409 fixed. The fat_UnmountDevice function won't hang
+   if an incomplete device structure is passed into it.
+
+*****************************************************************
+*****************************************************************
+VERSION 2.06
+
+NEW FEATURES
+ - Added support for PowerCoreFLEX boards equipped with data
+   flash.
+ - Added fat_UnmountDevice function for more complete device
+   disconnect from the Write-Thru cache.
+ - Updated sample programs to use fat_AutoMount and
+   fat_UnmountDevice.
+ - New samples available in Samples.zip or included with Dynamic
+   C 9.20
+
+BUG FIXES (Library)
+ - Defect #81365 fixed. Compile bug in fat_PartitionDevice.
+ - Defect #81366 fixed. GLOBAL INIT's in fat_AutoMount can cause
+   compile error.
+ - Defect #81367 fixed. Max Bad Cluster count reported on serial
+   flash devices.
+ - Defect #81368 fixed. Device level bad clusters on NAND flash
+   not being handled correctly.  NAND flash now sets count of bad
+   clusters found.
+ - Defect #81369 fixed. Driver level read problem with NAND flash
+   when busy waiting on flash write/erase cycle. Caused invalid
+   sectors in read cache, especially if using multiple devices.
+ - Defect #81370 fixed. Driver level write problem with NAND
+   flash when busy waiting on flash write/erase cycle. Caused
+   sectors to not always be written to the NAND flash when
+   flushed from the write-thru cache. Was more frequent when
+   using multiple devices.
+ - Defect #81374 fixed. PART.LIB - Unexpected interrupt while
+   running fat_shell.c "format 0" in fast RAM compile mode, or
+   system nak on exit afterward.
+
+OTHER FUNCTIONAL CHANGES
+
+*****************************************************************
+*****************************************************************
+VERSION 2.05
+
+NEW FEATURES
+ - Driver for use with RCM3360/70 boards equipped with nand
+   flash.
+
+*****************************************************************
+*****************************************************************
+VERSION 2.01
+
+******************** IMPORTANT!!! ********************
+  As of the FAT module version 2.01 release, the FAT module is
+  only compatible with Dynamic C versions 9.01 and greater.
+  Versions of Dynamic C earlier than 9.01 will not be able to be
+  used with this module.
+  If you have questions about module compatibility, please
+  contact technical support for assistance:
+  (530) 757.3737
+  Fax: 530.753.5141
+  E-mail: zworld@zworld.com
+******************************************************
+
+NEW FEATURES
+ - Added fat_AutoMount function for enhanced board specific
+   initialization.
+
+BUG FIXES (Library)
+ - Defect #81292 fixed. Split with 1 cluster free at the same
+   time the directory expands creates file in wrong place and
+   does not expand subdirectory properly.
+ - Defect #81293 fixed. Size of preallocation limited to 32767
+   clusters and incorrectly wraps and gives wrong results on
+   requests above this amount.
+ - Defect #81294 fixed. Split followed by write and then reset
+   loses length on new file.
+ - Defect #81295 fixed. Exceeding the remaining space on the
+   device sometimes gives errant -22 code.
+ - Defect #81296 fixed. FAT file system write through cache IDs
+   don't distinguish between multiple devices correctly.
+
+OTHER FUNCTIONAL CHANGES
+
+*****************************************************************
+*****************************************************************
+VERSION 1.02
+
+NEW FEATURES
+ - Full power-loss recovery on all operations with battery
+   back-up.
+
+BUG FIXES (Library)
+ - Deleting/truncating a file can leave an unlinked chain in FAT
+   table if power is lost during the operation. Clusters cannot
+   be recovered for use without reformatting the partition.
+ - Truncating a file to small sizes (less than one cluster) can
+   corrupt the file size.
+ - fat_Split not truncating original file, it is cross-linked
+   with new file.
+ - Cluster pointer not wrapping correctly when end of device is
+   reached, can lock system.  Corrupts chain being allocated.
+ - fat_FormatPartition is overlapping the two FAT tables. Entries
+   for clusters 0 & 1 in the second table are written to the end
+   of the first table, locking out 2 clusters.
+ - Free space in partition structure not calculated or maintained
+   correctly.
+ - Full file system + write or append to file yields bad state.
+   From there on you can't delete files or directories.
+ - Allocation problem with FAT 12 can cause an extra cluster to
+   be allocated when not requested.  Occurs when FAT table entry
+   spans two sectors.
+
+BUG FIXES (Samples)
+ - fat_NonBlk.c creates non-existent errors when executed, not
+   handling one of the return codes correctly.
+ - fat_Shell.c rd command not working properly if file contains
+   null characters.
+
+OTHER FUNCTIONAL CHANGES
+
+*****************************************************************
+*****************************************************************
+VERSION 1.01
+
+NEW FEATURES
+
+
+OTHER FUNCTIONAL CHANGES
+
+*****************************************************************

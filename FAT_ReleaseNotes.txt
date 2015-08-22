@@ -1,0 +1,208 @@
+*****************************************************************
+
+	FAT Release Notes
+
+*****************************************************************
+*****************************************************************
+VERSION 2.12
+
+NEW FEATURES
+ - Added PC compatible support for FAT 12 partitions.
+
+OTHER FUNCTIONAL CHANGES
+
+BUG FIXES
+
+ - Defect #1 (DC9.50) fixed. Divide by zero caused by underlying
+   serial flash initialization bug.  Added error checking to 
+   FAT_shell.c sample.
+ - Defect #25 (DC9.50) fixed. Divide by zero caused by underlying
+   serial flash initialization bug.  Added error checking to 
+   FAT_shell.c sample.
+ - Defect #29 (DC9.50) fixed. Serial flash initialization bug
+   caused by recent addition of ipreg setting/storage to the
+   sf_enable and sf_disable routines. This addition caused 
+   corruption of the SP reg within these routines. Added a local
+   variable to save ipreg in and SP adjustment to correct issue.
+ - Defect #81503 fixed. Corrected FAT 12/16 cluster calculations
+   to correct problem with certain partition sizes being assigned
+   FAT 16 status when they should have been FAT 12.  Added check
+   to allow existing partitions that had this issue to continue
+   to be accessed as FAT 16 until they are re-formatted.
+ - Defect #81594 fixed. Corrected file pointer calculation within
+   fat_seek function.
+ - Defect #81654 fixed. Same as Defect #29 above.
+
+*****************************************************************
+*****************************************************************
+VERSION 2.11
+
+NEW FEATURES
+ - Added support for RCM3305 and RCM3315.
+
+OTHER FUNCTIONAL CHANGES
+
+BUG FIXES
+
+ - Defect #81467 fixed. NFLASH_FAT.LIB's nf_XD_Detect function now
+   always updates the correct IBxCR register shadow."
+ - Defect #81489 fixed. Cache layer caused errant writes to the
+   storage device whenever a marker header (used with directory
+   entries) was released.  This caused writes to occur during
+   read operations in several frequently occuring situations.
+
+*****************************************************************
+*****************************************************************
+VERSION 2.10
+
+NEW FEATURES
+ - Added support for BL2600 variants equipped with nand flash.
+ - Added support for RCM3365 and RCM3375 with hotswap-safe
+   hardware.
+ - Added unique volume labeling for xD cards and other changes to
+   allow hot-swapping using fat_autoMount().
+ - Addded transparent mutex function wrappers to allow more than
+   one uC/OS-II task to do FAT operations. This includes a new
+   API function fat_InitUCOSMutex().
+ - Added new API function nf_XD_Detect() to detect xD card
+   presence.
+ - Added samples to demonstrate hot-swapping and FAT - uC/OS-II
+   usage.
+
+OTHER FUNCTIONAL CHANGES
+ - PC_COMPATIBLE mode is now enabled by default for RCM3370A.
+
+BUG FIXES (Library)
+ - Defect #81408 fixed. FAT can now access RCM3370's socketed xD
+   card nand flash.
+ - Defect #81409 fixed. The fat_UnmountDevice function won't hang
+   if an incomplete device structure is passed into it.
+
+*****************************************************************
+*****************************************************************
+VERSION 2.06
+
+NEW FEATURES
+ - Added support for PowerCoreFLEX boards equipped with data
+   flash.
+ - Added fat_UnmountDevice function for more complete device
+   disconnect from the Write-Thru cache.
+ - Updated sample programs to use fat_AutoMount and
+   fat_UnmountDevice.
+ - New samples available in Samples.zip or included with Dynamic
+   C 9.20
+
+BUG FIXES (Library)
+ - Defect #81365 fixed. Compile bug in fat_PartitionDevice.
+ - Defect #81366 fixed. GLOBAL INIT's in fat_AutoMount can cause
+   compile error.
+ - Defect #81367 fixed. Max Bad Cluster count reported on serial
+   flash devices.
+ - Defect #81368 fixed. Device level bad clusters on NAND flash
+   not being handled correctly.  NAND flash now sets count of bad
+   clusters found.
+ - Defect #81369 fixed. Driver level read problem with NAND flash
+   when busy waiting on flash write/erase cycle. Caused invalid
+   sectors in read cache, especially if using multiple devices.
+ - Defect #81370 fixed. Driver level write problem with NAND
+   flash when busy waiting on flash write/erase cycle. Caused
+   sectors to not always be written to the NAND flash when
+   flushed from the write-thru cache. Was more frequent when
+   using multiple devices.
+ - Defect #81374 fixed. PART.LIB - Unexpected interrupt while
+   running fat_shell.c "format 0" in fast RAM compile mode, or
+   system nak on exit afterward.
+
+OTHER FUNCTIONAL CHANGES
+
+*****************************************************************
+*****************************************************************
+VERSION 2.05
+
+NEW FEATURES
+ - Driver for use with RCM3360/70 boards equipped with nand
+   flash.
+
+*****************************************************************
+*****************************************************************
+VERSION 2.01
+
+******************** IMPORTANT!!! ********************
+  As of the FAT module version 2.01 release, the FAT module is
+  only compatible with Dynamic C versions 9.01 and greater.
+  Versions of Dynamic C earlier than 9.01 will not be able to be
+  used with this module.
+  If you have questions about module compatibility, please
+  contact technical support for assistance:
+  (530) 757.3737
+  Fax: 530.753.5141
+  E-mail: zworld@zworld.com
+******************************************************
+
+NEW FEATURES
+ - Added fat_AutoMount function for enhanced board specific
+   initialization.
+
+BUG FIXES (Library)
+ - Defect #81292 fixed. Split with 1 cluster free at the same
+   time the directory expands creates file in wrong place and
+   does not expand subdirectory properly.
+ - Defect #81293 fixed. Size of preallocation limited to 32767
+   clusters and incorrectly wraps and gives wrong results on
+   requests above this amount.
+ - Defect #81294 fixed. Split followed by write and then reset
+   loses length on new file.
+ - Defect #81295 fixed. Exceeding the remaining space on the
+   device sometimes gives errant -22 code.
+ - Defect #81296 fixed. FAT file system write through cache IDs
+   don't distinguish between multiple devices correctly.
+
+OTHER FUNCTIONAL CHANGES
+
+*****************************************************************
+*****************************************************************
+VERSION 1.02
+
+NEW FEATURES
+ - Full power-loss recovery on all operations with battery
+   back-up.
+
+BUG FIXES (Library)
+ - Deleting/truncating a file can leave an unlinked chain in FAT
+   table if power is lost during the operation. Clusters cannot
+   be recovered for use without reformatting the partition.
+ - Truncating a file to small sizes (less than one cluster) can
+   corrupt the file size.
+ - fat_Split not truncating original file, it is cross-linked
+   with new file.
+ - Cluster pointer not wrapping correctly when end of device is
+   reached, can lock system.  Corrupts chain being allocated.
+ - fat_FormatPartition is overlapping the two FAT tables. Entries
+   for clusters 0 & 1 in the second table are written to the end
+   of the first table, locking out 2 clusters.
+ - Free space in partition structure not calculated or maintained
+   correctly.
+ - Full file system + write or append to file yields bad state.
+   From there on you can't delete files or directories.
+ - Allocation problem with FAT 12 can cause an extra cluster to
+   be allocated when not requested.  Occurs when FAT table entry
+   spans two sectors.
+
+BUG FIXES (Samples)
+ - fat_NonBlk.c creates non-existent errors when executed, not
+   handling one of the return codes correctly.
+ - fat_Shell.c rd command not working properly if file contains
+   null characters.
+
+OTHER FUNCTIONAL CHANGES
+
+*****************************************************************
+*****************************************************************
+VERSION 1.01
+
+NEW FEATURES
+
+
+OTHER FUNCTIONAL CHANGES
+
+*****************************************************************

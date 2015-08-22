@@ -1,0 +1,279 @@
+/*** BeginHeader *************************************************************/
+//------------------------------------------------------------------------------
+
+#memmap anymem 0x3000
+
+#define	FLASH_BUF_SIZE		0x00001000ul	// 4096-byte flash transfer buffer size
+#define	FLASH_BUF_SIZE4K	0x01				// flash buffer size in 4K pages
+
+#define DATAEND4K	(RAM_START+RAM_SIZE)		// end of RAM in 4K pages
+
+// physical address in LDP format: [4 bits][16 bits] = 20-bit address
+#define FLASH_BUF_0015		0 + ((TC_SYSBUF_BLOCK_START + TC_SYSBUF_BLOCK) & 0xffff)
+#define FLASH_BUF_1619		0 + ((TC_SYSBUF_BLOCK_START + TC_SYSBUF_BLOCK) >> 16)	// Don't use directly, use flash_buf_1619 instead
+
+#define MBXCR_A18_INVRT 0x10
+#define MBXCR_A19_INVRT 0x20
+
+// address in terms of XMEM window
+#define FLASH_BUF_XPC		0 + ((TC_SYSBUF_BLOCK_START + TC_SYSBUF_BLOCK - 0xe000) >> 12) // Don't use directly, use flash_buf_xpc instead
+#define FLASH_BUF_ADDR		0xE000
+
+#if !(_SYSTEM)
+#define _SYS_MAP_FLASH
+#define _SYS_UNMAP_FLASH
+#endif
+
+//------------------------------------------------------------------------------
+//***** Memory Size Information ********************************************
+//***** User Data Reserve Store Information ***********************************
+#define _SOS_USERDATA    0x00000L // Size Of Store to reserve for general
+                                  // purpose battery-backed User Data, at a
+                                  // relatively fixed physical address as
+                                  // compared to xalloc'd memory.  Leave this at
+                                  // zero if the User Data reserve_Store[] entry
+                                  // is not required by the application.  This
+                                  // value is rounded up to a multiple of 4 KB
+                                  // (0x1000 bytes) for the reserve store array.
+                                  // See also STACK.LIB, where _BOS_USERDATA and
+                                  // _TOS_USERDATA macros define the bottom and
+                                  // top physical addresses of the User Data
+#ifndef USERDATA_NBLOCKS          // reserve_Store[] entry, respectively.
+	#define USERDATA_NBLOCKS	(0xFF&((_SOS_USERDATA+0xFFF)>>12))
+#endif                            // Number of 4 KB blocks reserved for the User
+                                  // Data store, used in (BB)DATASEGVAL and
+                                  // XMEM_RAM_RESERVE macro definitions.
+#if USERDATA_NBLOCKS != (0xFF&((_SOS_USERDATA+0xFFF)>>12))
+#error "USERDATA_NBLOCKS must equal _SOS_USERDATA's 4 KB blocks integer value."
+#endif
+
+//******* Target communication configuration ********************************
+#define TC_SYSBUF_SIZE      256  // The size of the internal target communication
+                                 // system buffers. The TC_HEADER_RESERVE size is
+                                 // included in this value, so adjust the size of
+                                 // the buffer accordingly.
+
+#define TC_SYSBUF_COUNT      15  // The number of internal target communication
+                                 // system buffers. Each is of the size
+                                 // TC_SYSBUF_SIZE, as defined above.
+
+#define TC_WRITEBLOCK_SIZE  256  // The size of the buffer that WriteBlocks are
+                                 // received into, and therefor the MTU of a
+                                 // write request.
+
+
+#if __RABBITSYS==0
+
+// There RAMSR is not supported
+#if _RK_FIXED_VECTORS
+   #define RAMSR_SIZE  0x0
+   #define FLASHDRIVER_SIZE  0x0
+// 3000A or later flash compile mode
+#elif FLASH_COMPILE
+   #define RAMSR_SIZE  0x800
+   #define FLASHDRIVER_SIZE  0x400
+// 3000A or later run-in-ram compile modes
+#else
+   #define RAMSR_SIZE  0x400
+   #define FLASHDRIVER_SIZE  0x0
+#endif
+
+#define RAMSR_VALUE 0+((RAMSR_SIZE >> 10) | (((STACKORG - BBROOTDATASIZE - 1) >> 8) & 0xFC))
+
+#define VECTOR_TABLE_SIZE 0x200
+
+#define FLASHDRIVER_BASE  STACKORG-BBROOTDATASIZE-VECTOR_TABLE_SIZE-1
+
+#if (_RAM_SIZE_==0x80) && !FAST_RAM_COMPILE
+                                 // Number of 4k pages of RAM. _RAM_SIZE_
+	#define RAM_SIZE 0x40         // is defined internally by Dynamic C
+#else                            // during the coldboot stage, but can
+	#define RAM_SIZE _RAM_SIZE_   // changed here. If _RAM_SIZE_ is 0x80 (512K)
+#endif                           // we reserve the upper half for xalloc
+                                 // and map top of DATA to the top of the
+                                 // lower half of RAM. The xalloc initialization
+                                 // code will recognize that the space is
+                                 // available if RAM_SIZE < _RAM_SIZE_.
+
+#define FLASH_SIZE _FLASH_SIZE_  // Number of 4k pages of flash. _FLASH_SIZE_
+                                 // is defined internally by Dynamic C during
+                                 // the coldboot stage by reading the flash ID
+                                 // int from the flash on CS0, but can be changed
+                                 // here.
+
+#define DATAEND ((RAM_START+RAM_SIZE)*0x1000L-1L)
+
+//***** File System Information *******************************************
+#define XMEM_RESERVE_SIZE 0x0000L // Amount of space in the first flash to
+                                  // reserve. Dynamic C will not use this
+                                  // much flash for xmemory code space.
+                                  // This allows the filesystem to be used on
+                                  // the first flash.
+
+#define FS2_RAM_RESERVE 0         // Number of 4096-byte blocks to reserve for
+                                  // filesystem II battery-backed RAM extent.
+                                  // Leave this at zero if not using RAM
+                                  // filesystem.
+
+
+/*
+** In FLASH_COMPILE mode, the flash transfer buffer and the target communication
+** buffers reserve stores are placed at the top of the /CS1 RAM for historical
+** reasons.  This is OK for the subsequent reserve stores because these stores
+** are of fixed size and are always allocated.
+**
+** The FAT and FS2 file systems, error logging and user data reserve stores are
+** third through sixth from the top of the /CS1 RAM because they are considered
+** to be the first through fourth priority optional reserve stores,
+** respectively.
+**
+** The rootdata org and watch data reserve stores change position and/or size
+** depending on whether separate I&D space is enabled or disabled and on watch
+** memory debug settings, respectively.  Since their positions are affected in
+** this way, these reserve stores are considered to be of the lowest priority
+** and placed lowest in RAM.  That their positions may be affected by changes to
+** any other reserve store is thus considered to be unimportant.
+*/
+#if FLASH_COMPILE
+	// flash transfer buffer (top)
+	#define DATAEND ((RAM_START+RAM_SIZE)*0x1000L-1L)
+
+	// FAT file system buffers, journals, etc. (top)
+	#define _TOS_FATDATA (_TOS_TCSYSBUF-TC_SYSBUF_BLOCK)
+	// FS2 RAM file system (top)
+	#define _TOS_FS2RAM (_TOS_FATDATA-FAT_TOTAL)
+	// error logging (top)
+	#define _TOS_ERRLOG (_TOS_FS2RAM-FS2_RAM_RESERVE*4096L)
+	// user data (top)
+	#define _TOS_USERDATA (_TOS_ERRLOG-ERRLOG_NBLOCKS*4096L)
+	#if __SEPARATE_INST_DATA__
+		// watch data (top, usually less than 4 KB block size)
+//		#define _TOS_WATCH_MEM (_TOS_USERDATA-_SOS_USERDATABLOCK)
+		// root data (top) in this compile mode is a fixed-location reserve store
+		#define _TOS_ROOTDATA (RAM_START*0x1000L+_RK_STACKORG-1L)
+	#else
+		// root data (top)
+		#define _TOS_ROOTDATA (_TOS_USERDATA-_SOS_USERDATABLOCK)
+		// watch data (top, usually less than 4 KB block size)
+//		#define _TOS_WATCH_MEM (_TOS_ROOTDATA-DATASIZE)
+	#endif
+#endif
+
+/*
+** In RAM_COMPILE mode, the flash transfer buffer and the target communication
+** buffers reserve stores are placed at the top of the /CS1 RAM for historical
+** reasons.  This is OK for the subsequent reserve stores because these stores
+** are of fixed size and are always allocated.
+**
+** The FAT and FS2 file systems and user data reserve stores are third through
+** fifth from the top of the /CS1 RAM because they are considered to be the
+** first through third priority optional reserve stores, respectively.  Note
+** that error logging is not supported in this compile mode, so it is not even
+** an optional reserve store.
+**
+** The rootdata org reserve store is either a separate relative-location reserve
+** store or is combined with other orgs in a fixed-location reserve store,
+** depending on whether separate I&D space is enabled or disabled.  The watch
+** data reserve store changes position and/or size depending on SRAM size,
+** whether separate I&D space is enabled or disabled, and on watch memory debug
+** settings.  Since their positions are affected in these ways, these reserve
+** stores are considered to be of the lowest priority and placed lowest in RAM.
+** That their positions may be affected by changes to any other reserve store is
+** thus considered to be unimportant.
+*/
+#if RAM_COMPILE
+	// flash transfer buffer (top)
+	#define DATAEND ((RAM_START+RAM_SIZE)*0x1000L-1L)
+	// FAT file system buffers, journals, etc. (top)
+	#define _TOS_FATDATA (_TOS_TCSYSBUF-TC_SYSBUF_BLOCK)
+	// FS2 RAM file system (top)
+	#define _TOS_FS2RAM (_TOS_FATDATA-FAT_TOTAL)
+	// user data (top)
+	#define _TOS_USERDATA (_TOS_FS2RAM-FS2_RAM_RESERVE*4096L)
+	#if __SEPARATE_INST_DATA__
+		#if RAM_SIZE <= 0x20
+      	#error "Separate instruction and data mode not supported in RAM mode for 128k RAM or smaller."
+		#else
+			// watch data (top, usually less than 4 KB block size)
+//			#define _TOS_WATCH_MEM (_TOS_USERDATA-_SOS_USERDATABLOCK)
+			// these *BASEBLOC macros include rootcode+*_intvec+watcode
+			//  +sid_xmemcode+rootconst+rootdata orgs in a fixed-location store
+//			#define _TOS_BASEBLOC (RAM_START*0x1000L+0x10000L+_RK_STACKORG-1L)
+//			#define _SOS_BASEBLOC (0x10000L+_RK_STACKORG)
+		#endif
+	#else
+		// root data (top)
+		#define _TOS_ROOTDATA (_TOS_USERDATA-_SOS_USERDATABLOCK)
+		// watch data (top, usually less than 4 KB block size)
+//		#define _TOS_WATCH_MEM (_TOS_ROOTDATA-DATASIZE)
+		// these *BASEBLOC macros include only the rootcode org in a
+		//  fixed-location reserve store
+//		#define _TOS_BASEBLOC (RAM_START*0x1000L+_RK_DATAORG-1L)
+//		#define _SOS_BASEBLOC _RK_DATAORG
+	#endif
+#endif
+#endif
+
+/*
+** In FAST_RAM_COMPILE mode, the FAT and FS2 file systems, error logging and
+** user data reserve stores are first through fourth from the top of the /CS1
+** RAM because they are considered to be the first through fourth priority
+** optional reserve stores, respectively.
+**
+** The bbrootdata org reserve store changes position depending on whether
+** separate I&D space is enabled or disabled.  Since its position is affected in
+** this way, this reserve store is considered to be of low priority and is
+** placed lowest in the /CS1 RAM.  That its position may be affected by changes
+** to any higher priority reserve store is thus considered to be unimportant.
+**
+** The flash transfer buffer and the target communication buffers reserve stores
+** are placed at the top of the /CS2 RAM for historical reasons.  This is OK for
+** the subsequent reserve stores because these stores are of fixed size and are
+** always allocated.
+**
+** The rootdata org is combined with other orgs in a fixed-location reserve
+** store, but its position changes depending on whether separate I&D space is
+** enabled or disabled.  The watch data reserve store changes position and/or
+** size depending on SRAM size, whether separate I&D space is enabled or
+** disabled, and on watch memory debug settings.  Since their positions are
+** affected in these ways, these reserve stores are considered to be of the
+** lowest priority and placed lowest in RAM.  That their positions may be
+** affected by changes to any other reserve store is thus considered to be
+** unimportant.
+*/
+
+#if FAST_RAM_COMPILE && (RUN_IN_RAM_CS == 0x2)
+	// end of reserved data in the highest-mapped RAM (top)
+	#define DATA2END ((RAM2_START+RAM2_SIZE)*0x1000L-1L)
+	// end of reserved data in the lowest-mapped RAM (top)
+	// FAT file system buffers, journals, etc. (top)
+	#define _TOS_FATDATA DATA2END
+	// FS2 RAM file system (top)
+	#define _TOS_FS2RAM (_TOS_FATDATA-FAT_TOTAL)
+	// error logging (top)
+	#define _TOS_ERRLOG (_TOS_FS2RAM-FS2_RAM_RESERVE*4096L)
+	// user data (top)
+	#define _TOS_USERDATA (_TOS_ERRLOG-ERRLOG_NBLOCKS*4096L)
+	#if __SEPARATE_INST_DATA__
+		// battery-backed root data (top) in this compile mode is a fixed-location
+		//  reserve store
+		#define _TOS_BBROOTDATA (RAM2_START*0x1000L+BBROOTDATAORG)
+		// watch data (top, usually less than 4 KB block size)
+		#define _TOS_WATCH_MEM (_TOS_TCSYSBUF-TC_SYSBUF_BLOCK)
+		// these *BASEBLOC macros include rootcode+*_intvec+watcode
+		//  +sid_xmemcode+rootconst+rootdata orgs
+//		#define _TOS_BASEBLOC (RAM_START*0x1000L+0x10000L+_RK_STACKORG-1L-BBROOTDATASIZE)
+//		#define _SOS_BASEBLOC (0x10000L+_RK_STACKORG-BBROOTDATASIZE)
+	#else
+		// battery-backed root data (top)
+		#define _TOS_BBROOTDATA (_TOS_USERDATA-_SOS_USERDATABLOCK)
+		// watch data (top, usually less than 4 KB block size)
+		#define _TOS_WATCH_MEM (_TOS_TCSYSBUF-TC_SYSBUF_BLOCK)
+		// these *BASEBLOC macros include rootcode+rootdata+watcode orgs,
+		//  internal+external interrupt vectors
+		#define _TOS_BASEBLOC (RAM_START*0x1000L+_RK_STACKORG-1L-BBROOTDATASIZE)
+		#define _SOS_BASEBLOC (_RK_STACKORG-BBROOTDATASIZE)
+	#endif
+#endif
+
+/*** EndHeader ***************************************************************/

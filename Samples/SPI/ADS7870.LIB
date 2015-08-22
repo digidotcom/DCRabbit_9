@@ -1,0 +1,258 @@
+/* START LIBRARY DESCRIPTION **************************************************
+ADS7870.LIB
+
+Copyright Z-World Inc. Jan 2002
+
+This program has been written by the Hardware Engineering Staff at Z-World in
+response to several customer requests.  As such, it has NOT had the testing and
+validation procedures which our "standard" software products have.  It is being
+made available as a sample.  There is no warranty, implied or otherwise.
+
+Some of the AD7870 pins are wired as follows:
+	~RESET = +5 - this signal is not used
+	RISE/~FALL = +5 - sets the SPI to use the rising edge of the clock
+	CONVERT = not used
+	BUSY = not used
+	OSC ENABLE = +5 - enables the internal oscillator
+	CCLK = not used
+	SCLK = serial clock from Rabbit
+	DIN = serial data from Rabbit
+	DOUT = serial data to Rabbit
+	~CS = Chip Select from Rabbit
+
+The A/D is used in its 'Direct Conversion' mode.  A single command is used to select
+the channel and gain and then initiate a conversion.
+
+Some of the internal registers are set as follows:
+	ADC control (3) = 0 (default)
+		Read instruction required to access conversion result
+		Clock division factor = 1
+	Reference Oscillator (7) = 0011 1100 = 0x3C
+		Use internal oscillator				(bit 5=1)
+		CCLK is oscillator output			(bit 4=1)
+		Reference is on						(bit 3=1)
+		Reference Buffer is on				(bit 2=1)
+		Reference is 2.5V						(bit 1=0)
+		Reference is determined by bit 1	(bit 0=0)
+	Serial Interface Control (24) = 0 (default)
+		MSB first (bits 7,0)
+		3 Wire mode (bits 6,1)
+		Din is HiZ on ~CS inactive (bits 5,2)
+	
+The following is a description of the values which the user may define
+BEFORE the #use ADS7870_R.lib statement:
+
+			****** Items 1..3 are required by SPI.LIB ******
+(1) Interface (default is SPI_SER_B)
+	SPI_SER_A			use serial port A
+	SPI_SER_B			use serial port B
+	SPI_MODE_PARALLEL	use a parallel I/O port
+
+(2) SPI Bit Rate if using serial port (default is 0)
+	SPI_BIT_RATE	This is the divisor for the appropriate Timer A register.
+
+(3) I/O bits for parallel interface							(defaults)
+	SPI_TX_REG		register for clock and Tx data		(PDDR)
+	SPI_TXD_BIT		bit number for Tx Data					(bit 1)
+	SPI_CLK_BIT		bit number for Clock						(bit 0)
+	SPI_RX_REG		register for Rx data						(PDDR)
+	SPI_RXD_MASK	mask for Rx bit							(8, bit 3)
+	NOTES for the parallel interface:
+	(1) the default values will be used if SPI_TX_REG is not defined.
+		If SPI_TX_REG is defined then all the values must be defined.
+	(2) the transmit data and clock bits must be in the same register
+	(3) the user MUST initialize the I/O port as required for
+		proper operation of the appropriate output and input bits!
+
+(4) I/O bit to be used for Chip Select (default is PB7)
+	ADS7870_CS_PORT
+	ADS7870_CS_PORTSHADOW
+	ADS7870_CS_BIT
+
+The following functions are provided for the user API:
+int	ADS7870Init			( void );
+float	ADS7870Read			( void );
+
+			THE FUNCTIONS IN THIS LIBRARY ARE NOT RE-ENTRANT
+END DESCRIPTION **********************************************************/
+
+/*****************************************************************************/
+/*****************************************************************************/
+
+
+/*** BeginHeader */
+#ifndef __ADS7870LIB
+#define __ADS7870LIB
+/*** EndHeader */
+
+/*** BeginHeader */
+#use "spi.lib"
+
+#ifndef ADS7870_CS_PORT
+#warnt "No ADS7870 /CS Interface defined: using PB7"
+#define ADS7870_CS_PORT			PBDR
+#define ADS7870_CS_PORTSHADOW	PBDRShadow
+#define ADS7870_CS_BIT				7
+#endif
+
+#ifndef CS_ENABLE
+#define CS_ENABLE	 BitWrPortI ( ADS7870_CS_PORT, &ADS7870_CS_PORTSHADOW, 0, ADS7870_CS_BIT ); \
+		SPIxor = 0;									// no invert
+#define CS_DISABLE BitWrPortI ( ADS7870_CS_PORT, &ADS7870_CS_PORTSHADOW, 1, ADS7870_CS_BIT )
+#endif
+
+/*** EndHeader */
+
+/*** BeginHeader ADS7870Init */
+int	ADS7870Init	( void );
+float	ADS7870Read	( int GainCode, int ChannelCode );
+void	ADS7870Regs ( void );
+
+extern int	ADS7870Error;
+extern const float GainTable[];
+union
+{	int ival;
+	char cval[2];
+} Value;
+char regs[10];
+
+/*** EndHeader */
+
+const float GainTable[] = { 1.0, 2.0, 4.0, 5.0, 8.0, 10.0, 16.0, 20.0 };
+int	ADS7870Error;
+
+/* START FUNCTION DESCRIPTION ********************************************
+ADS7870Init                   <ADS7870.LIB>
+
+SYNTAX:	      int ADS7870Init ( void );
+
+DESCRIPTION:   Initialize the A/D registers
+
+PARAMETER1:    none
+
+RETURN VALUES:		 0 = success
+			
+END DESCRIPTION **********************************************************/
+
+int ADS7870Init ( void )
+{
+	auto int i, j;
+	static const char ResetCmd[4] = {"\x00\x00\x01"};
+
+// cycle the chip enable to get it ready
+	CS_DISABLE;
+	CS_ENABLE;
+	CS_DISABLE;
+	SPIinit ();									// set up the serial port
+// initialize some A/D registers
+	CS_ENABLE;
+	SPIWrite ( ResetCmd, 3 );				// RESET: write a 0 to register 0
+	CS_DISABLE;
+//	Reference Oscillator (7) = 0x3C
+	CS_ENABLE;
+	SPIWrite ( "\x07", 1 );					// select write to register 7
+	SPIWrite ( "\x3C", 1 );					// MSB first, 3 wire mode
+	CS_DISABLE;
+
+	ADS7870Regs ();							// debug only!
+	return 0;
+} // ADS7870Init
+
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+ADS7870Read						<ADS7870.LIB>
+
+SYNTAX:			int ADS7870Read ( int GainCode, int ChannelCode );
+
+DESCRIPTION:	Direct Mode Read
+
+PARAMETER1:		Gain: 0..7
+PARAMETER2:		Channel Code: 0..15
+
+	Gain Codes (Code=Multiplier):
+		0 = 1,  1 = 2,  2 = 4,  3 = 5,  4 = 8,  5 = 10,  6 = 16,  7 = 20
+
+	Channel Codes for Differential Inputs:
+		0 = Ch0+, Ch1-			4 = Ch0-, Ch1+
+		1 = Ch2+, Ch3-			5 = Ch2-, Ch3+
+		2 = Ch4+, Ch5-			6 = Ch4-, Ch5+
+		3 = Ch6+, Ch7-			7 = Ch6-, Ch7+
+
+	Channel Codes for Single Ended Inputs:
+		8 = Ch0,  9 = Ch1,  10 = Ch2,  11 = Ch3,
+	  12 = Ch4, 13 = Ch5,  14 = Ch6,  15 = Ch7
+
+RETURN VALUE:	Reading scaled by Gain - assumes -10 V to +10 V basic range
+			
+END DESCRIPTION **********************************************************/
+
+float ADS7870Read ( int GainCode, int ChannelCode )
+{
+	auto int i, j;
+	auto float Volts, GainFactor;
+	auto char cBytes[2];
+	
+	GainFactor = GainTable[GainCode];
+	i = ((GainCode&7)<<4) | (ChannelCode&15) | 0x80;  // create direct mode command
+	CS_ENABLE;
+	SPIWrite ( &i, 1 );						// send direct mode command
+
+// wait for done
+	cBytes[0] = 0x80;							// set up for while loop
+	while ( cBytes[0] & 0x80 )
+	{	SPIWrite ( "\x44", 1 );				// cmd to read from reg 4
+		SPIRead ( cBytes, 1 );				// read a byte
+		j = 0;									// for breakpoint
+	}
+
+// get the result
+	SPIWrite ( "\x60", 1 );					// cmd to read from regs 0 & 1
+	SPIRead ( Value.cval, 2 );				// read the two bytes
+	CS_DISABLE;
+	ADS7870Error = Value.cval[0] & 1;	// bit 0 is overflow indicator
+	if ( ADS7870Error ) return 0.0;		// exit if error
+	i = Value.ival>>4;
+
+// process the SE voltage: actual A/D range = 0 to +2.5
+	if ( ChannelCode >= 8 )
+	{	Volts = ((float)i*2.5)/2048.0;	// normalize to 2.5V
+		Volts = Volts*16.0;					// adjust for divider
+		Volts /= GainFactor;					// adjust for PGA gain setting
+	}
+// process the Diff voltage: actual A/D range = 0 to +5
+	else
+	{	if ( i & 0x0800 ) i != 0xF000;	// make negative
+		Volts = ((float)i*5.0)/4096.0;	// normalize to 5V
+		Volts = Volts*16.0;					// adjust for divider
+		Volts /= GainFactor;					// adjust for PGA gain setting
+	}
+
+//	ADS7870Regs ();							// debug only!
+	return Volts;
+}
+
+
+void ADS7870Regs ( void )
+{
+	auto int i,j;
+
+// read all the registers
+	CS_ENABLE;
+	for ( i=0; i<=7; i++ )
+	{
+		j = 0x40 + i;							// read register command
+		SPIWrite ( &j, 1 );
+		SPIRead ( &regs[i], 1 );				// read a byte
+	}
+	SPIWrite ( "\x58", 1 );					// register 24
+	SPIRead ( &regs[8], 1 );
+	SPIWrite ( "\x5F", 1 );					// register 31
+	SPIRead ( &regs[9], 1 );
+	CS_DISABLE;
+}
+
+
+/*** BeginHeader */
+#endif	// __ADS7870LIB
+/*** EndHeader */

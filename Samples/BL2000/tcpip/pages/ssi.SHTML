@@ -1,0 +1,43 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD W3 HTML//EN">
+<HTML>
+<HEAD>
+	<TITLE>test test test</TITLE>
+</HEAD>
+
+<BODY topmargin="0" leftmargin="0" marginwidth="0" marginheight="0"
+	bgcolor="#FFFFFF" link="#009966" vlink="#FFCC00" alink="#006666">
+
+<!--img SRC="rabbit1.gif"-->
+<TABLE BORDER="0" CELLSPACING="2" CELLPADDING="1">
+	<TR>
+		<TH>DS4</TH>
+		<TH>DS5</TH>
+		<TH>DS6</TH>
+		<TH>DS7</TH>
+		<TH>DS8</TH>
+	</TR>
+	<TR>
+		<TD> <img SRC="<!--#echo var="led_DS4"-->"> </TD>
+		<TD> <img SRC="<!--#echo var="led_DS5"-->"> </TD>
+		<TD> <img SRC="<!--#echo var="led_DS6"-->"> </TD>
+		<TD> <img SRC="<!--#echo var="led_DS7"-->"> </TD>
+                <TD> <img SRC="<!--#echo var="led_DS8"-->"> </TD>
+	</TR>
+	<TR>
+		<TD> <A HREF="/led_DS4.cgi"> <img SRC="button.gif"> </A> </TD>
+		<TD> <A HREF="/led_DS5.cgi"> <img SRC="button.gif"> </A> </TD>
+		<TD> <A HREF="/led_DS6.cgi"> <img SRC="button.gif"> </A> </TD>
+		<TD> <A HREF="/led_DS7.cgi"> <img SRC="button.gif"> </A> </TD>
+                <TD> <A HREF="/led_DS8.cgi"> <img SRC="button.gif"> </A> </TD>
+	</TR>
+	
+
+	
+</TABLE>
+
+<BR>
+
+<A HREF="/showsrc.shtml">source code</A>
+
+</BODY>
+</HTML>

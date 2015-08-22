@@ -1,0 +1,57 @@
+<html>
+<pre>
+&nbsp;&nbsp;&nbsp;&lt;head>&lt;title&gt; hangman &lt;/title&gt;&lt;/head&gt;>
+&nbsp;&nbsp;&nbsp;&lt;body bgcolor="white" text="#000010" link="blue" vlink="#ff00ff" link="#ffff00"&gt;
+&nbsp;&nbsp;&nbsp;&lt;center&gt;&lt;font color = "#00BB00" size="+5"&gt; Hangman &lt;/font&gt;&lt;/center&gt;
+
+&lt;?z if($mode &lt;= 0) { ?&gt;
+&nbsp;&nbsp;&nbsp;&lt;div align=center&gt;
+&nbsp;&nbsp;&nbsp;&lt;font size=+3 color="#336699"&gt;
+&nbsp;&nbsp;&nbsp;&lt;?z if($mode == 0) { ?&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;font size=+3 color="#336699"&gt;&lt;pre&gt;&lt;b&gt;&lt;?z echo($newGuess)) ?&gt;&lt;/b&gt;&lt;/pre&gt;&lt;/font&gt;
+&nbsp;&nbsp;&nbsp;&lt;?z } ?&gt;
+&nbsp;&nbsp;&nbsp;&lt;?z if($numUsedGuesses== 7) { ?&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;p&gt;Game Over - You Win!&lt;/p&gt;
+&nbsp;&nbsp;&nbsp;&lt;?z } ?&gt;
+&nbsp;&nbsp;&nbsp;&lt;/font&gt;
+&nbsp;&nbsp;&nbsp;&lt;/div&gt;
+&nbsp;&nbsp;&nbsp;&lt;div align=center&gt;
+&nbsp;&nbsp;&nbsp;&lt;img src="./hang&lt;?z echo($currentGIF) ?&gt;.gif" height="145" width="120"&gt;
+&nbsp;&nbsp;&nbsp;&lt;p&gt;&lt;?z echo($prompt) ?&gt;&lt;/p&gt;
+&nbsp;&nbsp;&nbsp;&lt;font color="#0033ff"&gt;hint : &lt;B&gt;&lt;?z echo($hint) ?&gt;&lt;/b&gt;&lt;/font&gt;
+&nbsp;&nbsp;&nbsp;&lt;TABLE&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;TR&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;?z for($A=97; $A&lt;123; $A++) { ?&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;TD&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;form action="./index.zhtml" method="post" &gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;input type="hidden" NAME="character" VALUE="&lt;?z echo($A) ?&gt;"&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;input type="submit" value="&lt;?z printf("%c",$A) ?&gt;"&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;/form&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &lt;/TD&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;?z } ?&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;/TR&gt;
+&nbsp;&nbsp;&nbsp; &lt;/TABLE&gt;
+&lt;?z } ?&gt;
+
+&lt;?z if($mode==1) { ?&gt;
+&nbsp;&nbsp;&nbsp;&lt;div align=center&gt;
+&nbsp;&nbsp;&nbsp;&lt;font size=+3 color="#336699"&gt;&lt;p&gt;&lt;?z echo($newGuess) ?&gt;&lt;/p&gt; &lt;/font&gt;
+&nbsp;&nbsp;&nbsp;&lt;/div&gt;
+&nbsp;&nbsp;&nbsp;&lt;div align=center&gt;
+&nbsp;&nbsp;&nbsp;&lt;img src='./hang6.gif' height=145 width=120&gt;
+&nbsp;&nbsp;&nbsp;&lt;p&gt;&lt;font size=+3 color="#ff3333"&gt;Game over.&lt;/font&gt;&lt;/p&gt;
+&nbsp;&nbsp;&nbsp;&lt;p&gt;&lt;font size=+2 color="#3333cc"&gt;The correct answer is &lt;B&gt;&lt;?z echo($hint) ?&gt;&lt;/B&gt;.
+&nbsp;&nbsp;&nbsp;&lt;/p&gt;&lt;/font&gt;
+&lt;?z } ?&gt;
+&nbsp;&nbsp;&nbsp;&lt;form action="./index.zhtml" method="post" &gt;
+&nbsp;&nbsp;&nbsp;&lt;input type="hidden" NAME="mode" VALUE="-1"&gt;
+&nbsp;&nbsp;&nbsp;&lt;input type="submit" value="Start New Game"&gt;
+&nbsp;&nbsp;&nbsp;&lt;/form&gt;
+&nbsp;&nbsp;&nbsp;&lt;/div&gt;
+&lt;A HREF="/zsource.html"&gt; ZHTML Source
+&lt;/A&gt;
+&lt;A HREF="/hangman_game.c"&gt;C Source code
+&lt;/A&gt;
+&lt;/body&gt;
+&lt;/pre&gt;
+&lt;/html&gt;

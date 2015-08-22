@@ -1,0 +1,922 @@
+/* START LIBRARY DESCRIPTION *********************************************
+DM_SMTP.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains target-side routines for sending email messages.
+   It makes use of the TCP/IP subsystem to implement an RFC821 mail
+   client.
+
+PORTING NOTE:
+   For non-Rabbit target processors with an ANSI C compiler, there are
+   equivalent .c and .h files in the LIB\Target subdirectory.
+
+CONFIGURATION MACROS:
+	The following macros may be defined before inclusion of this library.
+
+	DEVMATE_SMTP_TIMEOUT
+	   Defaults to 300.  Specifies timeout for sending mail, in seconds.
+	   Whenever a response is received from the mail server, this timeout
+	   is reset (thus it is not an _overall_ timeout, but more of a
+	   watchdog timeout to ensure that there is no lock-up in either the
+	   server or the DeviceMate.)
+
+	DEVMATE_SMTP_SERVER
+	   Defaults to "" (none).  String constant defining the default SMTP
+	   server.  This may be overridden at runtime using devmate_smtp_
+	   setserver().
+
+	DEVMATE_SMTP_DOMAIN
+	   Defaults to "" (none).  String constant defining the default
+	   domain name of the sender.  This may be overridden at runtime using
+	   devmate_smtp_setdomain().
+
+	DEVMATE_SMTP_SOCK
+	   Defaults to 2.  Specifies the TCP/IP subsystem socket number to use
+	   when calling devmate_smtp_mailtick().  This may be overridden at
+	   runtime using devmate_smtp_setsocket().
+
+	DEVMATE_SMTP_DEBUG
+	   If defined, then debugging printf's will be inserted so that errors
+	   may be diagnosed.
+
+GLOBAL VARIABLES:
+
+   DM_SMTPState _smtps;
+      One instance of this structure contains all necessary state
+      information for email.  This library is thereby
+      made non-reentrant, however application code may serialize access
+      to these API functions so that the library may be used in a multi-
+      tasking environment.
+
+API FUNCTIONS:
+   See individual function description for details.  None of the
+   functions in this library are "blocking".
+
+   Initialize mailout parameters:
+     int devmate_smtp_setserver()
+     int devmate_smtp_setdomain()
+     int devmate_smtp_setsocket()
+   Start sending new mail:
+     void devmate_smtp_sendmail()
+     void devmate_smtp_sendmailxmem()
+   Drive mail state machine and check results:
+     int devmate_smtp_status()
+     int devmate_smtp_mailtick()
+
+   The typical sequence of calls would be:
+
+     devmate_smtp_setserver("mailserver.xxx.com");
+     devmate_smtp_setdomain("xxx.com");
+     devmate_smtp_sendmail(
+       "recipient@elsewhere.com",
+       "replyaddr@xxx.com",
+       "This is the subject",
+       "This is the message....");
+     while (devmate_smtp_mailtick() == DM_SMTP_PENDING);
+     if (devmate_smtp_status() == DM_SMTP_SUCCESS)
+       printf("Sent!\n");
+     else
+       printf("Something went wrong!\n");
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader _smtps */
+
+#ifndef __DM_SMTP_LIB
+#define __DM_SMTP_LIB
+
+#ifndef DEVMATE_TCP_H
+	#use "dm_tcp.lib"
+#endif
+
+#ifndef __DC__
+	// for isdigit()
+	#include <ctype.h>
+#endif
+
+/*
+ *   defining DEVMATE_SMTP_DEBUG allows you to view a complete log of
+ *   an email session in Dynamic C's STDIO window.
+ */
+#ifdef DEVMATE_SMTP_DEBUG
+	#define smtp_nodebug
+#else
+	#ifndef __DC__
+		#define smtp_nodebug
+	#else
+		#define smtp_nodebug nodebug
+	#endif
+#endif
+
+
+#define DM_SMTP_MAX_SRVLEN 100
+
+
+/*
+	This is a portion of the response chart for different situations
+	from RFC821.  For example the HELO message would get a response
+	from the server that begin with 250, 500, 501, 504, 421.  250
+	would be the only sucessful result.
+	
+            CONNECTION ESTABLISHMENT
+               S: 220
+               F: 421
+            HELO
+               S: 250
+               E: 500, 501, 504, 421
+            MAIL
+               S: 250
+               F: 552, 451, 452
+               E: 500, 501, 421
+            RCPT
+               S: 250, 251
+               F: 550, 551, 552, 553, 450, 451, 452
+               E: 500, 501, 503, 421
+            DATA
+               I: 354 -> data -> S: 250
+                                 F: 552, 554, 451, 452
+               F: 451, 554
+               E: 500, 501, 503, 421
+            QUIT
+               S: 221
+               E: 500
+
+	There is a logical progression of events when sending an
+	individual email. S: = sender, R: = receiver
+
+            S: MAIL FROM:<Smith@Alpha.ARPA>
+            R: 250 OK
+
+            S: RCPT TO:<Brown@Beta.ARPA>
+            R: 250 OK
+
+            S: DATA
+            R: 354 Start mail input; end with <CRLF>.<CRLF>
+            S: Blah blah blah...
+            S: ...etc. etc. etc.
+            S: <CRLF>.<CRLF>
+            R: 250 OK
+
+            S: QUIT
+            R: 221 OK
+
+	A complete definition of the format for the commands, the responses,
+	and their behaviour can be found in RFC821 from http://www.ietf.org
+	
+*/
+
+typedef struct
+{
+	int16		state;
+	uint8		socket;
+	char		server[DM_SMTP_MAX_SRVLEN];
+	char		domain[DM_SMTP_MAX_SRVLEN];
+	char		buffer[256];
+	int16		sendflag;
+	int16		sendpos;
+	uint32	offset;
+	int		status;
+	char*		to;
+	char*		rcpt;
+	char*		from;
+	char*		subject;
+	char*		message;
+	uint16	timeout;
+	faraddr_t xmemmessage;
+	uint32	messagelen;
+} DM_SMTPState;
+
+/*
+ *   Internal states for the SMTP server.
+ */
+
+#define DM_SMTP_INIT 				0
+#define DM_SMTP_WAITFORESTAB		1
+#define DM_SMTP_WAITFORHELO220	2
+#define DM_SMTP_WAITFORMAIL250	3
+#define DM_SMTP_WAITFORDATA354	4
+#define DM_SMTP_WAITFORDATA250	5
+#define DM_SMTP_WAITFORRCPT250	6
+#define DM_SMTP_SENDBODY			7
+#define DM_SMTP_SENDEOM				8
+#define DM_SMTP_WAITQUIT250		9
+#define DM_SMTP_WAITCLOSE			10
+#define DM_SMTP_WAITDONE			11
+#define DM_SMTP_DONE					12
+#define DM_SMTP_ERROR				13
+
+/*
+ *   Status of the SMTP Process
+ */
+
+#define DM_SMTP_SUCCESS				1
+#define DM_SMTP_PENDING				0
+#define DM_SMTP_TIME					-1
+#define DM_SMTP_UNEXPECTED			-2
+#define DM_SMTP_NOSOCK 				-3
+
+/*
+ *		Return codes for smtp_setserver() etc.
+ */
+#define DM_SMTP_OK					0
+#define DM_SMTP_NAMETOOLONG		-1
+#define DM_SMTP_BADSOCKNO			-2
+
+#define DM_SMTP_RESET_TIMEOUT	_smtps.timeout = (uint16)SEC_TIMER
+
+extern DM_SMTPState _smtps;
+
+/*** EndHeader */
+
+DM_SMTPState _smtps;
+
+
+/*** BeginHeader devmate_smtp_sendmail */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_smtp_sendmail                		<DM_SMTP.LIB>
+
+SYNTAX: void devmate_smtp_sendmail(char* to, char* from,
+                     char* subject, char* message);
+
+KEYWORDS:		tcpip, smtp, mail
+
+DESCRIPTION: 	Begin sending an email message.  The sum of the string
+               lengths of to, from and subject must be less than or
+               equal to 224.  You must call devmate_smtp_mailtick() to
+               complete processing.
+
+               The parameter strings must be held constant until the
+               devmate_smtp_mailtick() returns something other than
+               DM_SMTP_PENDING.
+
+PARAMETER1:	   String containing the e-mail address of the recipient,
+               or a comma-delimited list of recipients e.g.
+               "nobody@nowhere.org" or "foo@bar.com,baz@bar.com".
+PARAMETER2:	   String containing the e-mail address of the sender, or at
+               least an address of a mailbox for the server to post back
+               any error messages.
+PARAMETER3:	   String containing the subject of the message.
+PARAMETER4:	   String containing the message.  This string must NOT
+               contain the byte sequence "\r\n.\r\n" (CRLF.CRLF), as this
+               is used to mark the end of the e-mail, and will be appended
+               to the e-mail automatically.  The maximum length of this
+               string is limited by the lesser of root data space, or 32k.
+               For strict RFC compliance, lines should be delimited with
+               "\r\n" sequences, not just "\n".  For longer messages, see
+               devmate_smtp_sendmailxmem().
+
+SEE ALSO:      devmate_smtp_mailtick, devmate_smtp_status,
+               devmate_smtp_sendmailxmem
+
+END DESCRIPTION **********************************************************/
+
+void devmate_smtp_sendmail(char* to, char* from, char* subject, char* message);
+/*** EndHeader */
+
+smtp_nodebug void devmate_smtp_sendmail(char* to, char* from, char* subject, char* message)
+{
+#ifdef __DC__
+	#GLOBAL_INIT { _smtps.server[0] = '\0'; _smtps.socket = 0; }
+#endif
+
+	_smtps.state=DM_SMTP_INIT;
+	_smtps.sendflag = 0;
+	_smtps.to=to;
+	_smtps.from=from;
+	_smtps.subject=subject;
+	_smtps.message=message;
+	_smtps.xmemmessage=FARADDR_NULL;
+	_smtps.messagelen=strlen(message);
+	_smtps.status=DM_SMTP_PENDING;
+	_smtps.offset = 0;
+}
+
+/*** BeginHeader devmate_smtp_sendmailxmem */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_smtp_sendmailxmem            		<DM_SMTP.LIB>
+
+SYNTAX: void devmate_smtp_sendmailxmem(char* to, char* from, char* subject,
+                               faraddr_t message, uint32 messagelen);
+
+KEYWORDS:		tcpip, smtp, mail
+
+DESCRIPTION: 	Begin sending an email message.  The sum of the string
+               lengths of to, from and subject must be less than or
+               equal to 224.  You must call devmate_smtp_mailtick() to
+               complete processing.
+
+               This function is identical to devmate_smtp_sendmail()
+               except that longer messages can be contained in
+               extended ("far") memory.
+
+PARAMETER1:	   String containing the e-mail address of the recipient,
+               or a comma-delimited list of recipients e.g.
+               "nobody@nowhere.org" or "foo@bar.com,baz@bar.com".
+PARAMETER2:	   String containing the e-mail address of the sender, or at
+               least an address of a mailbox for the server to post back
+               any error messages.
+PARAMETER3:	   String containing the subject of the message.
+PARAMETER4:	   String containing the message.  This string must NOT
+               contain the byte sequence "\r\n.\r\n" (CRLF.CRLF), as this
+               is used to mark the end of the e-mail, and will be appended
+               to the e-mail automatically.  This string resides in far
+               memory, and does not have to be null-terminated since the
+               length is specified in the next parameter.
+PARAMETER5:	   Length of message string, limited only by xmem storage.
+
+SEE ALSO:      devmate_smtp_mailtick, devmate_smtp_status,
+               devmate_smtp_sendmail
+
+END DESCRIPTION **********************************************************/
+
+void devmate_smtp_sendmailxmem(char* to, char* from, char* subject,
+					faraddr_t message, uint32 messagelen);
+/*** EndHeader */
+
+smtp_nodebug void devmate_smtp_sendmailxmem(char* to, char* from, char* subject,
+					faraddr_t message, uint32 messagelen)
+{
+	_smtps.state=DM_SMTP_INIT;
+	_smtps.sendflag = 0;	
+	_smtps.to=to;
+	_smtps.from=from;
+	_smtps.subject=subject;
+	_smtps.message=NULL;
+	_smtps.xmemmessage=message;
+	_smtps.messagelen=messagelen;
+	_smtps.status=DM_SMTP_PENDING;
+	_smtps.offset = 0;
+}
+
+/*** BeginHeader devmate_smtp_status */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_smtp_status             		<DM_SMTP.LIB>
+
+SYNTAX: int devmate_smtp_status(void);
+
+KEYWORDS:		tcpip, smtp, mail
+
+DESCRIPTION: 	Return the status of the last email processed, or the
+               current status.
+
+RETURN VALUE: 	DM_SMTP_SUCCESS - email sent
+               DM_SMTP_PENDING - email not sent yet call smtp_mailtick
+                 again
+               DM_SMTP_TIME    - email not sent within SMTP_TIMEOUT
+                 seconds
+               DM_SMTP_UNEXPECTED - received an unexpected response from
+                 the SMTP server.
+               
+SEE ALSO:      devmate_smtp_sendmail
+
+END DESCRIPTION **********************************************************/
+
+int devmate_smtp_status(void);
+/*** EndHeader */
+
+smtp_nodebug int devmate_smtp_status(void)
+{
+	return _smtps.status;
+}
+
+/*** BeginHeader devmate_smtp_setserver */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_smtp_setserver          		<DM_SMTP.LIB>
+
+SYNTAX: int devmate_smtp_setserver(char* server);
+
+KEYWORDS:		tcpip, smtp, mail
+
+DESCRIPTION: 	Sets the SMTP server.  This value overrides
+               DEVMATE_SMTP_SERVER.  If DEVMATE_SMTP_SERVER is defined to
+               a suitable default (in tc_conf.lib/h) then there is no need
+               to set the server using this function.
+
+PARAMETER1:	   String containing the server name e.g. "mail.foo.org"
+
+RETURN VALUE: 	DM_SMTP_OK          - server name was set successfully
+					DM_SMTP_NAMETOOLONG - the server name was too long (more
+					    than DM_SMTP_MAX_SRVLEN=100 chars).
+               
+SEE ALSO: 	devmate_smtp_sendmail, devmate_smtp_setdomain
+
+END DESCRIPTION **********************************************************/
+
+int devmate_smtp_setserver(char* server);
+/*** EndHeader */
+
+smtp_nodebug int devmate_smtp_setserver(char* server)
+{
+	if (strlen(server) < DM_SMTP_MAX_SRVLEN) {
+		strcpy(_smtps.server, server);
+		return DM_SMTP_OK;
+	} else {
+		return DM_SMTP_NAMETOOLONG;
+	}
+}
+
+/*** BeginHeader devmate_smtp_setdomain */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_smtp_setdomain          		<DM_SMTP.LIB>
+
+SYNTAX: int devmate_smtp_setdomain(char* domain);
+
+KEYWORDS:		tcpip, smtp, mail
+
+DESCRIPTION: 	Sets the SMTP domain.  This value overrides
+               DEVMATE_SMTP_DOMAIN.  Note that this value should be set to
+               the sender's domain name, since some SMTP servers may be
+               configured to perform a reverse DNS query to verify the
+               identity of the sender.  If DEVMATE_SMTP_DOMAIN is defined
+               to a suitable default (in tc_conf.lib/h) then there is no
+               need to set the domain using this function.
+
+PARAMETER1:	   String containing the domain name e.g. "bunny.org"
+
+RETURN VALUE: 	DM_SMTP_OK          - domain name was set successfully
+					DM_SMTP_NAMETOOLONG - the domain name was too long (more
+					    than DM_SMTP_MAX_SRVLEN=100 chars).
+               
+SEE ALSO:      devmate_smtp_sendmail, devmate_smtp_setserver
+
+END DESCRIPTION **********************************************************/
+
+int devmate_smtp_setdomain(char* domain);
+/*** EndHeader */
+
+smtp_nodebug int devmate_smtp_setdomain(char* domain)
+{
+	if (strlen(domain) < DM_SMTP_MAX_SRVLEN) {
+		strcpy(_smtps.domain, domain);
+		return DM_SMTP_OK;
+	} else {
+		return DM_SMTP_NAMETOOLONG;
+	}
+}
+
+/*** BeginHeader devmate_smtp_setsocket */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_smtp_setsocket          		<DM_SMTP.LIB>
+
+SYNTAX: int devmate_smtp_setsocket(uint8 socket);
+
+KEYWORDS:		tcpip, smtp, mail
+
+DESCRIPTION: 	Sets the DeviceMate socket number to use for SMTP.  A
+               socket needs to be set since sockets are shared between
+               SMTP and any direct use of the TCP/IP subsystem by the
+               application.  If this function is not called, the
+               socket number will default to that defined in tc_conf.lib;
+               currently 2.  The socket is only used while sending
+               mail.  When devmate_smtp_mailtick() returns a value other
+               than DM_SMTP_PENDING, the socket may be used for other TCP
+               connections, until it is desired to send another email.
+
+PARAMETER1:	   Socket number.
+
+RETURN VALUE: 	DM_SMTP_OK        - socket number set successfully
+					DM_SMTP_BADSOCKNO - the socket number is invalid.  The
+					   requested socket number must be between 1 and
+					   devmate_tcp_maxsocket() inclusive.
+               
+SEE ALSO:      devmate_smtp_sendmail, devmate_smtp_setserver
+
+END DESCRIPTION **********************************************************/
+
+int devmate_smtp_setsocket(uint8 socket);
+/*** EndHeader */
+
+smtp_nodebug int devmate_smtp_setsocket(uint8 socket)
+{
+	auto uint8 s;
+
+	s = devmate_tcp_maxsocket();
+	if (!s)
+		s = DEVMATE_TCP_MAXCHANS;	// Use this as fallback in case not yet negotiated.
+	if (socket >= 1 && socket <= s) {
+		_smtps.socket = socket;
+		return DM_SMTP_OK;
+	}
+	else
+		return DM_SMTP_BADSOCKNO;
+}
+
+/*** BeginHeader devmate_smtp_mailtick */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_smtp_mailtick            		<DM_SMTP.LIB>
+
+SYNTAX: int devmate_smtp_mailtick(void);
+
+KEYWORDS:		tcpip, smtp, mail
+
+DESCRIPTION: 	This function must be called multiple times to complete
+               sending an email.  If the return code is DM_SMTP_PENDING
+               then it must be called again.  It is sufficent to call
+               this function once every 100ms or so if the main
+               application is performing other processing.  Otherwise,
+               it may be called in a tight loop to obtain the highest
+               performance.
+
+               If the SMTP socket is in use on the first call to this
+               function for a new email, then the socket will be
+               aborted first (see devmate_tcp_abort()).
+
+RETURN VALUE: 	DM_SMTP_SUCCESS - email sent successfully.
+               DM_SMTP_PENDING - email not sent yet call this again.
+               DM_SMTP_TIME    - email not sent within SMTP_TIMEOUT
+                 seconds.
+               DM_SMTP_UNEXPECTED - received an unexpected response from
+                 the SMTP server
+               
+SEE ALSO:      devmate_smtp_sendmail, devmate_smtp_status
+
+END DESCRIPTION **********************************************************/
+
+int devmate_smtp_mailtick(void);
+/*** EndHeader */
+
+smtp_nodebug int devmate_smtp_mailtick(void)
+{
+	auto char* buffer;
+	auto int16 bytes_written;
+	auto char* server;
+	auto int16 num_bytes;
+	auto char ip_buffer[16];
+	auto int16 bytes_sent;
+	auto int16 resolve_result;
+	auto int rc;
+	auto char c;
+	
+	devmate_tick();
+	
+	buffer=_smtps.buffer;
+
+	/*
+	 *   Check if the socket prematurely closed or if
+	 *   a timeout has occurred.
+	 */
+
+	if (_smtps.status != DM_SMTP_PENDING)
+		return _smtps.status;
+
+	if (_smtps.state != DM_SMTP_INIT) {
+			
+		if((int16)((uint16)SEC_TIMER - _smtps.timeout) > DEVMATE_SMTP_TIMEOUT) {
+#ifdef DEVMATE_SMTP_DEBUG
+			printf("Timeout\n");
+#endif
+			_smtps.state=DM_SMTP_ERROR;
+			return _smtps.status=DM_SMTP_TIME;
+		}
+	}
+
+	//see if we are sending a string
+	if(_smtps.sendflag) {
+#ifdef DEVMATE_SMTP_DEBUG
+		printf("Writing to server\n");
+#endif
+		num_bytes = strlen(buffer + _smtps.sendpos);
+		bytes_sent = devmate_tcp_fastwrite(_smtps.socket,
+													  buffer + _smtps.sendpos,
+													  num_bytes);
+		if(bytes_sent < 0)
+		{	
+			_smtps.state=DM_SMTP_ERROR;
+		}
+		else if(bytes_sent == num_bytes)
+			_smtps.sendflag = 0; //finished sending
+		else {
+			//didn't finish
+			_smtps.sendpos += bytes_sent;
+			return DM_SMTP_PENDING;
+		}
+	} 
+	
+	switch(_smtps.state) {
+		case DM_SMTP_INIT:
+	
+			if (strcmp(_smtps.server, "") == 0)
+				server = DEVMATE_SMTP_SERVER;
+			else
+				server = _smtps.server;
+
+			if (!_smtps.socket)
+				_smtps.socket = DEVMATE_SMTP_SOCK;
+
+			rc = devmate_tcp_open(_smtps.socket, 0, server, 25);
+			if(rc < 0) {
+#ifdef DEVMATE_SMTP_DEBUG
+				printf("Error %d opening SMTP socket.\n", rc);
+#endif
+				if (rc == -4) {
+					// Socket not closed.  Abort it, then caller will
+					// try again.
+					devmate_tcp_abort(_smtps.socket);
+					break;
+				}
+
+				_smtps.state=DM_SMTP_DONE;
+				return _smtps.status=DM_SMTP_NOSOCK;
+			}
+			if (!rc)
+				break;		// Keep trying to open if zero return
+			
+			_smtps.state=DM_SMTP_WAITFORESTAB;
+			DM_SMTP_RESET_TIMEOUT;
+			break;
+
+		case DM_SMTP_WAITFORESTAB:
+			/*
+			 *   Wait for the connection to be acknowledged
+			 */
+			 
+			if(rc = devmate_tcp_isestablished(_smtps.socket)) {
+			   if (rc < 0) {
+#ifdef DEVMATE_SMTP_DEBUG
+			   	printf("Connection reset by server\n");
+#endif
+					_smtps.status=DM_SMTP_UNEXPECTED;
+					_smtps.state=DM_SMTP_ERROR;
+			   	break;
+			   }
+#ifdef DEVMATE_SMTP_DEBUG
+				printf("Connected\n");
+#endif
+				_smtps.state=DM_SMTP_WAITFORHELO220;
+				DM_SMTP_RESET_TIMEOUT;
+			}
+			break;
+
+		case DM_SMTP_WAITFORHELO220:
+			/*
+			 *   Wait for the initial welcome message
+			 */
+
+			if(devmate_smtp_getresponse("220") > 0) {
+				sprintf(buffer,"HELO %s\r\n",_smtps.domain);
+				devmate_smtp_sendbuf(DM_SMTP_WAITFORMAIL250);
+#ifdef DEVMATE_SMTP_DEBUG
+				printf("Write: %s\n",buffer);
+#endif
+			}
+			break;
+
+		case DM_SMTP_WAITFORMAIL250:
+			/*
+			 *   Wait for the response to our HELO
+			 */
+
+			if(devmate_smtp_getresponse("25") > 0) {
+				sprintf(buffer,"MAIL FROM: <%s>\r\n",_smtps.from);
+				_smtps.rcpt = _smtps.to;
+				devmate_smtp_sendbuf(DM_SMTP_WAITFORRCPT250);
+#ifdef DEVMATE_SMTP_DEBUG
+				printf("Write: %s\n",buffer);
+#endif
+			}
+			break;
+			
+		case DM_SMTP_WAITFORRCPT250:
+			/*
+			 *   Wait for the response to our MAIL
+			 */
+
+			if(devmate_smtp_getresponse("25") > 0) {
+				strcpy(buffer, "RCPT TO: <");
+				buffer += 10;
+				while ((c = *_smtps.rcpt++) && c != ',')
+					*buffer++ = c;
+				strcpy(buffer, ">\r\n");
+				devmate_smtp_sendbuf(c ? DM_SMTP_WAITFORRCPT250 : DM_SMTP_WAITFORDATA250);
+#ifdef DEVMATE_SMTP_DEBUG
+				printf("Write: %s\n",_smtps.buffer);
+#endif
+			}
+			break;
+			
+		case DM_SMTP_WAITFORDATA250:
+			/*
+			 *   Wait for the response to our RCPT
+			 */
+
+			if(devmate_smtp_getresponse("25") > 0) {
+				sprintf(buffer,"DATA\r\n");
+				devmate_smtp_sendbuf(DM_SMTP_WAITFORDATA354);
+#ifdef DEVMATE_SMTP_DEBUG
+				printf("Write: DATA\n",buffer);
+#endif
+			}
+			break;
+
+		case DM_SMTP_WAITFORDATA354:
+			/*
+			 *   Wait for the response to our DATA
+			 */
+
+			if(devmate_smtp_getresponse("354") > 0) {
+				sprintf(buffer,"From: <%s>\r\nTo: <%s>\r\nSubject: %s\r\n\r\n",
+					_smtps.from,
+					_smtps.to,
+					_smtps.subject);
+
+				devmate_smtp_sendbuf(DM_SMTP_SENDBODY);
+#ifdef DEVMATE_SMTP_DEBUG
+				printf("Write: %s\n",buffer);
+#endif
+			}
+			break;
+
+		case DM_SMTP_SENDBODY:
+			/*
+			 *   Send the body of the message
+			 */
+
+			if (_smtps.xmemmessage == FARADDR_NULL)
+			{
+				bytes_written = devmate_tcp_fastwrite(_smtps.socket,
+					_smtps.message+(int)_smtps.offset,
+					strlen(_smtps.message+(int)_smtps.offset));
+			}
+			else {
+				num_bytes = (_smtps.messagelen - _smtps.offset) < 256 ?
+				            (int)(_smtps.messagelen - _smtps.offset) : 256;
+				xmem2root(_smtps.buffer,
+				          _smtps.xmemmessage + _smtps.offset, num_bytes);
+				bytes_written = devmate_tcp_fastwrite(_smtps.socket,
+					_smtps.buffer, num_bytes);
+			}
+			
+			if (bytes_written > 0) {
+				_smtps.offset+=bytes_written;
+				
+				DM_SMTP_RESET_TIMEOUT;
+					
+				if (_smtps.offset == _smtps.messagelen) {
+#ifdef DEVMATE_SMTP_DEBUG
+					printf("Message Written\n");
+#endif
+					strcpy(buffer,"\r\n.\r\n");
+					_smtps.offset=0;
+					_smtps.state=DM_SMTP_SENDEOM;
+				}
+			}
+			else if (bytes_written < 0)
+				_smtps.state=DM_SMTP_ERROR;
+
+			break;
+			
+		case DM_SMTP_SENDEOM:
+			/*
+			 *   Send "\r\n.\r\n" to terminate the message
+			 */
+
+			bytes_written = devmate_tcp_fastwrite(_smtps.socket,
+				buffer+(int)_smtps.offset, strlen(buffer+(int)_smtps.offset));
+
+			if (bytes_written > 0) {
+				_smtps.offset+=bytes_written;
+				DM_SMTP_RESET_TIMEOUT;
+				if(buffer[(int)_smtps.offset]==0) {
+#ifdef DEVMATE_SMTP_DEBUG
+					printf("End Of Message Written\n",buffer);
+#endif
+					_smtps.offset=0;
+					_smtps.state=DM_SMTP_WAITQUIT250;
+				}
+			}
+			else if (bytes_written < 0)
+				_smtps.state=DM_SMTP_ERROR;
+
+			break;
+
+		case DM_SMTP_WAITQUIT250:
+			/*
+			 *   Wait for the response to our message
+			 */
+
+			if(devmate_smtp_getresponse("250") > 0) {
+				sprintf(buffer,"QUIT\r\n");
+				devmate_smtp_sendbuf(DM_SMTP_WAITDONE);
+#ifdef DEVMATE_SMTP_DEBUG
+				printf("Write: QUIT\n",buffer);
+#endif
+			}
+			break;
+
+		case DM_SMTP_WAITDONE:
+			/*
+			 *   Wait for the response to our QUIT message
+			 */
+
+			if(devmate_smtp_getresponse("221") > 0) {
+#ifdef DEVMATE_SMTP_DEBUG
+				printf("Connection Closing\n",buffer);
+#endif
+				devmate_tcp_close(_smtps.socket);
+				_smtps.state=DM_SMTP_WAITCLOSE;
+				DM_SMTP_RESET_TIMEOUT;
+			}
+			break;
+
+		case DM_SMTP_WAITCLOSE:
+			/*
+			 *   Wait for the connection to completely close.
+			 */
+			 
+			if(devmate_tcp_isclosed(_smtps.socket)) {
+#ifdef DEVMATE_SMTP_DEBUG
+				printf("Connection Closed\n",buffer);
+#endif
+				_smtps.state=DM_SMTP_DONE;
+				_smtps.status=DM_SMTP_SUCCESS;
+			}
+			break;
+
+		case DM_SMTP_DONE:
+		case DM_SMTP_ERROR:
+			_smtps.status=DM_SMTP_UNEXPECTED;
+	}
+	
+	return _smtps.status;
+}
+
+/*** BeginHeader devmate_smtp_getresponse */
+int devmate_smtp_getresponse(char* expected);
+/*** EndHeader */
+
+/*
+ *		Internal function waits for and checks the response from a server.
+ */
+
+smtp_nodebug int devmate_smtp_getresponse(char* expected)
+{
+	int read_count;
+	char *buffer;
+	char *eol_pos;
+	int16 got_response;
+
+	buffer = _smtps.buffer;
+	got_response = 0;
+
+__DM_nextline:
+	read_count = devmate_tcp_preread(_smtps.socket, buffer, 255);
+	if (read_count < 0) {
+		_smtps.status = DM_SMTP_UNEXPECTED;
+		_smtps.state = DM_SMTP_ERROR;		
+		return -1;		// Error, socket not readable.
+	}
+	
+	buffer[read_count] = 0; //null terminator
+	if(eol_pos = strchr(buffer, '\n'))
+	{
+#ifdef DEVMATE_SMTP_DEBUG
+		printf("Read:  %s\n",_smtps.buffer);
+#endif
+		// Skip lines which do not start with 3 digits (servers are allowed to
+		// send multi-line responses).
+		if (!isdigit(buffer[0]) ||
+			 !isdigit(buffer[1]) ||
+			 !isdigit(buffer[2])) {
+			 devmate_tcp_fastread(_smtps.socket, NULL, (int16)(eol_pos - buffer) + 1);
+			 goto __DM_nextline;
+		}
+		
+		if(!strncmp(buffer, expected, strlen(expected)))
+			got_response = 1;
+		else {
+			_smtps.state = DM_SMTP_ERROR;
+			_smtps.status = DM_SMTP_UNEXPECTED;
+			// A bit brusque, but we avoid extra state for proper cleanup
+			// while remembering to return unsuccessful status.
+			devmate_tcp_abort(_smtps.socket);
+			return 0; 
+		}
+		// Dummy read to remove line from buffer
+		devmate_tcp_fastread(_smtps.socket, NULL, (int16)(eol_pos - buffer) + 1);
+	}
+	return got_response;
+}
+
+/*** BeginHeader devmate_smtp_sendbuf */
+void devmate_smtp_sendbuf(int nextstate);
+/*** EndHeader */
+void devmate_smtp_sendbuf(int nextstate)
+{
+	//set to send current buffer on next tick
+	_smtps.sendflag = 1;
+	_smtps.sendpos = 0;
+	_smtps.state = nextstate;
+	DM_SMTP_RESET_TIMEOUT;
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

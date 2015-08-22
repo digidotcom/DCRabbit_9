@@ -1,0 +1,93 @@
+<!-- This file shows how to use selection variables in ZHTML scripting.  See
+     the tags in the <FORM> ... </FORM> section. -->
+
+<HTML>
+
+<HEAD>
+<TITLE>Sprinkler Schedule</TITLE>
+</HEAD>
+
+<BODY>
+<H1>Sprinkler Schedule</H1>
+
+<FORM ACTION="/index.zhtml" METHOD="POST">
+
+<?z if (error()) { ?>
+   <FONT COLOR="red">0 to 23 hours and 0 to 59 minutes</FONT>
+<?z } ?>
+
+<TABLE BORDER="1">
+<TR>
+  	<th>Time</th>
+	<th colspan="1">Station 1 (Relay)</th>
+	<th colspan="1">Station 2 (OUT00)</th>
+	<th colspan="1">Station 3 (OUT01)</th>
+</TR>
+
+<TR>
+	<th rowspan="2">Zone 1</th>
+   <?z for ($A=0; $A<3; $A++) { ?>
+	<td><INPUT TYPE="text" NAME="<?z varname($station[0].houron[$A]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].houron[$A]) ?>">:
+	<INPUT TYPE="text" NAME="<?z varname($station[0].minuteon[$A]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].minuteon[$A]) ?>">Hr:Min On</td>
+   <?z } ?>
+</TR>
+<TR>
+   <?z for ($A=0; $A<3; $A++) { ?>
+	<td><INPUT TYPE="text" NAME="<?z varname($station[0].houroff[$A]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].houroff[$A]) ?>">:
+	<INPUT TYPE="text" NAME="<?z varname($station[0].minuteoff[$A]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].minuteoff[$A]) ?>">Hr:Min Off</td>
+   <?z } ?>
+</TR>
+
+<TR>
+	<th rowspan="2">Zone 2</th>
+   <?z for ($A=0; $A<3; $A++) { ?>
+	<td><INPUT TYPE="text" NAME="<?z varname($station[1].houron[$A]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].houron[$A]) ?>">:
+	<INPUT TYPE="text" NAME="<?z varname($station[1].minuteon[$A]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].minuteon[$A]) ?>">Hr:Min On</td>
+   <?z } ?>
+</TR>
+<TR>
+   <?z for ($A=0; $A<3; $A++) { ?>
+	<td><INPUT TYPE="text" NAME="<?z varname($station[1].houroff[$A]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].houroff[$A]) ?>">:
+	<INPUT TYPE="text" NAME="<?z varname($station[1].minuteoff[$A]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].minuteoff[$A]) ?>">Hr:Min Off</td>
+   <?z } ?>
+</TR>
+
+<TR>
+	<th rowspan="2">Zone 3</th>
+   <?z for ($A=0; $A<3; $A++) { ?>
+	<td><INPUT TYPE="text" NAME="<?z varname($station[2].houron[$A]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[2].houron[$A]) ?>">:
+	<INPUT TYPE="text" NAME="<?z varname($station[2].minuteon[$A]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[2].minuteon[$A]) ?>">Hr:Min On</td>
+   <?z } ?>
+</TR>
+<TR>
+   <?z for ($A=0; $A<3; $A++) { ?>
+	<td><INPUT TYPE="text" NAME="<?z varname($station[2].houroff[$A]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[2].houroff[$A]) ?>">:
+	<INPUT TYPE="text" NAME="<?z varname($station[2].minuteoff[$A]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[2].minuteoff[$A]) ?>">Hr:Min Off</td>
+   <?z } ?>
+</TR>
+
+</TABLE>
+
+<BR>
+<H3>Current Time <?z print($currenttime) ?></H3>
+
+<P>
+<INPUT TYPE="submit" VALUE="Submit">
+</FORM>
+
+</BODY>
+
+</HTML>
+

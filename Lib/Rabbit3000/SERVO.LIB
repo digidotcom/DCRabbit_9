@@ -1,0 +1,3235 @@
+/*************************************************************************
+SERVO.LIB
+Copyright (C) ZWorld, 2002
+
+API functions for use of the Rabbit 3000 as a servo controller.
+This library implements a PID controller based on a periodic interrupt.
+Interrupt processing implements full PID control, for 1 or 2
+servomechanisms.  It is assumed that an incremental encoder is
+attached to the motor shaft, and the motor drive is controlled by
+a selected PWM output.  Optionally, the encoder may have an index
+signal in addition to the I and Q signals.
+
+It is assumed that R3000.LIB is included, however the routines herein
+are not compatible with the quadrature encoder, PWM or input capture
+functions in R3000.LIB.  This library implements special purpose
+interrupt handlers.
+
+This library assumes that the following peripherals are available:
+  Timer B, prescaled by timer A1 (unless able to hook off the periodic ISR).
+  1 or 2 free PWM outputs (plus timer A9, which is shared between all PWMs)
+  Extra 1 or 2 PWM outputs, for sign/magnitude dual-PWM mode.
+  Extra 1 or 2 parallel port pins for optional enable signal in direction/
+    magnitude modes.
+  1 or 2 quadrature encoder inputs, assumed to be on pins PF0-3.  These
+  use timer A10.
+  Optionally:
+    Input capture channel 1, used for index pulse capture for one or
+    both servos.
+
+Two IP levels are used to service interrupts: by default, IP1 is used
+for the control loop timer and (optionally) input capture.  IP2 is
+used for the quadrature decoder.  The QD interrupt MUST run at a
+higher priority than the timer or input capture.  Optionally, levels
+IP2 and IP3 can be used to reduce jitter caused by the normal periodic
+interrupt or async serial communications.
+
+*************************************************************************/
+
+/*** BeginHeader _sp1, _sp2, _sp_slice */
+#ifndef __SERVO_LIB__
+#define __SERVO_LIB__
+
+//#define SERVO_VERBOSE							// Print debug messages
+
+/*
+ * Main control loop update rate (interrupt driven).  This is the unit of
+ * time unless otherwise stated and is the nominal time interval - the
+ * actual interrupt is related to the system clock divided down by the
+ * nearest whole number, which may not be exactly the rate given here.
+ * The actual interrupt runs at 2 or 4 times this rate, to sequentially process
+ * servo 1 control loop; servo 2 control loop (if any); servo 1
+ * command update; servo 2 command update.  This helps reduce latency
+ * experienced by other ISRs.
+ */
+#ifndef SERVO_LOOP_RATE_HZ
+	#define SERVO_LOOP_RATE_HZ		512		// Applies to both servos
+#endif
+
+/*
+ * Set to one of:
+ *  0 : locked antiphase -
+ *      Servo 0: will use PF4 for PWM, PF5 (default) for enable
+ *      Servo 1: will use PF6 for PWM, PF7 (default) for enable
+ *  1 : direction/magnitude single PWM
+ *      Servo 0: will use PF4 for PWM, PF5 (default) for direction signal,
+ *        PG6 (default) for enable
+ *      Servo 1: will use PF6 for PWM, PF7 (default) for direction signal,
+ *        PG7 (default) for enable
+ *  2 : direction/magnitude dual PWM
+ *      NOTE: This mode not supported presently.
+ *      Servo 0: will use PF4 for forward PWM, PF5 for reverse PWM,
+ *        PG6 (default) for enable
+ *      Servo 1: will use PF6 for forward PWM, PF7 for reverse PWM,
+ *        PG7 (default) for enable
+ * [Pins marked with "(default)" may be altered by macro definitions; others
+ *  are hard-coded and cannot be changed.]
+ * [Default logic level for enable signals is active-LOW.  Can be overriden
+ *  by macro definitions.]
+ */
+#ifndef SERVO_PWM_MODE
+	#define SERVO_PWM_MODE			0
+#endif
+
+/*
+ * Define this if the PWM output signal is inverted in the direction/magnitude modes
+ * i.e. '0' means 100% duty and '1024' means 0% duty.  This would be necessary if
+ * driving the Allegro A3971 H-bridge device, for example.
+ * This is ignored in locked antiphase mode.
+ */
+//#define SERVO_PWM_INVERT
+
+//#define SERVO_PWM_SWAP						// Define if PF5/PF7 are to be used as primary PWM outputs
+														// otherwise (default) PF4/PF6 are used.
+														// In PWM mode 2 only, the other PWMs are used as the secondary
+														// of the PWM pair.
+
+#ifdef SERVO_PWM_SWAP
+	#define SERVO_PWM_USE_0			1		// Use 2nd PWM (PF5 output pin) for servo loop 1.
+	#define SERVO_PWM_SEC_0			0		// Use 1st PWM (PF4 output pin) for servo loop 1 (second of pair in mode 2).
+	#define SERVO_PWM_USE_1			3		// Use 4th PWM (PF7 output pin) for servo loop 2.
+	#define SERVO_PWM_SEC_1			2		// Use 3rd PWM (PF6 output pin) for servo loop 2 (second of pair in mode 2).
+#else
+	#define SERVO_PWM_USE_0			0		// Use 1st PWM (PF4 output pin) for servo loop 1.
+	#define SERVO_PWM_SEC_0			1		// Use 2nd PWM (PF5 output pin) for servo loop 1 (second of pair in mode 2).
+	#define SERVO_PWM_USE_1			2		// Use 3rd PWM (PF6 output pin) for servo loop 2.
+	#define SERVO_PWM_SEC_1			3		// Use 4th PWM (PF7 output pin) for servo loop 2 (second of pair in mode 2).
+#endif
+
+#ifndef SERVO_PWM_FREQ
+	#define SERVO_PWM_FREQ			19000		// Base frequency for PWM output(s).  If over 3Khz,
+														// specify the pulse spreader definition below.
+#endif
+
+#if SERVO_PWM_FREQ > 3000
+	#define SERVO_PWM_SPREAD				// Enable pulse spreading on servo loop 1.
+													// This applies to both servos.
+#endif
+
+//#define SERVO_PWM_OPENDRAIN				// Use open drain output (else push-pull).  Applies
+													// to all PWM outputs.
+
+
+
+#ifndef SERVO_IP_LEVEL
+	#define SERVO_IP_LEVEL			1			// IP level for control loop timer.  This must be
+														// 1 or 2, since the QD rollover interrupt operates
+														// one level higher than this.
+#endif
+
+#ifndef SERVO_ENABLE_0
+	#define SERVO_ENABLE_0 servo_enable_0	// Default function to "enable" the first servo driver
+														// This is just a pin which asynchronously enables the
+														// actual drive.
+#endif
+
+#ifndef SERVO_DISABLE_0
+	#define SERVO_DISABLE_0 servo_disable_0	// Default function to "disable" the servo driver.
+#endif
+
+//#define SERVO_ENABLE_ACTIVEHIGH_0			// Define if enable signal is active high for 1st servo
+
+#if SERVO_PWM_MODE == 0
+	#ifndef SERVO_ENABLE_PORT_0
+		#define SERVO_ENABLE_PORT_0			PFDR
+		#define SERVO_ENABLE_DDR_0				PFDDR
+		#define SERVO_ENABLE_PORTSHADOW_0	PFDRShadow
+		#define SERVO_ENABLE_DDRSHADOW_0		PFDDRShadow
+	#endif
+	#ifndef SERVO_ENABLE_PIN_0
+		#if SERVO_PWM_USE_0 == 0
+			#define SERVO_ENABLE_PIN_0			5
+		#else
+			#define SERVO_ENABLE_PIN_0			4
+		#endif
+	#endif
+#else
+	#ifndef SERVO_ENABLE_PORT_0
+		#define SERVO_ENABLE_PORT_0			PGDR
+		#define SERVO_ENABLE_DDR_0				PGDDR
+		#define SERVO_ENABLE_PORTSHADOW_0	PGDRShadow
+		#define SERVO_ENABLE_DDRSHADOW_0		PGDDRShadow
+	#endif
+	#ifndef SERVO_ENABLE_PIN_0
+		#define SERVO_ENABLE_PIN_0				6
+	#endif
+#endif
+
+// For first servo:
+// If direction/magnitude mode is selected, then default to using PF5 for the
+// direction signal.  PF4 is always the PWM (magnitude) signal.
+#ifndef SERVO_DIRECTION_PORT_0
+	#define SERVO_DIRECTION_PORT_0			PFDR
+	#define SERVO_DIRECTION_DDR_0				PFDDR
+	#define SERVO_DIRECTION_PORTSHADOW_0	PFDRShadow
+	#define SERVO_DIRECTION_DDRSHADOW_0		PFDDRShadow
+#endif
+#ifndef SERVO_DIRECTION_PIN_0
+	#if SERVO_PWM_USE_0 == 0
+		#define SERVO_DIRECTION_PIN_0			5
+	#else
+		#define SERVO_DIRECTION_PIN_0			4
+	#endif
+#endif
+
+#ifndef SERVO_ENABLE_1
+	#define SERVO_ENABLE_1 servo_enable_1	// Default function to "enable" the second servo driver
+														// This is just a pin which asynchronously enables the
+														// actual drive.
+#endif
+
+#ifndef SERVO_DISABLE_1
+	#define SERVO_DISABLE_1 servo_disable_1
+#endif
+
+//#define SERVO_ENABLE_ACTIVEHIGH_1			// Define if enable signal is active high for 2nd servo
+
+#if SERVO_PWM_MODE == 0
+	#ifndef SERVO_ENABLE_PORT_1
+		#define SERVO_ENABLE_PORT_1			PFDR
+		#define SERVO_ENABLE_DDR_1				PFDDR
+		#define SERVO_ENABLE_PORTSHADOW_1	PFDRShadow
+		#define SERVO_ENABLE_DDRSHADOW_1		PFDDRShadow
+	#endif
+	#ifndef SERVO_ENABLE_PIN_1
+		#if SERVO_PWM_USE_1 == 2
+			#define SERVO_ENABLE_PIN_1			7
+		#else
+			#define SERVO_ENABLE_PIN_1			6
+		#endif
+	#endif
+#else
+	#ifndef SERVO_ENABLE_PORT_1
+		#define SERVO_ENABLE_PORT_1			PGDR
+		#define SERVO_ENABLE_DDR_1				PGDDR
+		#define SERVO_ENABLE_PORTSHADOW_1	PGDRShadow
+		#define SERVO_ENABLE_DDRSHADOW_1		PGDDRShadow
+	#endif
+	#ifndef SERVO_ENABLE_PIN_1
+		#define SERVO_ENABLE_PIN_1				7
+	#endif
+#endif
+
+// For second servo:
+// If direction/magnitude mode is selected, then default to using PF7 for the
+// direction signal.  PF6 is always the PWM (magnitude) signal.
+#ifndef SERVO_DIRECTION_PORT_1
+	#define SERVO_DIRECTION_PORT_1			PFDR
+	#define SERVO_DIRECTION_DDR_1				PFDDR
+	#define SERVO_DIRECTION_PORTSHADOW_1	PFDRShadow
+	#define SERVO_DIRECTION_DDRSHADOW_1		PFDDRShadow
+#endif
+#ifndef SERVO_DIRECTION_PIN_1
+	#if SERVO_PWM_USE_1 == 2
+		#define SERVO_DIRECTION_PIN_1			7
+	#else
+		#define SERVO_DIRECTION_PIN_1			6
+	#endif
+#endif
+
+
+#ifndef NUM_SERVOS
+	#define NUM_SERVOS				1			// Only using 1 servo loop.  Define to either 1 or 2.
+#endif
+
+
+//#define SERVO_REVERSE_0					// Define if high PWM duty cycle makes motor spin
+													// in reverse direction i.e. encoder count decrements.
+//#define SERVO_REVERSE_1
+
+#ifdef SERVO_REVERSE_0
+	#ifdef SERVO_FORWARD_0
+		#error "Conflicting definitions for SERVO_FORWARD_0/SERVO_REVERSE_0
+	#endif
+#endif
+#ifdef SERVO_REVERSE_1
+	#ifdef SERVO_FORWARD_1
+		#error "Conflicting definitions for SERVO_FORWARD_1/SERVO_REVERSE_1
+	#endif
+#endif
+
+#ifndef SERVO_PWM_INIT_OFFS_0
+	#define SERVO_PWM_INIT_OFFS_0		512		// Initial PWM offset (center point)
+#endif
+#ifndef SERVO_PWM_INIT_RANGE_0
+	#define SERVO_PWM_INIT_RANGE_0	300		// Initial PWM allowable range (+/- from INIT_OFFS)
+#endif
+#ifndef SERVO_PWM_INIT_OFFS_1
+	#define SERVO_PWM_INIT_OFFS_1		512		// Initial PWM offset (center point)
+#endif
+#ifndef SERVO_PWM_INIT_RANGE_1
+	#define SERVO_PWM_INIT_RANGE_1	300		// Initial PWM allowable range (+/- from INIT_OFFS)
+#endif
+
+#if SERVO_PWM_INIT_OFFS_0 < SERVO_PWM_INIT_RANGE_0 || SERVO_PWM_INIT_RANGE_0 + SERVO_PWM_INIT_OFFS_0 > 1024
+	#error "SERVO_PWM_INIT_RANGE_0 set too high (overflows PWM bounds 0..1024)"
+#endif
+#if SERVO_PWM_INIT_OFFS_1 < SERVO_PWM_INIT_RANGE_1 || SERVO_PWM_INIT_RANGE_1 + SERVO_PWM_INIT_OFFS_1 > 1024
+	#error "SERVO_PWM_INIT_RANGE_1 set too high (overflows PWM bounds 0..1024)"
+#endif
+
+#ifndef SERVO_COUNT_PER_REV_0
+	#define SERVO_COUNT_PER_REV_0	512L		// Must be long constant
+#endif
+
+#ifndef SERVO_COUNT_PER_REV_1
+	#define SERVO_COUNT_PER_REV_1	512L		// Must be long constant
+#endif
+
+#ifndef SERVO_MAX_RPM_0
+	#define SERVO_MAX_RPM_0			2000L		// Must be long constant.  Set to the maximum feasible
+														// speed in RPM, of an unloaded motor at maximum control
+														// output.  Provides an estimate of max encoder count rate.
+#endif
+
+#ifndef SERVO_MAX_RPM_1
+	#define SERVO_MAX_RPM_1			2000L
+#endif
+
+#define SERVO_MAX_HZ_0				(SERVO_COUNT_PER_REV_0 * SERVO_MAX_RPM_0 / 60)
+#define SERVO_MAX_HZ_1				(SERVO_COUNT_PER_REV_1 * SERVO_MAX_RPM_1 / 60)
+
+#define SERVO_LOOP_MAX_COUNT_0	(SERVO_MAX_HZ_0 / SERVO_LOOP_RATE_HZ)
+#define SERVO_LOOP_MAX_COUNT_1	(SERVO_MAX_HZ_1 / SERVO_LOOP_RATE_HZ)
+
+#ifndef SERVO_VS_UPSHIFT
+	#define SERVO_VS_UPSHIFT		4	// Scaling value for velocity - increases velocity gain.  Should be
+												// >= downshift, but not too much greater (values 0-6 allowable).
+#endif
+
+/*
+ * Note: it is recommended that SERVO_VS_DOWNSHIFT be set equal to zero.  Higher values
+ * introduce a lag in the velocity feedback, which can result in instability.  This
+ * definition is intended to filter "noise" in the velocity signal, however most
+ * incremental encoders are digital in nature and do not need filtering.
+ */
+#ifndef SERVO_VS_DOWNSHIFT
+	#define SERVO_VS_DOWNSHIFT		0	// Determines exponential smoothing for velocity calculations.
+												// A value of 3 means that 1/8 of the new sample is combined
+												// with 7/8 of the old value, which implement a digital low-pass
+												// filter.  The higher this number, the lower the filter corner
+												// frequency (values 0-6 allowable).  Zero means no filtering.
+#endif
+
+// Note: following comparisons are against 16k (not 32k) since we need to take difference
+// between command velocity and motor velocity - this could require an extra bit of precision
+// if opposite in sign.
+#if (SERVO_LOOP_MAX_COUNT_0 << SERVO_VS_UPSHIFT) > 16383L
+	#warnt "Encoder count 1 per loop interval may overflow velocity reading."
+	#warnt "Either reduce SERVO_VS_UPSHIFT or increase loop rate."
+#endif
+#if NUM_SERVOS > 1
+#if (SERVO_LOOP_MAX_COUNT_1 << SERVO_VS_UPSHIFT) > 16383L
+	#warnt "Encoder count 2 per loop interval may overflow velocity reading."
+	#warnt "Either reduce SERVO_VS_UPSHIFT or increase loop rate."
+#endif
+#endif
+
+//#define SERVO_INDEX_CAPTURE			// Define if using input capture for index pulses.  IC is used
+												// mainly for its interrupt capability (not timing).
+
+//#define SERVO_INDEX_0					// Encoder 1 has index pulse - assumed to be
+												// input on the next higher port F pin than the corresponding
+												// PWM output pin.  If an odd numbered bit, then can use
+												// input capture to precisely determine the encoder reading
+												// at the index position.
+//#define SERVO_INDEX_1
+
+#ifndef SERVO_INDEX_COUNT_0
+	#define SERVO_INDEX_COUNT_0	SERVO_COUNT_PER_REV_0
+												// Nominal encoder count between index pulses.  This is
+												// normally a multiple of SERVO_COUNT_PER_REV_0, or exactly
+												// divides it.
+#endif
+
+#ifndef SERVO_INDEX_COUNT_1
+	#define SERVO_INDEX_COUNT_1	SERVO_COUNT_PER_REV_1
+												// Nominal encoder count between index pulses.  This is
+												// normally a multiple of SERVO_COUNT_PER_REV_1, or exactly
+												// divides it.
+#endif
+
+#ifndef SERVO_MAX_CMD
+	#define SERVO_MAX_CMD	20			// Maximum number of command table entries.  If zero, then
+												// command list code is disabled.
+#endif
+
+
+/* This struct is an element of the command table.  This table is "executed" by the
+   command update loop in order to position the servo according to a precise schedule
+   of movements. */
+typedef struct
+{
+	char		type;				// Type of entry:
+#define SCMD_CV			0		// Add vel to cmd at each iteration; iterate forever (i.e. last table entry).
+#define SCMD_CVT			1		// As for CV, but only for count iterations, then execute next.
+#define SCMD_SET			2		// Set cmd to p2 (zero fraction part).  Every subsequent
+										// count adds vel (velocity) to command position.
+#define SCMD_ACCEL		3		// Add p2 to vel, then add vel to cmd, for count iterations.
+#define SCMD_LOOP			4		// Decrement count.  If non-zero, execute entry 'p2'.
+#define SCMD_CALLBACK	5		// Call function address in p2 (LSBs) - function executes at IP 0.
+										// Execution pointer immediately advanced in case ISR is re-entered.
+										// Note that only one callback can be specified in a sequence.
+	char		reserved;
+	word		count;			// Loop iteration down counter.  Contains remaining number of
+									// cycles for this entry.  When decremented to zero from 1,
+									// the execution entry is incremented.  This is not applicable to
+									// SCMD_CV, which does not terminate.  Initial value of 0 means 65536.
+	long		vel;				// Velocity - set into vcmd, and may be updated for ACCEL
+	long		p2;
+} servo_cmd;
+#define SERVO_CMD_SIZE 12	// Definition for assembler (can't use sizeof())
+
+/* This is the main structure of global information maintained by this library.
+   Most of the fields are used and set by interrupt handlers, so caution should be
+   exercised when accessing more than a single 2-byte field to avoid race conditions.
+
+   NOTE: for network compatibility purposes, all fields should align on offsets which are
+   a multiple of the field size e.g. long values should be at multiples of 4.
+*/
+
+typedef struct {
+	/* Current position.  LSB is not valid (but used by ISR).  The 3 MSBs count the overflows from the
+	   8bit counter.  This is updated by the QD interrupt. */
+	long		pos;
+
+	/* Current low-pass filtered velocity.  Stored in units of counts/sample, but scaled up by
+	   1 << SERVO_VS_UPSHIFT.  It is assumed that this value can not
+	   overflow the +/-32k range simply because the motor is speed limited. */
+	int		vel;
+
+	/* 16 LSBs of previously sampled position, used to compute velocity */
+	word		ppos;
+
+	/* If LSB set, ierror is not updated in the control loop.  Usually set when the output is "saturated"
+	   i.e. providing maximum or minimum drive signal.  When set, bits 0 and 1 are set.  When no longer
+	   in saturation, only bit 0 is reset.  Only the LSB is examined for integrator control.  Bit 1
+	   records whether saturation was reached at any time since last reset. */
+	char		antiwindup;
+#define SERVO_AW_SAT			0x01
+#define SERVO_AW_WASSAT		0x02
+
+	/* Set non-zero if open-loop or controlled torque mode.  In O/L mode, no change is made
+	   to pwm_out.  The previous setting of pwm_out is written to the PWM register, thus is
+	   it up to the application to manually control pwm_out.  In controlled torque mode, the
+	   PWM output is set to the no-load PWM level (for the current velocity) plus the increment
+	   set in torque field.  Value is:
+	     0 : closed loop (PID feedback control) mode
+	     1 : open loop mode (set pwm_out field "manually") - warning: current limit not applied!
+	     2 : controlled torque mode (use torque field).
+	*/
+	char		openloop;
+
+	/* Commanded position.  This should be set atomically w.r.t. ISRs to avoid glitches.  It is
+	   normally updated by the command update phase of the control loop.  The difference
+	   (pos-cmd) is the current error.  The commanded position is split into a whole
+	   number of encoder counts (cmd) and a fraction (frac) which is interpreted as a
+	   fraction 0..65535/65536 of an encoder count.  This is used by the command update
+	   phase to keep track of fractional position.  The commanded position should not be further
+	   than about 8M counts away from the actual motor position, to avoid problems with internal
+	   arithmetic overflow.  In particular, it should not be allowed to "wrap" from -2**31 to +2**31. */
+	word		frac;
+	long		cmd;
+
+	/* Error values.  These are saturated to +/-32k for use by the PID equation. */
+	int		error;		// Direct error (i.e. pos - cmd).
+	int		ierror;		// Error integral -- increased by 'error' at each loop iteration, unless the
+								// antiwindup flag is set on that iteration and the sign of error is same as
+								// sign of ierror.
+	int		derror;		// Velocity error.  This is the difference between the "command velocity" (vcmd) and the
+								// current motor velocity.  The vcmd is not filtered, since it is digitally generated
+								// and not subject to high frequency noise problems.  The motor velocity is taken
+								// from the vel field.  NOTE: correct computation of this field requires that the
+								// current command velocity not exceed 16384 >> SERVO_VS_UPSHIFT in magnitude.  Also,
+								// derror is not sensitive to changes in "cmd" - it relies on vcmd reflecting the
+								// current command velocity.
+
+	/* PWM offset from no-load level, when running in controlled torque mode */
+	int		torque;
+
+	/* PID coefficients.  None of these should be greater than 32k in magnitude.  If using just
+	   proportional control, the prop coefficient should be negative if a low PWM duty cycle
+	   causes the motor to spin backwards.  The signs for the other coefficients should
+	   generally be the same as the proportional coefficient's sign.  Note that the SERVO_FIRST
+	   demo program will advise of the correct signs for closed loop control, and use of
+	   servo_set_coeffs() ensures the right signs are applied - parameters to servo_set_coeffs
+	   should be positive for conventional (negative) feedback control. */
+	int		prop;			// Proportional.
+	int		integral;	// Integral (a.k.a. "reset").
+	int		diff;			// Differential (a.k.a. "rate").
+
+	/* Commanded PWM output (prior to offsetting and output saturation test).  It is stored as if
+	   the PWM output is 16-bit signed.  This is calculated as
+	      (error*prop + ierror*integral/256 + derror*diff) / 256
+	   and will be a value in the range +/-8M.  Values outside the range +/- 512 are typically beyond the
+	   PWM output limits, and are thus saturated to the output limits before being written to the PWM
+	   registers.
+	   */
+	int		pwm_int;
+
+	/* PWM offset value.  This is added to pwm_int to get the usual unsigned PWM setting.  It is
+	   normally 512 for symmetric 10-bit PWM, but can also be adjusted to compensate for any
+	   zero errors in the servo amplifier, or to provide a bias signal. */
+	word		pwm_offs;
+
+	/* Saturation levels.  These values specify the lower and upper limits for commanded PWM
+	   output.  If equal or within the given range, the output is considered not saturated.
+	   Otherwise, the actuator is at maximum allowed drive level and the antiwindup flag is set.
+	   Normally, these would be set to 1 and 1023 for the 10-bit Rabbit PWM.  The PWM will
+	   never be set to a value outside this given range.  Neither value should be set greater
+	   than 1024 to avoid possible output thrashing.  These values are set by the command
+	   phase of the loop, based on the measured motor velocity and a factor which converts
+	   this to an equivalent no-load PWM level. */
+	word		pwm_low;
+	word		pwm_high;
+
+	/* Allowable deviation from "no-load" PWM output, in PWM units.  This parameter effectively
+	   limits the supply current drawn by the motor.  The value is derived from knowledge of the
+	   motor RPM/volt, armature resistance and permissible current.  SERVO_FIRST.C sample helps
+	   compute this value.  It is initialized from SERVO_PWM_MAXDELTA. */
+	word		pwm_maxdelta;
+
+	/* Factor which converts measured velocity (vel, in units of counts per tick scaled up by
+	   SERVO_VS_UPSHIFT) into equivalent "no-load" PWM output: nlpwm = pwm_offs + vel * pwm_fac.
+	   If this is zero, then maxdelta processing is not performed, and any PWM output between
+	   pwm_low and pwm_high may be used. */
+	int		pwm_fac;
+
+	/* Current "no-load" PWM signal.  This is an estimate of the PWM output command which would
+	   make the (unloaded) motor spin at the current rate (vel). */
+	int		pwm_nl;
+
+	/* Absolute PWM saturation levels.  These are fixed, and used by the command phase to place
+	   limits on pwm_low and pwm_high.  For sign/magnitude modes, these values apply to each
+	   side of the neutral position (to limit minimum pulse widths). */
+	word		pwm_abslow;
+	word		pwm_abshigh;
+
+	/* Last output command to PWM (0..1024).  For sign/magnitude modes, this value is multiplied
+	   by 2, then 1024 is subtracted, giving a number between -1024 and 1024.  The absolute value
+	   of this number is used as the PWM duty cycle, and the sign bit determines the state of the
+	   direction control signal (-ve is high). */
+	word		pwm_out;
+
+	/* -------------------------------------------------------------------------
+	   Following parameters used by index position capture.  Values will be
+	   meaningless if input capture is not used.
+	   ------------------------------------------------------------------------- */
+
+	/* Index control */
+	char		index_ctl;
+#define SERVO_IXCTL_CAPTURED	0x01		// Set when valid capture
+#define SERVO_IXCTL_SEEK		0x80		// Set by caller when in index seek mode (index_count
+													// is only updated if this flag is set).
+	char     reserved_1;	// for alignment
+
+	/* Last encoder reading when index pulse captured */
+	long		index_count;
+
+	/* -------------------------------------------------------------------------
+	   Following parameters used in command update phase or control loop.
+	   ------------------------------------------------------------------------- */
+
+	/* Increment to add to cmd every time the command update phase executes i.e. at
+	   the loop update rate.  This is the command instantaneous "velocity".  The longword
+	   value is taken as a 16-bit integer part and a 16-bit fraction.  It is added to
+	   the low 16 bits of cmd, and frac, with sign extension to the high 16 bits of cmd.
+	   Note that this value is also used in computation of the error velocity. */
+	long		vcmd;
+
+	/* Statistics kept by control loop.  Reset to zero by calling servo_stats_reset(). */
+	int		max_error;	// Maximum |error| value (positive)
+
+	/* Control loop counter.  Each iteration increments this value.  Tasks which need to sync
+	   to the control loop can examine this variable.  It is incremented only in the command update
+	   phase of the control loop. */
+	word		ctl_count;
+
+	/* -----------  End of fields which are transferred in network packets -------------- */
+
+	/* Points to a table in xmem (linear physical address).  Each element of the table is
+	   four 16-bit integers.  The first 3 ints store the error samples, and the fourth the
+	   resulting pwm_int field value.  This table has a total of table_ent/8 entries.  The
+	   next entry to fill is indexed (as a byte offset) by table_offs.  If table_offs is
+	   less than table_ent then the entry is added and table_offs incremented by 8.
+	   Otherwise, no entry is added.  The purpose of this table is to obtain experimental
+	   graphs of error and control effort as a function of time.  table_offs is
+	   reset to zero by calling servo_stats_reset().  These fields should be initialized
+	   using the servo_alloc_table() function. */
+	long		table;
+	word		table_offs;
+	word		table_ent;
+
+	/* Root function to call at each iteration, or NULL to perform standard processing.
+	   This function must be written in assembler.  On entry, IX points to this structure.
+	   The function may use all registers except AF' and HL', and should not change IX.
+	   On entry, DE contains the address to return to (it is not pushed on the stack). */
+	void		(*ctl_callback)();
+
+	/* The following fields are reserved for use by the above callback routine.  They are not
+	   touched by the ISR.  servo_gear() makes use of these fields to implement "electronic
+	   gearing" between the two servo motors: cb_offset contains the initial offset from
+	   encoder 0 to encoder 1, and cb_ratio contains the gear ratio from 0 to 1. */
+	long		cb_offset;
+	long		cb_offset2;
+	long		cb_ratio;
+	long		cb_ratio2;
+
+#if SERVO_MAX_CMD > 0
+	/* Command table. */
+	servo_cmd *	exec;							// Execution pointer (usually address of "cmds" element, or NULL)
+	char			notfirst;					// Set when not first execution of current entry - used by ISR only!
+	void *		cbaddr;						// Current callback address (or NULL) - used by ISR only!
+	servo_cmd	cmds[SERVO_MAX_CMD];		// Command list.
+#endif
+} servo_parms;
+
+extern servo_parms _sp1;
+extern servo_parms _sp2;
+extern char _sp_slice;
+#if SERVO_MAX_CMD > 0
+extern servo_cmd _scmd;
+#endif
+#ifdef SERVO_HOOK_PERIODIC
+extern char _sp_pslice;
+#endif
+root long servo_qd_read_0(void);
+#if NUM_SERVOS > 1
+root long servo_qd_read_1(void);
+#endif
+
+/*** EndHeader */
+
+// Global control variable instances.
+servo_parms _sp1;
+#if NUM_SERVOS > 1
+servo_parms _sp2;
+#endif
+char _sp_slice;		// Counter for dividing ISR between servos, and between PID/command update phases.
+#if SERVO_MAX_CMD > 0
+servo_cmd _scmd;
+#endif
+#ifdef SERVO_HOOK_PERIODIC
+char _sp_pslice;
+#endif
+
+/* The QD rollover interrupt must run at a higher IP level than any thread that needs
+   to actually read the current encoder count.
+*/
+#asm root nodebug
+
+servo_qd_isr::
+	push	af								; 10
+	push	hl								; 10
+	push	de								; 10
+;ioi ld 	a,(QDCSR)					; 11
+	IOREAD_A(QDCSR)
+	ld		d,a							; 2
+	rlca									; 2
+	xor	d								; 2
+; XOR the 2 interrupt bits for each QD.  If zero, there were two
+; rollovers, and hence no update required.  This should be a rare
+; case, but it _is_ possible so we should handle it.  If an odd
+; number of rollovers (>=3) occur, the count will become incorrect
+; by 256 counts, but this is made impossible by correctly setting the
+; QD sample clock (A10).  Since no more than 2 rollovers are allowed
+; to occur between successive reads of QDCSR, we set the sample clock
+; to this rate minus some allowance for interrupt latency.  The
+; latency is about 220 clocks max for this ISR, plus allow 200 clocks
+; for other ISRs at same or higher priority.  Thus sample rate must
+; be less than clkspd/((220+200)/2) (e.g. 140kHz for 29.4MHz clock).
+; In practice, this is extremely conservative, since a physical motor
+; would be unlikely to have the necessary rate of change of acceleration
+; to obtain 3 rollover events in such a short interval.  The final
+; practical recommendation is to make the sample clock run at
+; clkspd/96.
+	ld		e,a							; 2
+	and	0x08							; 4
+	jr		z,sqi_check2				; 5
+	bit	3,d							; 4
+	ld		hl,(_sp1+[_sp1]+pos+1)	; 11
+	jr		z,sqi_dec1					; 5
+	inc	hl								; 2
+	ld		(_sp1+[_sp1]+pos+1),hl	; 13
+	bool	hl								; 2
+	jr		nz,sqi_check2				; 5
+	ld		hl,_sp1+[_sp1]+pos+3		; 11
+	inc	(hl)							; 8
+	jr		sqi_check2					; 5
+sqi_dec1:
+	dec	hl								; 2
+	ld		(_sp1+[_sp1]+pos+1),hl	; 13
+	inc	hl								; 2
+	bool	hl								; 2
+	jr		nz,sqi_check2				; 5
+	ld		hl,_sp1+[_sp1]+pos+3		; 6
+	dec	(hl)							; 8
+sqi_check2:
+#if NUM_SERVOS > 1
+	ld		a,e							; 2
+	rlca									; 2
+	jr		nc,sqi_reti					; 5
+	ld		a,d							; 2
+	rlca									; 2
+	ld		hl,(_sp2+[_sp2]+pos+1)	; 11
+	jr		nc,sqi_dec2					; 5
+	inc	hl								; 2
+	ld		(_sp2+[_sp2]+pos+1),hl	; 13
+	bool	hl								; 2
+	jr		nz,sqi_reti					; 5
+	ld		hl,_sp2+[_sp2]+pos+3		; 6
+	inc	(hl)							; 8
+	jr		sqi_reti						; 5
+sqi_dec2:
+	dec	hl								; 2
+	ld		(_sp2+[_sp2]+pos+1),hl	; 13
+	inc	hl								; 2
+	bool	hl								; 2
+	jr		nz,sqi_reti					; 5
+	ld		hl,_sp2+[_sp2]+pos+3		; 6
+	dec	(hl)							; 8
+#endif
+sqi_reti:
+	pop	de								; 7
+	pop	hl								; 7
+	pop	af								; 7
+	ipres									; 4
+	ret									; 8
+
+; Get a stable reading from QD1, return in BCDE.
+servo_qd_read_0::
+	ld		hl,(_sp1+[_sp1]+pos+2)
+	ld		b,h
+	ld		c,L
+	ld		a,(_sp1+[_sp1]+pos+1)	; Remember 2nd LSB
+	ld		L,a
+;ioi ld	a,(QDC1R)
+	IOREAD_A(QDC1R)
+	ld		e,a
+	ld		a,(_sp1+[_sp1]+pos+1)	; Read again to see if interrupt touched
+	ld		d,a
+	cp		L
+	ret	z
+	jr		servo_qd_read_0			; Do again if MSBs changed
+
+#if NUM_SERVOS > 1
+servo_qd_read_1::
+	ld		hl,(_sp2+[_sp2]+pos+2)
+	ld		b,h
+	ld		c,L
+	ld		a,(_sp2+[_sp2]+pos+1)	; Remember 2nd LSB
+	ld		L,a
+;ioi ld	a,(QDC2R)
+	IOREAD_A(QDC2R)
+	ld		e,a
+	ld		a,(_sp2+[_sp2]+pos+1)	; Read again to see if interrupt touched
+	ld		d,a
+	cp		L
+	ret	z
+	jr		servo_qd_read_1			; Do again if MSBs changed
+#endif
+
+// Control loop ISR, driven periodically by timer B clocked from timer A1 (or
+// alternatively, hooked from the periodic interrupt).
+servo_cl_isr::
+#ifdef SERVO_HOOK_PERIODIC
+	push	af								; Save context as per real periodic ISR...
+	push	ip								;
+	push	hl								;
+	push	de								;
+	push	ix								;
+
+	; Divide down for control loop rate
+ #if SERVO_HOOK_PERIODIC > 1
+	ld		a,(_sp_pslice)
+	inc	a
+	ld		(_sp_pslice),a
+	cp		SERVO_HOOK_PERIODIC
+	jp		nz,periodic_isr_ep2			; Not this time.  Continue with normal periodic ISR.
+	xor	a
+	ld		(_sp_pslice),a
+ #endif
+
+	; ...done, now save extra context for this ISR
+	push	bc
+
+#else
+	push	af
+	push	de
+	push	bc
+	push	ix
+#endif
+	exx
+	push	de
+	push	bc
+	push	hl
+
+;ioi ld	a,(TBCSR)
+	IOREAD_A(TBCSR)
+	xor	a
+;ioi ld	(TBL1R),a		; reenable TMRB interrupt
+	IOWRITE_A(TBL1R)
+
+	ld		ix,_sp1
+	ld		a,(_sp_slice)
+	inc	a
+	ld		(_sp_slice),a
+	rrca
+#if NUM_SERVOS > 1
+	jr		nc,cl_is_sp1
+	ld		ix,_sp2
+	rrca
+	jp		c,cl_command
+	call	servo_qd_read_1
+	jr		cl_0
+cl_is_sp1:
+	rrca
+#endif
+	jp		c,cl_command	; Interleave command cycle with output update
+
+;------------------------------
+; PID update processing
+;------------------------------
+
+	call	servo_qd_read_0	; Get stable reading in BCDE
+
+cl_0:
+	ld		bc',bc
+	ld		de',de			; Save current pos in alt regs
+	; Compute current motor velocity
+	ld		hl,(ix+[_sp1]+ppos);
+	or		a
+	sbc	hl,de				; HL = prev - current = -ve velocity
+	ex		de,hl
+	ld		(ix+[_sp1]+ppos),hl
+	ld		bc,-(1<<(SERVO_VS_UPSHIFT-SERVO_VS_DOWNSHIFT))
+	mul						; Scaled up value now in BC (with correct sign)
+#if SERVO_VS_DOWNSHIFT > 0
+	push	bc
+	ld		hl,(ix+[_sp1]+vel)
+	ex		de,hl
+	ld		bc,-(1<<(16-SERVO_VS_DOWNSHIFT))
+	mul
+	add	hl,de
+	pop	bc
+	add	hl,bc
+#else
+	ld		h,b
+	ld		L,c
+#endif
+	ld		(ix+[_sp1]+vel),hl
+
+	; Compute error
+	exx
+	ld		bc',bc
+	ld		de',de			; Restore current pos
+	exx
+	ld		hl,(ix+[_sp1]+cmd)
+	ex		de,hl
+	or		a
+	sbc	hl,de
+	ld		d,b				; Move MSBs of count to DE from BC
+	ld		e,c
+	ld		b,h				; Save LSBs of error in BC
+	ld		c,l
+	ld		hl,(ix+[_sp1]+cmd+2)
+	ex		de,hl
+	sbc	hl,de
+	ld		d,h
+	ld		a,b
+	rlca
+	jr		nc,cl_0a
+	inc	hl
+cl_0a:
+	bool	hl
+	jr		z,cl_1a			; No overflow, error already in 16-bit signed range
+	ld		a,d				; Otherwise, saturate error to +/-32k
+	ld		bc,0x7FFF
+	rlca
+	jr		nc,cl_1a
+	inc	bc
+cl_1a:
+	ld		h,b
+	ld		l,c
+	ld		(ix+[_sp1]+error),hl
+
+	; Update error integral if not in antiwindup mode, or the sign of the
+	; current error is opposite the sign of the error integral
+	ld		hl,(ix+[_sp1]+ierror)
+	ld		a,(ix+[_sp1]+antiwindup)
+	rrca
+	jr		nc,cl_3a			; Not in antiwindup
+	ld		a,b
+	xor	h
+	rlca
+	jr		nc,cl_3			; Antiwindup, and same signs
+cl_3a:
+	; Add in the new error (saturated) to the integrated error, saturating at +/-32k
+	; BC contains new error sample from cl_1a label above, HL contains error integral.
+	or		a
+	adc	hl,bc
+	jp		nv,cl_4
+	ld		a,b
+	ld		hl,0x7FFF
+	rlca
+	jr		nc,cl_4
+	inc	hl
+cl_4:
+	ld		(ix+[_sp1]+ierror),hl
+cl_3:
+	; Update error differential.  This is the difference between current motor velocity (vel)
+	; and the command velocity (vcmd).  The high word of vcmd must be scaled up to match the
+	; stored velocity units.  It is assumed that vcmd can be scaled up without overflow problems.
+	ld		hl,(ix+[_sp1]+vcmd+2)
+	ex		de,hl							; DE has MSBs of vcmd
+#if SERVO_VS_UPSHIFT > 0
+	ld		hl,(ix+[_sp1]+vcmd)
+	add	hl,hl
+	rl		de
+#endif
+#if SERVO_VS_UPSHIFT > 1
+	add	hl,hl
+	rl		de
+#endif
+#if SERVO_VS_UPSHIFT > 2
+	add	hl,hl
+	rl		de
+#endif
+#if SERVO_VS_UPSHIFT > 3
+	add	hl,hl
+	rl		de
+#endif
+#if SERVO_VS_UPSHIFT > 4
+	add	hl,hl
+	rl		de
+#endif
+#if SERVO_VS_UPSHIFT > 5
+	add	hl,hl
+	rl		de
+#endif
+	; DE has scaled up vcmd
+	ld		hl,(ix+[_sp1]+vel)
+	or		a
+	sbc	hl,de
+	ld		(ix+[_sp1]+derror),hl
+
+	; check for open loop control.  If so, skip PID update.
+	ld		a,(ix+[_sp1]+openloop)
+	or		a
+	jp		nz,cl_getpwm
+
+	; Apply PID control equation
+	; pwm_int = error*prop + ierror*integral + derror*diff
+	; derror is already in HL, so we start with that.
+	; No overflow checking required, so long as |prop+integral+diff| <= 30k.
+	; Each step multiplies BC by DE giving HL:BC, which is accumulated into BC':DE'
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+diff)
+	ld		b,h
+	ld		c,l
+	mul
+	ld		de',bc
+	ex		de,hl
+	ld		bc',de		; BC':DE' initialised to derror*diff
+
+	ld		hl,(ix+[_sp1]+error)
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+prop)
+	ld		b,h
+	ld		c,l
+	mul
+	ex		de',hl
+	add	hl,bc
+	ex		de',hl
+	exx
+	ld		de',bc
+	exx
+	adc	hl,de
+	ex		de,hl
+	ld		bc',de		; BC':DE' = derror*diff + error*prop
+
+	ld		hl,(ix+[_sp1]+ierror)
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+integral)
+	ld		b,h
+	ld		c,l
+	mul
+	; Divide raw integral term by 256 for better scaling
+	ld		c,b
+	ld		b,L
+	ld		L,h
+	ld		a,h
+	rlca
+	sbc	a,a
+	ld		h,a
+	ex		de',hl
+	add	hl,bc
+	ex		de',hl
+	exx
+	ld		de',bc
+	exx
+	adc	hl,de			; HL:DE' = derror*diff + error*prop + ierror*integral
+	ex		de,hl
+	ex		de',hl		; Now in DE:HL
+
+	; Downshift the result by 8 bits, sign extended.  Store in pwm_int (without
+	; yet checking for overflow).
+	ld		L,h
+	ld		h,e
+	ld		e,d
+	ld		a,d
+	rlca
+	sbc	a,a
+	ld		d,a
+	ld		(ix+[_sp1]+pwm_int),hl
+
+	; Saturate result to +/- 32k (all bits in DE should be same as MSB of HL)
+	ld		a,h
+	rlca
+	ld		a,d
+	ex		de,hl
+	jr		nc,cl_00a
+	inc	hl
+cl_00a:
+	bool	hl
+	ex		de,hl
+	jr		z,cl_01a			; No overflow
+	ld		hl,0x7FFF
+	rlca
+	jr		nc,cl_02a
+	inc	hl
+cl_02a:
+	ld		(ix+[_sp1]+pwm_int),hl		; Correct saturated value
+
+cl_01a:
+	; Convert internal PWM level (in HL from above) to control output
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+pwm_offs)
+	or		a
+	adc	hl,de			; HL = offset (unsigned) PWM value
+	jp		v,cl_overflow
+cl_01b:
+	ld		a,h
+	rlca
+	jp		c,cl_underflow
+	ex		de,hl			; DE = PWM value
+	ld		hl,(ix+[_sp1]+pwm_low)
+	or		a
+	sbc	hl,de			; Check for lower bound
+	jp		nc,cl_underflow
+	ld		hl,(ix+[_sp1]+pwm_high)
+	inc	hl
+	or		a
+	sbc	hl,de			; Check for upper bound
+	jp		c,cl_overflow
+	; Not saturated, turn off antiwindup bit
+	ld		a,(ix+[_sp1]+antiwindup)
+	and	0xFE
+	ld		(ix+[_sp1]+antiwindup),a
+
+	ex		de,hl
+cl_setpwm:
+	ld		(ix+[_sp1]+pwm_out),hl
+	; fall through
+
+cl_writepwm:
+	; HL contains basic PWM setting (0..1024) which is assumed to represent the total
+	; range of control from full reverse to full forward.  For direction/magnitude modes, this
+	; is multiplied by 2 then 1024 is subtracted, giving -1024..1024.  The sign of this
+	; value determines the direction, and the absolute value is used for the magnitude.
+	; In mode 1, the direction bit is applied to the direction pin and the magnitude
+	; directly to the PWM.  For mode 2, the direction bit selects which of the pair of
+	; PWMs to use; the PWM which is disabled is set to 1024 i.e. inactive high.
+#if SERVO_PWM_MODE != 0
+	add	hl,hl
+	ld		de,-1024
+	add	hl,de
+	ld		d,e				; e was zero; set de = 0
+	ld		a,h
+	or		a
+	jp		p,cl_dm_pos
+	ex		de,hl
+	sbc	hl,de				; carry clear from 'or a': negate hl to get absolute value
+cl_dm_pos:
+	; MSB of A contains direction bit (1='reverse', 0='forward') -- save it in B
+	ld		b,a
+  #ifdef SERVO_PWM_INVERT
+   ; Invert mode: set HL = 1024 - HL
+   ld		de,1024
+   ex		de,hl
+   or		a
+   sbc	hl,de
+  #endif
+  #if NUM_SERVOS > 1
+	ld		a,(_sp_slice)
+	rrca
+	jr		nc,cl_dm_setdir1
+	ld		a,(SERVO_DIRECTION_PORTSHADOW_1)
+	and	255-(1<<SERVO_DIRECTION_PIN_1)
+	rl		b
+	jr		nc,cl_dm_fwd1
+	or		1<<SERVO_DIRECTION_PIN_1
+cl_dm_fwd1:
+	ld		(SERVO_DIRECTION_PORTSHADOW_1),a
+ioi ld	(SERVO_DIRECTION_PORT_1),a
+	jr		cl_dm_cont
+cl_dm_setdir1:
+  #endif
+	ld		a,(SERVO_DIRECTION_PORTSHADOW_0)
+	and	255-(1<<SERVO_DIRECTION_PIN_0)
+	rl		b
+	jr		nc,cl_dm_fwd0
+	or		1<<SERVO_DIRECTION_PIN_0
+cl_dm_fwd0:
+	ld		(SERVO_DIRECTION_PORTSHADOW_0),a
+ioi ld	(SERVO_DIRECTION_PORT_0),a
+cl_dm_cont:
+
+#endif	// SERVO_PWM_MODE != 0
+	ex		de,hl
+	dec	de
+	ld		a,d
+	rlca
+	jr		c,cl_pwm_off	; PWM off if -1
+	ld		bc,64				; Upshift 6 bits to correspond with reg setting
+	mul
+	ld		h,b
+	ld		a,c
+#ifdef SERVO_PWM_SPREAD
+	or		0x01
+#else
+	and	0xFE
+#endif
+	ld		l,a
+#if NUM_SERVOS > 1
+	ld		a,(_sp_slice)
+	rrca
+	jr		nc,cl_setpwm1
+	ld		a,(PFFRShadow)
+	or		16<<SERVO_PWM_USE_1
+	ld		(PFFRShadow),a
+;ioi ld	(PFFR),a
+	IOWRITE_A(PFFR)
+ioi ld	(PWL0R+2*SERVO_PWM_USE_1),hl
+	jp		cl_reti
+cl_setpwm1:
+#endif
+	ld		a,(PFFRShadow)
+	or		16<<SERVO_PWM_USE_0
+	ld		(PFFRShadow),a
+;ioi ld	(PFFR),a
+	IOWRITE_A(PFFR)
+ioi ld	(PWL0R+2*SERVO_PWM_USE_0),hl
+	jp		cl_reti
+cl_getpwm:
+	; Reg A contains "openloop" field value (1 if open loop, 2 if controlled torque)
+	dec	a
+	jr		nz,cl_torque
+	ld		hl,(ix+[_sp1]+pwm_out)
+	jp		cl_writepwm
+cl_torque:
+	ld		hl,(ix+[_sp1]+pwm_nl)	; this assumes that "fac" field is non-zero, and pwm_nl is
+											; getting correctly updated in control update phase.
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+torque)
+	add	hl,de
+	jp		cl_01b
+cl_pwm_off:
+	; Turn off PWM completely by setting port output bit to 0
+	; Note that PFDR bit is assumed to be set to zero in the init call,
+	; and not changed by any other code.
+#if NUM_SERVOS > 1
+	ld		a,(_sp_slice)
+	rrca
+	jr		nc,cl_setoff1
+	ld		a,(PFFRShadow)
+	and	255-(16<<SERVO_PWM_USE_1)
+	ld		(PFFRShadow),a
+;ioi ld	(PFFR),a
+	IOWRITE_A(PFFR)
+	jp		cl_reti
+cl_setoff1:
+#endif
+	ld		a,(PFFRShadow)
+	and	255-(16<<SERVO_PWM_USE_0)
+	ld		(PFFRShadow),a
+;ioi ld	(PFFR),a
+	IOWRITE_A(PFFR)
+	jp		cl_reti
+
+cl_underflow:
+	ld		hl,(ix+[_sp1]+pwm_low)
+	jr		cl_7
+cl_overflow:
+	ld		hl,(ix+[_sp1]+pwm_high)
+cl_7:
+	ld		a,(ix+[_sp1]+antiwindup)
+	or		0x03
+	ld		(ix+[_sp1]+antiwindup),a
+	jp		cl_setpwm
+
+;------------------------------
+; Command phase processing
+;------------------------------
+cl_command:
+	push	iy					; IY used for table indexing
+	; Increment interrupt count
+	ld		hl,(ix+[_sp1]+ctl_count)
+	inc	hl
+	ld		(ix+[_sp1]+ctl_count),hl
+
+	; Update min/max error
+	ld		hl,(ix+[_sp1]+error)
+	ex		de,hl
+	bool	hl
+	ld		l,h
+	ld		a,d
+	rlca
+	jr		nc,clc_poserr
+	or		a
+	sbc	hl,de				; Negate error to get absolute value
+	ex		de,hl
+clc_poserr:
+	ld		hl,(ix+[_sp1]+max_error)
+	or		a
+	sbc	hl,de				; Carry if max_error < error
+	jr		nc,clc_lohi
+	ex		de,hl
+	ld		(ix+[_sp1]+max_error),hl
+
+clc_lohi:
+	; Set pwm_low and pwm_high based on current "no-load" PWM output.
+	ld		hl,(ix+[_sp1]+pwm_fac)
+	ld		b,h
+	ld		c,L
+	bool	hl
+	jr		z,clc_0a			; Skip following if zero factor
+	ld		hl,(ix+[_sp1]+vel)
+	ex		de,hl
+	mul						; Compute vel*pwm_fac>>16 (result in HL)
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+pwm_offs)
+	add	hl,de				; Add in pwm_offs to get "no-load" PWM for current sampled velocity
+	bit	7,h				; Test for -ve result
+	jr		z,clc_nlnn
+	bool	hl
+	ld		l,h				; Make zero if -ve.
+clc_nlnn:
+	ld		b,h
+	ld		c,L				; BC = HL = nlpwm
+	ld		(ix+[_sp1]+pwm_nl),hl
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+pwm_maxdelta)
+	ex		de,hl
+	or		a
+	sbc	hl,de				; HL = nlpwm - maxdelta
+	jr		c,clc_uflow		; Jump if underflow
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+pwm_abslow)
+	sbc	hl,de				; HL = abslow - low (carry clear from above)
+	jr		nc,clc_uflow
+	ex		de,hl
+	ld		(ix+[_sp1]+pwm_low),hl	; Set low PWM limit
+	jr		clc_chkhi
+clc_uflow:
+	ld		hl,(ix+[_sp1]+pwm_abslow)
+	ld		(ix+[_sp1]+pwm_low),hl
+clc_chkhi:
+	ld		hl,(ix+[_sp1]+pwm_maxdelta)
+	add	hl,bc				; HL = nlpwm + maxdelta
+	add	hl,hl
+	jr		c,clc_oflow		; Jump if overflow (MSB set)
+	rr		hl
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+pwm_abshigh)
+	sbc	hl,de				; HL = abshigh - high (carry clear from above)
+	jr		c,clc_oflow
+	ex		de,hl
+	ld		(ix+[_sp1]+pwm_high),hl	; Set high PWM limit
+	jr		clc_0a
+clc_oflow:
+	ld		hl,(ix+[_sp1]+pwm_abshigh)
+	ld		(ix+[_sp1]+pwm_high),hl
+
+clc_0a:
+	; Update table
+	ld		hl,(ix+[_sp1]+table_offs)
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+table_ent)
+	dec	hl
+	or		a
+	sbc	hl,de				; Carry if table_ent <= table_offs
+	jr		c,clc_1a
+	ld		hl,(ix+[_sp1]+table)
+	add	hl,de
+	rla
+	ld		iy,hl
+	ex		de,hl
+	ld		bc,8
+	add	hl,bc
+	ld		(ix+[_sp1]+table_offs),hl
+	rra
+	ld		a,(ix+[_sp1]+table+2)
+	adc	a,0			; Add in carry  A:IY now paddr of table entry
+							; - 8-byte boundary guaranteed by servo_alloc_table()
+	ld		hl,(ix+[_sp1]+error)
+	ldp	(iy),hl
+	ld		c,2			; BC = 2
+	add	iy,bc
+	ld		hl,(ix+[_sp1]+ierror)
+	ldp	(iy),hl
+	add	iy,bc
+	ld		hl,(ix+[_sp1]+derror)
+	ldp	(iy),hl
+	add	iy,bc
+	ld		hl,(ix+[_sp1]+pwm_int)
+	ldp	(iy),hl
+
+clc_1a:
+	ld		hl,(ix+[_sp1]+ctl_callback)
+	ld		a,h
+	or		L
+	jr		z,clc_noctlcb
+	ld		de,clc_exit
+	jp		(hl)
+
+clc_noctlcb:
+#if SERVO_MAX_CMD > 0
+	; Execute command
+	ld		hl,(ix+[_sp1]+exec)
+clc_1a2:
+	ld		iy,hl
+	bool	hl
+	jp		z,clc_updcmd
+	ld		a,(iy+[_scmd]+type)
+	or		a
+	jp		z,clc_cv
+	dec	a
+	jr		z,clc_cvt
+	dec	a
+	jr		z,clc_set
+	dec	a
+	jr		z,clc_accel
+	dec	a
+	jr		z,clc_loop
+	dec	a
+	jr		z,clc_callback
+	jp		clc_updcmd
+clc_cv:
+	ld		(ix+[_sp1]+notfirst),1
+	ld		hl,(iy+[_scmd]+vel+2)
+	ld		(ix+[_sp1]+vcmd+2),hl
+	ld		hl,(iy+[_scmd]+vel)
+	ld		(ix+[_sp1]+vcmd),hl
+	jp		clc_updcmd2
+clc_cvt:
+	ld		(ix+[_sp1]+notfirst),1
+	ld		hl,(iy+[_scmd]+vel+2)
+	ld		(ix+[_sp1]+vcmd+2),hl
+	ld		hl,(iy+[_scmd]+vel)
+	ld		(ix+[_sp1]+vcmd),hl
+	jr		clc_deccount
+clc_set:
+	ld		a,(ix+[_sp1]+notfirst)
+	or		a
+	jr		nz,clc_setnotfirst
+	bool	hl
+	ld		l,h
+	ld		(ix+[_sp1]+frac),hl
+	ld		hl,(iy+[_scmd]+p2)
+	ld		(ix+[_sp1]+cmd),hl
+	ld		hl,(iy+[_scmd]+p2+2)
+	ld		(ix+[_sp1]+cmd+2),hl
+	jr		clc_deccount
+clc_setnotfirst:
+	ld		hl,(iy+[_scmd]+vel+2)
+	ld		(ix+[_sp1]+vcmd+2),hl
+	ld		hl,(iy+[_scmd]+vel)
+	ld		(ix+[_sp1]+vcmd),hl
+	jr		clc_deccount
+clc_accel:
+	ld		(ix+[_sp1]+notfirst),1
+	ld		hl,(iy+[_scmd]+vel)
+	ex		de,hl
+	ld		hl,(iy+[_scmd]+p2)
+	add	hl,de
+	ld		(iy+[_scmd]+vel),hl
+	ld		(ix+[_sp1]+vcmd),hl
+	ld		hl,(iy+[_scmd]+vel+2)
+	ex		de,hl
+	ld		hl,(iy+[_scmd]+p2+2)
+	adc	hl,de
+	ld		(iy+[_scmd]+vel+2),hl
+	ld		(ix+[_sp1]+vcmd+2),hl
+	jr		clc_deccount
+clc_loop:
+	ld		hl,(iy+[_scmd]+count)
+	dec	hl
+	ld		(iy+[_scmd]+count),hl
+	inc	hl
+	bool	hl
+	jr		z,clc_next
+	ld		hl,(iy+[_scmd]+p2)
+	ld		(ix+[_sp1]+exec),hl
+	jp		clc_1a2
+clc_callback:
+	ld		hl,(iy+[_scmd]+p2)
+	ld		(ix+[_sp1]+cbaddr),hl	; Signal callback
+	ld		bc,SERVO_CMD_SIZE
+	ld		hl,iy
+	add	hl,bc
+	ld		(ix+[_sp1]+exec),hl
+	jp		clc_1a2
+
+clc_deccount:
+	ld		hl,(iy+[_scmd]+count)
+	dec	hl
+	ld		(iy+[_scmd]+count),hl
+	bool	hl
+	jr		nz,clc_updcmd
+clc_next:
+	ld		(ix+[_sp1]+notfirst),0
+	ld		bc,SERVO_CMD_SIZE
+	ld		hl,iy
+	add	hl,bc
+	ld		(ix+[_sp1]+exec),hl
+
+#endif //#if SERVO_MAX_CMD > 0
+
+clc_updcmd:
+	; Add velocity to current command (32-bit addition with sign extension to 48 bits)
+	ld		hl,(ix+[_sp1]+vcmd)
+clc_updcmd2:
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+frac)
+	add	hl,de
+	ld		(ix+[_sp1]+frac),hl
+	ld		hl,(ix+[_sp1]+vcmd+2)
+	ld		a,h							; remember MSB for sign extension
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+cmd)
+	adc	hl,de
+	ld		(ix+[_sp1]+cmd),hl
+	rla									; save current carry, and set carry from MSB
+	sbc	hl,hl							; Sign extend to HL
+	rra									; Get previous carry
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+cmd+2)
+	adc	hl,de
+	ld		(ix+[_sp1]+cmd+2),hl
+
+#if SERVO_MAX_CMD > 0
+	ld		hl,(ix+[_sp1]+cbaddr)	; Check for callback request
+	ld		iy,hl
+	bool	hl
+	jr		z,clc_exit
+	push	ip
+	ipset	0							; Re-enable interrupts
+	ex		af,af'
+	push	af
+	exx
+	push	hl							; Save caller's HL and AF' (since not normally pushed)
+	ld		hl,clc_retaddr
+	push	hl
+	jp		(iy)
+clc_retaddr:
+	pop	hl
+	exx
+	pop	af
+	ex		af,af'
+	pop	ip
+clc_exit:
+#endif
+
+	pop	iy
+
+cl_reti:
+	pop	hl
+	pop	bc
+	pop	de
+	exx
+#ifdef SERVO_HOOK_PERIODIC
+	pop	bc
+	jp		periodic_isr_ep2			; Continue with standard periodic ISR
+#else
+	pop	ix
+	pop	bc
+	pop	de
+	pop	af
+	ipres
+	ret
+#endif
+
+#ifdef SERVO_INDEX_CAPTURE
+servo_ic_isr::
+	push	af
+	push	hl
+	push	bc
+	push	de
+;ioi ld	a,(ICCSR)
+	IOREAD_A(ICCSR)
+	bit	5,a
+	jr		z,ic_cap2
+
+; Start event i.e. index 1 capture.
+	ld		a,(_sp1+[_sp1]+index_ctl)
+	rlca
+	jr		nc,ic_cap2		; Not interested in index
+	call	servo_qd_read_0
+	ld		(_sp1+[_sp1]+index_count),de
+	ld		(_sp1+[_sp1]+index_count+2),bc
+	ld		a,0x81			; Indicate captured
+	ld		(_sp1+[_sp1]+index_ctl),a
+
+ic_cap2:
+#if NUM_SERVOS > 1
+	bit	4,a
+	jr		z,ic_reti
+
+; Stop event i.e. index 2 capture.
+	ld		a,(_sp2+[_sp2]+index_ctl)
+	rlca
+	jr		nc,ic_reti		; Not interested in index
+	call	servo_qd_read_1
+	ld		(_sp2+[_sp2]+index_count),de
+	ld		(_sp2+[_sp2]+index_count+2),bc
+	ld		a,0x81			; Indicate captured
+	ld		(_sp2+[_sp2]+index_ctl),a
+
+#endif
+ic_reti:
+	pop	de
+	pop	bc
+	pop	hl
+	pop	af
+	ipres
+	ret
+#endif	// SERVO_INDEX_CAPTURE
+
+#endasm
+
+/*** BeginHeader servo_isrinit */
+xmem void servo_isrinit(void);
+/*** EndHeader */
+#asm xmem debug
+
+servo_isrinit::
+	 ;setup interrupt vectors: Quad decode and timer B for servo control loop
+#if _USER
+    ld   hl, servo_qd_isr
+    push hl
+    ld   hl, QUAD_OFS/0x10
+    push hl
+    call SetVectIntern
+    add  sp,4
+#else
+	 ld	iy, INTVEC_BASE + QUAD_OFS
+	 ld	hl, servo_qd_isr
+	 ld	(iy+1), hl		;ISR address
+	 ld	(iy), 0xC3		;JP command
+#endif
+
+#ifdef SERVO_HOOK_PERIODIC
+	 ; Control loop hooked off periodic interrupt.  Intercept the existing
+	 ; vector and replace with ours.  The control loop does its thing, then
+	 ; passes control back to the standard periodic ISR.
+    #if _USER
+    #error Servo.lib cannot be configured to hook into the periodic interrupt when using RabbitSys.
+	 #else
+	 ld	iy, INTVEC_BASE + PERIODIC_OFS
+	 ld	hl,servo_cl_isr
+	 ld	(iy+1),hl		; Our ISR address
+    #endif
+#else
+    #if _USER
+    ld   hl,servo_cl_isr
+    push hl
+    ld   hl,TIMERB_OFS/0x10
+    push hl
+    call SetVectIntern
+    add  sp,4
+    #else
+	 ; Timer B interrupt
+    ld	iy, INTVEC_BASE + TIMERB_OFS
+    ld	hl,servo_cl_isr
+	 ld	(iy+1),hl		;ISR address
+	 ld	(iy),0xC3		;JP command
+    #endif
+#endif
+
+#ifdef SERVO_INDEX_CAPTURE
+	 ; Input capture interrupt
+    #if _USER
+    ld    hl, servo_ic_isr
+    push  hl
+    ld    hl, INPUTCAP_OFS/0x10
+    push  hl
+    call  SetVectIntern
+    add   sp,4
+    #else
+	 ld	 iy, INTVEC_BASE + INPUTCAP_OFS	;iy holds interrupt vector
+	 ld	 hl, servo_ic_isr
+	 ld	(iy+1),hl		;ISR address
+	 ld	(iy),0xC3		;JP command
+    #endif
+#endif
+
+	 lret
+#endasm
+
+/*** BeginHeader servo_qd_zero_0 */
+xmem void servo_qd_zero_0(void);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_qd_zero_0                   <SERVO.LIB>
+
+SYNTAX:  void servo_qd_zero_0(void)
+
+DESCRIPTION:   Reset the 1st servo encoder reading to zero.  The servo
+               motor is not moved; only the notion of the current position
+               is reset to zero.  This should only be called when the
+               servo is in open loop mode.
+
+SEE ALSO:      servo_qd_zero_0.
+END DESCRIPTION **********************************************************/
+#asm xmem
+
+servo_qd_zero_0::
+	ld		a,0x01
+	push	ip
+	ipset	3
+;	ioi ld (QDCSR),a
+	IOWRITE_A(QDCSR)
+	; ld		(QDCSRShadow),a	; no need: all bits are read-only or write-only
+	bool	hl
+	ld		l,h
+	ld		(_sp1),hl
+	ld		(_sp1+2),hl
+	pop	ip
+	lret
+
+#endasm
+
+/*** BeginHeader servo_qd_zero_1 */
+xmem void servo_qd_zero_1(void);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_qd_zero_1                   <SERVO.LIB>
+
+SYNTAX:  void servo_qd_zero_1(void)
+
+DESCRIPTION:   Reset the 2nd servo encoder reading to zero.  The servo
+               motor is not moved; only the notion of the current position
+               is reset to zero.  This should only be called when the
+               servo is in open loop mode.
+
+SEE ALSO:      servo_qd_zero_0.
+END DESCRIPTION **********************************************************/
+#asm xmem
+
+servo_qd_zero_1::
+	ld		a,0x10
+	push	ip
+	ipset	3
+;	ioi ld (QDCSR),a
+	IOWRITE_A(QDCSR)
+	; ld		(QDCSRShadow),a	; no need: all bits are read-only or write-only
+	bool	hl
+	ld		l,h
+	ld		(_sp2),hl
+	ld		(_sp2+2),hl
+	pop	ip
+	lret
+
+#endasm
+
+
+/*** BeginHeader servo_stats_reset */
+xmem void servo_stats_reset(int which);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_stats_reset                   <SERVO.LIB>
+
+SYNTAX:  void servo_stats_reset(int which)
+
+DESCRIPTION:   Reset the statistics table.  This is used immediately
+               prior to a command movement, so that the table is filled
+               with the results of the movement command.  Once reset, one
+               table row is filled in for each execution of the update
+               loop (ISR driven).  This continues until the table is
+               full, or it is reset again.
+
+PARAMETER1:    Servo (0 or 1).
+
+SEE ALSO:      servo_graph, servo_read_table.
+END DESCRIPTION **********************************************************/
+#asm xmem
+
+servo_stats_reset::
+	push	ix
+	ld		ix,_sp1
+	bool	hl
+#if NUM_SERVOS > 1
+	jr		z,ssr_0a
+	ld		ix,_sp2
+ssr_0a:
+#endif
+	ld		l,h		; Zero HL
+	push	ip
+	ipset	3
+	ld		(ix+[_sp1]+table_offs),hl
+	ld		(ix+[_sp1]+max_error),hl
+	ld		a,(ix+[_sp1]+antiwindup)
+	and	255-SERVO_AW_WASSAT
+	ld		(ix+[_sp1]+antiwindup),a
+	pop	ip
+	pop	ix
+	lret
+
+#endasm
+
+/*** BeginHeader servo_set_coeffs */
+xmem void servo_set_coeffs(int which, int prop, int integral, int diff);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_set_coeffs                   <SERVO.LIB>
+
+SYNTAX:  void servo_set_coeffs(int which, int prop, int integral, int diff)
+
+DESCRIPTION:   Set the PID closed loop control coefficients.  The normal
+               sign for all coefficients should be positive in order to
+               implement a stable control loop.  See Technical Note 233
+               for details.
+
+PARAMETER1:    Servo (0 or 1).
+PARAMETER2:    Proportional coefficient.
+PARAMETER3:    Integral ("reset") coefficient.
+PARAMETER4:    Derivative ("rate") coefficient.
+
+SEE ALSO:      servo_closedloop, servo_openloop.
+END DESCRIPTION **********************************************************/
+
+void servo_set_coeffs(int which, int prop, int integral, int diff)
+{
+#if NUM_SERVOS > 1
+	if (which) {
+#ifndef SERVO_REVERSE_1
+		prop = -prop;
+		integral = -integral;
+		diff = -diff;
+#endif
+		_sp2.prop = prop;
+		_sp2.integral = integral;
+		_sp2.diff = diff;
+	}
+	else
+#endif
+	{
+#ifndef SERVO_REVERSE_0
+		prop = -prop;
+		integral = -integral;
+		diff = -diff;
+#endif
+		_sp1.prop = prop;
+		_sp1.integral = integral;
+		_sp1.diff = diff;
+	}
+}
+
+/*** BeginHeader servo_set_pos */
+xmem void servo_set_pos(int which, long pos, long vel);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_set_pos                   <SERVO.LIB>
+
+SYNTAX:  void servo_set_pos(int which, long pos, long vel)
+
+DESCRIPTION:   Move the specified servo motor to a specified position
+               and set the specified velocity at that position.  This
+               cancels any move which is currently in effect.
+
+PARAMETER1:    Servo (0 or 1).
+PARAMETER2:    Position, as an encoder count.
+PARAMETER3:    Velocity, in units of encoder counts per loop update
+               interval, times 65536.  You can convert RPM to a suitable
+               velocity command using servo_millirpm2vcmd().
+
+SEE ALSO:      servo_move_to, servo_set_vel, servo_millirpm2vcmd.
+END DESCRIPTION **********************************************************/
+
+void servo_set_pos(int which, long pos, long vel)
+{
+	auto servo_parms * p;
+#if NUM_SERVOS > 1
+	if (which)
+		p = &_sp2;
+	else
+#endif
+		p = &_sp1;
+	p->exec = NULL;	// Suspend current execution
+	asm ipset SERVO_IP_LEVEL;
+	p->vcmd = vel;
+	p->cmd = pos;
+	p->frac = 0;
+	asm ipres;
+}
+
+/*** BeginHeader servo_set_vel */
+xmem void servo_set_vel(int which, long vel);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_set_vel                   <SERVO.LIB>
+
+SYNTAX:  void servo_set_vel(int which, long vel)
+
+DESCRIPTION:   Move the specified servo motor at a constant velocity.
+               This cancels any move which is currently in effect.
+
+PARAMETER1:    Servo (0 or 1).
+PARAMETER2:    Velocity, in units of encoder counts per loop update
+               interval, times 65536.  You can convert RPM to a suitable
+               velocity command using servo_millirpm2vcmd().
+
+SEE ALSO:      servo_move_to, servo_set_pos, servo_millirpm2vcmd.
+END DESCRIPTION **********************************************************/
+
+void servo_set_vel(int which, long vel)
+{
+	auto servo_parms * p;
+#if NUM_SERVOS > 1
+	if (which)
+		p = &_sp2;
+	else
+#endif
+		p = &_sp1;
+	p->exec = NULL;	// Suspend current execution
+	asm ipset SERVO_IP_LEVEL;
+	p->vcmd = vel;
+	asm ipres;
+}
+
+/*** BeginHeader servo_move_to */
+xmem int servo_move_to(int which, long pos, long ticks, long accel_ticks, long final_v);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_move_to                   <SERVO.LIB>
+
+SYNTAX:  int servo_move_to(int which, long pos, long ticks,
+                           long accel_ticks, long final_v)
+
+DESCRIPTION:   Move to new position, pos.  Assumes current position is
+  "cmd" and current velocity is "vcmd" (with the values of these read
+  from the control structure at beginning of routine).
+
+  Each "tick" represents the time interval between loop updates.  This
+  routine measures time intervals in units of ticks.
+
+  accel_ticks (<= ticks) is the number of ticks allocated to acceleration/
+  deceleration phase of movement.  The remaining part of the movement is
+  performed at constant velocity.  Acceleration and deceleration are
+  computed to be of the same magnitude at beginning and end of motion (but
+  may be opposite signs).  final_v is the velocity to be achieved at end of
+  movement.  This routine returns immediately the necessary command list
+  is installed for execution by the ISR.  The movement will not be
+  completed until "ticks" ISR executions.
+
+  NB: if the average velocity (vt) required to complete the movement is
+  greater than +/-16k counts per tick, then the movement is stretched to a
+  longer time interval so as to make the peak velocity equal to the
+  +/- 8k counts/tick (which is higher than any physical motor can follow).
+  accel_ticks is set to 16384 if it is over that (since rounding errors
+  can accumulate over long periods of low acceleration).
+
+  If this routine is called again before the previous motion is completed,
+  then the previous motion will be overridden by the new motion.  This
+  routine uses floating point, since the mathematics is quite complex.
+  It takes several milliseconds to execute, so should not be called to
+  perform motions which complete in less than, say, 50ms.
+
+  This routine does not attempt to control rate of change of acceleration
+  ("jerk" or d^3x/dt^3).  It approximates the required movement profile
+  as parabolic (constant acceleration) and linear (constant velocity)
+  segments.
+
+PARAMETER1:    Servo (0 or 1).
+PARAMETER2:    Position to be achieved at end of movement.
+PARAMETER3:    Number of ISR executions (loop update rate) over which
+                 to complete the movement.  If less than 1, set to 1.
+PARAMETER4:    Number of ticks over which acceleration is to be
+                 applied.  The remainder of the interval, ticks -
+                 accel_ticks, is performed at constant velocity.  If
+                 greater than "ticks", set equal to "ticks".
+PARAMETER5:    Final velocity to be achieved at end of movement.
+
+RETURN VALUE:  0: OK.
+               1: computed velocity is "extremely high": time interval
+                  stretched to make velocity fit within allowable
+                  fixed-point limits (i.e. 8192 encoder counts per
+                  sample).
+
+SEE ALSO:      servo_set_vel, servo_set_pos, servo_millirpm2vcmd.
+END DESCRIPTION **********************************************************/
+
+#if SERVO_MAX_CMD < 7
+	#error "servo_move_to() requires SERVO_MAX_CMD to be at least 7"
+#endif
+
+int servo_move_to(int which, long pos, long ticks, long accel_ticks, long final_v)
+{
+	/* Basically, this boils down to finding the common tangent to two "equal size"
+	   parabolas, which may or may not be pointing in the same direction (i.e.
+	   same or opposite signs for a (acceleration) and d (deceleration)).
+	   d = +/- a.  The magnitude of a is to be determined based on the given
+	   constraints.  If a==d, then this is trivial: a = d = (v1-v0)/accel_ticks.
+	   If a==-d then it is a lot more complicated, requiring two quadratics
+	   to be solved.
+
+	   First, we try for a same-signs solution, since the equations are linear.
+	   If this fails because one of he tangent points is outside the alloted
+	   time interval, we go for the opposite signs solution.  a (and d = -a)
+	   are computed by solving a quadratic expression.  Another quadratic equation is
+	   then solved to find the acceleration interval at the starting end.
+
+	   Finally, the parameters (computed in floating point) are discretized
+	   and placed in the command list for execution by the ISR.
+	*/
+	auto long x0;	// Current pos
+	auto long v0s;	// Current velocity
+	auto long x1;	// (pos - x0)
+	auto float v0, v1;	// Initial and final velocity (counts/tick)
+	auto float Ta, Tc, Td;	// Accel, constant, decel phase ticks
+	auto long ta, tc, td;	// Integer versions of above
+	auto float vtf;
+	auto long vt;	// Average transit velocity (pos-x0)/ticks
+	auto int rc;	// Function return code
+	auto long as;	// Acceleration (counts/tick/tick, scaled up <<16)
+	auto long ds;	// Deceleration (= +/- a)
+	auto long vc;	// Constant velocity
+	auto float a, dticks;
+	auto float x, y, W, q0, q1, q2, q, det;
+	auto long dxa, dxc, dxd, va, vd;
+#ifdef SERVO_SIMULATE
+	auto long t, s, f;
+#else
+	auto servo_parms * p;
+	auto servo_cmd * c;
+#endif
+
+	rc = 0;
+#ifdef SERVO_SIMULATE
+	v0s = initvel;
+	x0 = initpos;		// Starting point.  We normalize this to 0 for most computations
+#else
+  #if NUM_SERVOS > 1
+	if (which) {
+		p = &_sp2;
+	}
+	else
+  #endif
+	{
+		p = &_sp1;
+	}
+	asm ipset SERVO_IP_LEVEL;
+	p->exec = NULL;					// Set to constant velocity; abandon current command list
+	v0s = p->vcmd;
+	x0 = p->cmd + (v0s >> 16);	// Anticipate position at next tick, since takes about 2.5ms to compute
+	asm ipres;
+#endif
+	v0 = v0s * (1.0 / 65536.0);
+
+	if (ticks <= 0) ticks = 1;
+	if (accel_ticks > ticks)
+		accel_ticks = ticks;
+	if (accel_ticks > 16384)
+		accel_ticks = 16384;
+
+	x1 = pos - x0;
+	v1 = final_v * (1.0 / 65536.0);
+	for (;;) {
+		vtf = x1 * 65536.0 / ticks;
+		if (fabs(vtf) <= 16384.0 * 65536.0)
+			break;
+		ticks = (long)(ticks * fabs(vtf) / (8192.0 * 65536.0));
+		rc = 1;
+	}
+	vt = (long)vtf;	// Transit velocity
+	if (accel_ticks <= 1) {
+		// Practically instantaneous velocity changes.
+		vc = vt;
+		ta = td = 0;
+		tc = ticks;
+		goto __smt_finish;
+	}
+
+	// Initial guess for a, d: assume same signs.  This may turn out to be wrong
+	// later, but try simple solution first.
+	a = (v1 - v0) / accel_ticks;
+
+	// Parameters of final parabola x = y + W t + 1/2 a t^2
+	dticks = a * ticks;
+	y = x1 + (0.5 * dticks - v1) * ticks;
+	W = v1 - dticks;
+
+	// Compute coeffs of linear eq'n to solve for tangent to 2 parabolas of same
+	// t^2 coefficient.
+	q = W - v0;
+	q0 = 2.0 * a * y - q * q;
+	q1 = -2.0 * a * q;
+
+	// If q1 is zero, then v1 must equal v0.  Generally requires d = -a solution.
+#ifdef SERVO_SIMULATE
+	printf("q0 = %f  q1 = %f\n", q0, q1);
+#endif
+	if (q0 < 0.0 || q0 >= q1 * accel_ticks) {
+		// No same-sign solution within time constraints;
+		// d = -a solution required.  This is more complex in that it requires
+		// solving 2 quadratic equations, one for the acceleration so that the
+		// acceleration time constraint is satisfied, then one to determine the
+		// amount of time in each phase (however the two are mathematically
+		// related, of course).
+#ifdef SERVO_SIMULATE
+		printf("Opposite signs\n");
+#endif
+		// Find tangent to 2 parabolas with opposite t^2 coeffs, but first we need
+		// to determine the t^2 coefficients.
+		// Coeffs of quadratic eq'n to solve for acceleration.
+		q = v1 - v0;
+		q0 = -q * q;
+		q1 = 4.0 * (v1 * ticks - x1) - 2.0 * ticks * q;
+		q2 = (2.0 * ticks - accel_ticks) * accel_ticks;
+		det = sqrt(q1 * q1 - 4.0 * q0 * q2);	// Always non-negative argument
+		a = (det - q1) / (2.0 * q2);
+#ifdef SERVO_SIMULATE
+		printf("a = -d = %f\n", a);
+#endif
+		// Parameters of final parabola x = y + W t - 1/2 a t^2
+		dticks = a * ticks;
+		y = x1 - (0.5 * dticks + v1) * ticks;
+		W = v1 + dticks;
+
+		// Compute coeffs of quadratic eq'n to solve for tangent to 2 parabolas of opposite
+		// t^2 coefficient.
+		q = W - v0;
+		q0 = q * q + 2.0 * a * y;
+		q1 = -2.0 * a * q;
+		q2 = 2.0 * a * a;
+		det = q1 * q1 - 4.0 * q0 * q2;
+#ifdef SERVO_SIMULATE
+		printf("det = %f\n", det);
+#endif
+		if (det < q2 * q2) {
+			// Constant velocity phase is less than 1 tick.
+			det = 0.0;	// Compensate for possible rounding errors
+		}
+		else
+			det = sqrt(det);
+		// Now we have 2 possible solutions; we pick the one closest to start for Ta
+		// (the other will be at Td, the proof of which is left as an exercise...)
+		Ta = (-det - q1) / (2.0 * q2);
+#ifdef SERVO_SIMULATE
+		printf("Ta = %f\n", Ta);
+#endif
+		if (Ta < 0.0)
+			// Compensate for rounding errors
+			Ta = 0.0;
+		else if (Ta > ticks)
+			Ta = ticks;
+		as = (long)(a * 65536.0);
+		ds = -as;
+	}
+	else {
+		// All OK for same-signs solution!
+		// Accel time
+		Ta = q0 / q1;
+		as = (long)(a * 65536.0);
+		ds = as;
+	}
+	Td = accel_ticks - Ta;
+	ta = (long)(Ta+0.5);
+	td = accel_ticks - ta;
+	tc = ticks - ta - td;
+#ifdef SERVO_SIMULATE
+	printf("ta = %ld  tc = %ld  td = %ld\n", ta, tc, td);
+#endif
+	// Adjust a, d to compensate for discretization
+	as = (long)(as * Ta / (ta + 1));
+	ds = (long)(ds * Td / (td + 1));
+
+	// Now work backwards, computing exact displacements for acceleration phases
+	// Formula is dx = A(n^2 + n)/2 + nV.  We only do this if accel interval is
+	// less than 32k ticks, else get overflow problems.
+	dxa = (long)(((ta * (ta+1) * (float)as * 0.5) + (float)ta * v0s) / 65536.0);
+	//va = as * (ta+1) + v0s;	// Velocity at end of accel
+	//dxd = (long)(((float)td * (final_v-ds) - (td * (td-1) * (float)ds * 0.5)) / 65536.0);
+	//vd = (final_v-ds) - ds * (td-1);
+	va = as * (ta+1) + v0s;
+	dxd = (long)(((td * (td+1) * (float)ds * 0.5) + (float)td * va) / 65536.0);
+	vd = va;
+
+	// Constant velocity computed from dxc/tc
+	dxc = x1 - dxa - dxd;
+	if (tc > 0)
+		vc = (long)(dxc * 65536.0 / tc);
+#ifdef SERVO_SIMULATE
+	printf("dxa = %ld  dxd = %ld  dxc = %ld  va = %ld (%ld#%ld)\n",
+		dxa, dxd, dxc, va, va >> 16, va & 0xFFFFL);
+	printf("vc = %ld (%ld#%ld)  vd = %ld (%ld#%ld)\n",
+		vc, vc >> 16, vc & 0xFFFFL, vd, vd >> 16, vd & 0xFFFFL);
+	printf("as = %ld (%ld#%ld)  ds = %ld (%ld#%ld)\n", as, as>>16, as & 0xFFFFL, ds, ds>>16, ds & 0xFFFFL);
+#endif
+__smt_finish:
+
+#ifdef SERVO_SIMULATE
+	printf("x0 = %ld  v0s = %ld  t = 0\n", x0, v0s);
+	// Simulate ISR action
+	s = ta;
+	f = 0;
+	for (t = 0; t < s; t++) {
+		v0s += as;
+		f += v0s & 0xFFFFL;
+		x0 += v0s >> 16;
+		if (f >= 65536) {
+			f -= 65536;
+			x0++;
+		}
+	}
+	printf("x0 = %ld  v0s = %ld  t = %ld\n", x0, v0s, t);
+	if (tc > 0) {
+		s += tc;
+		v0s = vc;
+		for (; t < s; t++) {
+		f += v0s & 0xFFFFL;
+		x0 += v0s >> 16;
+		if (f >= 65536) {
+			f -= 65536;
+			x0++;
+		}
+		}
+		printf("x0 = %ld  v0s = %ld  t = %ld\n", x0, v0s, t);
+	}
+	s += td;
+	v0s = vd;
+	for (; t < s; t++) {
+		v0s += ds;
+		f += v0s & 0xFFFFL;
+		x0 += v0s >> 16;
+		if (f >= 65536) {
+			f -= 65536;
+			x0++;
+		}
+	}
+	printf("x0 = %ld  v0s' = %ld  t = %ld\n\n", x0, v0s+ds, t);
+#else
+	// Set up command list (execution is currently suspended)
+	c = p->cmds;
+	c->type = SCMD_SET;
+	c->p2 = x0;
+	c->count = 1;
+	if (ta > 0) {
+		c->vel = v0s + as;
+		if (ta > 1) {
+			c++;
+			c->type = SCMD_ACCEL;
+			c->p2 = as;
+			c->vel = v0s + as;
+			c->count = (word)(ta - 1);
+		}
+		c++;
+		c->type = SCMD_CVT;
+		c->vel = vc;
+		c->count = (word)tc;
+	}
+	else {
+		c->vel = vc;
+		c->count = (word)tc;
+	}
+	if (td > 0) {
+		c++;
+		c->type = SCMD_ACCEL;
+		c->p2 = ds;
+		c->vel = vd;
+		c->count = (word)td;
+	}
+	c++;
+	c->type = SCMD_SET;
+	c->p2 = pos;
+	c->vel = final_v;
+	c->count = 1;
+	c++;
+	c->type = SCMD_CV;
+	c->vel = final_v;
+
+  #ifdef SERVO_VERBOSE
+   /*
+   for (c = p->cmds; ; c++) {
+   	printf("C: t=%d c=%u v=%ld p2=%ld\n", c->type, c->count, c->vel, c->p2);
+   	if (c->type == SCMD_CV)
+   		break;
+   }
+   */
+  #endif
+	p->notfirst = 0;
+	p->exec = p->cmds;	// Start execution
+#endif
+
+	return rc;
+}
+
+/*** BeginHeader servo_alloc_table */
+xmem void servo_alloc_table(int which, int entries);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_alloc_table                   <SERVO.LIB>
+
+SYNTAX:  void servo_alloc_table(int which, int entries)
+
+DESCRIPTION:   Allocate an xmem data area for servo statistics collection.
+               This function should be called once only (for each servo)
+               at application startup time.
+
+PARAMETER1:    Servo (0 or 1).
+PARAMETER2:    Number of entries to allocate.  Each entry is 8 bytes, and
+               stores 4 integer values.  The maximum value for this
+               parameter is 8190.
+
+SEE ALSO:      servo_graph, servo_read_table, servo_stats_reset.
+END DESCRIPTION **********************************************************/
+
+void servo_alloc_table(int which, int entries)
+{
+	// This function should be called once only for each servo!
+	long x;
+
+	if ((word)entries > 8190)	// No more than 64k-16 table size
+		entries = 8190;
+	x = xalloc((entries+1)<<3);
+	x = (x + 7) & 0xFFFF8;		// Round to 8-byte boundary since use LDP, and don't want
+										// any single entry to overlap 64k boundary.
+#if NUM_SERVOS > 1
+	if (which) {
+		// Assignments must be done in this order to prevent race.
+		_sp2.table = x;
+		_sp2.table_ent = entries << 3;
+	}
+	else
+#endif
+	{
+		_sp1.table = x;
+		_sp1.table_ent = entries << 3;
+	}
+}
+
+/*** BeginHeader servo_read_table */
+xmem int servo_read_table(int which, word entry, word nent, int data[12]);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_read_table                   <SERVO.LIB>
+
+SYNTAX:  int servo_read_table(int which, word entry,
+                              word nent, int data[12])
+
+DESCRIPTION:   Read one or more table entries, returning average, max and
+               min of all samples in the specified group starting at entry,
+               for nent samples.
+
+PARAMETER1:    Servo (0 or 1).
+PARAMETER2:    First sample number.
+PARAMETER3:    Number of entries starting at "entry".
+PARAMETER4:    Returned data: 3 sets of 4 contiguous entries.  The first
+               set (data[0]..data[3]) contains the average; the second
+               set (data[4]..data[7]) contains the maximum; and the
+               last set (data[8]..data[11]) contains the minimum.  The
+               elements of each set correspond with the table data: the
+               first element is the instantaneous error; the second is
+               the error integral; the third is the error rate; and the
+               4th is the PWM output.  These may be customized to have
+               different meanings.
+
+RETURN VALUE:  0: OK.
+					1: no such entry or entries.
+
+SEE ALSO:      servo_alloc_table, servo_graph, servo_stats_reset.
+END DESCRIPTION **********************************************************/
+
+int servo_read_table(int which, word entry, word nent, int data[12])
+{
+	auto long x;
+	auto word n;
+	auto int s[4];
+	auto long avg[4];
+	auto word i;
+
+#if NUM_SERVOS > 1
+	if (which)
+		x = _sp2.table, n = _sp2.table_offs;
+	else
+#endif
+		x = _sp1.table, n = _sp1.table_offs;
+	if (entry >= 8190 || nent >= 8191)
+		return -1;
+	entry <<= 3;
+	nent <<= 3;
+	if (entry >= n)
+		return -1;
+	if (nent > n - entry)
+		nent = n - entry;
+	x += (unsigned long)entry;
+	n = 0;
+	for (i = 0; i < 4; i++) data[i] = 0;
+	for (i = 4; i < 8; i++) data[i] = (int)-32768;
+	for (i = 8; i < 12; i++) data[i] = 32767;
+	memset(avg, 0, sizeof(avg));
+	while (nent) {
+		xmem2root(s, x, 8);
+		x += 8;
+		for (i = 0; i < 4; i++) {
+			avg[i] += s[i];
+			if (s[i] > data[i+4])
+				data[i+4] = s[i];
+			if (s[i] < data[i+8])
+				data[i+8] = s[i];
+		}
+		nent -= 8;
+		n++;
+	}
+	for (i = 0; i < 4; i++)
+		data[i] = (int)(avg[i] / n);
+	return n;
+}
+
+/*** BeginHeader servo_graph */
+xmem int servo_graph(int which, word start, word nlines, word samples, word what, int low, int high);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_graph                   <SERVO.LIB>
+
+SYNTAX:  int servo_graph(int which, word start, word nlines, word samples,
+                         word what, int low, int high)
+
+DESCRIPTION:   Draw ASCII-art graph of servo response.  This is primarily
+               intended for debugging.  It should be called after
+               resetting the sample collection table using
+               servo_stats_reset(), then executing a movement whose
+               response is to be graphed.
+
+PARAMETER1:    Servo (0 or 1).
+PARAMETER2:    Starting sample number.
+PARAMETER3:    Number of lines (sample bins) in graph - vertical axis.
+PARAMETER4:    Number of samples to cover (should be multiple of nlines).
+PARAMETER5:    Which statistic to print.  0 is for error; 1 for error
+                 integral; 2 for error rate (differential), 3 for PWM
+                 output setting.  These may be customized to have
+                 different meanings.
+PARAMETER6:    low range of horizontal axis.
+PARAMETER7:    high range of horizontal axis.
+
+RETURN VALUE:  0: OK.
+               -1: error.
+
+SEE ALSO:      servo_alloc_table, servo_read_table, servo_stats_reset.
+END DESCRIPTION **********************************************************/
+
+int servo_graph(int which, word start, word nlines, word samples, word what, int low, int high)
+{
+#define SG_LINE	72
+	auto int totals[12];
+	auto int s[12];
+	auto char line[SG_LINE+2];
+	auto word i, j;
+	auto word nent;
+	auto int n, min, max, avg;
+	auto char avgc;
+	auto word pos, lpos, hpos;
+	auto long range;
+	auto int zeropos;
+	static const char * const type[4] = { "error", "err-integral", "err-rate", "pwm-int" };
+
+	if (what >= 4)
+		return -1;
+	nent = samples / nlines;
+	if (nent < 1)
+		nent = 1;
+	if (servo_read_table(which, start, samples, totals) < 0) {
+		printf("No entries in table\n");
+		return -1;
+	}
+	range = high - low;
+	if (low <= 0 && 0 <= high)
+		zeropos = (int)(SG_LINE * (long)(-low) / range);
+	else
+		zeropos = -1;
+	printf("Horz: %s  range %d..%d\nVert: time  %ldus/line  range %ld..%ldms\n"
+		, type[what]
+		, low, high
+		, (long)nent * 1000000 / SERVO_LOOP_RATE_HZ
+		, (long)start * 1000 / SERVO_LOOP_RATE_HZ
+		, (long)(start+nlines*nent) * 1000 / SERVO_LOOP_RATE_HZ
+		);
+	for (i = start; nlines; i += n) {
+		n = servo_read_table(which, i, nent, s);
+		if (n < 0)
+			break;
+		avg = s[what];
+		max = s[what+4];
+		min = s[what+8];
+		if (avg < low) avg = low, avgc = '<';
+		else if (avg > high) avg = high, avgc = '>';
+		else avgc = '#';
+		if (max < low) max = low;
+		if (max > high) max = high;
+		if (min < low) min = low;
+		if (min > high) min = high;
+		memset(line, ' ', sizeof(line));
+		if (zeropos >= 0)
+			line[zeropos] = '|';
+		lpos = (int)(SG_LINE * (long)(min - low) / range);
+		hpos = (int)(SG_LINE * (long)(max - low) / range);
+		for (j = lpos; j <= hpos; j++) line[j] = '-';
+		pos = (int)(SG_LINE * (long)(avg - low) / range);
+		line[pos] = avgc;
+		line[SG_LINE+1] = 0;
+		printf("%s\n", line);
+		nlines--;
+	}
+	return 0;
+}
+
+/*** BeginHeader servo_millirpm2vcmd */
+xmem long servo_millirpm2vcmd(int which, long millirpm);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_millirpm2vcmd                   <SERVO.LIB>
+
+SYNTAX:  long servo_millirpm2vcmd(int which, long millirpm)
+
+DESCRIPTION:   Convert 1/1000 RPM units to velocity command value.  Basic
+               formula is
+                        SERVO_COUNT_PER_REV_n * millirpm * 65536
+                 vcmd = ----------------------------------------
+                             60000 * SERVO_LOOP_RATE_HZ
+
+               Floating point is used to retain 24 bit precision.
+
+PARAMETER1:    Servo (0 or 1).
+PARAMETER2:    Input in units of 1/1000 RPM.
+
+RETURN VALUE:  Output in units suitable for command velocity setting i.e
+               units of 1/65536 encoder counts per ISR execution (sample).
+
+SEE ALSO:      servo_move_to, servo_set_vel, servo_set_pos.
+END DESCRIPTION **********************************************************/
+
+long servo_millirpm2vcmd(int which, long millirpm)
+{
+	auto long cpr;
+
+	cpr = which ? SERVO_COUNT_PER_REV_1 : SERVO_COUNT_PER_REV_0;
+	return (long)((float)millirpm * (cpr << 16) / (60000L * SERVO_LOOP_RATE_HZ));
+}
+
+/*** BeginHeader servo_gear */
+xmem void servo_gear(int count0, int count1, int slave0, int slave1);
+root void servo_gear01(void);
+root void servo_gear10(void);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_gear                   <SERVO.LIB>
+
+SYNTAX:  void servo_gear(int count0, int count1, int slave0, int slave1)
+
+DESCRIPTION:   ========================================================
+               NOTE: this function is currently not efficient enough
+               for production use (owing to use of long multiplication
+               and division).  It is provided as an example of the
+               use of callbacks from the ISR.
+               ========================================================
+
+					If two servos in use, couple or cross-couple their
+               positioning.  This only works if NUM_SERVOS is 2, and both
+               servos are in closed loop mode.
+
+               There are four possible sub-modes of operation, which
+               depend on the slave0/1 parameters:
+
+               slave0 slave1 Operation
+               ------ ------ -----------------------------------------
+               0      0      Non-gear mode: neither servo is slaved.
+                             This is the normal, default, mode.
+               0      1      Second servo is slaved from first servo.
+                             For every 'count0' increments of the first
+                             servo's encoder, the second servo will
+                             be moved 'count1' increments.
+               1      0      First servo is slaved from second servo.
+                             For every 'count1' increments of the second
+                             servo's encoder, the first servo will
+                             be moved 'count0' increments.
+               1      1      Both servos cross-coupled.  Movement will
+                             only result from an externally applied
+                             torque.  This is a true simulation of
+                             mechanical gearing.
+
+               Call this function with count0 or count1 zero, or both
+               slave0 and slave1 zero, to exit from gear mode.  When a
+               servo which was slaved is set to normal mode, its velocity
+               is set to zero.
+
+PARAMETER1:    Encoder increment for the first servo which results from
+               count1 increments of the second servo.
+PARAMETER2:    Encoder increment for the second servo which results from
+               count0 increments of the first servo.
+               - Together, count0 and count1 determine the gearing ratio.
+               Neither value should be set to a magnitude greater than
+               about 500, to avoid internal arithmetic overflow.  In any
+               gear mode, the total movement of either servo should be
+               limited to less than about 2M counts in either direction
+               from the point at which gear mode was set.  If a smaller
+               range of movement is acceptable, then the maximum of either
+               count parameter may be increased proportionally.  The value
+               of count0/count1 or count1/count0 should not have a
+               magnitude greater than about 10 to avoid encoder
+               quantization problems, especially in cross-coupled mode.
+PARAMETER3:    1 if first servo slaved to second, else zero.
+PARAMETER4:    1 if second servo slaved to first, else zero.
+
+SEE ALSO:      servo_closedloop, servo_torque.
+END DESCRIPTION **********************************************************/
+
+#if NUM_SERVOS < 2
+	#warnt "servo_gear() does nothing with only one servo"
+#endif
+
+#asm root
+servo_gear10::
+	push	de			; Save return address
+	call	servo_qd_read_0	; Get other servo's position in BCDE
+	jr		sg_cont
+servo_gear01::
+	push	de			; Save return address
+	; For the 0->1 update only, we distribute the integral error
+	ld		hl,(ix+[_sp1]+ierror)
+	ld		a,h
+	rla
+	rr		hl
+	ex		de,hl
+	ld		hl,(_sp2+[_sp2]+ierror)
+	ld		a,h
+	rla
+	rr		hl
+	or		a
+	ex		de,hl
+	sbc	hl,de
+	ld		(ix+[_sp1]+ierror),hl
+	ld		de,0
+	ex		de,hl
+	or		a
+	sbc	hl,de
+	ld		(_sp2+[_sp2]+ierror),hl
+	call	servo_qd_read_1	; Get other servo's position in BCDE
+sg_cont:
+	ld		hl,(ix+[_sp1]+cb_offset)
+	add	hl,de
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+cb_offset+2)
+	adc	hl,bc
+	ld		b,h
+	ld		c,L
+	; now BCDE contains normalized position of other servo.  Multiply by ratio (stored as
+	; 2 x 16-bit signed integers) to set current command position.
+	; Save AF' and HL' since used by long arith routines
+	ex		af,af'
+	exx
+	push	af
+	push	hl
+	exx
+	ex		af,af'
+	ld		hl,0
+	push	hl			; MSW of multiplicand
+	ld		hl,(ix+[_sp1]+cb_ratio)
+	push	hl			; LSW of multiplicand
+	call	L_mul
+	push	bc			; MSW of dividend
+	push	de			; LSW of dividend
+	ld		bc,0
+	ld		hl,(ix+[_sp1]+cb_ratio2)
+	ex		de,hl
+	call	L_div
+	pop	hl'
+	pop	af'
+	; unnormalise to new pos
+	ld		hl,(ix+[_sp1]+cb_offset2)
+	add	hl,de
+	ex		de,hl
+	ld		hl,(ix+[_sp1]+cb_offset2+2)
+	adc	hl,bc
+	ld		(ix+[_sp1]+cmd+2),hl
+	ld		hl,(ix+[_sp1]+cmd)
+	ex		de,hl
+	ld		(ix+[_sp1]+cmd),hl
+	or		a
+	sbc	hl,de		; hl = new pos - old pos
+	ld		(ix+[_sp1]+vcmd+2),hl	; Store velocity signal
+	ret
+
+#endasm
+
+void servo_gear(int count0, int count1, int slave0, int slave1)
+{
+	auto int ps0, ps1;
+
+	// Determine previous slave state
+	ps0 = _sp1.ctl_callback != NULL;
+	ps1 = _sp2.ctl_callback != NULL;
+
+	if (!count0 || !count1)
+		slave0 = slave1 = 0;
+
+	if (ps0 && !slave0) {
+		servo_set_vel(0, 0);
+		_sp1.ctl_callback = NULL;
+	}
+
+	if (ps1 && !slave1) {
+		servo_set_vel(1, 0);
+		_sp2.ctl_callback = NULL;
+	}
+
+	if (slave0 || slave1) {
+		#asm
+		ipset		SERVO_IP_LEVEL
+		#endasm
+		_sp1.cb_offset2 = servo_qd_read_0();
+		_sp2.cb_offset2 = servo_qd_read_1();
+		_sp1.cb_offset = -_sp2.cb_offset2;
+		_sp2.cb_offset = -_sp1.cb_offset2;
+		_sp1.cb_ratio = count0;
+		_sp1.cb_ratio2 = count1;
+		_sp2.cb_ratio = count1;
+		_sp2.cb_ratio2 = count0;
+		#asm
+		ipres
+		#endasm
+		if (slave0)
+			_sp1.ctl_callback = servo_gear01;
+		if (slave1)
+			_sp2.ctl_callback = servo_gear10;
+	}
+}
+
+/*** BeginHeader servo_openloop */
+xmem void servo_openloop(int which, word pwm);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_openloop                   <SERVO.LIB>
+
+SYNTAX:  void servo_openloop(int which, word pwm)
+
+DESCRIPTION:   Run specified servo in open-loop mode (no PID control).
+               Note that this bypasses dynamic current-limiting (if any
+               defined) so should be used with caution.
+
+PARAMETER1:    Servo (0 or 1).
+PARAMETER2:    Output PWM setting (0-1024).  0 indicates maximum reverse
+               speed, 1024 is maximum forward speed.  512 is nominally
+               zero speed (but this depends on amplifier offset).
+
+SEE ALSO:      servo_closedloop, servo_torque.
+END DESCRIPTION **********************************************************/
+
+void servo_openloop(int which, word pwm)
+{
+	if (pwm > 1024)
+		pwm = 1024;
+#if NUM_SERVOS > 1
+	if (which) {
+		#asm
+		ipset	SERVO_IP_LEVEL
+		c _sp2.openloop = 1;
+		c _sp2.pwm_out = pwm;
+		ipres
+		#endasm
+	}
+	else
+#endif
+	{
+		#asm
+		ipset	SERVO_IP_LEVEL
+		c _sp1.openloop = 1;
+		c _sp1.pwm_out = pwm;
+		ipres
+		#endasm
+	}
+}
+
+/*** BeginHeader servo_closedloop */
+xmem void servo_closedloop(int which, int reset);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_closedloop                   <SERVO.LIB>
+
+SYNTAX:  void servo_closedloop(int which, int reset)
+
+DESCRIPTION:   Run specified servo in closed-loop (PID) mode.
+
+PARAMETER1:    Servo (0 or 1).
+PARAMETER2:    Whether to reset the current command list.  The command list
+               executes even while in open loop mode (although it will have
+               no visible effect in that mode).  If reset is non-zero, then
+               the command list will be reset to empty and the motor will
+               halt at the current position.
+
+SEE ALSO:      servo_openloop, servo_torque.
+END DESCRIPTION **********************************************************/
+
+void servo_closedloop(int which, int reset)
+{
+	auto servo_parms * p;
+	auto long pos;
+
+#if NUM_SERVOS > 1
+	if (which) {
+		p = &_sp2;
+		pos = servo_qd_read_1();
+	}
+	else
+#endif
+	{
+		p = &_sp1;
+		pos = servo_qd_read_0();
+	}
+	if (reset) {
+		asm ipset	SERVO_IP_LEVEL;
+		p->exec = NULL;	// Cancel any command list in progress
+		p->cmd = pos;
+		p->vcmd = 0;
+		p->frac = 0;
+		asm ipres;
+	}
+
+	p->openloop = 0;
+}
+
+/*** BeginHeader servo_torque */
+xmem void servo_torque(int which, int torque);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_torque                   <SERVO.LIB>
+
+SYNTAX:  void servo_torque(int which, int torque)
+
+DESCRIPTION:   Run specified servo in open loop controlled torque mode.
+               The torque is limited by the dynamic current limit
+               feature, if available.
+
+PARAMETER1:    Servo (0 or 1).
+PARAMETER2:    Amount of torque expressed as a fraction of the maximum
+               permissible torque, times 10,000.  For example, to set the
+               torque to 1/10 the maximum value in the reverse direction,
+               call servo_torque(0, -1000).
+
+SEE ALSO:      servo_closedloop, servo_openloop.
+END DESCRIPTION **********************************************************/
+
+#ifndef SERVO_PWM_MAXDELTA_0
+	#error "Use of servo_torque() requires definition of SERVO_PWM_MAXDELTA_0"
+#endif
+#if NUM_SERVOS > 1
+  #ifndef SERVO_PWM_MAXDELTA_1
+	#error "Use of servo_torque() requires definition of SERVO_PWM_MAXDELTA_1"
+  #endif
+#endif
+
+void servo_torque(int which, int torque)
+{
+	// "torque" should be set to +/-10000 for maximum permissible torque,
+	// or a value of lesser magnitude e.g. 1000 for 1/10 maximum torque.
+#if NUM_SERVOS > 1
+	if (which) {
+		torque = (int)((long)torque * SERVO_PWM_MAXDELTA_1 / 10000);
+		if (torque < -SERVO_PWM_MAXDELTA_1)
+			torque = -SERVO_PWM_MAXDELTA_1;
+		else if (torque > SERVO_PWM_MAXDELTA_1)
+			torque = SERVO_PWM_MAXDELTA_1;
+		#asm
+		ipset	SERVO_IP_LEVEL
+		c _sp2.openloop = 2;
+		c _sp2.torque = torque;
+		ipres
+		#endasm
+	}
+	else
+#endif
+	{
+		torque = (int)((long)torque * SERVO_PWM_MAXDELTA_0 / 10000);
+		if (torque < -SERVO_PWM_MAXDELTA_0)
+			torque = -SERVO_PWM_MAXDELTA_0;
+		else if (torque > SERVO_PWM_MAXDELTA_0)
+			torque = SERVO_PWM_MAXDELTA_0;
+		#asm
+		ipset	SERVO_IP_LEVEL
+		c _sp1.openloop = 2;
+		c _sp1.torque = torque;
+		ipres
+		#endasm
+	}
+}
+
+/*** BeginHeader servo_enable_0 */
+xmem void servo_enable_0(void);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_enable_0                   <SERVO.LIB>
+
+SYNTAX:  void servo_enable_0(void)
+
+DESCRIPTION:   Enable drive to the first servo motor.  This function only
+               works if an auxiliary control signal is connected to the
+               motor driver.  The I/O pin used for this function is
+               specified by the macros:
+
+                 #define SERVO_ENABLE_PORT_0        PGDR
+                 #define SERVO_ENABLE_PORTSHADOW_0  PGDRShadow
+                 #define SERVO_ENABLE_PIN_0         6
+               and, optionally,
+                 #define SERVO_ENABLE_DDR_0         PGDDR
+                 #define SERVO_ENABLE_DDRSHADOW_0   PGDDRShadow
+                 #define SERVO_ENABLE_ACTIVEHIGH_0
+
+               This function is limited to toggling the output pin high
+               or low.  If enabling or disabling the servo motor requires
+               more complicated actions, then you can substitute your
+               own function by defining
+
+                 #define SERVO_ENABLE_0  xxxx
+
+               where xxxx is the name of your own function (which is
+               assumed to take no parameters and have no return value).
+
+SEE ALSO:      servo_disable_0, servo_enable_1.
+END DESCRIPTION **********************************************************/
+
+void servo_enable_0(void)
+{
+	#asm
+	ld		a,(SERVO_ENABLE_PORTSHADOW_0)
+#ifdef SERVO_ENABLE_ACTIVEHIGH_0
+	or		1<<SERVO_ENABLE_PIN_0
+#else
+	and	255-(1<<SERVO_ENABLE_PIN_0)
+#endif
+	ld		(SERVO_ENABLE_PORTSHADOW_0),a
+ioi ld	(SERVO_ENABLE_PORT_0),a
+#ifdef SERVO_ENABLE_DDR_0
+	ld		a,(SERVO_ENABLE_DDRSHADOW_0)
+	or		1<<SERVO_ENABLE_PIN_0
+	ld		(SERVO_ENABLE_DDRSHADOW_0),a
+ioi ld	(SERVO_ENABLE_DDR_0),a
+#endif
+	#endasm
+}
+
+
+/*** BeginHeader servo_disable_0 */
+xmem void servo_disable_0(void);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_disable_0                   <SERVO.LIB>
+
+SYNTAX:  void servo_disable_0(void)
+
+DESCRIPTION:   Disable drive to the first servo motor.  This function only
+               works if an auxiliary control signal is connected to the
+               motor driver.  The I/O pin used for this function is
+               specified by the macros:
+
+                 #define SERVO_ENABLE_PORT_0        PGDR
+                 #define SERVO_ENABLE_PORTSHADOW_0  PGDRShadow
+                 #define SERVO_ENABLE_PIN_0         6
+               and, optionally,
+                 #define SERVO_ENABLE_DDR_0         PGDDR
+                 #define SERVO_ENABLE_DDRSHADOW_0   PGDDRShadow
+                 #define SERVO_ENABLE_ACTIVEHIGH_0
+
+               This function is limited to toggling the output pin high
+               or low.  If enabling or disabling the servo motor requires
+               more complicated actions, then you can substitute your
+               own function by defining
+
+                 #define SERVO_DISABLE_0  yyyy
+
+               where yyyy is the name of your own function (which is
+               assumed to take no parameters and have no return value).
+
+SEE ALSO:      servo_enable_0.
+END DESCRIPTION **********************************************************/
+
+void servo_disable_0(void)
+{
+	#asm
+	ld		a,(SERVO_ENABLE_PORTSHADOW_0)
+#ifdef SERVO_ENABLE_ACTIVEHIGH_0
+	and	255-(1<<SERVO_ENABLE_PIN_0)
+#else
+	or		1<<SERVO_ENABLE_PIN_0
+#endif
+	ld		(SERVO_ENABLE_PORTSHADOW_0),a
+ioi ld	(SERVO_ENABLE_PORT_0),a
+#ifdef SERVO_ENABLE_DDR_0
+	ld		a,(SERVO_ENABLE_DDRSHADOW_0)
+	or		1<<SERVO_ENABLE_PIN_0
+	ld		(SERVO_ENABLE_DDRSHADOW_0),a
+ioi ld	(SERVO_ENABLE_DDR_0),a
+#endif
+	#endasm
+}
+
+
+/*** BeginHeader servo_enable_1 */
+xmem void servo_enable_1(void);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_enable_1                   <SERVO.LIB>
+
+SYNTAX:  void servo_enable_1(void)
+
+DESCRIPTION:   Enable drive to the 2nd servo motor.  This function only
+               works if an auxiliary control signal is connected to the
+               motor driver.  The I/O pin used for this function is
+               specified by the macros:
+
+                 #define SERVO_ENABLE_PORT_1        PGDR
+                 #define SERVO_ENABLE_PORTSHADOW_1  PGDRShadow
+                 #define SERVO_ENABLE_PIN_1         7
+               and, optionally,
+                 #define SERVO_ENABLE_DDR_1         PGDDR
+                 #define SERVO_ENABLE_DDRSHADOW_1   PGDDRShadow
+                 #define SERVO_ENABLE_ACTIVEHIGH_1
+
+               This function is limited to toggling the output pin high
+               or low.  If enabling or disabling the servo motor requires
+               more complicated actions, then you can substitute your
+               own function by defining
+
+                 #define SERVO_ENABLE_1  xxxx
+
+               where xxxx is the name of your own function (which is
+               assumed to take no parameters and have no return value).
+
+SEE ALSO:      servo_disable_1, servo_enable_0.
+END DESCRIPTION **********************************************************/
+
+void servo_enable_1(void)
+{
+	#asm
+	ld		a,(SERVO_ENABLE_PORTSHADOW_1)
+#ifdef SERVO_ENABLE_ACTIVEHIGH_1
+	or		1<<SERVO_ENABLE_PIN_1
+#else
+	and	255-(1<<SERVO_ENABLE_PIN_1)
+#endif
+	ld		(SERVO_ENABLE_PORTSHADOW_1),a
+ioi ld	(SERVO_ENABLE_PORT_1),a
+#ifdef SERVO_ENABLE_DDR_1
+	ld		a,(SERVO_ENABLE_DDRSHADOW_1)
+	or		1<<SERVO_ENABLE_PIN_1
+	ld		(SERVO_ENABLE_DDRSHADOW_1),a
+ioi ld	(SERVO_ENABLE_DDR_1),a
+#endif
+	#endasm
+}
+
+
+/*** BeginHeader servo_disable_1 */
+xmem void servo_disable_1(void);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_disable_1                   <SERVO.LIB>
+
+SYNTAX:  void servo_disable_1(void)
+
+DESCRIPTION:   Disable drive to the 2nd servo motor.  This function only
+               works if an auxiliary control signal is connected to the
+               motor driver.  The I/O pin used for this function is
+               specified by the macros:
+
+                 #define SERVO_ENABLE_PORT_1        PGDR
+                 #define SERVO_ENABLE_PORTSHADOW_1  PGDRShadow
+                 #define SERVO_ENABLE_PIN_1         7
+               and, optionally,
+                 #define SERVO_ENABLE_DDR_1         PGDDR
+                 #define SERVO_ENABLE_DDRSHADOW_1   PGDDRShadow
+                 #define SERVO_ENABLE_ACTIVEHIGH_1
+
+               This function is limited to toggling the output pin high
+               or low.  If enabling or disabling the servo motor requires
+               more complicated actions, then you can substitute your
+               own function by defining
+
+                 #define SERVO_DISABLE_1  yyyy
+
+               where yyyy is the name of your own function (which is
+               assumed to take no parameters and have no return value).
+
+SEE ALSO:      servo_enable_1, servo_enable_0.
+END DESCRIPTION **********************************************************/
+
+void servo_disable_1(void)
+{
+	#asm
+	ld		a,(SERVO_ENABLE_PORTSHADOW_1)
+#ifdef SERVO_ENABLE_ACTIVEHIGH_1
+	and	255-(1<<SERVO_ENABLE_PIN_1)
+#else
+	or		1<<SERVO_ENABLE_PIN_1
+#endif
+	ld		(SERVO_ENABLE_PORTSHADOW_1),a
+ioi ld	(SERVO_ENABLE_PORT_1),a
+#ifdef SERVO_ENABLE_DDR_1
+	ld		a,(SERVO_ENABLE_DDRSHADOW_1)
+	or		1<<SERVO_ENABLE_PIN_1
+	ld		(SERVO_ENABLE_DDRSHADOW_1),a
+ioi ld	(SERVO_ENABLE_DDR_1),a
+#endif
+	#endasm
+}
+
+
+/*** BeginHeader servo_init */
+xmem void servo_init(void);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+servo_init                   <SERVO.LIB>
+
+SYNTAX:  void servo_init(void)
+
+DESCRIPTION:   This function must be called once at the beginning of
+               application code to initialize the servo library.
+
+SEE ALSO:      servo_stats_reset, servo_alloc_table, servo_set_coeffs,
+               servo_enable_0.
+END DESCRIPTION **********************************************************/
+
+void servo_init(void)
+{
+	auto unsigned long divisor;
+	auto unsigned long base_frequency;
+
+#ifdef SERVO_HOOK_PERIODIC
+	_sp_pslice = 0;
+#endif
+
+	#asm
+	; Set the normal PWM port pins to zero level for when PWM is disabled
+	; at zero level.
+	ipset	3
+	ld		a,(PFDRShadow)
+#if NUM_SERVOS > 1
+	#if SERVO_PWM_MODE == 2
+	and	255-(16<<SERVO_PWM_USE_0)-(16<<SERVO_PWM_USE_1)-(16<<SERVO_PWM_SEC_0)-(16<<SERVO_PWM_SEC_1)
+	#else
+	and	255-(16<<SERVO_PWM_USE_0)-(16<<SERVO_PWM_USE_1)
+	#endif
+#else
+	#if SERVO_PWM_MODE == 2
+	and	255-(16<<SERVO_PWM_USE_0)-(16<<SERVO_PWM_SEC_0)
+	#else
+	and	255-(16<<SERVO_PWM_USE_0)
+	#endif
+#endif
+	ld		(PFDRShadow),a
+;ioi ld	(PFDR),a
+	IOWRITE_A(PFDR)
+	ld		a,(PFDDRShadow)
+#if NUM_SERVOS > 1
+	#if SERVO_PWM_MODE == 2
+	or		0+(16<<SERVO_PWM_USE_0)+(16<<SERVO_PWM_USE_1)+(16<<SERVO_PWM_SEC_0)+(16<<SERVO_PWM_SEC_1)
+	#else
+	or		0+(16<<SERVO_PWM_USE_0)+(16<<SERVO_PWM_USE_1)
+	#endif
+	#ifdef SERVO_INDEX_CAPTURE
+	and	255-(32<<SERVO_PWM_USE_0)-(32<<SERVO_PWM_USE_1)
+	#endif
+#else
+	#if SERVO_PWM_MODE == 2
+	or		0+(16<<SERVO_PWM_USE_0)+(16<<SERVO_PWM_SEC_0)
+	#else
+	or		0+(16<<SERVO_PWM_USE_0)
+	#endif
+	#ifdef SERVO_INDEX_CAPTURE
+	and	255-(32<<SERVO_PWM_USE_0)
+	#endif
+#endif
+	ld		(PFDDRShadow),a
+;ioi ld	(PFDDR),a
+	IOWRITE_A(PFDDR)
+	ld		a,(PFDCRShadow)
+#ifdef SERVO_PWM_OPENDRAIN
+	#if NUM_SERVOS > 1
+	#if SERVO_PWM_MODE == 2
+	or		0+(16<<SERVO_PWM_USE_0)+(16<<SERVO_PWM_USE_1)+(16<<SERVO_PWM_SEC_0)+(16<<SERVO_PWM_SEC_1)
+	#else
+	or		0+(16<<SERVO_PWM_USE_0)+(16<<SERVO_PWM_USE_1)
+	#endif
+	#else
+	#if SERVO_PWM_MODE == 2
+	or		0+(16<<SERVO_PWM_USE_0)+(16<<SERVO_PWM_SEC_0)
+	#else
+	or		0+(16<<SERVO_PWM_USE_0)
+	#endif
+	#endif
+#else
+	#if NUM_SERVOS > 1
+	#if SERVO_PWM_MODE == 2
+	and		255-(16<<SERVO_PWM_USE_0)-(16<<SERVO_PWM_USE_1)-(16<<SERVO_PWM_SEC_0)-(16<<SERVO_PWM_SEC_1)
+	#else
+	and		255-(16<<SERVO_PWM_USE_0)-(16<<SERVO_PWM_USE_1)
+	#endif
+	#else
+	#if SERVO_PWM_MODE == 2
+	and		255-(16<<SERVO_PWM_USE_0)-(16<<SERVO_PWM_SEC_0)
+	#else
+	and		255-(16<<SERVO_PWM_USE_0)
+	#endif
+	#endif
+#endif
+	ld		(PFDCRShadow),a
+;ioi ld	(PFDCR),a
+	IOWRITE_A(PFDCR)
+#if SERVO_PWM_MODE == 1
+	ld		a,(SERVO_DIRECTION_DDRSHADOW_0)
+	or		1<<SERVO_DIRECTION_PIN_0
+	ld		(SERVO_DIRECTION_DDRSHADOW_0),a
+ioi ld	(SERVO_DIRECTION_DDR_0),a
+	#if NUM_SERVOS > 1
+	ld		a,(SERVO_DIRECTION_DDRSHADOW_1)
+	or		1<<SERVO_DIRECTION_PIN_1
+	ld		(SERVO_DIRECTION_DDRSHADOW_1),a
+;ioi ld	(SERVO_DIRECTION_DDR_1),a
+	IOWRITE_A(SERVO_DIRECTION_DDR_1)
+	#endif
+#endif
+	ipres
+	#endasm
+
+	// Set PWM base frequencies (base_freq is system clock divided by 2048)
+	base_frequency = (long)freq_divider * 307;
+#ifdef SERVO_PWM_SPREAD
+	divisor = base_frequency*4/SERVO_PWM_FREQ - 1;
+#else
+	divisor = base_frequency/SERVO_PWM_FREQ - 1;
+#endif
+	if (divisor < 0)
+		divisor = 0;
+	else if (divisor > 255)
+		divisor = 255;
+#ifdef SERVO_VERBOSE
+	printf("Setting PWM divisor to %d, actual freq = %d\n",
+		(int)divisor,
+	#ifdef SERVO_PWM_SPREAD
+		(int)(base_frequency/(divisor+1) * 4)
+	#else
+		(int)(base_frequency/(divisor+1))
+	#endif
+		);
+#endif
+	WrPortI(TAT9R, &TAT9RShadow, (char)divisor);
+
+	memset(&_sp1, 0, sizeof(_sp1));
+	servo_qd_zero_0();
+	_sp1.pwm_offs = SERVO_PWM_INIT_OFFS_0;
+#ifdef SERVO_PWM_MAXDELTA_0
+	_sp1.pwm_low = SERVO_PWM_INIT_OFFS_0;
+	_sp1.pwm_high = SERVO_PWM_INIT_OFFS_0;
+	_sp1.pwm_abslow = SERVO_PWM_INIT_OFFS_0 - SERVO_PWM_INIT_RANGE_0;
+	_sp1.pwm_abshigh = SERVO_PWM_INIT_OFFS_0 + SERVO_PWM_INIT_RANGE_0;
+	_sp1.pwm_fac = SERVO_PWM_FAC_0;
+	_sp1.pwm_maxdelta = SERVO_PWM_MAXDELTA_0;
+#else
+	_sp1.pwm_low = _sp1.pwm_abslow = SERVO_PWM_INIT_OFFS_0 - SERVO_PWM_INIT_RANGE_0;
+	_sp1.pwm_high = _sp1.pwm_abshigh = SERVO_PWM_INIT_OFFS_0 + SERVO_PWM_INIT_RANGE_0;
+	_sp1.pwm_fac = 0;
+	_sp1.pwm_maxdelta = 0;
+#endif
+
+#if NUM_SERVOS > 1
+	memset(&_sp2, 0, sizeof(_sp2));
+	servo_qd_zero_1();
+	_sp2.pwm_offs = SERVO_PWM_INIT_OFFS_1;
+  #ifdef SERVO_PWM_MAXDELTA_1
+	_sp2.pwm_low = SERVO_PWM_INIT_OFFS_1;
+	_sp2.pwm_high = SERVO_PWM_INIT_OFFS_1;
+	_sp2.pwm_abslow = SERVO_PWM_INIT_OFFS_1 - SERVO_PWM_INIT_RANGE_1;
+	_sp2.pwm_abshigh = SERVO_PWM_INIT_OFFS_1 + SERVO_PWM_INIT_RANGE_1;
+	_sp2.pwm_fac = SERVO_PWM_FAC_1;
+	_sp2.pwm_maxdelta = SERVO_PWM_MAXDELTA_1;
+  #else
+	_sp2.pwm_low = _sp2.pwm_abslow = SERVO_PWM_INIT_OFFS_1 - SERVO_PWM_INIT_RANGE_1;
+	_sp2.pwm_high = _sp2.pwm_abshigh = SERVO_PWM_INIT_OFFS_1 + SERVO_PWM_INIT_RANGE_1;
+	_sp2.pwm_fac = 0;
+	_sp2.pwm_maxdelta = 0;
+  #endif
+#endif
+
+	// Initialise the necessary interrupt vectors
+	servo_isrinit();
+
+	WrPortI(TAT10R, &TAT10RShadow, 1);	// Sample at clkspd/48 for good noise immunity and
+														// limit rollover interrupt rate.  (Division by 6 accounts
+														// for the multiple samples which are required, and the
+														// peripheral clock being 1/2 the main clock rate).
+	// set quad inputs to lower nibble of port F
+	WrPortI(QDCR, &QDCRShadow, 0x88 + SERVO_IP_LEVEL + 1);
+
+#ifndef SERVO_HOOK_PERIODIC
+	// Set up timer B for control loop periodic interrupt
+	// Set timer A1 count to set timing of control loop.  For single servo, the
+	// time constant is twice as long, since there is no need to multiplex
+	// with the other servo loop.
+
+	divisor = base_frequency/(SERVO_LOOP_RATE_HZ*2*NUM_SERVOS) - 1;
+	if (divisor < 0)
+		divisor = 0;
+	else if (divisor > 255)
+		divisor = 255;
+  #ifdef SERVO_VERBOSE
+	printf("Setting Loop rate divisor to %d, actual freq = %d\n",
+		(int)divisor,
+		(int)(base_frequency/(divisor+1)/(2*NUM_SERVOS))
+		);
+  #endif
+	WrPortI(TAT1R, &TAT1RShadow, (char)divisor);
+	WrPortI(TBCR, &TBCRShadow, 0x04+SERVO_IP_LEVEL);	// Enable interrupts
+	WrPortI(TBCSR, &TBCSRShadow, 0x03);	// Enable int on match 1, and start clock
+	WrPortI(TBM1R, NULL, 0x00);
+	WrPortI(TBL1R, NULL, 0x00);
+#endif
+
+#ifdef SERVO_INDEX_CAPTURE
+	// We use IC1 start condition for index pulse.  Start pin is PWM output pin for 1st
+	// servo, plus 1.
+#if NUM_SERVOS > 1
+	WrPortI(ICS1R, NULL, 0x88 + (SERVO_PWM_USE_0/2 + 2 << 4) + (SERVO_PWM_USE_1/2 + 2));
+	WrPortI(ICT1R, NULL, 0x05);	// Rising edge start, rising stop, no counter, no latch
+	WrPortI(ICCSR, NULL, 0x34);	// Enable start/stop interrupts, clear rollover latches
+#else
+	WrPortI(ICS1R, NULL, 0x88 + (SERVO_PWM_USE_0/2 + 2 << 4));
+	WrPortI(ICT1R, NULL, 0x04);	// Rising edge start, no stop, no counter, no latch
+	WrPortI(ICCSR, NULL, 0x24);	// Enable start interrupt, clear rollover latches
+#endif
+	WrPortI(ICCR, NULL, SERVO_IP_LEVEL); //enable interrupt
+#endif
+}
+
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

@@ -1,0 +1,33 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD W3 HTML//EN">
+<html>
+<head>
+   <title>Download Manager</title>
+   <META HTTP-EQUIV="Pragma" CONTENT="no-cache">
+   <META HTTP-EQUIV="Expires" CONTENT="-1">
+</head>
+
+<body topmargin="0" leftmargin="0" marginwidth="0" marginheight="0"
+   bgcolor="#FFFFFF" fgcolor="#009900" link="#009933" vlink="#009933"
+   alink="#006666">
+<br><br>
+<center>
+<table border="0" width="65%" cellspacing="0" cellpadding="3">
+   <tr>
+      <th colspan="2" style="background-color:#009933;color:white">Rabbit Semiconductor Download Manager</th>
+   </tr>
+   <tr>
+      <td style="background-color:#CCCCCC;color:black"> View current download manager status </td>
+      <td style="background-color:#CCCCCC;color:black"> <a href="status.shtml"> Status </a> </td>
+   </tr>
+   <tr>
+      <td style="background-color:#CCCCCC;color:black"> Upload new DLP image </td>
+      <td style="background-color:#CCCCCC;color:black"> <a href="upload.html"> Upload </td>
+   </tr>
+	<!--#exec cmd="listsimages"-->
+</table>
+</body>
+<head>
+   <META HTTP-EQUIV="Pragma" CONTENT="no-cache">
+   <META HTTP-EQUIV="Expires" CONTENT="-1">
+</head>
+</html>

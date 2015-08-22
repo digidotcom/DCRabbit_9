@@ -1,0 +1,209 @@
+/*******************************************************************************
+        Samples\TCPIP\HTTP\httpupld2.c
+        Z-World, 2003
+
+        Demonstrate the HTTP file upload facility.  This is the same
+        demo as httpupld.c, except that it generates the response
+        in the CGI function (instead of using http_switchCGI()).
+
+        The CGI merely dumps the action codes and information which is
+        presented by the server.
+
+        See the "upld_fat.c" sample for details on using the default
+        upload handler CGI, and adding security.
+
+*******************************************************************************/
+#class auto
+
+/***********************************
+ * Configuration                   *
+ * -------------                   *
+ * All fields in this section must *
+ * be altered to match your local  *
+ * network settings.               *
+ ***********************************/
+
+/*
+ * Pick the predefined TCP/IP configuration for this sample.  See
+ * LIB\TCPIP\TCP_CONFIG.LIB for instructions on how to set the
+ * configuration.
+ */
+#define TCPCONFIG 1
+
+
+
+/*
+ * TCP/IP modification - reduce TCP socket buffer
+ * size, to allow more connections. This can be increased,
+ * with increased performance, if the number of sockets
+ * are reduced.  Note that this buffer size is split in
+ * two for TCP sockets--1024 bytes for send and 1024 bytes
+ * for receive.
+ */
+#define TCP_BUF_SIZE 2048
+
+/*
+ * Web server configuration
+ */
+
+/*
+ * only one socket and server are needed for a reserved port
+ */
+#define HTTP_MAXSERVERS 1
+#define MAX_TCP_SOCKET_BUFFERS 1
+
+
+//#define HTTP_VERBOSE
+//#define ZSERVER_VERBOSE
+//#define HTTP_DEBUG
+//#define ZSERVER_DEBUG
+//#define DCRTCP_DEBUG
+
+
+#define HTTP_TIMEOUT		6
+
+#define HTTP_MAXBUFFER	512	// Bigger than default: allows us to avoid using CGI_MORE protocol
+
+
+/********************************
+ * End of configuration section *
+ ********************************/
+
+#define USE_HTTP_UPLOAD		// Required for this demo, to include upload code.
+
+#define DISABLE_DNS		// No name lookups required
+
+#memmap xmem
+
+#use "dcrtcp.lib"
+#use "http.lib"
+
+
+#ximport "samples/tcpip/http/pages/upload.html"    index_html
+
+// This table maps file extensions to the appropriate "MIME" type.  This is
+// needed for the HTTP server.
+SSPEC_MIMETABLE_START
+	SSPEC_MIME(".htm", "text/html"),
+	SSPEC_MIME(".html", "text/html"),
+	SSPEC_MIME(".gif", "image/gif"),
+	SSPEC_MIME(".cgi", "")
+SSPEC_MIMETABLE_END
+
+
+int upload_cgi(HttpState * s)
+{
+	char buf[HTTP_MAXBUFFER];
+	int rc;
+
+
+   if (!http_getState(s)) {
+   	http_setState(s, 1);
+	   http_genHeader(s, buf, HTTP_MAXBUFFER,
+                  200, NULL, 0,
+                  "<html><head><title>Upload Information</title></head><body>");
+      sprintf(buf + strlen(buf),
+        "<P>HTTP version=%s</P>" \
+        "<P>HTTP method=%s</P>" \
+        "<P>Userid=%d</P>" \
+        "<P>URL=%s</P>\r\n"
+        ,
+        http_getHTTPVersion(s) == HTTP_VER_09 ? "0.9" :
+        http_getHTTPVersion(s) == HTTP_VER_10 ? "1.0" :
+        http_getHTTPVersion(s) == HTTP_VER_11 ? "1.1" : "unknown"
+        ,
+        http_getHTTPMethod(s) == HTTP_METHOD_GET ? "GET" :
+        http_getHTTPMethod(s) == HTTP_METHOD_POST ? "POST" :
+        http_getHTTPMethod(s) == HTTP_METHOD_HEAD ? "HEAD" : "unknown"
+        ,
+        http_getContext(s)->userid
+        ,
+        http_getURL(s)
+        );
+   	rc = CGI_SEND;		// Send the data we put in http_getData().
+   }
+   else {
+   	buf[0] = 0;
+   	rc = 0;				// Default to not sending anything
+   }
+
+
+	switch (http_getAction(s)) {
+   	case CGI_PROLOG:
+      	// Ignore prolog data.
+
+         break;
+   	case CGI_HEADER:
+      	sprintf(buf+strlen(buf), "<P>HEADER \"%s\"</P>\r\n", http_getData(s));
+         strcpy(http_getData(s), buf);
+         rc = CGI_SEND;
+         break;
+   	case CGI_START:
+      	sprintf(http_getData(s),
+           "<P>START content_length=%ld<BR>" \
+           "field name=%s<BR>" \
+           "disposition=%d<BR>" \
+           "transfer_encoding=%d<BR>" \
+           "content_type=%s<BR></P>\r\n"
+           , http_getContentLength(s)
+           , http_getField(s)
+           , http_getContentDisposition(s)
+           , http_getTransferEncoding(s)
+           , http_getContentType(s)
+           );
+         rc = CGI_SEND;
+         break;
+   	case CGI_DATA:
+      	sprintf(http_getData(s), "<P>DATA length=%d (total %ld)</P>\r\n",
+            http_getDataLength(s), http_getContentLength(s));
+         rc = CGI_SEND;
+         break;
+   	case CGI_END:
+      	sprintf(http_getData(s), "<P>END ----------- actual received length=%ld</P>\r\n",
+         	http_getContentLength(s));
+         rc = CGI_SEND;
+         break;
+      case CGI_EPILOG:
+      	// Ignore epilog data.
+         break;
+      case CGI_EOF:
+      	sprintf(http_getData(s), "<P>EOF (unused content=%ld)</P></body></html>\r\n", s->content_length);
+         // Since we use switchCGI, there is no need to return CGI_DONE.
+   		rc = CGI_SEND_DONE;
+         break;
+
+      // The following print to the console...
+      case CGI_ABORT:
+      	printf("ABORT!\n");
+         break;
+      default:
+      	printf("CGI: unknown action code %d\n", http_getAction(s));
+         break;
+   }
+   return rc;
+}
+
+
+// The flash resource table is now initialized with these macros...
+SSPEC_RESOURCETABLE_START
+	SSPEC_RESOURCE_XMEMFILE("/index.html", index_html),
+	SSPEC_RESOURCE_CGI("upload.cgi", upload_cgi)
+SSPEC_RESOURCETABLE_END
+
+void main()
+{
+	char buf[20];
+
+   sock_init();
+   http_init();
+   tcp_reserveport(80);
+
+   printf("Ready: point your browser to http://%s/\n\n", inet_ntoa(buf, MY_ADDR(IF_DEFAULT)));
+
+
+   while (1) {
+      http_handler();
+   }
+}
+
+

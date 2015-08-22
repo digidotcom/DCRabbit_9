@@ -1,0 +1,575 @@
+/*** BeginHeader */
+#ifndef __DKCOMMON_LIB
+#define __DKCOMMON_LIB
+
+/*** EndHeader */
+
+/*** BeginHeader _dkxexit */
+root void _dkxexit(void);
+/*** EndHeader */
+
+#asm
+_dkxexit::
+#if (DK_ENABLE_DEBUGKERNEL)
+
+	#if (DK_ENABLE_WATCHEXPRESSIONS)
+	ld		a,(dkStatusFlags)
+   bit	DKF_STAT_INWATCH,a
+   ret	nz
+   #endif
+
+   push	hl
+   exx
+   push	hl
+   exx
+   push	af
+
+#if !(_USER)
+   call _init_bad_interrupts
+#endif
+
+   ld		a,(dkSendFlags)
+   set   DKF_SEND_STATUS,a
+   set   DKF_SEND_ACK,a
+   ld		(dkSendFlags),a
+   ld		a,(dkStatusFlags)
+   res   DKF_STAT_RUNMODE,a
+   set   DKF_STAT_ATEXIT,a
+   set   DKF_STAT_AT_BP,a
+   ld		(dkStatusFlags),a
+   ld		a,TC_DEBUG_ATBREAKPOINT
+   ld		(dkAckToSend),a
+   ld		a,(OPMODE)                     ;if board is in runmode, don't reenable rst 20
+   and   8
+   jr		z, _xexit_skiprst20enable
+   lcall	dkEnableRST20
+
+_xexit_skiprst20enable:
+   pop   af
+   exx
+   pop	hl
+   exx
+   pop	hl
+   add   sp,4
+   rst   0x20
+#endif
+__xexit__::
+#if _SYSTEM
+	; Log system-mode exits
+	xor	a
+   push	hl
+   call	_rs_mon_rt_error
+   add	sp,2
+#endif
+   ipset 3
+   ld    a,0x00
+   ioi   ld (WDTTR),a
+_xexitLoop:
+   jr		_xexitLoop
+#endasm
+
+/*** BeginHeader dkInitDebugKernel */
+root void dkInitDebugKernel();
+/*** EndHeader */
+
+#asm root
+dkInitDebugKernel::
+   ld    hl, _xexit
+   ld    (DCParam+errorExit), hl  ; initialize error exit for exception handler
+	ld		hl,_dkxexit
+	ld		(_xexithook),hl
+
+#if (DK_ENABLE_DEBUGKERNEL)
+   bool	hl
+   ld		l,h
+   ld    (dkLastAsmStart),hl
+   ld    (dkLastAsmEnd),hl
+
+#if (DK_ENABLE_TRACING == 1)
+   ld    (dkTraceCount),hl
+#endif
+#if (DK_ENABLE_STACK_TRACING == 1)
+   ld    (dkInitStkTop),hl
+   ld    (dkStkAddrToSend),hl
+#endif
+#if (DK_ENABLE_ASMSINGLESTEP == 1)
+	ld		(dkStackAddress+__dkaddress+offset),hl
+	ld		(dkReturnAddress+__dkaddress+offset),hl
+#endif
+#ifdef MCOS
+	ld		(OSTCBCur),hl
+	ld		(dkLastTCB),hl
+	ld		(dkDbgTCB),hl
+#endif
+
+   xor   a
+   ld		(dkAckToSend),a
+   ld		(dkLocks),a
+   ld    (dkRequest),a
+   ld    (dkStatusFlags),a
+   ld		(dkCharData),a
+   ld		(dkCharReady),a
+   ld		(dkStepFlags),a
+   ld		(dkSendFlags),a
+#if (DK_ENABLE_STACK_TRACING == 1)
+   ld		(dkUCos),a
+#endif
+#if (DK_ENABLE_ASMSINGLESTEP == 1)
+	ld		(dkStackAddress+__dkaddress+xpc),a
+	ld		(dkReturnAddress+__dkaddress+xpc),a
+#endif
+#if (DK_ENABLE_TRACING == 1)
+	ld		(dkTraceFlags),a
+#endif
+#ifdef MCOS
+	ld		(OSRunning),a
+	ld		(dkOSRunning),a
+#endif
+
+	ld		a,(OPMODE)
+	and	8
+	jp		z, __dk_runmode
+
+#if _USER
+   #if (DK_ENABLE_ASMSINGLESTEP == 1)
+	ld		hl,dkHandleRST18
+	#else
+	bool	hl
+   ld		l,h
+	#endif
+   push	hl               					; push asm single step handler
+
+	ld		hl,dkHandleRST20
+	push	hl                            ; push breakpoint handler
+
+	ld		hl,dkHandleRST28
+	push	hl                            ; push source level single step handler
+   call	_sys_dk_setrstvectors
+   add	sp,6
+
+#else
+	ld		a,0xc3								;	enable all rst vectors (jp)
+	#if (DK_ENABLE_ASMSINGLESTEP == 1)
+	ld		(INTVEC_BASE+RST18_OFS),a
+	ld		hl,dkHandleRST18
+	ld		(INTVEC_BASE+RST18_OFS+1),hl
+	#endif
+
+	ld		(INTVEC_BASE+RST28_OFS),a
+	ld		hl,dkHandleRST28
+	ld		(INTVEC_BASE+RST28_OFS+1),hl
+
+	ld		(INTVEC_BASE+RST20_OFS),a
+	ld		hl,dkHandleRST20
+	ld		(INTVEC_BASE+RST20_OFS+1),hl
+#endif
+	lcall	dkEnableRST28
+
+	ld		a,0xc3
+	ld		(dkRST20State),a
+	ld		(dkRST28State),a
+
+	ld		hl,dkASMbuf
+	ld		(dkptrASMbuf),hl
+
+#if _USER
+   ld		hl,dkCallback
+   push	hl
+   call	_sys_dk_setcallback
+   add	sp,2
+#ifdef _SYS_ROUTE_STDIO_THROUGH_USER
+	ld		hl,dkSendStdio
+   push	hl
+   call	_sys_dk_setstdio
+   add	sp,2
+#endif
+#else // SYSTEM
+   ld		hl,dkCallback
+	ld		(dkCallbackHook),hl
+#endif
+
+#endif	// end #if (DK_ENABLE_DEBUGKERNEL)
+__dk_runmode:
+	ret
+#endasm
+
+/*** BeginHeader dkStartup */
+root void dkStartup();
+#asm
+__dkStartup: equ dkStartup
+#endasm
+/*** EndHeader */
+// The compiler will generate a call to this function prior to calling premain.
+#asm root
+dkStartup::
+#if (DK_ENABLE_DEBUGKERNEL)
+	call dkInitDebugKernel
+#else
+	#if !(_SYSTEM)
+      ld    hl,_dkxexit
+      ld    (_xexithook),hl
+		ld		a,0x80
+   	ld		(OPMODE),a
+      #if __RABBITSYS == 0
+		   lcall	dkSetIntVecTabR
+      #endif
+   #endif
+#endif
+   ipset 0
+#if (DK_ENABLE_DEBUGKERNEL)
+   rst		0x28
+#endif
+	ret
+#endasm
+
+
+/*** BeginHeader dkHandleRST20 */
+root void dkHandleRST20(void);
+/*** EndHeader */
+
+struct __dkaddress dkCurBPAddress;
+
+#asm root
+#if (DK_ENABLE_ASMSINGLESTEP == 1)
+dkSetReturnAddress::
+	; if debug kernel attempted to single step over the function
+	; where this breakpoint occurred, the stack will be incorrect
+	; (instruction level single stepping only)
+	ld		a,(dkStepFlags)					; get step flags
+	bit	DKF_STEP_CALL,a					; check if last asm instr was call
+	jr		nz,__dk_sra_dostep				; yes, handle
+	bit	DKF_STEP_LCALL,a					; check if last asm instr was lcall
+	jr		nz,__dk_sra_dostep				; yes, handle
+
+	jr		__dk_sra_done						; not call or lcall, enter return
+
+__dk_sra_dostep:
+	ld		hl,(dkStackAddress+__dkaddress+offset)	; logical address in hl
+	ex		de,hl												; logical address in de
+	bool	hl
+	ld		l,h												; clear hl
+	ld		a,(dkStackAddress+__dkaddress+xpc)		; xpc in a
+	ld		c,a                  						; save xpc in c for later
+	ld		h,a                  						; xpc in h
+	sla	h                    						; shift xpc 4 bits to the left
+	sla	h
+	sla	h
+	sla	h                                ; h = lower nibble of xpc << 12
+	add	hl,de                            ; hl = low 16 bits of phys addr
+	ex		de,hl                            ; de = low 16 bits of phys addr
+	ex		af,af'                           ; save carry flag in af'
+	srl	c                                ; shift xpc 4 bits to the right
+	srl	c
+	srl	c
+	srl	c                                ; c = upper nibble of xpc
+	ex		af,af'                           ; restore carry flag
+	ld		a,c                              ; a = upper nibble of xpc
+	adc	a,0                              ; add carry bit to upper nibble of xpc
+	ld		c,a
+	ld		b,0                              ; bc = upper 16 bits of phys addr
+	call	LongToXaddr								; returns with a=xpc, de=logical addr
+   ld		xpc,a
+   ld		ix,hl
+	ld		hl,(dkReturnAddress+__dkaddress+offset); get return address
+	ld		(ix),hl
+
+	ld		a,(dkStepFlags)					; get step flags
+	bit	DKF_STEP_CALL,a					; check if last asm instr was call
+	jr		nz,__dk_sra_stepcall				; yes, handle
+	bit	DKF_STEP_LCALL,a					; check if last asm instr was lcall
+	jr		nz,__dk_sra_steplcall			; yes, handle
+
+__dk_sra_stepcall:
+	res	DKF_STEP_CALL,a								; clear flag
+	ld		(dkStepFlags),a								; save flags
+	ld		a,(dkReturnAddress+__dkaddress+xpc)
+	ld		(dkRegisters+__dkregisters+_xpc),a
+	ld		(dkNextAddress+__dkaddress+xpc),a
+	jr		__dk_sra_done
+
+__dk_sra_steplcall:
+	res	DKF_STEP_LCALL,a								; clear flag
+	ld		(dkStepFlags),a								; save flags
+	ld		a,(dkReturnAddress+__dkaddress+xpc)		; get ret val for xpc
+	ld		(ix+2),a											; put xpc on stack
+__dk_sra_done:
+	ret
+#endif
+
+dkHandleRST20::
+	push	af
+	call	dkCheckEntry
+	jr		z,__dk_hr20enter
+	pop	af
+#if _RK_FIXED_VECTORS
+	lret
+#else
+	ret
+#endif
+
+__dk_hr20enter:
+	pop	af
+	call 	dkProlog
+	call	dkSaveContext							; save processor context
+
+#if (DK_ENABLE_TRACING == 1)
+   ld		hl,dkTraceFlags
+   set	DKF_TRACE_INIT,(hl)
+   bit	DKF_TRACE_ON,(hl)
+   jr		z,.dkEndTraceRST20
+   ld		hl,dkSendFlags
+   set	DKF_SEND_TRACE,(hl)
+   set	DKF_SEND_STATUS,(hl)
+.dkEndTraceRST20:
+#endif
+
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	ld		(dkCurBPAddress+__dkaddress+offset),hl
+	ld		a,(dkNextAddress+__dkaddress+xpc)
+	ld		(dkCurBPAddress+__dkaddress+xpc),a
+
+	call	dkSavepcrst2028						; save pc and xpc
+
+	ld		a,(dkStatusFlags) 					; get status flags
+	bit	DKF_STAT_ATEXIT,a 					; check if at exit bit is set
+	jr		z,.dk_hr20notatexit
+
+	ljp	dkCore									; if at exit, enter kernel
+
+.dk_hr20notatexit:
+#if (DK_ENABLE_BREAKPOINTS == 0)
+	ret
+#else
+
+	ld		a,(dkStatusFlags)
+	bit	DKF_STAT_RUNMODE,a					; check if in run mode
+	jp		nz,.dk_hr20checkbp					; if in run mode, check bp
+
+	ld		hl,(dkEntryCount)						; lookup breakpoint if stepping
+	ld		a,h										; over function
+	or		l
+	jp		nz,.dk_hr20checkbp
+
+#ifdef MCOS
+	call	dkCheckCurrentTask
+#endif
+
+#if _RK_FIXED_VECTORS
+	add	sp,5
+#else
+	add	sp,2							; adjust stack for pushed ret addr
+#endif
+#if (DK_ENABLE_ASMSINGLESTEP == 1)
+	call dkSetReturnAddress
+#endif
+ 	ljp	dkCore
+
+.dk_hr20checkbp:
+	; it is possible that no rst 28s exist within the program (if all rst 28s
+	; have been set to breakpoints and subsequently cleared). Need to check for
+	; stop program command here.
+	ld		a,(dkRequest)							; get current request from dc
+	cp		TC_DEBUG_STOPPROGRAM					; check for stop program command
+	jr		nz,__dk_hr20checkwatch				; check for execute watch command
+
+#if _RK_FIXED_VECTORS
+	add	sp,5
+#else
+	add	sp,2										; adjust for pushed pc
+#endif
+	ljp	dkCore
+
+__dk_hr20checkwatch:
+	; it is possible that no rst 28s exist within the program (if all rst 28s
+	; have been set to breakpoints and subsequently cleared). Need to check for
+	; execute watch(es) command here.
+	cp		TC_DEBUG_EXECWATCH					; check for execute watch command
+	jr		nz,__dk_hr20checkwatches			; look for execute watches command
+
+#if _RK_FIXED_VECTORS
+	add	sp,5
+#else
+	add	sp,2										; adjust for pushed pc
+#endif
+	ljp	dkCore
+
+__dk_hr20checkwatches:
+	cp		TC_DEBUG_EXECALLWATCHES				; check for exeucte all watches command
+	jr		nz,__dk_hr20findbp					; find bp in table
+
+#if _RK_FIXED_VECTORS
+	add	sp,5
+#else
+	add	sp,2							; adjust stack for pushed ret addr
+#endif
+	ljp	dkCore
+
+__dk_hr20findbp:
+#if _RK_FIXED_VECTORS
+	ld 	hl, (sp+2)
+	ld    c, l										; retrieve the real xpc value from the stack (not the relay one)
+	add	sp,3
+#endif
+	pop	de											; 16 bit pc offset in de
+	dec	de											; back off one - rst is before ret addr
+	xor	a											; clear a
+	ld		b,a										; load 0 into b
+	ld		hl,0xdfff
+	sbc	hl,de
+	jr		nc,__dk_hr20_cont
+#if !(_RK_FIXED_VECTORS)
+	ld		a,xpc										; load xpc into a
+#else
+	ld    a, c										; load xpc read from stack earlier
+#endif
+__dk_hr20_cont:
+	ld		c,a										; c has upper 16 bits of bp address
+
+	lcall dkBPTableFindBP						; find bp in table
+
+	cp		DKF_BP_EXHAUSTED						; check if table was searched with no match
+	jp		z,__dk_hrst20restore
+
+	cp		DKF_BP_NOTFOUND						; check if bp was not found
+	jp		z,__dk_hrst20restore
+
+	ld		ix,hl										; ix = address of bp struct
+	ld		a,(ix+__dkbreakpoint+flags)
+	bit	DKF_BP_ACTIVE,a						; must make sure bp is active before stopping
+	jp		z,__dk_hrst20restore
+
+	ld		hl,(ix+__dkbreakpoint+condition)	; hl = conditional code address
+	bool	hl											; contional address is zero if non-conditional bp
+	jr		z,__dk_hr20conditiondone
+	ld		hl,(ix+__dkbreakpoint+condition)	; hl = pointer to conditional code
+	ld		de,__dk_hr20condret					; push return value after conditional code is executed
+	push	de
+	jp		(hl)										; let conditional code execute
+__dk_hr20condret:
+	cp		0											; break point conditional routines return either 0 or 1
+	jp		z,__dk_hrst20restore					; in a, signifying condition not met or met respectively.
+
+__dk_hr20conditiondone:
+	ld		a,(ix+__dkbreakpoint+flags)		; a = bp flags
+	bit	DKF_BP_HARD,a
+	jr		z,__dk_hr20nothardbp
+	ipset	3											; disable interrupts for hard breakpoint
+	xor	a
+	set	DKF_STAT_AT_HARD_BP,a
+	ld		(dkStatusFlags),a
+#if _USER
+	; user program compile, must go through syscall interface
+	ld		hl,0x0001
+	push	hl
+	call	_sys_dk_nestinterrupts
+	add	sp,2
+#else
+	ld		iy,TCState								; disable nesting of interrupts during tc callbacks
+	ld		a,1
+	TC_STOR(dont_nest_interrupts,a)
+#endif
+	jr		__dk_hr20done
+
+__dk_hr20nothardbp:
+	xor	a
+	set	DKF_STAT_AT_BP,a
+	ld		(dkStatusFlags),a
+__dk_hr20done:
+	; Target is stopped at breakpoint - send message to DC
+	ld		a,(dkSendFlags)
+	set	DKF_SEND_STATUS,a
+	set	DKF_SEND_ACK,a							; set send ack bit
+	ld		(dkSendFlags),a						; save send flags
+	ld		a,TC_DEBUG_ATBREAKPOINT				; notify dc at bp
+	ld		(dkAckToSend),a						; queue this ack to be sent after single step
+
+#if (DK_ENABLE_ASMSINGLESTEP == 1)
+	call dkSetReturnAddress
+#endif
+	ljp 	dkCore
+
+__dk_hrst20restore:
+	ld		hl,(dkCurBPAddress+__dkaddress+offset)
+	ld		(dkNextAddress+__dkaddress+offset),hl
+
+	ld		a,(dkCurBPAddress+__dkaddress+xpc)
+	ld		(dkNextAddress+__dkaddress+xpc),a
+
+#if (DK_ENABLE_TRACING == 1)
+   push	hl
+   ld		hl,dkTraceFlags
+   bit	DKF_TRACE_ON,(hl)
+   jr		z,.dkEndRST20Trace
+   bit   DKF_TRACE_FULL,(hl)
+   jr		z,.dkEndRST20Trace
+   pop	hl
+	ljp	dkCore
+.dkEndRST20Trace:
+   pop	hl
+#endif
+
+	jp		dkRestoreContext
+#endif
+#endasm
+
+/*** BeginHeader dkSetStdioTimer, dkCheckStdioTimeOut, dkSetGetCharTimer,
+					  dkCheckGetCharTimeOut */
+nodebug root void dkSetStdioTimer(void);
+nodebug root int dkCheckStdioTimeOut(void);
+nodebug root void dkSetGetCharTimer(void);
+nodebug root void dkCheckGetCharTimeOut(void);
+/*** EndHeader */
+
+unsigned int dkStdioTimeout;
+unsigned int dkGetCharTimeout;
+
+nodebug root void dkSetStdioTimer(void)
+{
+#if _SYSTEM
+	dkStdioTimeout = (unsigned)_RK_MS_TIMER + DK_STDIO_TIMEOUT;
+#else
+	dkStdioTimeout = (unsigned)MS_TIMER + DK_STDIO_TIMEOUT;
+#endif
+}
+
+nodebug root int dkCheckStdioTimeOut(void)
+{
+#if _SYSTEM
+	if ((int)((unsigned)_RK_MS_TIMER - dkStdioTimeout) >= 0)
+#else
+	if ((int)((unsigned)MS_TIMER - dkStdioTimeout) >= 0)
+#endif
+	{
+		dkUnlockStdio();
+		return 1;
+	}
+	return 0;
+}
+
+nodebug root void dkSetGetCharTimer(void)
+{
+#if _SYSTEM
+	dkGetCharTimeout = (unsigned)_RK_MS_TIMER + DK_GETCHAR_TIMEOUT;
+#else
+	dkGetCharTimeout = (unsigned)MS_TIMER + DK_GETCHAR_TIMEOUT;
+#endif
+}
+
+nodebug root void dkCheckGetCharTimeOut(void)
+{
+#if _SYSTEM
+	if ((int)((unsigned)_RK_MS_TIMER - dkGetCharTimeout) >= 0)
+#else
+	if ((int)((unsigned)MS_TIMER - dkGetCharTimeout) >= 0)
+#endif
+	{
+      #asm
+      ld    hl,dkLocks
+      res   DKF_GETCHAR_LOCK,(hl)         ; reset lock
+      #endasm
+	}
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

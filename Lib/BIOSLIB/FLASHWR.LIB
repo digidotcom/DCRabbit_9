@@ -1,0 +1,3357 @@
+
+/*** BeginHeader */
+#ifndef __FLASHWR_LIB
+#define __FLASHWR_LIB
+/*** EndHeader */
+
+/*** BeginHeader	flash_buf_phys, flash_buf_1619, flash_buf_0015, flash_buf_xpc,
+                  flash_buf_addr, _FlashInfo, IDBlockAddr, IDBlockSector,
+                  UserBlockSector, UserBlockAddr, ByteModeEraseCmd */
+
+
+#ifdef PILOT_BIOS
+	#ifdef DATAEND4K
+	   #undef DATAEND4K
+	#endif
+	#define DATAEND4K (RAM_START+2)           // 0+2=>0x02000L, so flash transfer
+	                                          //  buffer range is [0x01000,0x01FFF]
+#else
+	#define DATAEND4K	(RAM_START+RAM_SIZE)		// end of RAM in 4K pages
+#endif	// PILOT_BIOS
+
+// Variables needed to allow flash buffer position to change from defaults above
+// see _InitFlashDriver below for how this is initialized.
+extern unsigned long flash_buf_phys;
+extern unsigned char flash_buf_1619;
+extern unsigned int  flash_buf_0015;
+extern unsigned char flash_buf_xpc;
+extern unsigned int  flash_buf_addr;
+
+typedef struct {
+	char	flashXPC;			// XPC used to access flash via XMEM (E000-FFFF)
+	int	sectorSize;			// sector size in bytes (=128 for large-sector flash)
+	int	numSectors;			// number of sectors on the flash
+	int	flashSize;			// size of the flash in 4KB blocks
+	char	writeMode;			// method of data-writing (currently only 1-3, 0x1X)
+	void * eraseChipPtr;		// pointer to erase chip function in RAM
+	void * writePtr;			// pointer to write flash sector function in RAM
+} _FlashInfoType;
+
+#ifndef PILOT_BIOS
+_FlashInfoType _FlashInfo;
+#endif
+
+extern unsigned long	IDBlockAddr;		// physical address of the ID blocks
+extern int				IDBlockSector;		// sector # of 1st sector in ID blocks
+extern int				UserBlockSector;	// sector # of 1st sector in user blocks
+extern unsigned long	UserBlockAddr;		// physical address of the user blocks
+
+extern char ByteModeEraseCmd;
+
+// "jump to self" command to place before all flash-writing
+// functions to help prevent runaway writing to flash!
+#define	JUMP_TRAP	db	0x18, 0xFE
+
+/*** EndHeader */
+
+// Variables needed to allow flash buffer position to change from defaults above
+// see _InitFlashDriver below for how this is initialized.
+unsigned long flash_buf_phys;
+unsigned char flash_buf_1619;
+unsigned int  flash_buf_0015;
+unsigned char flash_buf_xpc;
+unsigned int  flash_buf_addr;
+
+unsigned long	IDBlockAddr;		// physical address of the ID blocks
+int				IDBlockSector;		// sector # of 1st sector in ID blocks
+int				UserBlockSector;	// sector # of 1st sector in user blocks
+unsigned long	UserBlockAddr;		// physical address of the user blocks
+
+char ByteModeEraseCmd;
+
+////////////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader xmemToSector */
+#ifdef PILOT_BIOS
+root
+#else
+#if (ENABLE_CLONING == 1)
+root
+#else
+xmem
+#endif
+#endif
+int xmemToSector();
+/*** EndHeader */
+
+#ifdef PILOT_BIOS
+#asm root nodebug
+#else
+#if (ENABLE_CLONING == 1)
+#asm root nodebug
+#else
+#asm xmem nodebug
+#endif
+#endif
+xmemToSector::
+	;
+	;	Converts an XMEM window address in A:DE into a flash
+	;	device sector #, returned in HL (really just converts
+	;	the address to a physical address and calls longToSector)
+	;
+
+	push	af
+	push	de
+	push	bc
+
+	ld		c, a
+	srl	c
+	srl	c
+	srl	c
+	srl	c						; C now contains A>>4
+
+	sla	a
+	sla	a
+	sla	a
+	sla	a						; A now contains A<<4
+	add	a, d
+	ld		d, a
+	ld		a, 0x00				; save carry for next step
+	adc	a, c					; add any carry bit
+	ld		c, a
+
+	ld		b, 0x00
+
+#ifdef PILOT_BIOS
+	call	longToSector
+#else
+#if (ENABLE_CLONING == 1)
+	call	longToSector
+#else
+	lcall	longToSector
+#endif
+#endif
+
+	pop	bc
+	pop	de
+	pop	af					; value returned in HL
+#ifdef PILOT_BIOS
+	ret
+#else
+#if (ENABLE_CLONING == 1)
+	ret
+#else
+	lret
+#endif
+#endif
+#endasm
+
+////////////////////////////////////////
+
+/*** BeginHeader longToSector */
+#ifdef PILOT_BIOS
+root
+#else
+#if (ENABLE_CLONING == 1)
+root
+#else
+xmem
+#endif
+#endif
+int longToSector(unsigned long);
+/*** EndHeader */
+
+#ifdef PILOT_BIOS
+#asm root nodebug
+#else
+#if (ENABLE_CLONING == 1)
+#asm root nodebug
+#else
+#asm xmem nodebug
+#endif
+#endif
+longToSector::
+	;
+	; Converts a long physical address in BC:DE into a flash
+	;	device sector #, returned in HL
+	;
+
+	push	af
+	push	bc
+	push	de
+
+	ld		a, (_FlashInfo+writeMode)
+	cp		0x10
+	jp		nc, .longToLSector
+
+;;;;;;;;;;;;;;;;;;;;
+.longToSSector:
+	ld		hl, (_FlashInfo+sectorSize)
+	ld		l, h
+	ld		h, 0x00		; HL = sector size / 0x100
+
+	ld		e, d
+	ld		a, c
+	and	0x0F
+	ld		d, a
+	ld		b, 0x00		; BC:DE = address / 0x100
+
+	ld		a, l
+	cp		001h						; does sector size = 0100h?
+	jr		z, .cont					; if so, don't need to change h = counter
+	cp		002h						; does sector size = 0200h?
+	jr		z, .sec512
+	cp		004h						; does sector size = 0400h?
+	jr		z, .sec1024
+	cp		010h						; does sector size = 1000h?
+	jr		z, .sec4096
+.sec128:								; assume sector size = 0080h
+	sla	e							; multiply by two
+	rl		d
+	jr		.cont
+.sec4096:
+	srl	d							; divide by four
+	rr		e
+	srl	d
+	rr		e
+.sec1024:
+	srl	d							; divide by two
+	rr		e
+.sec512:
+	srl	d							; divide by two
+	rr		e
+.cont:
+	ld		hl, (_FlashInfo+numSectors)
+	dec	hl							; hl = mask for numSectors
+	and	hl, de
+	jp		.done
+
+;;;;;;;;;;;;;;;;;;;;
+.longToLSector:
+	sla	d					; divide BC:DE by 4096
+	rl		c
+	sla	d
+	rl		c
+	sla	d
+	rl		c
+	sla	d
+	rl		c
+	ld		a, c				; save result (address in 4kb blocks)
+
+	ld		bc, (_FlashInfo+flashSize)
+	dec	c
+	and	c					; mask off flash size
+
+	ex		de, hl
+	ld		hl, (_FlashInfo+writeMode)
+	call	_lookupFlashSect
+	push	hl
+	bool	hl
+	pop	hl
+	jr		z, .flashNotFound
+	ld		b, 0
+.loop:
+	ld		c, (hl)			; size of next sector
+	sub	c
+	jr		c, .foundAddr
+	inc	b
+	inc	hl
+	jr		.loop
+.flashNotFound:
+	ld		l, -1
+		jr		.done
+.foundAddr:
+	ld		l, b
+	ld		h, 0x00
+.done:
+	pop	de
+	pop	bc
+	pop	af
+#ifdef PILOT_BIOS
+		ret					; sector # returned in HL
+#else
+#if (ENABLE_CLONING == 1)
+		ret					; sector # returned in HL
+#else
+		lret					; sector # returned in HL
+#endif
+#endif
+#endasm
+
+////////////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader sectorToXmem */
+#ifdef PILOT_BIOS
+root
+#else
+#if (ENABLE_CLONING == 1)
+root
+#else
+xmem
+#endif
+#endif
+void sectorToXmem(int);
+/*** EndHeader */
+
+#ifdef PILOT_BIOS
+#asm root nodebug
+#else
+#if (ENABLE_CLONING == 1)
+#asm root nodebug
+#else
+#asm xmem nodebug
+#endif
+#endif
+sectorToXmem::
+	;
+	;	Converts a flash device sector # passed in HL into
+	;	an XMEM window address in A:DE
+	;
+
+	push	hl
+	push	bc
+
+	ld		a, (_FlashInfo+writeMode)
+	cp		0x10
+	jp		nc, .lSectorToXmem
+
+;;;;;;;;;;;;;;;;;;;;
+.sSectorToXmem:
+	ld		bc, (_FlashInfo+sectorSize)
+	ex		de, hl
+ 	mul
+	ld		a, b
+	and	0x0F
+	or		0xE0
+	ld		d, a
+	ld		e, c			; DE is now correct
+
+	sla	b
+	rl		l
+	sla	b
+	rl		l
+	sla	b
+	rl		l
+	sla	b
+	rl		l
+	ld		a, l			; A now contains "raw" XPC value
+	ld		c, a
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, c
+	add	a, 0x0E		; A now contains correct XPC value
+	ld		h, 0x0E
+	sub	h
+
+	pop	bc
+	pop	hl
+#ifdef PILOT_BIOS
+	ret
+#else
+#if (ENABLE_CLONING == 1)
+	ret
+#else
+	lret
+#endif
+#endif
+
+;;;;;;;;;;;;;;;;;;;;
+.lSectorToXmem:
+#ifdef	PILOT_BIOS
+	call	_sectorTo4k
+#else
+#if (ENABLE_CLONING == 1)
+	call	_sectorTo4k
+#else
+	lcall	_sectorTo4k
+#endif
+#endif
+	ld		e, a
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, e
+	ld		de, 0xE000
+
+	pop	bc
+	pop	hl
+#ifdef PILOT_BIOS
+	ret
+#else
+#if (ENABLE_CLONING == 1)
+	ret
+#else
+	lret
+#endif
+#endif
+#endasm
+
+////////////////////////////////////////
+
+/*** BeginHeader sectorToLong */
+#ifdef PILOT_BIOS
+root
+#else
+#if (ENABLE_CLONING == 1)
+root
+#else
+xmem
+#endif
+#endif
+unsigned long sectorToLong(int);
+/*** EndHeader */
+
+#ifdef PILOT_BIOS
+#asm root nodebug
+#else
+#if (ENABLE_CLONING == 1)
+#asm root nodebug
+#else
+#asm xmem nodebug
+#endif
+#endif
+sectorToLong::
+	;
+	;	Converts a flash device sector # passed in HL into
+	;	a long physical address returned in BC:DE
+	;
+
+	push	af
+	push	hl
+
+	ld		a, (_FlashInfo+writeMode)
+	cp		0x10
+	jp		nc, .lSectorToLong
+
+;;;;;;;;;;;;;;;;;;;;
+.sSectorToLong:
+	ld		bc, (_FlashInfo+sectorSize)
+	ex		de, hl
+	mul
+	ld		d, b
+	ld		e, c
+	ld		b, h
+	ld		c, l
+
+	pop	hl
+	pop	af
+#ifdef PILOT_BIOS
+	ret
+#else
+#if (ENABLE_CLONING == 1)
+	ret
+#else
+	lret
+#endif
+#endif
+
+;;;;;;;;;;;;;;;;;;;;
+.lSectorToLong:
+#ifdef	PILOT_BIOS
+	call	_sectorTo4k
+#else
+#if (ENABLE_CLONING == 1)
+	call	_sectorTo4k
+#else
+	lcall	_sectorTo4k
+#endif
+#endif
+	; a now contains address in 4kb blocks, convert to long
+
+	ld		b, 0x00		; initialize MSB of (shifted) physical address
+	ld		c, a			; temporarily preserve 4KB blocks address
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, 0x0E		; flash's (shifted << 4) base physical address
+	add	a, c			; A has (shifted << 4) physical address, excepting Carry
+	jr		nc, .noCarry_ST4K		; if no Carry, go leave B with 0 in it
+	inc	b				; add the (shifted << 4) Carried bit
+.noCarry_ST4K:
+	ld		c, a			; BC has the (shifted << 4) physical address MSBs
+	ld		de, 0x0000	; BC:DE has the full (shifted << 4) physical address
+
+	srl	b				; shift
+	rr		c				;  BC:D
+	rr		d				;  right
+	srl	b				;  four
+	rr		c				;  bit
+	rr		d				;  places
+	srl	b				;  to
+	rr		c				;  get
+	rr		d				;  the
+	srl	b				;  flash
+	rr		c				;  sector's
+	rr		d				;  physical address in BC:DE
+
+	pop	hl
+	pop	af
+#ifdef PILOT_BIOS
+	ret
+#else
+#if (ENABLE_CLONING == 1)
+	ret
+#else
+	lret
+#endif
+#endif
+#endasm
+
+
+/*** BeginHeader _sectorTo4k */
+#ifdef	PILOT_BIOS
+root
+#else
+#if (ENABLE_CLONING == 1)
+root
+#else
+xmem
+#endif
+#endif
+void _sectorTo4k(int);
+/*** EndHeader */
+
+#ifdef	PILOT_BIOS
+#asm root nodebug
+#else
+#if (ENABLE_CLONING == 1)
+#asm root nodebug
+#else
+#asm xmem nodebug
+#endif
+#endif
+_sectorTo4k::
+	;
+	;	Utility function for the sectorToLong/Xmem functions
+	;
+	;	sector # passed in HL
+	;	physical address in 4kb blocks returned in A
+	;
+
+	push	hl
+	push	bc
+
+	ld		b, l
+	bool	hl
+	jr		nz, .nonzeroSector
+	ld		c, 0						; sector 0 has address 0000
+	jr		.done
+
+.nonzeroSector:
+	ld		hl, (_FlashInfo+writeMode)
+	call	_lookupFlashSect		; hl now contains ptr to sector list
+
+	ld		c, 0
+.loop:
+	ld		a, (hl)
+	add	a, c
+	ld		c, a
+	inc	hl
+	djnz	.loop
+.done:
+	ld		a, c
+	pop	bc
+	pop	hl
+#ifdef	PILOT_BIOS
+	ret
+#else
+#if (ENABLE_CLONING == 1)
+	ret
+#else
+	lret
+#endif
+#endif
+#endasm
+
+/*** BeginHeader _flash_buf_bank_select */
+root void _flash_buf_bank_select(int);
+/*** EndHeader */
+
+#asm root nodebug
+	; _flash_buf_bank_select::
+	; Utility function for _InitFlashDriver
+	;
+	; Bank number passed in L
+	; Adjusts the flash buffer address to be in the bank specfied in L.
+_flash_buf_bank_select::
+	ld		a, (flash_buf_1619)		; adjust flash buffer addresses to bank selected in register L
+	and	0x3
+	or		a, L
+	ld		(flash_buf_1619), a
+	ld		(flash_buf_phys+2), a
+
+	add	hl, hl						; shift lower nibble of L to upper nibble
+	add	hl, hl						; for xpc adjustment
+	add	hl, hl
+	add	hl, hl
+
+	ld		a, (flash_buf_xpc)
+	add	a, 0xe 							; normalize to physical address
+	and 	0x3f
+	or  	a, L
+	sub	0xe							; normalize back to xpc
+	ld		(flash_buf_xpc), a
+
+	ret
+#endasm
+
+/*** BeginHeader _CallRAMFunction */
+
+#if _RK_FIXED_VECTORS
+xmem void _CallRAMFunction();
+#endif
+/*** EndHeader */
+
+#if _RK_FIXED_VECTORS
+#asm xmem nodebug
+_CallRAMFunction::
+	ipset 3 ; turn off interrupts
+	ex		af, af'
+   SEP_ID_OFF ; turn off separate I&D space
+   ld a, SID_DATAORG
+   ioi ld (DATASEG), a ; data segment now points to root data
+;	IOWRITE_A(DATASEG)
+	ex		af, af'
+	push hl
+   ld hl, retaddr
+	ex (sp), hl
+   jp (hl) ; call the function
+retaddr:
+	ld a, DATASEGVAL
+   ioi ld (DATASEG), a ; restore data segment to point to root code
+;	IOWRITE_A(DATASEG)
+   SEP_ID_ON
+   ipres
+	lret
+#endasm
+#endif
+
+////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader FSM_XFlash, FSM_Flash,
+		_InitFlashDriver, _EraseFlashSect, _EraseFlashSecX, _EraseFlashChip,
+		_WriteFlash, _GetFlashID, _FlashWait, FlashData,
+      _lookupFlash, _EraseFlashChipX, _checkFlashByteX, _WriteFlashByteX,
+      _WriteFlashSecX, _unlockQuad, _relockQuad, _GetFlashData  */
+
+/*
+ *      FlashDataStruct
+ *
+ *      This internal data structure is used to pull data out of the
+ *      internal BIOS flash type table.
+ *
+ */
+
+typedef struct
+{
+	int	id;
+	int	sector_size;
+	int	number_sectors;
+#ifndef PRE_720_BIOS
+	int	flash_size;
+#endif
+	int	write_mode;
+} FlashDataStruct;
+
+root void FSM_Flash();
+root void FSM_XFlash();
+root void _EraseFlashChip(int);
+root void _WriteFlash();
+root void _EraseFlashChipX();
+root void _checkFlashByteX();
+root void _WriteFlashByteX();
+root void _WriteFlashSecX();
+root int _lookupFlash();
+root int _InitFlashDriver(int);
+int _GetFlashData(int, FlashDataStruct*);
+
+
+// If running from flash, give these RAM buffers the callable names of
+// the functions.  If running in RAM, actual functions are renamed to
+// the callable names (see functions).
+#if !FLASH_COMPILE
+root void _unlockQuad();
+root void _relockQuad();
+root void _FlashWait();
+root void _EraseFlashSect();
+root int _GetFlashID();
+root void _checkFlashByte();
+#endif
+
+#if FLASH_COMPILE
+// The following commented out macro definitions describe the method of
+//  determining the size of RAM buffers required in FLASH_COMPILE mode,
+//  using the symbol addresses found in the RabbitBIOS.MAP file.
+//#define _SIZEOF_EraseFlashSect _EndOf__EraseFlashSecX-_EraseFlashSecX
+#define _SIZEOF_EraseFlashSect 207
+//#define _SIZEOF_EraseChipBuf _EndOf__EraseFlashChipX-_EraseFlashChipX
+#define _SIZEOF_EraseChipBuf 38
+//#define _SIZEOF_WriteFlashByte _EndOf__WriteFlashByteX-_WriteFlashByteX
+#define _SIZEOF_WriteFlashByte 193
+//#define _SIZEOF_WriteFlashSec _EndOf__WriteFlashSecX-_WriteFlashSecX
+#define _SIZEOF_WriteFlashSec 201
+//#define _SIZEOF_WriteFlashBuf max(_SIZEOF_WriteFlashByte,_SIZEOF_WriteFlashSec)
+#define _SIZEOF_WriteFlashBuf 201
+//#define _SIZEOF_GetFlashID _EndOf__GetFlashIDX-_GetFlashIDX
+#define _SIZEOF_GetFlashID 121
+//#define _SIZEOF_FlashWaitBuf _EndOf__FlashWaitX-_FlashWaitX
+#define _SIZEOF_FlashWaitBuf 15
+//#define _SIZEOF_unlockQuad _EndOf__unlockQuadX-_unlockQuadX
+#define _SIZEOF_unlockQuad 38
+//#define _SIZEOF_relockQuad _EndOf__relockQuadX-_relockQuadX
+#define _SIZEOF_relockQuad 38
+//#define _SIZEOF_sFlashWait _EndOf__sFlashWait-_sFlashWait
+#define _SIZEOF_sFlashWait 3
+//#define _SIZEOF_checkFlashByte _EndOf__checkFlashByteX-_checkFlashByteX
+#define _SIZEOF_checkFlashByte 69
+
+root void _sFlashWait();
+root void _unlockQuadX();
+root void _relockQuadX();
+root void _EraseFlashSecX();
+root int _GetFlashIDX();
+root void _FlashWaitX();
+
+#if !(_RK_FIXED_VECTORS)
+#rvarorg flashdriver apply
+#endif
+
+char _EraseFlashSect[_SIZEOF_EraseFlashSect];
+char _EraseChipBuf[_SIZEOF_EraseChipBuf];
+char _WriteFlashBuf[_SIZEOF_WriteFlashBuf];
+char _GetFlashID[_SIZEOF_GetFlashID];
+char _FlashWaitBuf[_SIZEOF_FlashWaitBuf];
+char _unlockQuad[_SIZEOF_unlockQuad];
+char _relockQuad[_SIZEOF_relockQuad];
+char _FlashWait[_SIZEOF_sFlashWait];
+char _checkFlashByte[_SIZEOF_checkFlashByte];
+
+#if !(_RK_FIXED_VECTORS)
+#rvarorg rootdata resume
+#endif
+
+#endif
+
+/*** EndHeader */
+
+#asm root nodebug
+;;
+;;	FSM_Flash and FSM_XFlash
+;;		- entry points for flash writes that will determine
+;;			whether to call sector-write or byte-write functions
+;;
+
+	JUMP_TRAP
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;; entry point if destination is not in XMEM
+
+FSM_Flash::
+	ld		a, (_FlashInfo+writeMode)
+	cp		0x02
+	jr		z, .sectorwrite
+bytewrite:
+	jp		FSM_bFlash			; byte-write, root memory
+.sectorwrite:
+	jp		FSM_sFlash			; sector-write, root memory
+.done:
+	ret
+#endasm
+
+#asm root nodebug
+	JUMP_TRAP
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;; entry point if destination is in XMEM
+
+FSM_XFlash::
+	ld		a, (_FlashInfo+writeMode)
+	cp		0x02
+	jr		z, .sectorwrite
+bytewrite:
+	jp		FSM_bXFlash			; byte-write, root memory
+.sectorwrite:
+	jp		FSM_sXFlash			; sector-write, root memory
+.done:
+	ret
+#endasm
+
+////////////////////////////////
+
+#asm root nodebug
+;;
+;;	FSM_bFlash and FSM_bXFlash
+;;		- entry points for byte-write flash that will prep the
+;;			flash buffer (copy the new data over the old data
+;;			and then call _WriteFlash
+;;
+
+	JUMP_TRAP
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;; entry point if destination is not in XMEM
+FSM_bFlash::
+	// convert to an XMEM address in 0xE000-0xFFFF range
+	ld    hl,(curHeader+address)
+	push  hl				; save offset
+
+	ld   	de,0x0fff   ; compute new offset
+	and  	hl,de
+	ld   	de,0xe000
+	or    hl,de
+	ex    de,hl			; save new offset
+
+	pop   hl				; compute xpc
+	ld   	a,h
+	srl   a
+	srl   a
+	srl   a
+	srl   a
+	and   0ffh      	; clear carry flag
+	sbc  	a,0x0e
+
+	ex    de,hl			; get new offset
+	push  af		      ; save new xpc
+	jr    .Xdest
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;; entry point of destination is in XMEM
+
+FSM_bXFlash::
+   ld		a,(curHeader+XPCval)
+	push  af				; save xpc
+   ld  	hl,(curHeader+address)
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;; copy the new data into the flash buffer
+
+.Xdest:
+	ld		ix, commBuffer
+	ld		iy, (flash_buf_0015)
+	ld		bc, (curHeader+length)
+.loop2:
+	ld		a, (flash_buf_1619)
+	ldp	hl, (iy)
+	ld		d, h
+	ld		hl, (ix)
+	ld		h, d						; we actually only want to write one byte
+	ldp	(iy), hl					; at a time!
+	inc	ix
+	inc	iy
+	dec	bc
+	xor	a
+	cp		b
+	jr		nz, .loop2
+	cp		c
+	jr		nz, .loop2
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;; write the buffer!
+
+	pop   af		            ; get xpc
+	ld		de, (curHeader+address)
+	ld		bc, (curHeader+length)
+	call	_WriteFlash
+
+#ifdef PILOT_BIOS
+	or		a								; clear the Carry flag before the subtraction
+	ld		bc, -4						; get ID/User Blocks overwrite error code
+	sbc	hl, bc						; same result code from _WriteFlash?
+	jr		nz, .VerifyFlashWrite	; not ID/User Blocks write, go verify . . .
+
+	bool	hl								; ignore ID/User Blocks write error,
+	ld	l, h								;  return "no error" to caller . . .
+	ret
+
+.VerifyFlashWrite:
+#endif
+
+	// verify the write...
+   ld		a, (curHeader+XPCval)
+	ld		xpc, a
+	ld		de, (curHeader+address)
+	ld		bc, (curHeader+length)
+	#if FLASH_COMPILE
+	call	_checkFlashByteX	; Call the routine in flash, not the RAM copy
+	#else
+	call	_checkFlashByte
+	#endif
+	ld		h, b
+	ld		l, c		; error code from _checkFlashByte returned in HL
+
+   ret
+
+#endasm
+
+////////////////////////////////
+
+#asm root nodebug
+;;
+;;	FSM_sFlash and FSM_sXFlash
+;;		- entry points for sector-write flash that will prep the
+;;			flash buffer (copy the old sector then copy the new data
+;;			over the old data) and then call _WriteFlash
+;;
+
+	JUMP_TRAP
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;; entry point if destination is not in XMEM
+FSM_sFlash::
+	// convert to an XMEM address in 0xE000-0xFFFF range
+	ld    hl,(curHeader+address)
+	push  hl				; save offset
+
+	ld   	de,0x0fff   ; compute new offset
+	and  	hl,de
+	ld   	de,0xe000
+	or    hl,de
+	ex    de,hl			; save new offset
+
+	pop   hl				; compute xpc
+	ld   	a,h
+	srl   a
+	srl   a
+	srl   a
+	srl   a
+	and   0ffh      	; clear carry flag
+	sbc  	a,0x0e
+
+	ex    de,hl			; get new offset
+	push  af		      ; save new xpc
+	jr    .Xdest
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;; entry point of destination is in XMEM
+
+FSM_sXFlash::
+   ld		a,(curHeader+XPCval)
+	push  af				; save xpc
+   ld  	hl,(curHeader+address)
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;; copy destination sector to flash buffer
+.Xdest:
+	// calculate
+   ld    xpc,a
+	ld		de, (_FlashInfo+sectorSize)
+	dec	de
+	ld		a, d
+	cpl					; set high byte to complement
+	ld		d, a
+	ld		a, e
+	cpl					; set low byte to complement
+	ld		e, a
+	and	hl, de		; hl now contains sector base
+
+   push  hl                ; keep a copy of the sector base
+   push  hl                ; keep a copy of the sector base
+
+	ld		iy, (flash_buf_0015)	; destination address in [a][iy]
+	ld		ix, hl					; source address in [XPC][hl]
+	ld		bc, (_FlashInfo+sectorSize)
+.loop1:
+	ld		a, (flash_buf_1619)
+	ld		hl, (ix)
+	ldp	(iy), hl
+	inc	ix
+	inc	ix
+	inc	iy
+	inc	iy
+	dec	bc
+	dec	bc
+	xor	a
+	cp		b
+	jr		nz, .loop1
+	cp		c
+	jr		nz, .loop1
+
+	ld		de, (_FlashInfo+sectorSize)		; put sector size in de
+   pop   hl                ; get the sector base
+   add   hl, de            ; advanced to next sector
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;; determine where new data goes in the buffer
+
+   ld    de, (curHeader+address)
+   xor   a
+   sbc   hl, de            ; get the difference in l
+
+   ld    a, (curHeader+length+1)
+	cp 1
+	jr    nz,.not256
+	ld    bc,256
+	jr		.data_size_okay
+.not256:
+   ld    a, (curHeader+length)
+   ld    c,a
+   ld    b,0
+   xor   a
+   push  hl                ; save a copy of hl
+   sbc   hl, bc
+   pop   hl                ; restore hl
+   jp    nc, .data_size_okay
+   ld    b, 0
+   ld    c, l
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;; copy the new data into the flash buffer
+
+.data_size_okay:
+	ld    iy, (curHeader+address)
+	ld		de, (_FlashInfo+sectorSize)
+	dec	de									; should equal the offset mask
+	and	iy, de
+	ld		de, (flash_buf_0015)
+	add   iy, de
+
+	ld		ix, commBuffer
+.loop2:
+	ld		a, (flash_buf_1619)
+	ldp	hl, (iy)
+	ld		d, h
+	ld		hl, (ix)
+	ld		h, d						; we actually only want to write one byte
+	ldp	(iy), hl					; at a time!
+	inc	ix
+	inc	iy
+	dec	bc
+	xor	a
+	cp		b
+	jr		nz, .loop2
+	cp		c
+	jr		nz, .loop2
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;; write the buffer!
+
+	ld		bc, (_FlashInfo+sectorSize)
+   pop   de                ; pop sector base again
+	pop   af		            ; get xpc
+	push	de						; save sector base for _checkFlashByte
+
+	call	_WriteFlash 		; this call must be through the proxy!!!
+
+#ifdef PILOT_BIOS
+	or		a								; clear the Carry flag before the subtraction
+	ld		bc, -4						; get ID/User Blocks overwrite error code
+	sbc	hl, bc						; same result code from _WriteFlash?
+	jr		nz, .VerifyFlashWrite	; not ID/User Blocks write, go verify . . .
+
+	pop	de								; dump sector base off of the stack
+	bool	hl								; ignore ID/User Blocks write error,
+	ld	l, h								;  return "no error" to caller . . .
+	ret
+
+.VerifyFlashWrite:
+#endif
+
+	// verify the write...
+	ld		bc, (_FlashInfo+sectorSize)
+	pop	de						; recover sector base again
+
+   ld		a, (curHeader+XPCval)
+	ld		xpc, a
+
+#if FLASH_COMPILE
+	call	_checkFlashByteX	; Call the routine in flash, not the RAM copy
+#else
+	call	_checkFlashByte
+#endif
+	ld		h, b
+	ld		l, c		; error code from _checkFlashByte returned in HL
+
+   ret
+
+#endasm
+
+/************************************************************************/
+/*
+	Stubs for pointer-derived function calls - the functions they call (and
+	the _FlashWait stub itself) will be relocated into RAM for safe access
+	during flash operations; _sFlashWait is copied into a callable RAM buffer
+	named "_FlashWait"...
+*/
+#asm root nodebug
+
+// call "_FlashWait" instead of this function
+#if FLASH_COMPILE
+_sFlashWait::
+	jp		_FlashWaitBuf
+_EndOf__sFlashWait::
+#endif
+
+	JUMP_TRAP
+_EraseFlashChip::
+	ld		hl, (_FlashInfo+eraseChipPtr)
+	jr		.doramcall
+
+	JUMP_TRAP
+_WriteFlash::
+	ld		hl, (_FlashInfo+writePtr)
+
+.doramcall:
+#if _RK_FIXED_VECTORS && FLASH_COMPILE
+	ex		af, af'
+	ioi   ld  a, (MMIDR)			; test to see if I&D is on
+;	IOREAD_A(MMIDR)
+	and 0x20
+	jp nz, .wf_idon				; if disabled we are bootstrapping clone and are running in ram
+	ex		af, af'
+	jp (hl)							; so call directly
+.wf_idon:
+	ex		af, af'
+	lcall _CallRAMFunction
+	ret
+#else
+	jp		(hl)
+#endif
+#endasm
+
+/****************************************************************************/
+/*
+	This function polls the flash device for the manufacturer and device
+	ID codes using the industry standard method.  It returns these values
+	in HL.
+*/
+
+#asm root nodebug
+	// destroys hl
+	// ID codes returned in hl:  h=manufacturer, l=device
+#if !FLASH_COMPILE  // if RAM_COMPILE || FAST_RAM_COMPILE
+_GetFlashID::
+#endif
+#if FLASH_COMPILE
+_GetFlashIDX::
+#endif
+	ld		a, xpc
+	push	af							; save current XPC
+
+	push	ip
+	ipset	3
+
+	;****** unlock flash for ID read
+	ld		a, (_FlashInfo+flashXPC)
+	call	_unlockQuad
+	add	a, 005h
+	ld    xpc, a
+   ld    a, 0xAA
+   ld    (0xE555), a  	    	;AA to 5555
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, 002h
+	ld    xpc, a
+   ld    a, 0x55
+   ld    (0xEAAA), a   		 	;55 to 2AAA
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, 005h
+	ld    xpc, a
+   ld    a, 0x90
+   ld    (0xE555), a 	     	;90 to 5555
+
+   ;****** wait until flash ready to be read
+	ld		a, (_FlashInfo+flashXPC)
+	ld		xpc, a
+	ld		de, 0xE000
+   call	_FlashWait
+
+   ;****** get manufacturer and product codes
+	ld		a, (0E000h)			// get manufacturer ID
+	ld		h, a
+	ld		a, (0E001h)			// get product ID
+	ld		l, a
+
+	;****** put flash back into read mode
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, 005h
+	ld    xpc, a
+   ld    a, 0xAA
+   ld    (0xE555), a  	    	;AA to 5555
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, 002h
+	ld    xpc, a
+   ld    a, 0x55
+   ld    (0xEAAA), a   		 	;55 to 2AAA
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, 005h
+	ld    xpc, a
+   ld    a, 0xF0
+   ld    (0xE555), a 	     	;F0 to 5555
+
+   push	hl
+	ld    de,0xe000
+   call	_FlashWait
+	pop	hl
+
+	ld		a, (_FlashInfo+flashXPC)
+	call	_relockQuad
+
+.done:
+	pop 	ip
+	pop	af
+	ld		xpc, a					; restore XPC
+	ret
+#if FLASH_COMPILE
+_EndOf__GetFlashIDX::
+#endif
+#endasm
+
+/****************************************************************************/
+
+/*
+	This function initializes the flash driver.  It is passed a bitmap of
+	the memory quadrants mapped to flash (in the L register):
+
+		Quadrant Phys Memory		Value
+			0		00000-3FFFF		  01
+			1		40000-7FFFF		  02
+			2		80000-BFFFF		  04
+			3		C0000-FFFFF		  08
+
+	For example:	01 = quadrant 0 only is mapped to flash,
+						03 = quadrants 0 and 1 are mapped to flash,
+						0C = quadrants 2 and 3 are mapped to flash, etc.
+
+	It is also passed a bitmap of where the flash transfer buffer (RAM) is mapped
+	located (in the H register) and follows the same mapping as above.
+	Note that only 1 bit can be valid as the buffer is only 4K.
+	If zero is passed in H then the flash transfer buffer is put in the default
+	location.
+	Note that the memory bank control registers are not set, this must be done separately
+	beforehand.
+
+
+*/
+
+#ifdef FORCED_BYTEMODEERASECMD
+ #define BYTEMODEERASECMD_ATMELSTANDARD FORCED_BYTEMODEERASECMD
+ #define BYTEMODEERASECMD_WINBONDPAGE FORCED_BYTEMODEERASECMD
+ #define BYTEMODEERASECMD_SSTALTERNATE FORCED_BYTEMODEERASECMD
+#else
+ #define BYTEMODEERASECMD_ATMELSTANDARD 0x30
+ #define BYTEMODEERASECMD_WINBONDPAGE 0x50
+ #define BYTEMODEERASECMD_SSTALTERNATE 0x20
+#endif
+
+#asm root nodebug
+_InitFlashDriver::
+	push	ix
+	ld		c, l			// save bitmap of flash memory quadrants in reg c
+	ld    b, h
+
+	; Initialize flash buffer locations, and then adjust according to parameter in reg B
+	ld		hl, FLASH_BUF_0015
+	ld		(flash_buf_0015), hl
+	ld		(flash_buf_phys), hl
+
+	ld		a, FLASH_BUF_1619
+	ld		(flash_buf_1619), a
+	bool	hl
+	ld		L, a
+	ld    (flash_buf_phys+2), hl
+
+	ld		a, FLASH_BUF_XPC
+	ld		(flash_buf_xpc), a
+
+	ld		ix, flash_buf_addr
+	ld		hl, FLASH_BUF_ADDR
+	ld		(ix), hl
+
+	ld		a, 0xf				; zero out any garbage in high nibble of b to prevent bad calls to _flash_buf_bank_select
+	and	b
+	ld		b, a
+	xor   a						; zero a and test to see if no banks are selected, if so, use default settings for flash buffer
+	cp		b
+	jp		z, .usedefquad		; branching here will go with the default bank for the flash buffer
+
+	; the following algorithm will always go with the bank for the highest bit selected
+	bit	0, b					; test to see if we should force flash buffer to bank 0
+	jp		z, .testquad1
+	ld    L, 0x0
+.testquad1:
+	bit	1, b					; test to see if we should force flash buffer to bank 1
+	jp 	z, .testquad2
+	ld		L, 0x4
+.testquad2:
+	bit	2, b
+	jp 	z, .testquad3		; test to see if we should force flash buffer to bank 2
+	ld		L, 0x8
+.testquad3:
+	bit 	3, b
+	jp 	z, .selectbank		; test to see if we should force flash buffer to bank 3
+	ld		L, 0xc
+.selectbank:
+	call 	_flash_buf_bank_select
+
+.usedefquad:
+	bool	hl
+	ld		l, h
+	ld		(IDBlockAddr), hl			// clear out these variables
+	ld		(IDBlockAddr+2), hl
+	ld		(IDBlockSector), hl
+	ld		(UserBlockAddr), hl
+	ld		(UserBlockAddr+2), hl
+	ld		(UserBlockSector), hl
+
+.findQuadrant:
+	// The sectorSize field will be used temporarily as a flag
+	// to let the next part of the init know if there are two
+	// adjacent quadrants mapped to flash -> could be a 512k flash!
+	xor	a
+	ld		(_FlashInfo+sectorSize), a		// amount to add to XPC = 0
+
+#ifndef PILOT_BIOS
+.lock0:
+	bit	0, c
+	jr		z, .lock1
+	ld		a, (MB0CRShadow)
+	or		a, 0x08		; set write-protect bit
+	ld		(MB0CRShadow), a
+	ioi	ld (MB0CR), a
+;	IOWRITE_A(MB0CR)
+.lock1:
+	bit	1, c
+	jr		z, .lock2
+	ld		a, (MB1CRShadow)
+	or		a, 0x08		; set write-protect bit
+	ld		(MB1CRShadow), a
+	ioi	ld (MB1CR), a
+;	IOWRITE_A(MB1CR)
+.lock2:
+	bit	2, c
+	jr		z, .lock3
+	ld		a, (MB2CRShadow)
+	or		a, 0x08		; set write-protect bit
+	ld		(MB2CRShadow), a
+	ioi	ld (MB2CR), a
+;	IOWRITE_A(MB2CR)
+.lock3:
+	bit	3, c
+	jr		z, .lockdone
+	ld		a, (MB3CRShadow)
+	or		a, 0x08		; set write-protect bit
+	ld		(MB3CRShadow), a
+	ioi	ld (MB3CR), a
+;	IOWRITE_A(MB3CR)
+.lockdone:
+#endif /*ifndef PILOT_BIOS*/
+
+.test0:
+	bit	0, c
+	jr		z, .test1
+	ld		a, 0F2h		// XPC to get to flash addr 0000 (F2:E000)
+	ld		(_FlashInfo+flashXPC), a
+	bit	1, c
+	jr		z, .testDone
+	ld		a, 040h
+	ld		(_FlashInfo+sectorSize), a		// temporary flag for possible 512k
+	jr		.testDone
+
+.test1:
+	bit	1, c
+	jr		z, .test2
+	ld		a, 032h		// XPC to get to flash addr 0000 (32:E000)
+	ld		(_FlashInfo+flashXPC), a
+	bit	2, c
+	jr		z, .testDone
+	ld		a, 040h
+	ld		(_FlashInfo+sectorSize), a		// temporary flag for possible 512k
+	jr		.testDone
+
+.test2:
+	bit	2, c
+	jr		z, .test3
+	ld		a, 072h		// XPC to get to flash addr 0000 (72:E000)
+	ld		(_FlashInfo+flashXPC), a
+	bit	3, c
+	jr		z, .testDone
+	ld		a, 040h
+	ld		(_FlashInfo+sectorSize), a		// temporary flag for possible 512k
+	jr		.testDone
+
+.test3:
+	bit	3, c
+	jr		z, .noFlash
+	ld		a, 0B2h		// XPC to get to flash addr 0000 (B2:E000)
+	ld		(_FlashInfo+flashXPC), a
+	//		Assume this is not a 512k flash...
+	jr		.testDone
+
+.noFlash:
+	ld		hl, -1			// error if no flash in setup
+	pop	ix
+	ret
+
+.testDone:
+	// load function pointers in _FlashInfo struct
+#if !FLASH_COMPILE // if RAM_COMPILE || FAST_RAM_COMPILE
+	ld		hl, _EraseFlashChipX
+	ld		(_FlashInfo+eraseChipPtr), hl
+#endif
+#if FLASH_COMPILE
+	ld		hl, _EraseFlashSecX ; source
+	ld		bc, _SIZEOF_EraseFlashSect
+	ld		de, _EraseFlashSect ; destination
+#if __SEPARATE_INST_DATA__
+   call inst2data_ldir
+#else
+	ldir
+#endif
+
+	// copy chip-erasing routine to RAM for safe calling
+	ld		hl, _EraseFlashChipX
+	ld		bc, _SIZEOF_EraseChipBuf
+	ld		de, _EraseChipBuf
+#if __SEPARATE_INST_DATA__
+   call inst2data_ldir
+#else
+	ldir
+#endif
+
+	ld		hl, _EraseChipBuf
+	ld		(_FlashInfo+eraseChipPtr), hl
+
+	// copy flash ID routine to RAM for safe calling
+	ld		hl, _GetFlashIDX
+	ld		bc, _SIZEOF_GetFlashID
+	ld		de, _GetFlashID
+#if __SEPARATE_INST_DATA__
+   call inst2data_ldir
+#else
+	ldir
+#endif
+
+	// copy flash wait routine to RAM for safe calling
+	ld		hl, _FlashWaitX
+	ld		bc, _SIZEOF_FlashWaitBuf
+	ld		de, _FlashWaitBuf
+#if __SEPARATE_INST_DATA__
+   call inst2data_ldir
+#else
+	ldir
+#endif
+
+	// copy call FlashWait stub to RAM for safe calling...
+	ld		hl, _sFlashWait
+	ld		bc, _SIZEOF_sFlashWait
+	ld		de, _FlashWait
+#if __SEPARATE_INST_DATA__
+   call inst2data_ldir
+#else
+	ldir
+#endif
+
+	// copy quadrant unlock routine to RAM for safe calling
+
+	ld		hl, _unlockQuadX
+	ld		bc, _SIZEOF_unlockQuad
+	ld		de, _unlockQuad
+#if __SEPARATE_INST_DATA__
+   call inst2data_ldir
+#else
+	ldir
+#endif
+
+	// copy quadrant relock routine to RAM for safe calling
+	ld		hl, _relockQuadX
+	ld		bc, _SIZEOF_relockQuad
+	ld		de, _relockQuad
+#if __SEPARATE_INST_DATA__
+   call inst2data_ldir
+#else
+	ldir
+#endif
+
+  	// copy checkFlashByte routine to RAM for safe calling
+
+	ld		hl, _checkFlashByteX
+	ld		bc, _SIZEOF_checkFlashByte
+	ld		de, _checkFlashByte
+#if __SEPARATE_INST_DATA__
+   call inst2data_ldir
+#else
+	ldir
+#endif
+#endif	//#if FLASH_COMPILE
+
+	// flash writing routine copied to RAM later, when we know which one to copy!
+
+#ifndef PILOT_BIOS
+.doLookup:
+	call	_lookupFlash			// check if flash device is known
+
+
+	bool	hl
+	jr		z, .lookupDone			// if returned 0, found it in table!
+
+	// lookup failed, we need to load data from the ID block now...
+	ld		hl, (SysIDBlock+tableVersion)
+	bool	hl
+	jr		nz, .blockOk			; version = 0 -> no ID block found
+
+.blockBad:
+	// didn't find device ID block on flash, return error
+	pop	ix
+	ld		hl, -2
+	ret						// value returned in hl
+
+.blockOk:
+	ld		hl, (SysIDBlock+flashType)
+	ld		(_FlashInfo+writeMode), hl
+
+	ld		hl, (SysIDBlock+sectorSize)
+	ld		(_FlashInfo+sectorSize), hl
+
+	ld		hl, (SysIDBlock+numSectors)
+	ld		(_FlashInfo+numSectors), hl
+
+	ld		hl, (SysIDBlock+flashSize)
+	ld		(_FlashInfo+flashSize), hl
+
+.lookupDone:
+
+#else		// ie:  ifdef PILOT_BIOS
+	pop	ix									; recover FLASHDATA packet address,
+	push	ix									;  and then resave it
+
+	// get parameters from the FLASHDATA packet passed to the pilot BIOS
+	ld		hl, (ix)							; get flash sector size
+	ld		(_FlashInfo+sectorSize), hl
+	ld		hl, (ix+2)						; get flash sector count
+	ld		(_FlashInfo+numSectors), hl
+	ld		hl, (ix+4)						; get overall flash size
+	ld		(_FlashInfo+flashSize), hl
+	ld		a, (ix+6)						; get flash write mode (single byte)
+	ld		(_FlashInfo+writeMode), a
+#endif	// PILOT_BIOS
+
+	;; load default byte-write mode "Atmel standard" sector erase command value
+	ld		a, BYTEMODEERASECMD_ATMELSTANDARD
+	ld		(ByteModeEraseCmd), a	; set default "Atmel standard" erase command
+	ld		a, (_FlashInfo+writeMode)
+	cp		002h							; sector-write mode flash?
+	jr		z, .loadSecWrite			; yes, go set sector-write fcn
+
+	cp		003h							; use "Winbond page" erase command instead?
+	jr		nz, .checkWriteMode4		; no, go check "SST alternate" erase command
+
+	;; load byte-write mode "Winbond page" erase command value
+	ld		a, BYTEMODEERASECMD_WINBONDPAGE
+	jr		.loadByteWriteCmd			; go set byte-write erase cmd & fcn
+
+.checkWriteMode4:
+	cp		004h							; use "SST alternate" erase command instead?
+	jr		nz, .loadByteWrite		; no, go set up byte-write fcn
+
+	;; load byte-write mode "SST alternate" sector erase command value
+	ld		a, BYTEMODEERASECMD_SSTALTERNATE
+.loadByteWriteCmd:
+	ld		(ByteModeEraseCmd), a	; set nonstandard erase command
+.loadByteWrite:
+	;; writeMode!=2, so load byte-write mode fcn
+	ld		hl, _WriteFlashByteX
+	jr .loadWriteBuf
+
+.loadSecWrite:
+	;; writeMode==2, so load sector-write mode fcn
+	ld		hl, _WriteFlashSecX
+.loadWriteBuf:
+#if !FLASH_COMPILE // if RAM_COMPILE || FAST_RAM_COMPILE
+	ld		(_FlashInfo+writePtr), hl
+#endif
+#if FLASH_COMPILE
+	;; copy flash writing routine to RAM for safe calling
+	ld		bc, _SIZEOF_WriteFlashBuf
+	ld		de, _WriteFlashBuf
+#if __SEPARATE_INST_DATA__
+	call inst2data_ldir
+#else
+	ldir
+#endif
+
+	ld		hl, _WriteFlashBuf
+	ld		(_FlashInfo+writePtr), hl
+#endif
+
+	bool	hl
+	ld		l, h									; ensure HL is zero, enable
+	ld		(_overwrite_block_flag), hl	;  ID/User Blocks protection
+
+	;; calculate IDBlockAddr and IDBlockSector
+	;;  (first, check if only a simulated System ID Block)
+#ifdef PILOT_BIOS
+	ld		a, (_PB_SysIDBlock+tableVersion+1)
+#else
+	ld		a, (SysIDBlock+tableVersion+1)
+#endif
+	or		a
+	jr		nz, .realSysIDBlock
+
+#ifdef PILOT_BIOS
+	ld		a, (_PB_SysIDBlock+tableVersion)
+#else
+	ld		a, (SysIDBlock+tableVersion)
+#endif
+	or		a
+	jr		nz, .realSysIDBlock
+
+	;; "flag" the simulated system ID Block as if in the MB2CR quadrant
+#if FAST_RAM_COMPILE
+	ld		bc, 0x0010				; BC gets simulated ID Block address MSBs
+#else
+	ld		bc, 0x0008				; BC gets simulated ID Block address MSBs
+#endif
+	ld		de, 0x0000				; DE gets simulated ID Block address LSBs
+	ld		hl, (_FlashInfo+numSectors)	; end-of-flash "sector" number
+	;; go save HL's simulated System ID Block sector number
+	;;  and BC:DE's simulated System ID Block physical address
+	jr		.writeIDBlockSectorAddr
+
+.realSysIDBlock:
+	ld		hl, (_FlashInfo+numSectors)	; end-of-flash "sector" number
+#ifdef PILOT_BIOS
+	call	sectorToLong			; calculate physical address
+#else
+#if (ENABLE_CLONING == 1)
+	call	sectorToLong			; calculate physical address
+#else
+	lcall	sectorToLong			; calculate physical address
+#endif
+#endif
+#ifdef PILOT_BIOS
+	ld 	hl, (_PB_SysIDBlock+idBlockSize)
+#else
+	ld		hl, (SysIDBlock+idBlockSize)
+#endif
+
+	ex		de, hl					; swap for the following subtraction
+	or		a							; clear Carry flag
+	sbc	hl, de					; end-of-flash LSBs minus ID Block size
+#if FAST_RAM_COMPILE
+	ld		bc, 0x000F				; hard-code bc:hl=0x000FXXXX for run-in-fast-RAM
+#else
+	jr		nc, .noDecIDBA_IFD	; if no Carry, then go leave MSBs alone
+
+	dec	bc							; Carry (borrow) set, decrement MSBs
+.noDecIDBA_IFD:
+#endif
+	ex		de, hl					; get ID Block physical address fully into BC:DE
+#ifdef PILOT_BIOS
+	call	longToSector			; calculate sector #
+#else
+#if (ENABLE_CLONING == 1)
+	call	longToSector			; calculate sector #
+#else
+	lcall	longToSector			; calculate sector #
+#endif
+#endif
+.writeIDBlockSectorAddr:
+	ld		(IDBlockSector), hl	; save System ID Block sector number
+	ld		(IDBlockAddr), de		; save ID Block physical address LSBs
+	ld		(IDBlockAddr+2), bc	; save ID Block physical address MSBs
+
+	// calculate UserBlockAddr and UserBlockSector
+	; first, check if only a simulated User Block
+#ifdef PILOT_BIOS
+	ld		a, (_PB_SysIDBlock+tableVersion+1)
+#else
+	ld		a, (SysIDBlock+tableVersion+1)
+#endif
+	or		a
+	jr		nz, .v5andUpUserBlock
+
+#ifdef PILOT_BIOS
+	ld		a, (_PB_SysIDBlock+tableVersion)
+#else
+	ld		a, (SysIDBlock+tableVersion)
+#endif
+	cp		2							; less than v. 2 ID block?
+	; also "flag" the simulated User Block as if in the MB2CR quadrant
+	; go save HL's simulated User Block sector number
+	;  and BC:DE's simulated User Block physical address
+	jr		c, .writeUserBlockSectorAddr	; yes (Carry set), go write block address
+
+	cp		5							; less than v. 5 ID block?
+	jr		c, .v234userBlock	; yes (Carry flag set), go calculate block address
+
+.v5andUpUserBlock:
+
+#ifdef PILOT_BIOS
+	ld		ix, _PB_SysIDBlock+userBlockSize
+#else
+	ld		ix, SysIDBlock+userBlockSize
+#endif
+	ld		a, (ix+0)
+	or		(ix+1)					; nonzero sized "old style" mirrored User block?
+	jr		nz, .v234userBlock	; yes (Zero reset), go do "old style" User block
+
+#ifdef PILOT_BIOS
+	ld		hl, (_PB_SysIDBlock+idBlock2+persBlockLoc+0)
+#else
+	ld		hl, (SysIDBlock+idBlock2+persBlockLoc+0)
+#endif
+	or		a							; reset Carry flag
+	ex		de, hl					; swap for the following subtraction
+	sbc	hl, de					; ID block addr minus persist block offset (LSBs)
+	ld		de', bc					; get ID block address MSBs into DE'
+	ex		de', hl					; swap ID block address MSBs into HL,
+										;  persistent block address LSBs into DE'
+	ex		de, hl					; get ID block address MSBs into DE
+#ifdef PILOT_BIOS
+	ld		hl, (_PB_SysIDBlock+idBlock2+persBlockLoc+2)
+#else
+	ld		hl, (SysIDBlock+idBlock2+persBlockLoc+2)
+#endif
+	ex		de, hl					; swap for the following subtraction
+	sbc	hl, de					; ID block addr minus persist block offset (MSBs)
+	ex		de, hl					; get persistent block address MSBs into DE
+	ld		bc', de					; get persistent block address MSBs into BC'
+	exx								; swap persistent block address into BCDE
+	call	.forceToSectorStart	; persist block's start sector address into BCDE
+
+#ifdef PILOT_BIOS
+	ld		ix, _PB_SysIDBlock+idBlock2+userBlockSiz2
+#else
+	ld		ix, SysIDBlock+idBlock2+userBlockSiz2
+#endif
+	ld		a, (ix+0)
+	or		(ix+1)					; zero sized "new style" mirrored User block?
+	jr		z, .writeUserBlockSectorAddr	; yes (Zero reset), go write block addr
+
+	call	.subtractV5UBSize		; calculate start address of User block image A
+
+	call	.subtractV5UBSize		; calculate start address of User block image B
+
+	jr		.writeUserBlockSectorAddr	; go save User block address, sector number
+
+.v234userBlock:
+#ifdef PILOT_BIOS
+	ld		ix, _PB_SysIDBlock+userBlockLoc
+#else
+	ld		ix, SysIDBlock+userBlockLoc
+#endif
+	ld		a, (ix+0)
+	or		(ix+1)					; zero sized User block?
+	jr		z, .writeUserBlockSectorAddr	; yes (Zero set), go write block address
+
+#ifdef PILOT_BIOS
+	ld		hl, (_PB_SysIDBlock+userBlockLoc)
+#else
+	ld		hl, (SysIDBlock+userBlockLoc)
+#endif
+	ex		de, hl					; swap for the following subtraction(s)
+	or		a							; clear Carry flag
+	sbc	hl, de					; ID Block address minus User Block offset
+	jr		nc, .noDecUBA0_IFD	; if no Carry, then go leave MSBs alone
+
+	dec	bc							; Carry (borrow) set, decrement MSBs
+.noDecUBA0_IFD:
+
+#ifdef PILOT_BIOS
+	ld		a, (_PB_SysIDBlock+tableVersion+1)
+#else
+	ld		a, (SysIDBlock+tableVersion+1)
+#endif
+	or		a
+	jr		nz, .twoUsrBlkImages
+
+#ifdef PILOT_BIOS
+	ld		a, (_PB_SysIDBlock+tableVersion)
+#else
+	ld		a, (SysIDBlock+tableVersion)
+#endif
+	cp		3
+	jr		c, .calcUserBlockSector
+
+.twoUsrBlkImages:
+	; the Carry flag is clear if we got here!
+	sbc	hl, de					; User Block A address minus User Block offset
+	jr		nc, .noDecUBA1_IFD	; if no Carry, then go leave MSBs alone
+
+	dec	bc							; Carry (borrow) set, decrement MSBs
+.noDecUBA1_IFD:
+#ifdef PILOT_BIOS
+	ld		de, (_PB_SysIDBlock+idBlockSize)
+#else
+	ld		de, (SysIDBlock+idBlockSize)
+#endif
+	or		a							; clear Carry flag
+	sbc	hl, de					; hl gets User Block B address LSBs
+	jr		nc, .noDecUBA2_IFD	; if no Carry, then go leave MSBs alone
+
+	dec	bc							; Carry (borrow) set, decrement MSBs
+.noDecUBA2_IFD:
+.calcUserBlockSector:
+
+	ex		de, hl					; get ID Block physical address fully into BC:DE
+#ifdef PILOT_BIOS
+	call	longToSector			; calculate sector #
+#else
+#if (ENABLE_CLONING == 1)
+	call	longToSector			; calculate sector #
+#else
+	lcall	longToSector			; calculate sector #
+#endif
+#endif
+.writeUserBlockSectorAddr:
+	ld		(UserBlockSector), hl	; save User Block sector number
+	ld		(UserBlockAddr), de		; save User Block physical address LSBs
+	ld		(UserBlockAddr+2), bc	; save User Block physical address MSBs
+
+	bool	hl
+	ld		l, h							; return value = 0 (ok)
+	pop	ix
+  	ret
+
+; Local subroutine for version 5 and up uID+mUser blocks only.  Subtracts marker
+;  size (6 bytes) and User block size from physical address in BCDE, returns
+;  sector number and start address of flash sector of result.
+;    entry:  BCDE has initial physical address
+;    exit:  HL has sector number, BCDE has sector start address
+.subtractV5UBSize:
+	ld		hl, 6						; get size of User block validity marker field
+	or		a							; reset Carry flag
+	ex		de, hl					; swap for the following subtraction
+	sbc	hl, de					; start of sector address minus marker size
+	jr		nc, .noBorrow0			; no borrow (Carry flag reset), go skip decrement
+
+	dec	bc							; decrement BC to account for borrow
+.noBorrow0:
+	ex		de, hl					; get User block marker start address into DE
+#ifdef PILOT_BIOS
+	ld		hl, (_PB_SysIDBlock+idBlock2+userBlockSiz2)
+#else
+	ld		hl, (SysIDBlock+idBlock2+userBlockSiz2)
+#endif
+	or		a							; reset Carry flag
+	ex		de, hl					; swap for the following subtraction
+	sbc	hl, de					; marker start addr minus User block size (LSBs)
+	jr		nc, .noBorrow1			; no borrow (Carry flag reset), go skip decrement
+
+	dec	bc							; decrement BC to account for borrow
+.noBorrow1:
+	ex		de, hl					; get User block image start address into DE
+.forceToSectorStart:
+#ifdef PILOT_BIOS
+	call	longToSector			; calculate sector #
+	call	sectorToLong			; force User block address to start of sector
+#else
+#if (ENABLE_CLONING == 1)
+	call	longToSector			; calculate sector #
+	call	sectorToLong			; force User block address to start of sector
+#else
+	lcall	longToSector			; calculate sector #
+	lcall	sectorToLong			; force User block address to start of sector
+#endif
+#endif
+#if FAST_RAM_COMPILE
+	ld		a, 0x0C					; For run-in-fast-RAM mode, effectively hard code
+	or		c							;  bc:de = lowest User block address to always be
+	ld		c, a						;  in the MB3CR quadrant.
+#endif
+
+	ret
+#endasm
+
+/****************************************************************************/
+
+/*
+	The Z-World supported flash device table.	 The format is:
+
+		dw idCode, sectorSize, numSectors, flashSize, writeMode
+
+	where
+
+		idCode		= manufacturer code * 0x100 + device code
+
+		sectorSize	= sector size in bytes (128 for large sector flash)
+
+		numSectors	= number of sectors on the device
+
+		flashSize	= size of flash in 4KB blocks (eg:  256KB = 64)
+
+		writeMode	= 1 for small sector, sector erase (0x30) byte write
+		         	= 2 for small sector, sector write
+		         	= 3 for small page, page erase (0x50) byte write
+		         	= 4 for small sector, sector erase (0x20) byte write
+		         	  or
+		         	> 0x10 for large sector, sector erase (0x30) byte write
+		         	  (see SectorData table flash sector layout maps)
+
+	Note:  The flash device table is located in code space when separate
+	       I&D space is enabled in order for cloning to work properly.
+	       The clone uses the flash driver without separate I&D space
+	       enabled.  The table can only be accessed with ldp instructions
+	       (preferred) or through the xmem window when separate I&D space
+	       is enabled.
+*/
+
+#ifndef FLASHWR_ALL_USE_ACTUAL_WRITEMODE
+ #ifndef PILOT_BIOS
+  // Compiling an application,
+  //  use actual write mode for all flash devices.
+  #define FLASHWR_ALL_USE_ACTUAL_WRITEMODE 1
+ #else
+  // Compiling a pilot BIOS, for program load via Dynamic C IDE or RFU.
+  #if CC_VER >= 0x0850
+   // Dynamic C defaults to combined BIOS+application load method,
+   //  use actual write mode for all flash devices.
+   #define FLASHWR_ALL_USE_ACTUAL_WRITEMODE 1
+  #else
+   // Dynamic C defaults to separate BIOS/application load method,
+   //  use alternate write mode for some flash devices.
+   #define FLASHWR_ALL_USE_ACTUAL_WRITEMODE 0
+  #endif
+ #endif
+#endif
+
+#asm root nodebug
+FlashData::
+; small sector flash (uniform sectors or pages and <= 4KB)
+	dw		0xBF07,  128, 1024,  32, 2			// SST SST29EE010
+	dw		0xBF08,  128, 1024,  32, 2			// SST SST29LE010 / SST29VE010
+	dw		0xBF10,  128, 2048,  64, 2			// SST SST29EE020
+	dw		0xBF12,  128, 2048,  64, 2			// SST SST29LE020 / SST29VE020
+#if FLASHWR_ALL_USE_ACTUAL_WRITEMODE
+	dw		0xBF13,  128, 2048, 128, 4			// SST SST29SF040
+	dw		0xBF14,  128, 2048, 128, 4			// SST SST29VF040
+	dw		0xBF20,  128,  512,  16, 4			// SST SST29SF512
+	dw		0xBF21,  128,  512,  16, 4			// SST SST29VF512
+	dw		0xBF22,  128, 1024,  32, 4			// SST SST29SF010
+	dw		0xBF23,  128, 1024,  32, 4			// SST SST29VF010
+	dw		0xBF24,  128, 2048,  64, 4			// SST SST29SF020
+	dw		0xBF25,  128, 2048,  64, 4			// SST SST29VF020
+#else
+	dw		0xBF13,  128, 2048, 128, 1			// SST SST29SF040
+	dw		0xBF14,  128, 2048, 128, 1			// SST SST29VF040
+	dw		0xBF20,  128,  512,  16, 1			// SST SST29SF512
+	dw		0xBF21,  128,  512,  16, 1			// SST SST29VF512
+	dw		0xBF22,  128, 1024,  32, 1			// SST SST29SF010
+	dw		0xBF23,  128, 1024,  32, 1			// SST SST29VF010
+	dw		0xBF24,  128, 2048,  64, 1			// SST SST29SF020
+	dw		0xBF25,  128, 2048,  64, 1			// SST SST29VF020
+#endif	// FLASHWR_ALL_USE_ACTUAL_WRITEMODE
+	dw		0xBF3D,  128,  512,  16, 2			// SST SST29LE512 / SST29VE512
+	dw		0xBF5D,  128,  512,  16, 2			// SST SST29EE512
+	dw		0xBFB4, 4096,   16,  16, 1			// SST SST39SF512
+	dw		0xBFB5, 4096,   32,  32, 1			// SST SST39SF010
+	dw		0xBFB6, 4096,   64,  64, 1			// SST SST39SF020
+	dw		0xBFB7, 4096,  128, 128, 1			// SST SST39SF040
+	dw		0xBFD4, 4096,   16,  16, 1			// SST SST39LF512 / SST39VF512
+	dw		0xBFD5, 4096,   32,  32, 1			// SST SST39LF010 / SST39VF010
+	dw		0xBFD6, 4096,   64,  64, 1			// SST SST39LF020 / SST39VF020
+	dw		0xBFD7, 4096,  128, 128, 1			// SST SST39LF040 / SST39VF040
+
+	dw		0x4001,  512,  256,  32, 1			// Mosel/Vitelic V29C51001T
+	dw		0x4002,  512,  512,  64, 1			// Mosel/Vitelic V29C51002T
+	dw		0x4003, 1024,  512, 128, 1			// Mosel/Vitelic V29C51004T
+	dw		0x4060,  512,  256,  32, 1			// Mosel/Vitelic V29LC51001
+	dw		0x4063, 1024,  512, 128, 1			// Mosel/Vitelic V29C31004T
+	dw		0x4073, 1024,  512, 128, 1			// Mosel/Vitelic V29C31004B
+	dw		0x4082,  512,  512,  32, 1			// Mosel/Vitelic V29LC51002
+	dw		0x40A1,  512,  256,  32, 1			// Mosel/Vitelic V29C51001B
+	dw		0x40A2,  512,  512,  64, 1			// Mosel/Vitelic V29C51002B
+	dw		0x40A3, 1024,  512, 128, 1			// Mosel/Vitelic V29C51004B
+
+	dw		0x1F25,  128,  512,  16, 2			// Atmel AT29C1024
+	dw		0x1F26,  128,  512,  16, 2			// Atmel AT29LV1024
+	dw		0x1F35,  128, 1024,  32, 2			// Atmel AT29LV010 / AT29BV010A
+	dw		0x1FA4,  256, 2048, 128, 2			// Atmel AT29C040
+	dw		0x1FBA,  256, 1024,  64, 2			// Atmel AT29LV020 / AT29BV020
+	dw		0x1FC4,  256, 2048, 128, 2			// Atmel AT29LV040 / AT29BV040
+	dw		0x1FD5,  128, 1024,  32, 2			// Atmel AT29C010
+	dw		0x1FDA,  256, 1024,  64, 2			// Atmel AT29C020
+
+	dw		0xDA45,  128, 2048,  64, 2			// Winbond W29C020CT
+	dw		0xDA46,  256, 2048, 128, 2			// Winbond W29C040
+#if FLASHWR_ALL_USE_ACTUAL_WRITEMODE
+	dw		0xDAB5, 4096,   64,  64, 3			// Winbond W39L020
+#endif
+	dw		0xDAC1,  128, 1024,  32, 2			// Winbond W29EE011
+
+; large sector flash (nonuniform sectors or > 4KB)
+	dw		0x0134,  128,    7,  64, 0x16		// AMD AM29F002BB
+	dw		0x0140,  128,    7,  64, 0x15		// AMD AM29LV002BT
+	dw		0x016D,  128,   10,  32, 0x1F		// AMD AM29LV001BB
+	dw		0x0177,  128,   11, 128, 0x17		// AMD AM29F004BT
+	dw		0x017B,  128,   11, 128, 0x18		// AMD AM29F004BB
+	dw		0x01A4,  128,    8, 128, 0x1A		// AMD Am29F040B
+	dw		0x01B0,  128,    7,  64, 0x15		// AMD AM29F002BT
+	dw		0x01B5,  128,   11, 128, 0x17		// AMD AM29LV004BT
+	dw		0x01B6,  128,   11, 128, 0x18		// AMD AM29LV004BB
+	dw		0x01C2,  128,    7,  64, 0x16		// AMD AM29LV002BB
+	dw		0x01ED,  128,   10,  32, 0x13		// AMD AM29LV001BT
+
+	dw		0x0434,  128,    7,  64, 0x16		// Fujitsu MBM29F002BC
+	dw		0x04B0,  128,    7,  64, 0x15		// Fujitsu MBM29F002TC
+
+	; The following 2 devices do not allow "boot block" sector erase,
+	;  except when the device's internal chip erase command is used!
+	; Note that they also erase their 8K "PB1" and "PB2" parameter blocks
+	;  when they perform a "MMB1" main memory block sector erase.
+	dw		0x1F07,  128,    5,  64, 0x12		// Atmel AT49F002
+	dw		0x1F08,  128,    5,  64, 0x11		// Atmel AT49F002T
+
+	dw		0x2023,  128,    8,  32, 0x20		// ST M29W010B
+	dw		0x20E2,  128,    8, 128, 0x1A		// ST M29F040B
+	dw		0x20E3,  128,    8, 128, 0x1A		// ST M29W040B
+
+	dw		0xAD34,  128,    7,  64, 0x16		// Hyundai HY29F002B
+	dw		0xADB0,  128,    7,  64, 0x15		// Hynix/Hyundai HY29F002T
+
+	dw		0xC234,  128,    7,  64, 0x16		// Macronix MX29F002B
+	dw		0xC2B0,  128,    7,  64, 0x15		// Macronix MX29F02T
+
+#if !FLASHWR_ALL_USE_ACTUAL_WRITEMODE
+	dw		0xDAB5,  128,    4,  64, 0x1C		// Winbond W39L020
+#endif
+
+	; table ends with 0x0000 in the idCode word
+	dw		0x0000,    0,    0,   0, 0
+	dw		0x0000,    0,    0,   0, 0
+	dw		0x0000,    0,    0,   0, 0
+	dw		0x0000,    0,    0,   0, 0
+	dw		0x0000,    0,    0,   0, 0
+	dw		0x0000,    0,    0,   0, 0
+
+;;*** This label is global so that it can be found in the MAP file;
+;;***  new flash descriptions can be poked into BIN files to add new
+;;***  flash types.
+EndFlashData::
+#endasm
+
+
+/*
+	This function searches the flash data table above searching
+	and populates the passed FlashDataStruct with the corresponding
+	FlashData info if found. The function returns 1 if it finds a match
+	for id and is able to populate the passed structure, otherwise it
+	returns 0.
+*/
+nodebug
+int _GetFlashData(int id, FlashDataStruct *fds)
+{
+#asm nodebug
+	ld hl, (sp+@sp+id)
+	ex de, hl
+	ld  iy, FlashData
+.gfd_search_loop:
+	xor a   				; zero A and clear carry flag
+	ldp hl, (iy)
+	bool hl				; test to make sure not at end of flash data list
+	jp z, .gfd_fail
+
+	ldp hl, (iy)
+	sbc hl, de
+	jp z, .gfd_found	; test for flash id
+
+	ld  bc, sizeof(FlashDataStruct)
+	ld  hl, iy
+	add hl, bc
+	ld  iy, hl			; advance to next flash id
+	jp .gfd_search_loop
+
+.gfd_found:
+	ld hl, (sp+@sp+fds) ; Copy one byte at a time to avoid overflow writes
+	ex de, hl
+	ld bc, sizeof(FlashDataStruct)  ; first copy does two bytes
+.gfd_copyloop:
+	xor a
+	ldp hl, (iy)
+	ld a, l
+	ld (de), a
+	inc iy
+	inc de
+	dec bc
+	ld  a, b
+	or  c
+	jp nz, .gfd_copyloop
+c	return 1;
+
+.gfd_fail:
+c	return 0;
+#endasm
+}
+
+/*
+	This function reads the flash ID codes and looks up relevant information
+	in the table above:  sector size, number of sectors, and write method.
+*/
+//root _lookupFlash(int id, FlashDataStruct* fds) {
+#asm root nodebug
+_lookupFlash::
+#if _RK_FIXED_VECTORS && FLASH_COMPILE
+	ld   hl, _GetFlashID
+	ioi   ld  a, (MMIDR)			; test to see if I&D is on
+;	IOREAD_A(MMIDR)
+	and 0x20
+	jp nz, .idon					; if disabled we are bootstrapping clone and are running in ram
+	call _GetFlashID				; so call directly
+	jr .skip
+.idon:
+	lcall _CallRAMFunction
+.skip:
+#else
+	call	_GetFlashID
+#endif
+
+	ex		de, hl				// put flash ID code in de
+
+	xor   a						// zero a for ldp accesses from table
+	ld		ix, FlashData  	// access via physical address, to read when I&D is enabled
+	ld		bc, sizeof(FlashDataStruct)
+.loop:
+#ifdef PILOT_BIOS
+	ld		hl, (ix)				// get ID code for table entry in root memory
+#else
+	ldp	hl, (ix)				// get ID code for entry
+#endif
+	bool	hl
+	jr		z, .flashNotFound	// exit if entry is 0000h
+#ifdef PILOT_BIOS
+	ld		hl, (ix)				// get ID code again from table in root mem
+#else
+	ldp	hl, (ix)				// get ID code again
+#endif
+	sbc	hl, de
+	jr		z, .foundFlash		// if entry ID code = code in de, entry found
+	ld		hl, ix
+	add	hl, bc
+	ld		ix, hl				// increment ix by FlashEntrySize
+	jr		.loop
+
+.flashNotFound:
+	ld		hl, -1				// return -1
+	ret
+
+.foundFlash:
+	ld		bc, 0x02
+	add   ix, bc
+#ifdef PILOT_BIOS
+	ld		hl, (ix)				// load _FlashInfo table with root mem values
+	ld		(_FlashInfo+sectorSize), hl
+	add   ix, bc
+	ld		hl, (ix)
+	ld		(_FlashInfo+numSectors), hl
+	add   ix, bc
+	ld		hl, (ix)
+	ld		(_FlashInfo+flashSize), hl
+	add   ix, bc
+	ld		hl, (ix)
+	ld		a, l
+	ld		(_FlashInfo+writeMode), a
+#else
+	ldp	hl, (ix)				// load _FlashInfo table with values
+	ld		(_FlashInfo+sectorSize), hl
+	add   ix, bc
+	ldp	hl, (ix)
+	ld		(_FlashInfo+numSectors), hl
+	add   ix, bc
+	ldp	hl, (ix)
+	ld		(_FlashInfo+flashSize), hl
+	add   ix, bc
+	ldp	hl, (ix)
+	ld		a, l
+	ld		(_FlashInfo+writeMode), a
+#endif
+
+#ifdef PILOT_BIOS
+	ex		de, hl				; put the flashid in hl
+	ld		(PB_FLASH_ID), hl	; and store it for later
+#endif
+
+	ld		hl, 0000h			// return 0
+	ret
+#endasm
+
+/****************************************************************************/
+
+/*
+	This table lists the sector layouts for the supported large sector
+	flash types.  For a flash with N sectors, the format is:
+
+		db writeMode, sector0size, sector1size, ..., sectorN-1size, 0
+
+	where
+
+		writeMode	= FlashData table's index into this table
+
+		sectorXsize	= size of sector X (0 <= X < N) in units of 4KB blocks
+		           	  (eg:  a 16KB sector is represented by a 4)
+
+		0				= large sector flash layout entry end marker
+
+	To add a new large sector flash layout entry, assign it a new
+	writeMode value in the FlashData table and add a line below listing
+	the new writeMode, the sector sizes from low to high addresses, and
+	the layout entry end marker.
+*/
+
+//******************************************************************
+// Map of large sector flash sector layouts (nonuniform sector size
+//  or > 4KB sector size).
+//
+// Notes:
+//
+//	1) Large sector flash types where the topmost 2 or 3 sectors are each
+//		16KB or less should have an odd writeMode value, indicating that
+//    an ID/User Block area is reserved.  These flash types may have
+//		either uniform or nonuniform sector sizes, so long as the topmost
+//		sectors are of suitable size to make User Block writes practical.
+//
+//	2)	Large sector flash types where the topmost 2 or 3 sectors are more
+//    than 16KB each should generally have an even writeMode value,
+//    indicating that no ID/User Block area is reserved.  A programmer
+//    may choose to override this (by changing or adding a suitable odd-
+//    numbered writeMode and its SectorData index entry) for a smaller
+//    application that can afford the topmost 2 or 3 large flash sectors
+//    being reserved for ID/User Blocks.
+//
+//	3)	The SectorData table is located in code space when separate I&D
+//		space is enabled, in order for cloning to work properly.  The
+//		clone uses the flash driver without separate I&D space enabled.
+//		The table can only be accessed with ldp instructions (preferred)
+//		or through the xmem window when separate I&D space is enabled.
+
+#asm root nodebug
+SectorData::
+	db		0x11, 32, 24,  2,  2,  4,  0                        	// 128/96/8/8/16
+	db		0x12,  4,  2,  2, 24, 32,  0                        	// 16/8/8/96/128
+	db		0x13,  4,  4,  4,  4,  4,  4,  4,  1,  1,  2,  0   	// 16*7/4/4/8
+	db		0x14,  2,  1,  1,  4,  4,  4,  4,  4,  4,  4,  0    	// 8/4/4/16*7
+	db		0x15, 16, 16, 16,  8,  2,  2,  4,  0                  // 64*3/32/8/8/16
+	db		0x16,  4,  2,  2,  8, 16, 16, 16,  0                	// 16/8/8/32/64*3
+	db		0x17, 16, 16, 16, 16, 16, 16, 16,  8,  2,  2,  4,  0	// 64*7/32/8/8/16
+	db		0x18,  4,  2,  2,  8, 16, 16, 16, 16, 16, 16, 16,  0	// 16/8/8/32/64*7
+	db		0x19, 16, 16, 16, 16, 16, 16, 16, 16,  0            	// 64*8
+	db		0x1A, 16, 16, 16, 16, 16, 16, 16, 16,  0            	// 64*8
+	db		0x1B, 16, 16, 16, 16,  0                            	// 64*4
+	db		0x1C, 16, 16, 16, 16,  0                            	// 64*4
+	db		0x1D, 32, 24,  2,  2,  0                            	// 128/96/8/8/(16)
+	db		0x1E,  8,  8,  8,  8,  8,  8,  8,  8,  0            	// 32*8
+	db		0x1F,  2,  1,  1,  4,  4,  4,  4,  4,  4,  4,  0    	// 8/4/4/16*7
+	db		0x20,  4,  4,  4,  4,  4,  4,  4,  4,  0            	// 16*8
+	db		0x21,  4,  4,  4,  4,  4,  4,  4,  4,  0            	// 16*8
+
+	; table ends with 0x00 in the writeMode byte
+   db    0x00,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
+   db    0x00,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
+   db    0x00,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
+   db    0x00,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
+   db    0x00,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
+   db    0x00,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
+
+;;*** This label is global so that it can be found in the MAP file;
+;;***  new flash sector layouts can be poked into BIN files to add new
+;;***  flash types.
+EndSectorData::
+#endasm
+
+/*
+	This function takes a writeMode value passed in HL and returns
+	a pointer to the first sector size in the SectorData table.
+	If the flash is not found (or is a small-sector flash), the
+	function returns a zero.
+*/
+#asm root nodebug
+; value looking for passed in HL (just L really)
+;  HL return value:  pointer to table of sector sizes
+;  HL error value:   0 = small sector flash or flash not found
+_lookupFlashSect::
+	push	af
+	push	ix
+
+	xor   a					; zero A and Carry flag (and see "ldp" below)
+	ld		d, l
+	ld		e, l				; D:E now contains writeMode:writeMode
+	ld 	hl, 0x0F0F
+	sbc	hl, de  			; if writeMode < 0x10 it's small sector flash
+	jr		c, .lsFlash		; OK, go do large/nonuniform flash sector lookup
+   bool	hl
+   ld		h, l				; it's small sector flash, return error
+	jr		.done
+
+.lsFlash:
+	ld		ix, SectorData
+.tableEntryLoop:
+#ifdef PILOT_BIOS
+	; NB:  Separate I&D space MUST BE disabled!
+	ld		hl, (ix)				; get flash type from table in root memory
+#else
+	; NB:  This " ldp hl, (ix)" depends on the " xor a" above!!!
+	ldp	hl, (ix)				; get flash type from table, use ldp to access table when I&D is enabled
+#endif
+	ld		h,l
+	or		a
+	sbc	hl, de
+	jr		z, .foundIt			; found flash in table
+	ld		h, l
+	bool  hl						; test byte for zero (h & l are same)
+	jr		z, .done					; didn't find that flash type in the table
+
+.getNextEntry:
+	inc	ix
+#ifdef PILOT_BIOS
+	; NB:  Separate I&D space MUST BE disabled!
+	ld		hl, (ix)				; get flash type from table in root memory
+#else
+	; NB:  This " ldp hl, (ix)" depends on the " xor a" above!!!
+	ldp	hl, (ix)				; get flash type from table, use ldp to access table when I&D is enabled
+#endif
+	ld		h, l
+	bool  hl						; test byte for zero (h & l are same)
+	jr		nz, .getNextEntry
+	inc	ix
+	jr		.tableEntryLoop
+
+.foundIt:
+	ld		hl, ix
+	inc	hl						; return pointer to sector table
+.done:
+	pop	ix
+	pop	af
+	ret							; return pointer or error in HL
+#endasm
+
+/****************************************************************************/
+
+#asm root nodebug
+	JUMP_TRAP
+#if !FLASH_COMPILE  // if RAM_COMPILE || FAST_RAM_COMPILE
+_unlockQuad::
+#endif
+#if FLASH_COMPILE
+_unlockQuadX::
+#endif
+#ifndef PILOT_BIOS
+	; unlock write protection on relevant memory quadrant
+	;	relevant XPC passed in a
+	push	af					; save original values
+	push	hl
+	add	a, 0x0E
+	rla
+	rla
+	rla
+	and	0x03
+	push	af					; save offset for later
+	ld		hl, MB0CRShadow
+	add	a, l
+	ld		l, a
+	ld		a, 0x00			; add 0x00 (plus any carry) to h
+	adc	a, h
+	ld		h, a
+
+	ld		a, (hl)			; get shadow reg
+	res	3, a				; clear write-prot bit
+	ld		(hl), a			; reload shadow reg
+
+	ld		h, a				; save a in h (temp)
+	pop	af					; restore offset
+	ld		l, MB0CR
+	add	a, l
+	ld		l, a				; put reg addr in l
+	ld		a, h				; put new value in a
+	ld		h, 0x00
+
+	ioi	ld (hl), a
+
+	pop	hl					; restore original values
+	pop	af
+#endif /*ifndef PILOT_BIOS*/
+	ret
+#if FLASH_COMPILE
+_EndOf__unlockQuadX::
+#endif
+#endasm
+
+
+#asm root nodebug
+	JUMP_TRAP
+#if !FLASH_COMPILE  // if RAM_COMPILE || FAST_RAM_COMPILE
+_relockQuad::
+#endif
+#if FLASH_COMPILE
+_relockQuadX::
+#endif
+#ifndef PILOT_BIOS
+	; relock write protection on relevant memory quadrant
+	;	relevant XPC passed in a
+	;	destroys hl
+	push	af					; save original value
+	push	hl
+	add	a, 0x0E
+	rla
+	rla
+	rla
+	and	0x03
+	push	af					; save offset for later
+	ld		hl, MB0CRShadow
+	add	a, l
+	ld		l, a
+	ld		a, 0x00			; add 0x00 (plus any carry) to h
+	adc	a, h
+	ld		h, a
+
+	ld		a, (hl)			; get shadow reg
+	set	3, a				; set write-prot bit
+	ld		(hl), a			; reload shadow reg
+
+	ld		h, a				; save a in h (temp)
+	pop	af					; restore offset
+	ld		l, MB0CR
+	add	a, l
+	ld		l, a				; put reg addr in l
+	ld		a, h				; put new value in a
+	ld		h, 0x00
+
+	ioi	ld (hl), a
+	pop	hl
+	pop	af					; restore original value
+#endif /*ifndef PILOT_BIOS*/
+	ret
+#if FLASH_COMPILE
+_EndOf__relockQuadX::
+#endif
+#endasm
+
+/****************************************************************************/
+/*
+	Polling method to determine if internal flash program operation is finished.
+	When done, two consecutive reads of data from the same address in the flash
+	sector will yield the same data in bit 6 (and every other bit) when done.
+*/
+
+#asm root nodebug
+#if !FLASH_COMPILE  // if RAM_COMPILE || FAST_RAM_COMPILE
+_FlashWait::
+#endif
+#if FLASH_COMPILE
+_FlashWaitX::
+#endif
+	// destroys hl
+	// sector address passed in de (XPC should already be set)
+	// always returns zero in hl (0 == no error)
+	push	af
+	// XPC should be already set!
+	ex		de, hl				; put toggle-bit-check xmem window address into HL
+.wloop:
+	ld		a, (hl)				; first read of toggle-bit-check comparison pairs
+	cp		(hl)					; second read same as before (no bit toggle)?
+	jr		nz, .wloop			; bit(s) changed (not done yet), go check again . . .
+	// Some SST 8-bit flash devices have a "spurious completion" issue.
+	// Double-check the toggle-bit to ensure the flash operation is complete.
+	ld		a, (hl)				; third read of toggle-bit-check comparison pairs
+	cp		(hl)					; fourth read same as before (again no bit toggle)?
+	jr		nz, .wloop			; bit(s) changed (not done yet), go check again . . .
+
+	ex		de, hl				; restore toggle-check xmem window address into DE
+	bool	hl						; put zero into HL for return
+	ld		L, h					;
+	pop	af
+	ret
+#if FLASH_COMPILE
+_EndOf__FlashWaitX::
+#endif
+#endasm
+
+/****************************************************************************/
+/*
+	This function erases the flash sector passed to it as an XMEM address
+	in A:DE.  It provides a return value in HL.
+*/
+
+#asm root nodebug
+	// destroys hl
+	// sector address passed in a:de
+	// error flag (if any) returned in hl:  -3 = timeout, 0 = no error
+	JUMP_TRAP
+#if !FLASH_COMPILE  // if RAM_COMPILE || FAST_RAM_COMPILE
+_EraseFlashSect::
+#endif
+#if FLASH_COMPILE
+_EraseFlashSecX::
+#endif
+	push	af
+
+	// make sure we don't erase the ID block
+	ld		hl, (_overwrite_block_flag)
+	bool	hl
+	jr		nz, .noIDBlock
+#ifdef PILOT_BIOS
+	ld		hl, (_PB_SysIDBlock+tableVersion)
+#else
+	ld		hl, (SysIDBlock+tableVersion)
+#endif
+	bool	hl
+	jr		z, .noIDBlock	; if no ID block, don't worry
+	push	af
+	push	de
+#ifdef PILOT_BIOS
+	call	xmemToSector
+#else
+#if (ENABLE_CLONING == 1)
+	call	xmemToSector				; get sector # in HL
+#else
+	lcall	xmemToSector
+#endif
+#endif
+	ld		de, (UserBlockSector)
+	xor	a						; clear carry flag
+	sbc	hl, de
+	jr		c, .notToIDBlock
+.writeToIDBlock:
+	pop	de						; attempted write to ID block, exit with error
+	pop	af
+	pop	af
+
+	ld		hl, -4				; exit with error code
+	ret
+
+.notToIDBlock:
+	pop	de						; write ok, continue
+	pop	af
+.noIDBlock:
+	ex    af,af'					; save destination xpc
+	ld		a, xpc
+	push	af							; save current XPC
+	push	bc
+	push	de
+
+	; "sector write"-mode chips typically don't have a built-in
+	; sector erase function, so we just do it by hand...
+
+	ld		a, (_FlashInfo+writeMode)
+	cp		002h
+	jr		nz, .byteMode
+
+.sectorMode:
+	push	ix
+
+	ld		ix, (flash_buf_0015)
+	ld		bc, (_FlashInfo+sectorSize)
+.eraseLoop:
+	ld		a, (flash_buf_1619)			; destination
+	ld		hl, 0xFFFF
+	ldp	(ix), hl						; save in flash buffer
+	inc	ix
+	inc	ix
+
+	dec	bc
+	xor	a
+	cp		b
+	jr		nz, .eraseLoop
+	cp		c
+	jr		nz, .eraseLoop
+	pop	ix								; restore registers
+
+	ex		af, af'					; de should still be ok
+	;	call	_WriteFlash				; write that data to flash
+	ld    hl, retaddr
+	push  hl
+	ld		hl, (_FlashInfo+writePtr)
+	jp 	(hl)
+retaddr:
+	pop	de
+	pop	bc
+	pop	af
+	ld		xpc, a				; restore XPC
+	pop	af
+	ret
+
+.byteMode:
+	push	ip
+	ipset	3
+#ifdef PILOT_BIOS
+	call	_PB_hitwd			; necessary since large sector erase can take 2 sec
+#else
+	call	bioshitwd			; necessary since large sector erase can take 2 sec
+#endif
+
+	;****** unlock flash
+	ld		a, (_FlashInfo+flashXPC)
+	call	_unlockQuad
+	add	a, 005h
+	ld    xpc,a
+   ld    a,0xaa
+   ld    (0xE555), a  	    	;AA to 5555
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, 002h
+	ld    xpc,a
+   ld    a,0x55
+   ld    (0xEAAA), a   		 	;55 to 2AAA
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, 005h
+	ld    xpc,a
+   ld    a,0x80
+   ld    (0xE555), a 	     	;80 to 5555
+
+   ;****** setup to erase sector
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, 005h
+	ld    xpc,a
+   ld    a,0xaa
+   ld    (0xE555), a  	    	;AA to 5555
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, 002h
+	ld    xpc,a
+   ld    a,0x55
+   ld    (0xEAAA), a   		 	;55 to 2AAA
+
+	ld		a, (_FlashInfo+flashXPC)
+	call	_relockQuad
+
+   ex    af,af'
+	call	_unlockQuad
+	ld    xpc,a						; get destination segment
+   ex    af,af'
+	ld		h, d
+	ld		l, e						; put destination address into hl
+	ld		a, (ByteModeEraseCmd)
+	ld		(hl), a					; 30h or 50h or 20h to address of segment to erase
+	ex		af, af'
+	call	_relockQuad
+	ex		af, af'
+
+	; de contains sector address, error returned in hl
+	call	_FlashWait
+#ifdef PILOT_BIOS
+	call	_PB_hitwd			; necessary since large sector erase can take 2 sec
+#else
+	call	bioshitwd			; necessary since large sector erase can take 2 sec
+#endif
+	pop 	ip
+
+	pop	de
+	pop	bc
+	pop	af
+	ld		xpc, a					; restore XPC
+	pop	af
+	ret
+#if FLASH_COMPILE
+_EndOf__EraseFlashSecX::
+#endif
+#endasm
+
+/****************************************************************************/
+/*
+	This function erases the number of sectors passed in BC (pass 0 for
+	a shortcut to erase the entire flash).  The user and ID blocks will
+	not be erased in any case.
+*/
+
+#asm root nodebug
+	JUMP_TRAP
+_EraseFlashChipX::
+	push	af
+	push	bc
+	push	de
+
+	; is BC == 0x0000?
+   ld		a, b
+   or		c
+	jr		nz, .cont
+
+.eraseall:
+	ld		bc, (_FlashInfo+numSectors)	; if BC==0, erase all sectors
+.cont:
+	dec	bc										; convert number of sectors to
+	ld		h, b									;  erase in BC to the  highest
+	ld		l, c									;  sector number to erase in HL
+
+.loop:
+#ifdef PILOT_BIOS
+	call	sectorToXmem
+#else
+#if (ENABLE_CLONING == 1)
+	call	sectorToXmem		; returns address in A:DE of sector in HL
+#else
+	lcall	sectorToXmem
+#endif
+#endif
+
+	push	hl
+	call	_EraseFlashSect	; erases sector at A:DE
+	ld		hl, (sp)
+
+	bool	hl
+	pop	hl
+	jr		z, .done
+	dec	hl
+	jr		.loop
+
+.done:
+	pop	de
+	pop	bc
+	pop	af
+	ret
+_EndOf__EraseFlashChipX::
+#endasm
+
+/****************************************************************************/
+/*
+	This function compares BC bytes of data pointed to by DE (assumes that
+	the XPC is set correctly) to data in the flash buffer at _PHYS.
+	It will return one of the following values:
+
+				0 = Two buffers are identical
+				1 = All bit changes between the two buffers are 1 -> 0.
+				2 = Some bit changes between the two buffers are 0 -> 1.
+
+	This function is used to determine whether the flash sector needs to be
+	erased completely, or if the new data can be written on top of the old data.
+*/
+
+#asm root nodebug
+	// old data pointer passed in XPC:DE
+	// size passed in BC
+	// result returned in BC
+#if !FLASH_COMPILE  // if RAM_COMPILE || FAST_RAM_COMPILE
+_checkFlashByte::
+#endif
+_checkFlashByteX::
+	push	af
+	ex		af, af'
+	push	af
+	ex		af, af'
+	push	hl
+	push	de
+	push	ix
+
+	ex		de',hl
+	push	hl
+	ex		de',hl
+
+	ld		ix, (flash_buf_0015)
+
+	ex		de', hl
+	ld		l, 0x00		; alternate de stores return flag (0 initially)
+	ex		de', hl
+.loop:
+	ld		a, b			; check for n = 0
+	or		c
+	jr		z, .done		; jump if n = 0
+	ld		a, (de)
+	ex		af, af'
+	ld		a, (flash_buf_1619)
+	ldp	hl, (ix)		; get a byte from flash buffer
+	ex		af, af'
+	cp		l				; are they equal?
+	jr		z, .doneLoop	; if so, go to next test
+
+	ex		de', hl
+	ld		l, 0x01		; set the return flag to "not identical"
+	ex		de', hl
+
+	xor	l
+	and	l				; little bit of math:  will be nonzero if 0->1 in bytes
+	jr		nz, .needsErase
+
+.doneLoop:
+	dec	bc				; n--
+	inc	de				; oldbuf++
+	inc	ix				; newbuf++
+ 	jr		.loop
+
+.needsErase:
+	ex		de', hl
+	ld		l, 0x02h		; return flag = 2 implies that sector erase required
+	ex		de', hl
+.done:
+	ld		bc, 000h
+	ex		de', hl
+	ld		c, l  		; put return flag (0 or 1) into bc
+	ex		de', hl
+
+	pop	hl
+	ex		de', hl
+	pop	ix
+	pop	de
+	pop	hl
+	ex		af, af'
+	pop	af
+	ex		af, af'
+	pop	af
+
+	ret					; return flag in bc
+_EndOf__checkFlashByteX::
+#endasm
+
+/****************************************************************************/
+/*
+	This function writes BC bytes of data from the flash buffer in XMEM
+	to the sector pointed to by A:DE.  An error code is returned in HL.
+	This function is for "byte-write" flash devices that do not have an
+	on-board buffer (i.e. they require a "wait until flash not busy" between
+	each byte written).  Examples:  Mosel/Vitelic V29C51001, SST39SF030
+*/
+
+#asm root nodebug
+/*
+	destroys hl, de'
+	destination sector address passed in a:de, size in bc
+	source assumed to be at FLASH_BUF_PHYS
+	error flag (if any) returned in hl:
+			 0 = no error
+			-3 = timeout
+			-4 = attempt to write to ID block
+			-5 = sector erase needed; write aborted
+*/
+
+	JUMP_TRAP
+_WriteFlashByteX::
+	push	af
+	// make sure we don't erase the ID block
+	ld		hl, (_overwrite_block_flag)
+	bool	hl
+	jr		nz, .noIDBlock
+#ifdef PILOT_BIOS
+	ld		hl, (_PB_SysIDBlock+tableVersion)
+#else
+	ld		hl, (SysIDBlock+tableVersion)
+#endif
+	bool	hl
+	jr		z, .noIDBlock	; if no ID block, don't worry
+	push	af
+	push	de
+#ifdef PILOT_BIOS
+	call	xmemToSector
+#else
+#if (ENABLE_CLONING == 1)
+	call	xmemToSector		; get sector # in HL
+#else
+	lcall	xmemToSector
+#endif
+#endif
+	ld		de, (UserBlockSector)
+	xor	a						; clear carry flag
+	sbc	hl, de
+	jr		c, .notToIDBlock
+.writeToIDBlock:
+	pop	de						; attempted write to ID block, exit with error
+	pop	af
+	pop	af
+	ld		hl, -4				; exit with error code
+	ret
+.notToIDBlock:
+	pop	de						; write ok, continue
+	pop	af
+.noIDBlock:
+
+	ex		af, af'					; save destination XPC
+
+	bool	hl
+	ld		l, h
+	ex		de', hl					; save potential return value (0 = ok)
+
+	ld		a, xpc
+	push	af							; save current XPC
+	push	ix
+
+	push	ip
+	ipset	3
+
+	// check if size = 0x0000
+	xor	a
+	cp		b
+	jr		nz, .sizeNotZero
+	cp		c
+	jr		nz, .sizeNotZero
+	jp		.done						; if size=0, we are done!
+
+.sizeNotZero:
+	// check buffer for any changes?
+//	ld		bc, (bufLength)
+	; bc still contains data length
+	push	bc
+	ex		af, af'
+	ld		xpc, a					; set xpc for comparasion
+	ex		af, af'
+	call	_checkFlashByte		; call routine to compare buffers
+	ld		a, c
+	pop	bc
+	or		a
+	jr		nz, .needsChange
+
+.identical:
+//	ld		bc, (bufLength)
+	;; bc still contains data length
+	add	hl, bc					; increment source pointer
+	ex		de, hl
+	add	hl, bc					; increment dest pointer
+	ex		de, hl
+	jp		.done
+
+.needsChange:
+	cp		001h
+	jr		z, .dontErase			; if no 0->1, then don't need to erase
+
+.doErase:
+	pop 	ip
+	pop	ix
+	ex		af, af'
+	pop	af
+	ld		xpc, a					; restore XPC
+	pop	af
+	ld		hl, -5					; exit with error code
+	ret
+/*
+	ex		af, af'
+	ld		xpc, a					; set destination XPC
+	push	hl
+	call	_EraseFlashSect
+	pop	hl
+	ex		af, af'					; save destination XPC
+*/
+.dontErase:
+//	ld		bc, (bufLength)
+	;; bc still contains data length!
+	ld		ix, (flash_buf_0015)	; load ix with source
+
+.write_byte:
+	;****** unlock flash
+	ld		a, (_FlashInfo+flashXPC)
+	call	_unlockQuad
+	add	a, 005h
+	ld    xpc, a
+   ld    a, 0AAh
+   ld    (0E555h), a  	    	;AA to 5555
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, 002h
+	ld    xpc, a
+   ld    a, 055h
+   ld    (0EAAAh), a   		 	;55 to 2AAA
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, 005h
+	ld    xpc, a
+   ld    a, 0A0h
+   ld    (0E555h), a 	     	;A0 to 5555
+	ld		a, (_FlashInfo+flashXPC)
+	call	_relockQuad
+
+   ex    af, af'
+	call	_unlockQuad
+	ld    xpc, a					; get destination segment
+	ex		af, af'
+
+	ld		a, (flash_buf_1619)
+	ldp	hl, (ix)					; get word from buffer
+
+	ex		de, hl
+	ld		(hl), e					; save byte at destination
+	ex		de, hl
+
+	inc	ix
+
+	//		wait for write to finish!
+	ex		de', hl					; save hl
+	call	_FlashWait
+	ex		de', hl					; restore hl
+
+	inc	de							; increment destination pointer
+	dec	bc							; decrement byte counter
+
+	ld		a, b
+	or		a
+	jr		nz, .write_byte		; if b is nonzero keep writing bytes
+	cp		c
+	jr		nz, .write_byte		; if c is nonzero keep writing bytes
+
+	ex		af, af'
+	call	_relockQuad
+	ex		af, af'
+.done:
+	pop 	ip
+	pop	ix
+	ex		af, af'
+	pop	af
+	ld		xpc, a					; restore XPC
+	pop	af
+
+	ex		de', hl					; hl now has return value (was in de')
+   ret
+_EndOf__WriteFlashByteX::
+#endasm
+
+/****************************************************************************/
+/*
+	This function writes one sector of data from the flash buffer in XMEM
+	to the sector pointed to by A:DE.  An error code is returned in HL.
+	This function is for "sector-write" flash devices that accept one
+	sectors' worth of data, then internally erase the sector and write the
+	data to the device.  Examples:  SST SST29EE010, Atmel AT29C010
+*/
+
+#asm root nodebug
+/*
+	destroys hl, de'
+	destination sector address passed in a:de
+	source assumed to be at flash_buf_phys
+	error flag (if any) returned in hl:
+			 0 = no error
+			-3 = timeout
+			-4 = attempt to write to ID block
+*/
+
+	JUMP_TRAP
+_WriteFlashSecX::
+	push	af
+
+	// make sure we don't erase the ID block
+	ld		hl, (_overwrite_block_flag)
+	bool	hl
+	jr		nz, .noIDBlock
+#ifdef PILOT_BIOS
+	ld		hl, (_PB_SysIDBlock+tableVersion)
+#else
+	ld		hl, (SysIDBlock+tableVersion)
+#endif
+	bool	hl
+	jr		z, .noIDBlock	; if no ID block, don't worry
+	push	af
+	push	de
+#ifdef PILOT_BIOS
+	call	xmemToSector
+#else
+#if (ENABLE_CLONING == 1)
+	call	xmemToSector		; get sector # in HL
+#else
+	lcall	xmemToSector
+#endif
+#endif
+	ld		de, (UserBlockSector)
+	xor	a						; clear carry flag
+	sbc	hl, de
+	jr		c, .notToIDBlock
+.writeToIDBlock:
+	pop	de						; attempted write to ID block, exit with error
+	pop	af
+	pop	af
+	ld		hl, -4				; exit with error code
+	ret
+.notToIDBlock:
+	pop	de						; write ok, continue
+	pop	af
+.noIDBlock:
+
+	ex    af,af'					; save destination xpc
+
+	ld		a, xpc
+	push	af							; save current XPC
+	push	ix
+	push	iy
+
+	bool	hl
+	ld		l, h
+	ex		de', hl					; save potential return value (0 = ok)
+
+	ld		h, b
+	ld		l, c						; move source addr into hl
+
+	push	ip
+	ipset	3
+
+	// check buffer for any changes?  If identical, don't do flash write...
+	ld		bc, (_FlashInfo+sectorSize)
+	ex		af, af'
+	ld		xpc, a					; set xpc for comparison
+	ex		af, af'
+	call	_checkFlashByte		; call routine to compare buffers
+
+	ld		a, c
+	or		a
+	jr		nz, .needsChange
+
+.identical:
+	ld		bc, (_FlashInfo+sectorSize)
+	add	hl, bc					; increment source pointer
+	ex		de, hl
+	add	hl, bc					; increment dest pointer
+	ex		de, hl
+	jr		.done
+
+.needsChange:
+	ld		bc, (_FlashInfo+sectorSize)
+.do_write:
+	;****** unlock flash
+	ld		a, (_FlashInfo+flashXPC)
+	call	_unlockQuad
+	add	a, 005h
+	ld    xpc,a
+   ld    a,0xaa
+   ld    (0xE555), a  	    	;AA to 5555
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, 002h
+	ld    xpc,a
+   ld    a,0x55
+   ld    (0xEaaa), a   		 	;55 to 2AAA
+	ld		a, (_FlashInfo+flashXPC)
+	add	a, 005h
+	ld    xpc,a
+   ld    a,0xa0
+   ld    (0xE555), a 	     	;A0 to 5555
+	ld		a, (_FlashInfo+flashXPC)
+	call	_relockQuad
+
+   ex    af, af'
+	call	_unlockQuad
+	ld    xpc, a					; get destination segment
+	ex		af, af'
+
+.write_sector:
+	ld		ix, (flash_buf_0015)	; source address pointer
+	ex		de, hl
+	ld		iy, hl					; destination address pointer
+
+	ld		bc, (_FlashInfo+sectorSize)
+
+.write_loop:
+	ld		a, (flash_buf_1619)
+	ldp	hl, (ix)
+	ld		(iy), hl
+	inc	ix
+	inc	ix
+	inc	iy
+	inc	iy
+
+	dec	bc
+	dec	bc
+	xor	a
+	cp		b
+	jr		nz, .write_loop
+	cp		c
+	jr		nz, .write_loop
+
+	ld		hl, iy
+	ex		de, hl		; return dest address to de
+
+	//		wait for write to finish!
+	dec	de
+	ex		de', hl					; save hl
+	call	_FlashWait
+	ex		de', hl					; restore hl
+	inc	de
+
+	ex		af, af'
+	call	_relockQuad
+	ex		af, af'
+.done:
+	pop 	ip
+	pop	iy
+	pop	ix
+	pop	af
+	ld		xpc, a					; restore XPC
+	ex		af, af'
+	pop	af
+
+	ld		b, h
+	ld		c, l						; copy source address back to bc
+
+	ex		de', hl					; hl now has return value (was in de')
+   ret
+_EndOf__WriteFlashSecX::
+#endasm
+
+
+/****************************************************************************/
+
+/*** BeginHeader _EraseFlashChip2 */
+root void _EraseFlashChip2(int);
+/*** EndHeader */
+
+/*
+	This function erases the number of sectors passed in BC (pass 0 for
+	a shortcut to erase the entire flash) on the SECOND FLASH.
+*/
+
+#ifdef	SPLIT_FLASH_PRIMARY_PROG
+#asm root nodebug
+; Single split-flash DLM, no secondary flash exists!
+; Avoid DLP's half of single flash, which is mapped to MB1CR quadrant
+;  for ID/User Block access.
+		JUMP_TRAP
+_EraseFlashChip2::
+		ret
+#endasm
+#endif	//ifdef SPLIT_FLASH_PRIMARY_PROG
+#ifdef	SPLIT_FLASH_SECONDARY_PROG
+#asm root nodebug
+; Single split-flash DLP, no secondary flash exists!
+; Avoid half of single flash which may be mapped to MB1CR quadrant.
+		JUMP_TRAP
+_EraseFlashChip2::
+		ret
+#endasm
+#endif	//ifdef SPLIT_FLASH_SECONDARY_PROG
+#ifndef	SPLIT_FLASH_PRIMARY_PROG
+#ifndef	SPLIT_FLASH_SECONDARY_PROG
+#asm root nodebug
+	JUMP_TRAP
+_EraseFlashChip2::
+	push	af
+	push	bc
+	push	de
+	push	hl
+
+	ld		a, (_FlashInfo+flashXPC)
+	push	af
+	add    a, 0x40
+	ld 	(_FlashInfo+flashXPC), a		; fool flash driver
+
+	bool	hl										; ensure HL is nonzero, disable
+	inc	hl										;  "ID/User Blocks" protection
+	ld		(_overwrite_block_flag), hl	;  on second flash!
+
+	; is BC == 0x0000?
+   ld		a, b
+   or		c
+	jr		nz, .cont
+
+.eraseall:
+	ld		bc, (_FlashInfo+numSectors)	; if BC==0, erase all sectors
+.cont:
+	dec	bc										; convert number of sectors to
+	ld		h, b									;  erase in BC to the  highest
+	ld		l, c									;  sector number to erase in HL
+
+.loop:
+#ifdef PILOT_BIOS
+	call	sectorToXmem		; returns address in A:DE of sector in HL
+#else
+#if (ENABLE_CLONING == 1)
+	call	sectorToXmem		; returns address in A:DE of sector in HL
+#else
+	lcall	sectorToXmem		; returns address in A:DE of sector in HL
+#endif
+#endif
+
+	push	hl
+	call	_EraseFlashSect	; erases sector at A:DE
+
+	ld		hl, (sp)
+
+	bool	hl
+	pop	hl
+	jr		z, .done
+	dec	hl
+	jr		.loop
+
+.done:
+	pop	af
+	ld		(_FlashInfo+flashXPC), a	; restore 1st flash XPC value
+
+	bool	hl
+	ld		l, h									; ensure HL is zero, enable
+	ld		(_overwrite_block_flag), hl	;  ID/User Blocks protection
+
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	ret
+#endasm
+#endif	//ifndef SPLIT_FLASH_SECONDARY_PROG
+#endif	//ifndef SPLIT_FLASH_PRIMARY_PROG
+
+
+/*** BeginHeader GetIDBlockSize */
+xmem int GetIDBlockSize();
+/*** EndHeader */
+/********************************************************************
+Return in HL the size of one buffered writable flash data block in
+1000h blocks
+
+This function is badly named, it really has more to do with reporting
+the User block size than the ID block size.
+********************************************************************/
+#if RAM_COMPILE
+#warns "In RAM compile mode the application must manually map flash and call"
+#warns "_InitFlashDriver() before GetIDBlockSize() return value is reliable."
+#endif
+xmem nodebug
+int GetIDBlockSize()
+{
+	//*** returns System/user block size in 4k units
+	auto char *tabptr;
+	auto int retval;
+
+	// Default to zero in case flash type is incompatible with a User block,
+	//  or the board just has no User block allocated.
+	retval = 0;
+
+	if ((SysIDBlock.tableVersion >= 5) && !SysIDBlock.userBlockSize &&
+	    SysIDBlock.idBlock2.userBlockSiz2)
+	{
+		// For ID block versions 5 and up with "new style" User block, round up
+		//  the ID block's (presumed reliable) new secondary User block image size
+		//  to the next 4 KB boundary.
+		// NB:  Each "new style" User block image is followed by a six byte
+		//      validity marker which is generally included within the 4 KB
+		//      boundary.
+		retval = (int) ((SysIDBlock.idBlock2.userBlockSiz2 + 0x0FFFul) >> 12ul)
+		               & 0x001F;
+	}
+	else if(_FlashInfo.writeMode & '\xF0') {
+		//*** User Block in large, nonuniform sector flash
+		//***  requires that flash be top boot block type.
+		if (SysIDBlock.tableVersion > 1) {
+			tabptr = (char *) SectorData;			// Initialize ptr to table start
+			while (tabptr < EndSectorData) {
+	      	if (*tabptr == _FlashInfo.writeMode) {
+					//*** found it ***
+					if (!(*tabptr & '\x01')) {
+						// but it doesn't support ID/User Blocks!
+						break;
+					}
+					while (*tabptr) {
+						tabptr++;		// advance to end of entry
+					}
+					tabptr -= 3;		// back up  3 sector size entries
+               if ((int) tabptr[0] == ((int) tabptr[1] + (int) tabptr[2])) {
+						// The third last sector is the same size as the next two
+						//  sectors combined, use the third last sector's size for
+						//  the ID/User blocks image size.
+						retval = (int) tabptr[0];
+					}
+					else if ((tabptr[2] == tabptr[1]) ||
+					         ((int)tabptr[2] == ((int)tabptr[1] + (int)tabptr[0])))
+					{
+						// The last sector is the same size as either the previous
+						//  one or the previous two sectors combined, use the last
+						//  sector's size for ID/User blocks image size.
+						retval = (int) tabptr[2];
+					}
+					break;
+				}
+				//*** Advance to next entry (top boot block types
+				//***  have odd indices)
+				while (*tabptr && (tabptr < EndSectorData)) {
+					tabptr++;
+				}
+				if (tabptr >= EndSectorData) {
+					break;
+				}
+				tabptr++;
+			}
+		}
+	} else {
+#if (((_BOARD_TYPE_ & 0xFF00) == (BL2000 & 0xFF00)) \
+     || ((_BOARD_TYPE_ & 0xFF00) == (BL2100 & 0xFF00)))
+		// special case for BL20xx and BL21xx boards
+		// (calibration constants are in a different location)
+		retval = 2;
+#else
+		//*** Small sector types (uniform sector size <= 4K)
+		if (SysIDBlock.tableVersion > 1) {
+			// ID block versions 2 through 4 and "old style" version 5 ID block
+			retval = (int) (((unsigned long) SysIDBlock.idBlockSize
+			                + IDBlockAddr - UserBlockAddr) >> 12ul);
+			if (SysIDBlock.tableVersion > 2) {
+				// mirrored ID+User Blocks, actual size is half
+				retval >>= 1;
+			}
+		} else {
+			// ID block version 1 or no ID block
+			retval = 2;
+		}
+#endif
+	}
+   return retval;
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

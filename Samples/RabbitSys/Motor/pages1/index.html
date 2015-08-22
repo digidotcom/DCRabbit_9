@@ -1,0 +1,39 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD W3 HTML//EN">
+<html><head><title>Rabbit Motor Control</title>
+<style type="text/css">
+body {color: #000000; background: #ffffff; margin: 10px;}
+#main {position:absolute; width: 300px;}
+#delay {float: left}
+#direction {float:right}
+#button {left:0px; position:absolute; top:100px;}
+#error {color: red; font-family: "arial"}
+</style>
+</head>
+
+<body>
+<div>
+   <div id="intro">
+      <img SRC="rabbit1.gif"><br>
+      <h1>Rabbit Motor Control</h1>
+   </div>
+   <div id="error">
+      <span><!--#exec cmd="error_message"--></span>
+   </div>
+   <div id="main">
+      <form action="submit.cgi" method="POST">
+      <div id="delay">
+         <h3>Delay (<acronym title="Milliseconds">ms</acronym>)</h3>
+         <p><input type="TEXT" name="delay" size=15 value="<!--#echo var="motor_msd"-->"></p>
+      </div>
+      <div id="direction">
+         <h3>Direction</h3>
+         <p><select name="direction"><!--#exec cmd="options"--></select></p>
+      </div>
+      <div id="button">
+         <p><input type="SUBMIT" value="Submit"></p>
+      </div>
+      </form>
+   </div>
+</div>
+</body>
+</html>

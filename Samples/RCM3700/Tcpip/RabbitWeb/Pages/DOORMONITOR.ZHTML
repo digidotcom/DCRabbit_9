@@ -1,0 +1,61 @@
+<!-- This file shows how to display and access structures in ZHTML scripting.
+     See the tags in the <FORM> ... </FORM> section. -->
+
+<HTML>
+
+<HEAD>
+<TITLE>Structure Variables</TITLE>
+</HEAD>
+
+<BODY>
+<H1>Door Entry/Exit Monitor</H1>
+
+<FORM ACTION="/index.zhtml" METHOD="POST">
+
+<TABLE>
+<TR>
+<!-- Note that the structure variable is referred to just like in C, except for
+     the '$' (or '@' if accessing the committed value) in front. -->
+<TD>Password 1
+</TD>
+<TD>
+<INPUT TYPE="text" NAME="<?z varname($passwords[0].entrypw) ?>" SIZE=7 VALUE="<?z echo($passwords[0].entrypw) ?>">
+<?z if (error($passwords[0].entrypw)) { ?> <font color="#FF0000"> (7 char) </font> <?z } ?>
+</TD>
+<TD>Owner 1
+<INPUT TYPE="text" NAME="<?z varname($passwords[0].entryname) ?>" SIZE=20 VALUE="<?z echo($passwords[0].entryname) ?>">
+<?z if (error($passwords[0].entryname)) { ?> <font color="#FF0000"> (20 char) </font> <?z } ?>
+</TD>
+<TD> Last Entry: <VAR> <?z echo($passwords[0].entrytime) ?> </VAR>
+</TD>
+<TD> Last Exit: <VAR> <?z echo($passwords[0].exittime) ?> </VAR>
+</TD>
+</TR>
+
+<TR>
+<TD>Password 2
+</TD>
+<TD>
+<INPUT TYPE="text" NAME="<?z varname($passwords[1].entrypw) ?>" SIZE=7 VALUE="<?z echo($passwords[1].entrypw) ?>">
+<?z if (error($passwords[1].entrypw)) { ?> <font color="#FF0000"> (7 char) </font> <?z } ?>
+</TD>
+<TD>Owner 2
+<INPUT TYPE="text" NAME="<?z varname($passwords[1].entryname) ?>" SIZE=20 VALUE="<?z echo($passwords[1].entryname) ?>">
+<?z if (error($passwords[1].entryname)) { ?> <font color="#FF0000"> (20 char) </font> <?z } ?>
+</TD>
+<TD> Last Entry: <VAR> <?z echo($passwords[1].entrytime) ?> </VAR>
+</TD>
+<TD> Last Exit: <VAR> <?z echo($passwords[1].exittime) ?> </VAR>
+</TD>
+</TR>
+
+</TABLE>
+
+<P>
+<INPUT TYPE="submit" VALUE="Submit Password">
+<INPUT TYPE="submit" VALUE="Update Monitor">
+</FORM>
+
+</BODY>
+</HTML>
+

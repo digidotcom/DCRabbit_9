@@ -1,0 +1,23 @@
+<! Page to change LEDs for SSL demo>
+<HTML>
+<HEAD>
+<TITLE>Secure Page</TITLE>
+</HEAD>
+<BODY>
+<b>Secure page</b><br><br>
+<form action="./index.zhtml" method="post" >
+  <INPUT TYPE="hidden" name="LED01"  VALUE="0" >
+  <INPUT TYPE="checkbox" <?z if($LED01==1) { ?>checked<?z } ?>
+      NAME="LED01" VALUE="1" > LED 1 <P>
+  <INPUT TYPE="hidden" name="LED02"  VALUE="0" >
+  <INPUT TYPE="checkbox" <?z if($LED02==1) { ?>checked<?z } ?>
+      NAME="LED02" VALUE="1" > LED 2 <P>
+  <INPUT TYPE="Submit"   VALUE="Submit" >
+</form>
+
+<br><br><br>
+
+<A HREF="http://10.10.6.206/index.zhtml">Back to main page</A>
+
+</BODY>
+</HTML>

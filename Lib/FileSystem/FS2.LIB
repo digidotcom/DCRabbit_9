@@ -1,0 +1,5131 @@
+/*** BeginHeader */
+#ifndef __FS2_LIB
+#define __FS2_LIB
+/*** EndHeader */
+/*
+ * fs2.lib
+ *
+ * Copyright (C) Z-World, Inc. All rights reserved.
+ *
+ * Filesystem Mk II
+ *
+ * Testing note:
+ *   The symbol __TESTENV__ should only be defined in the
+ *   test harness environment.
+ *
+ *   The symbol FS_API_TRACE may be defined to cause an API
+ *   call trace to be printed.
+ *
+ *
+ * SJH 2003/02/03 - improved efficiency of fs_locate, by caching last
+ *                  read position in the FS_ef struct.
+ * SJH 2003/02/20 - added more TRACE macros for unit test/debugging.
+ *                  #define FS2_VERBOSE to turn on tracing, and also
+ *                  use fs_trace_on and fs_trace_off macros to turn
+ *                  it on and off at runtime.
+ * BRI 2003/03/28 - Added automatic FS2_DISALLOW_GENERIC_FLASH macro
+ *                  to prevent DLM/DLP access to and corruption of
+ *                  each other's (possibly half of) flash.
+ * SJH 2003/04/10 - added ability to create new RAM extent on-the-fly
+ *                  using fs_setup() with FS_CREATE_RAM_EXTENT.
+ * BRI 2003/12/19 - Reworked FS2_DISALLOW_*_FLASH macros to also prevent RAM
+ *                  corruption caused by _GetFlashID() in run in RAM mode.
+ * BRI 2004/02/20 - Eliminated last use of FS_SAVE/RESTORE_XPC macros, although
+ *                  they are still defined.  The fs_read_pbuf function now
+ *                  preserves IX.
+ */
+
+/* START LIBRARY DESCRIPTION *********************************************
+FILESYSTEM.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+	Filesystem Mk II.
+
+	This an a (mostly) API-compatible replacement for FILESYSTEM.LIB.
+	This library should be used for new code.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader _fs */
+
+#if _USER
+	#error "FS2 is not supported by RabbitSys"
+#endif
+
+#ifndef _ERRNO_LIB
+#use "errno.lib"
+#endif
+#ifndef __TESTENV__
+	#ifdef FS2_VERBOSE
+		#define TRACE(x) do { if (_fs.trap) printf x; } while(0)
+		#define fs_trace_on do { _fs.trap = 1; } while(0)
+		#define fs_trace_off do { _fs.trap = 0; } while(0)
+	#else
+		#define TRACE(x)
+		#define fs_trace_on
+		#define fs_trace_off
+	#endif
+	#ifdef FS_API_TRACE
+		#define FS_TRACE(x) printf x;
+	#endif
+#else
+	// We need to rename some of the API functions so they don't
+	// conflict with <stdio.h>.  They should be referred to as
+	// the fs_* version when called from __TESTENV__ test harness.
+	// (These are undef'd at end)
+	#define fclose fs_close
+	#define fflush fs_flush
+	#define fread fs_read
+	#define fwrite fs_write
+	#define fseek fs_seek
+	#define ftell fs_tell
+	extern int t_trace;	// Runtime trace
+	#define TRACE(x) do { if (t_trace) printf x; } while(0)
+#endif
+
+#ifndef FS_TRACE
+	#define FS_TRACE(x)
+#endif
+
+#ifndef CPUSH
+	#define CPUSH(n)
+	#define CPOP
+#endif
+
+#ifndef fs_nodebug
+	#define fs_nodebug nodebug
+#endif
+
+/*
+ * Default values for compile-time options
+ */
+#ifndef FS2_USE_PROGRAM_FLASH
+	#define FS2_USE_PROGRAM_FLASH 0		// Default to not using the 1st (program) flash.
+#endif
+
+#ifndef FS_MAX_DEVICES
+  #if (FS2_USE_PROGRAM_FLASH > 0 && XMEM_RESERVE_SIZE > 0)
+    #if (FS2_RAM_RESERVE > 0)
+      #define FS_MAX_DEVICES		3		// Maximum physical media
+    #else
+      #define FS_MAX_DEVICES		2
+    #endif
+  #else
+    #if (FS2_RAM_RESERVE > 0)
+      #define FS_MAX_DEVICES		2
+    #else
+      #define FS_MAX_DEVICES		1
+    #endif
+  #endif
+#endif
+
+#ifndef FS_MAX_LX
+  #define FS_MAX_LX			FS_MAX_DEVICES		// Maximum logical extents
+#endif
+
+#ifndef FS_MAX_FILES
+  #define FS_MAX_FILES			6		// Maximum files in filesystem
+#endif
+
+#ifndef FS_MAX_LS_PER_PS
+  #define FS_MAX_LS_PER_PS		64		// Max LS per PS of any LX.
+#endif
+
+#ifndef FS_MIN_PBUF_SIZE
+	// This must be a power of 2 between 64 and 8192 inclusive.
+  #define FS_MIN_PBUF_SIZE		256	// Min physical sector buffer size
+#endif
+
+#define FS_DEFAULT_FLASH_SHIFT	10	// Default LS size of 1K for flash
+#define FS_DEFAULT_RAM_SHIFT		7	// Default LS size of 128 bytes for RAM
+
+// The application may have already defined FS2_DISALLOW_GENERIC_FLASH to
+//  prevent FS2 from mistakenly attempting to recover a nonexistant file system
+//  on the "generic" (second) flash, or to prevent RAM corruption caused by
+//  _GetFlashID() when flash is not mapped into memory at all.
+#ifndef FS2_DISALLOW_GENERIC_FLASH
+  #ifdef USE_2NDFLASH_CODE
+    // the second flash is used for code, so it can't contain a file system
+    #define FS2_DISALLOW_GENERIC_FLASH
+  #endif
+#endif
+
+#ifndef FS2_DISALLOW_GENERIC_FLASH
+  #ifdef COMPILE_PRIMARY_PROG
+    // the application is a DLM, so no "generic" (second) flash exists!
+    #define FS2_DISALLOW_GENERIC_FLASH
+  #endif
+#endif
+
+#ifndef FS2_DISALLOW_GENERIC_FLASH
+  #ifdef COMPILE_SECONDARY_PROG
+    // the application is a DLP, so no "generic" (second) flash exists!
+    #define FS2_DISALLOW_GENERIC_FLASH
+  #endif
+#endif
+
+#ifndef FS2_DISALLOW_GENERIC_FLASH
+  #if RAM_COMPILE || FAST_RAM_COMPILE
+    // the application is running in RAM,
+    //  so no "generic" (second) flash is available!
+    #define FS2_DISALLOW_GENERIC_FLASH
+  #endif
+#endif
+
+// The application may have already defined FS2_DISALLOW_PROGRAM_FLASH to
+//  prevent FS2 from mistakenly attempting to recover a nonexistant file system
+//  on the "program" (first) flash, or to prevent RAM corruption caused by
+//  _GetFlashID() when flash is not mapped into memory at all.
+#ifndef FS2_DISALLOW_PROGRAM_FLASH
+  #if RAM_COMPILE
+    // the application is compiled to and running in RAM,
+    //  so no "program" (first) flash is available!
+    #define FS2_DISALLOW_PROGRAM_FLASH
+  #endif
+#endif
+
+/*
+ * Basic typedefs
+ */
+
+
+typedef word FileNumber;		// External file numbers (for API) - contains file number
+										// in low byte, LX number in high byte.
+
+// Block identifier; first byte of structures stored in filesystem (*-blocks).
+typedef byte FSmagic;
+#define FSMAGIC_F		0xFF		// Free block.  This must be 0xFF to correspond to erased h/w
+#define FSMAGIC_B		0x7F		// B-block (header for file data per LS)
+#define FSMAGIC_H		0xFE		// H-block (header for file metadata per LS)
+#define FSMAGIC_DEL	(FSMAGIC_B & FSMAGIC_H)		// A B- or H-block marked as deleted (BW devices)
+#define FSMAGIC_W		0x18		// Wear-leveling unit header
+#define FSMAGIC_BAD	0x00		// Bad block (do not re-use)
+
+// File attribute bits: Reserved (not yet implemented)
+typedef byte FSattrs;
+#define FSATTR_BIN	0x80		// Binary (else cannot contain 0xFF chars)
+#define FSATTR_NOLOG 0x40		// No automatic logging (else all updates logged)
+#define FSATTR_APONLY 0x20		// Append-only (else overwritable)
+
+// Device classes
+typedef byte FSdevclass;
+#define FSDC_SSW		0x01		// Small-sector writable flash
+#define FSDC_BW		0x02		// Byte-writable (AND over existing data) flash
+#define FSDC_NVRAM	0x03		// Battery-backed SRAM
+
+// Types used in *-block fields
+typedef long FSwear;				// Wear (erase) counter
+typedef word FSrwear;			// Relative wear counter
+typedef byte FSwlocount;		// Wear-leveling operation count
+typedef long FSversion;			// LS rewrite counter per file/metadata.  Starts at 1.
+typedef word FSseq;				// LS sequence number within file
+typedef byte FSfilenum;			// File number within LX
+typedef byte FSEFnum;			// Existing file index (filesystem-wide)
+typedef byte FSLXnum;			// Logical extent (LX) number
+typedef word FSoffset;			// Offset of byte (or count) within LS
+typedef word FSLSnum;			// Logical sector (LS) number or counter
+typedef word FSPSnum;			// Physical sector (PS) number or counter
+typedef word FSchecksum;		// Checksum value.  Checksums are computed using 1's complement
+										// addition of 16-bit words.  Where necessary, odd byte counts
+										// are padded with assumed zeros.  The checksum is stored as its
+										// 1's complement, with 0xFFFF stored as 0x0000 (0xFFFF in a checksum
+										// field indicates the checksum was not written).  Thus, if the
+										// checksum field itself is included in the verification, then the
+										// result of a valid checksum will be 0xFFFF or 0x0000.
+
+// 'whence' parameter values for fseek().
+#define SEEK_SET		0
+#define SEEK_CUR		1
+#define SEEK_END		2
+#define SEEK_RAW		3
+
+// 'flags' bits for fsck().
+#define FSCK_HEADERS		0x0001
+#define FSCK_CHECKSUMS	0x0002
+#define FSCK_VERSION		0x0004
+
+// 'command' values for fs_setup().
+#define FS_MODIFY_EXTENT 1
+#define FS_PARTITION_FRACTION 2
+#define FS_CREATE_RAM_EXTENT 3
+
+#define FS_INVALID_LS ((FSLSnum)(-1))	// End of chain marker etc.
+#define FS_INVALID_CHK ((FSchecksum)(-1))	// Checksum not written.
+
+// *-block definitions.  All must be even size unless noted otherwise.
+
+// Wear-leveling unit header.  Note that dummy W-blocks (used when LS size < PS size)
+// are set to all 0xFF.
+typedef struct {
+	FSmagic		magic;		// FSMAGIC_W
+	FSwlocount	wlo_num;		// Wear-leveling operation counter
+	FSrwear		rwear;		// Wear since last WLO
+	FSwear		wear;			// Total wear (erase or rewrite count)
+} FS_w;
+
+typedef struct {
+	FS_w			w;
+	FSmagic		magic;
+} FS_w_aug;						// W-block augmented with following block's magic ID.
+
+typedef struct {
+	FSmagic		magic;		// FSMAGIC_B
+	FSfilenum	filenum;		// File name
+	FSseq			seq;			// Sequence within file
+	FSversion	version;		// Version within file
+#ifdef __TESTENV__
+	short			pad;			// Pad to force chksum to be last bytes in struct
+#endif
+	FSchecksum	chksum;		// ~Checksum of this B-block and preceding W-block (if any)
+} FS_b;
+
+typedef struct {
+	FSmagic		magic;		//
+	FSfilenum	filenum;		// These 4 fields must match definition in FS_b.
+	FSseq			seq;			//
+	FSversion	version;		//
+
+	FSLXnum		lxn;			// LX number of data
+	FSattrs		attrs;		// File attributes (reserved)
+	FSoffset		first_offs;	// Offset of start of data in first data LS
+	FSseq			first_seq;	// Sequence number of first data LS
+	FSoffset		last_offs;	// Offset of next free byte in last data LS
+	FSchecksum	last_chk;	// Checksum of last data LS
+
+	FSchecksum	chksum;		// ~Checksum of this H-block and preceding W-block (if any)
+} FS_h;
+
+typedef struct {
+	FSoffset		new_offs;	// New offset in last (append) or first (shift) LS.  Only the 13 LSBs
+									// contain the offset, the high 3 bits contain the log entry type.
+#define FS_OFFS_MASK	0x1FFF	// Mask for bits in the above corresponding to offset
+#define FS_LOG_DEL	0x8000	// This bit marks entry as deletion (shift) entry, otherwise append:
+										// Allows proper interpretation of the log_data field.
+	FSchecksum	log_data;	// New last LS checksum (append) or first data sequence number (shift).
+	FSchecksum	log_chk;		// ~Checksum of this log entry.
+} FS_l;
+
+
+
+// Structures maintained at run-time only.
+
+// Existing file descriptor
+typedef struct {
+	short			in_use;			// Flag indicating entry in use.  0 if this EF not in use.
+	FSfilenum	name;				// Corresponding file number
+	FSLXnum		metalx;			// Metadata LX number
+	FSLXnum		datalx;			// Data LX number
+	FSattrs		attrs;			// File attributes (fixed once created).
+	FSLSnum		first_mls;		// First LS in metadata LX chain
+	FSLSnum		first_dls;		// First LS in data LX chain
+	FSLSnum		num_mls;			// Number of metadata LSs in chain (0 or 1)
+	FSLSnum		num_dls;			// Number of data LSs in chain
+	FSseq			first_seq;		// Sequence number of first LS (0 unless shifted)
+	FSversion	vers;				// Highest current LS version number
+	short			ref_count;		// Number of times this file currently opened
+
+	FSoffset		first_offs;		// Offset of start of data in first LS [0..datalx->d_size-1]
+	FSoffset		m_offs;			// Offset of where to add next metadata log (L-block).
+	FSoffset		d_offs;			// Offset of EOF in last LS.
+	FSchecksum	data_chk;		// Checksum of last data LS (not 1's complement; it accumulates).
+	long			eof;				// Position of EOF = length of file.
+
+	// Position caching information
+	short			cache_valid;	// Non-zero if following caching parameters are valid.  Can only use caching
+										// under following circumstances:
+										//  . physical sector size <= logical size.
+										// This condition ensures that cached position cannot be invalidated
+										// by blocks being moved because of wear-leveling or because PS needs
+										// to be rewritten.  Cache is invalidated when the file is written to
+										// except if data is appended to byte-writable class.
+	FSseq			cache_seq;		// Sequence number of cached LS in file
+	long			cache_pos;		// File position of 1st byte in the cached LS (relative to 1st byte in 1st LS,
+										// which is not necessarily the 1st user byte is data has been shifted).
+	long			cache_lstabp;	// Phys address of LStab entry
+	FSLSnum		cache_prevls;	// Previous LS number before cached LS.
+
+	// Second cached position.
+	short			cache_valid2;
+	FSseq			cache_seq2;
+	long			cache_pos2;
+	long			cache_lstabp2;
+	FSLSnum		cache_prevls2;
+
+} FS_ef;
+
+
+
+// Logical extent descriptor (LXD)
+typedef struct FS_lxd_t {
+	// Following fields set up _before_ calling fs_init()...
+	// Can mostly be filled in by gflash_init() or nvram_init() in FS_DEV.LIB
+	byte			mb1cr;		// MB1CR register setting for device access - this field not used
+	long			dev_offs;	// Device offset of start of LX (usually 0)
+										// !!! do not change offset of above fields - assembler use !!!
+	FSdevclass	dev_class;	// Device class of the device containing this LX
+	byte			dev_index;	// Device number
+	short			ls_shift;	// Log2(ls_size) 6 to 13 inclusive.
+	long			ps_size;		// Minimum 32, power of 2 if <= ls_size, else multiple of ls_size up
+									// to a maximum of FS_MAX_LS_PER_PS times ls_size.
+	word			num_ps;		// Number of PSs in this LX (1..32768)
+	void *		data;			// Data specific to low-level driver
+	byte			wear_leveling;	// Whether to do wear-leveling (usually 1 for flash)
+	byte			dummy_lx;	// Whether filesystem is to reserve this LX
+	// Device methods.  See documentation for implementing low-level drivers.
+#ifdef __TESTENV__
+	long			(*map)(struct FS_lxd_t * lxd, long dev_rel);
+	short			(*andover)(struct FS_lxd_t * lxd, long src_phy, word len, long dest);
+	short			(*erase)(struct FS_lxd_t * lxd, long dest_ps_start);
+	short			(*write)(struct FS_lxd_t * lxd, long src_phy, word len, long dest);
+	short			(*init)(struct FS_lxd_t * lxd);
+	short			(*flush)(struct FS_lxd_t * lxd);
+#else
+	long			(*map)();
+	short			(*andover)();
+	short			(*erase)();
+	short			(*write)();
+	short			(*init)();
+	short			(*flush)();
+#endif
+	// ...end of application-initialized fields.
+
+	// Following fields set up by fs_init()...
+	FSLXnum		this;					// This LX number
+	word			id;					// Flash ID (if relevant)
+	word			ps_per_ls;			// Number of PSs per LS, 0 if ps_size==0 or PS>LS
+	word			ls_size;				// Power of 2 between 64 and 8192 inclusive
+	FSLSnum		num_ls;				// Number of LSs (1..32768)
+	word			ls_per_ps;			// Number of LSs per PS, 0 if PS<LS
+	word			d_size;				// Size of data block in LS ( < ls_size)
+	FSwlocount	high_wlo;			// Highest WLO count observed.
+
+	long /* FSLSnum* */	lstab;	// Phys addr of LS table, num_ls entries.  Each lstab entry
+											// is the index of the next LS in a logical chain.  Chains
+											// exist for free LSs, file data and file metadata.  The
+											// end of a chain is marked with a value of 0xFFFF.  The
+											// table exists in xmem, but the 2-byte values make access
+											// via LDP convenient.
+	FSLSnum		first_free;			// First free (ready-to-use) entry
+	FSLSnum		num_free;			// Number of free LSs
+	FSLSnum		first_deleted;		// First deleted entry.  These are generated when LSs are marked as
+											// deleted without actual erasure.  They are not yet ready for use.
+	FSLSnum		num_deleted;		// Number of deleted LSs: Non-zero only for BW devices.
+	FSLSnum		first_bad;			// First bad block
+	FSLSnum		num_bad;				// Number of bad blocks
+	FSLSnum		min_free;			// For BW only, the minimum number of "emergency" free LSs to
+											// keep aside for the purpose of recycling del LSs.  Defaults to
+											// ls_per_ps - 1.
+} FS_lxd;
+
+
+// This is the top-level structure for the entire filesystem.  There is one
+// instance of this struct, in the static variable _fs.  This makes the
+// filesystem non-reentrant.
+typedef struct {
+	// Following fields set up _before_ calling fs_init().  This is done by global init.
+	FSLXnum		num_lx;			// Number of valid logical extents [1..FS_MAX_LS].
+	FS_lxd		lx[FS_MAX_LX+1];	// Logical extents.  Note that the 0th (first) entry is
+											// not used (except maybe as a cache to avoid array
+											// indexing operations).  Some of this is further filled in
+											// by fs_init().
+	FSLXnum		flash_lx;		// Preferred flash LX number.  This is the 2nd flash if available,
+										// otherwise is the program flash, or 0 if no flash available.
+	FSLXnum		ram_lx;			// RAM LX number, or zero if not available.
+	FSLXnum		other_lx;		// If 2nd flash is "preferred", this will indicate the non-preferred
+										// flash (normally the program flash, if available).  0 if no other
+										// flash available.
+
+	// Following fields set up by fs_init().
+	FSLXnum		cur_meta;		// Current default metadata LX number
+	FSLXnum		cur_data;		// ...and data
+
+	byte			init;				// True if in process of init. or formatting entire FS.
+	FSLXnum		cur_fmt;			// The LX currently being formatted.
+
+//#define FS_MAX_FILENUM (1<<sizeof(FSfilenum)*8)
+#define FS_MAX_FILENUM	256
+	FSEFnum		eftab[FS_MAX_FILENUM+1];	// File number to EF mapping.  Zero entry if file does
+										// not exist.  Indexes into the ef array below.
+
+	FS_ef		ef[FS_MAX_FILES+1];	// Existing file information.  0th entry not used except
+											// as cache.
+
+	word			pbuf_size;			// Allocated size of the following (max 8k)
+	long			pbuf;					// paddr of physical sector buffer.  This is enough for
+											// the largest PS size in any SSW LX, or the largest LS
+											// size in any BW LX.
+	int			trap;					// Flag for runtime debugging
+	int			setup_failed;		// Non-zero if an error occurred in fs_init premain.
+} FS_universe;
+
+extern FS_universe _fs;			// The global variable to access it.
+extern byte _fs_savexpc;		// Register save areas for asm routines
+extern byte _fs_savexpc2;
+extern long _fs_pbuf;
+
+/*
+ * High-level API
+ */
+typedef struct
+{
+	FSfilenum	name;				// Name, or 0 if not open.
+	FS_ef *		ef;				// Cached pointers to useful info
+	FS_lxd *		mlxd;
+	FS_lxd *		dlxd;
+	byte			mode;
+#define FSMODE_RO		0x01		// Read-ony (else read/write)
+#define FSMODE_RAW	0x02		// Raw reads i.e. past EOF up to end of last LS.
+
+	long			position;		// Current read/write position
+
+} File;
+
+/*
+ * Structure passed to fs_setup() to create new RAM extent from xalloc()ed storage.
+ */
+typedef struct {
+	long	base;			// Physical address of start of extent.
+   long	length;		// Length of extent (in bytes).
+} fs2_ramextent;
+
+/*** EndHeader */
+
+FS_universe _fs;
+byte _fs_savexpc;
+byte _fs_savexpc2;
+long _fs_pbuf;
+
+
+/*** BeginHeader fs_lstabent, fs_set_lstabent, fs_checksum, fs_checksum_x */
+// fs_erase_chain halt condition flags
+#define FSHALT_COUNT		0x0001	// Erase a maximum of max_count
+#define FSHALT_SEQ		0x0002	// Erase only while LS sequence == while_seq
+#define FS_REALLY_ERASE	0x0004	// Really erase sectors of SSW device
+
+#define FS_FQFN(lxn, name) ((FileNumber)((name) + ((lxn)<<8)))
+#define FS_SPLITFN(name, lxn, fnum) (lxn = (name)>>8, fnum = (name)&0xFF)
+#define FS_EXISTS(name) (_fs.eftab[name] != 0)
+#define FS_METALX_OF_FILE(name) (_fs.ef[_fs.eftab[name]].metalx)
+#define FS_DATALX_OF_FILE(name) (_fs.ef[_fs.eftab[name]].datalx)
+#define FS_EF_OF_FILE(name) (_fs.ef + _fs.eftab[name])
+#define FS_IS_DUMMY_LX(lxn) (_fs.lx[lxn].dummy_lx)
+#define FS_IS_VALID_LX(lxn) ((lxn) >= 1 && (lxn) <= _fs.num_lx && !FS_IS_DUMMY_LX(lxn))
+#define FS_INIT_LOGOFFS (sizeof(FS_h) - sizeof(FS_b))
+
+#define FS_IS_SSW(lxd) (lxd->dev_class == FSDC_SSW)
+//#define FS_IS_BW(lxd) (lxd->dev_class == FSDC_BW)
+#define FS_IS_BW(lxd) (lxd->dev_class != FSDC_SSW)	// RAM is also a kind of BW class.
+#define FS_IS_RAM(lxd) (lxd->dev_class == FSDC_NVRAM)
+#define FS_LXN2PTR(lxn) (_fs.lx + (lxn))
+#define FS_PTR2LXN(lxd) ((lxd)->this)
+#define FS_LS2OFFSET(lxd, ls) ((long)(ls) << lxd->ls_shift)
+#define FS_PS2OFFSET(lxd, ps) ((long)(ps) * lxd->ps_size)
+#define FS_LS2PS(lxd, ls) (((long)(ls) << lxd->ls_shift) / lxd->ps_size)
+#ifndef __TESTENV__
+#define FS_SAVE_XPC \
+	ld		a,xpc	$\
+	ld		(_fs_savexpc),a
+#define FS_RESTORE_XPC \
+	ld		a,(_fs_savexpc) $\
+	ld		xpc,a
+#endif
+#define FS_CALL_MAP(lxd, devrel) (lxd->map(lxd, (long)(devrel)))
+#define FS_CALL_ANDOVER(lxd, src, len, dest) (lxd->andover(lxd, (long)(src), \
+															(word)(len), (long)(dest)))
+#define FS_CALL_ERASE(lxd, dest) (lxd->erase(lxd, (long)(dest)))
+#define FS_CALL_WRITE(lxd, src, len, dest) (lxd->write(lxd, (long)(src), \
+															(word)(len), (long)(dest)))
+#define FS_CALL_INIT(lxd) (lxd->init(lxd))
+#define FS_CALL_FLUSH(lxd) (lxd->flush(lxd))
+
+// Macros for accessing the lstab.  These are sensitive to the size of FSLSnum!
+
+// Convert LS number to physical address in lstab.
+#define FS_LSTABPHYS(lxd, ls) ((lxd)->lstab + ((ls) << 1))
+#define FS_LS2TABENT(tab, ls) ((tab) + ((ls) << 1))
+
+// Function expects 1st arg (physical address) in BCDE.  Returns 2-byte value at that
+// addr.
+root FSLSnum fs_lstabent(long cur_lsp);
+// Function expects 1st arg (physical address) in BCDE.  2-byte value to put at that
+// address is 2nd arg (on stack).
+root void fs_set_lstabent(long lsp, FSLSnum ls);
+
+// Filesystem checksumming routines.  Use 1's complement addition.  If a checksum
+// evaluates to 0x0000, it is set to 0xFFFF (which is equivalent in 1's complement)
+// then, when stored in its complemented form, will ensure it is not stored as 0xFFFF.
+// If *chk is not null, it contains an initial sum.  Otherwise, the initial sum is
+// assumed to be zero.  Return value is 0 if the result is 0xFFFF, else 1.
+int fs_checksum(FSchecksum * chk, void * buf, int len);
+root int fs_checksum_x(FSchecksum * chk, long buf, int len);	// Linear address buf
+root int fs_checksum_s(FSchecksum * chk, long buf, int len);	// Segmented address buf
+
+/*** EndHeader */
+
+#ifndef __TESTENV__
+
+fs_nodebug root FSLSnum fs_lstabent(long cur_lsp)
+{
+#asm
+	ld		a,c
+	ex		de,hl
+	ldp	hl,(hl)
+#endasm
+}
+
+
+fs_nodebug root void fs_set_lstabent(long lsp, FSLSnum ls)
+{
+#asm
+	push	ix
+	ld		a,c
+	ex		de,hl
+	ld		ix,hl
+	ld		hl,(sp+@sp+2+ls)
+	ldp	(ix),hl
+	pop	ix
+#endasm
+}
+
+#asm fs_nodebug
+; Standalone core checksumming routine.  On entry, IX=buffer address,
+; HL=pointer to partial checksum (or NULL), IY=byte count.
+; Returns HL=0 iff checksum totalled to 0xFFFF.
+fs_ones_cpl_sum::
+	push	hl			; Save partial chk addr
+	push	iy			; Save length
+	ld		a,h
+	or		l
+	jr		nz,focs_load_init
+	ld		d,a
+	ld		e,a					; Init to zero if null ptr
+	jr		focs_cont
+focs_load_init:
+	ld		e,(hl)
+	inc	hl
+	ld		d,(hl)				; DE = initial checksum
+focs_cont:
+	pop	hl			; Get length
+	rr		hl			; Round down to whole word count
+	ld		c,h		; Set up BC appropriately for loop count
+	ld		b,l
+	jr		z,focs_lessthan2
+	ex		af,af'	; Preserve C flag for odd byte
+	ld		a,b
+	or		a			; Test B for zero and reset C flag
+	jr		z,focs_loop
+	inc	c
+focs_loop:
+	ld		hl,(ix)
+	adc	hl,de
+	ex		de,hl
+	inc	ix
+	inc	ix
+	djnz	focs_loop
+	dec	c
+	jr		nz,focs_loop
+	jr		nc,focs_nocy
+	inc	de
+focs_nocy:
+	ex		af,af'
+focs_lessthan2:
+	jr		nc,focs_nocy2
+	bool	hl			; H = 0
+	ld		l,(ix)
+	add	hl,de
+	adc	hl,bc		; add in final carry (BC = 0 from above)
+	ex		de,hl
+focs_nocy2:
+	ld		a,d
+	or		e
+	jr		nz,focs_nodec
+	dec	de			; Turn 0 into 0xFFFF
+focs_nodec:
+	pop	hl			; Get partial chk addr
+	ld		a,h
+	or		l
+	jr		z,focs_nostore
+	ld		(hl),e
+	inc	hl
+	ld		(hl),d
+focs_nostore:
+	ex		de,hl
+	inc	hl
+	bool	hl			; Return 0 iff result == 0xFFFF
+	ret
+#endasm
+
+fs_nodebug int fs_checksum(FSchecksum * chk, void * buf, int len)
+{
+#asm
+	; HL = chk
+	push	ix
+	ld		ix,(sp+@sp+2+buf)	; Buffer address
+	ld		iy,(sp+@sp+2+len)	; Length
+	call	fs_ones_cpl_sum
+	pop	ix
+#endasm
+}
+
+
+fs_nodebug root int fs_checksum_x(FSchecksum * chk, long buf, int len)
+{
+	// Do this by mapping buf into xpc window.  Solves lot of problems
+	// related to ldp wrap-around.
+#asm
+	push	ix
+	ld		a,xpc
+	push	af
+	ld		hl,(sp+@sp+4+buf)
+	ex		de,hl
+	ld		hl,(sp+@sp+4+buf+2)		; HLDE = buf
+	ld		h,l
+	ld		l,d
+	rr		hl
+	rr		hl
+	rr		hl
+	rr		hl
+	ld		a,0xF2
+	add	a,l
+	ld		xpc,a
+	ld		a,0x0F
+	and	d
+	or		0xE0
+	ld		l,e
+	ld		h,a
+	ld		ix,hl
+	ld		iy,(sp+@sp+4+len)
+	ld		hl,(sp+@sp+4+chk)
+	call	fs_ones_cpl_sum
+	pop	af
+	ld		xpc,a
+	pop	ix
+#endasm
+}
+
+
+fs_nodebug root int fs_checksum_s(FSchecksum * chk, long buf, int len)
+{
+	// This is same as above, except buf is a segmented address since we are
+	// accessing the device.
+#asm
+	push	ix
+	ld		a,xpc
+	push	af
+	ld		hl,(sp+@sp+4+buf+2)
+	ld		a,l
+	ld		xpc,a
+
+	ld		hl,(sp+@sp+4+buf)
+	ld		ix,hl
+	ld		iy,(sp+@sp+4+len)
+	ld		hl,(sp+@sp+4+chk)
+	call	fs_ones_cpl_sum
+
+	pop	af
+	ld		xpc,a
+	pop	ix
+#endasm
+}
+
+
+#endif // !__TESTENV__
+
+/*** BeginHeader fs_dev2root, fs_deverased */
+root void fs_dev2root(void * buf, long maplog, int len);
+root int fs_deverased(long maplog, long count);
+/*** EndHeader */
+
+fs_nodebug root void fs_dev2root(void * buf, long maplog, int len)
+{
+#asm
+	ld		a,xpc
+	push	af
+	ld		hl,(sp+@sp+2+maplog+2)
+	ld		a,l
+	ld		xpc,a
+
+	ld		hl,(sp+@sp+2+len)
+	ld		b,h
+	ld		c,l
+	ld		hl,(sp+@sp+2+buf)
+	ex		de,hl
+	ld		hl,(sp+@sp+2+maplog)
+	ldir
+
+	pop	af
+	ld		xpc,a
+#endasm
+}
+
+fs_nodebug root int fs_deverased(long maplog, long count)
+{
+#asm
+	ld		a,xpc
+	push	af
+	ld		hl,(sp+@sp+2+maplog+2)
+	ld		a,l
+	ld		xpc,a
+
+	ld		hl,(sp+@sp+2+count)
+	ld		b,l
+	ld		e,h
+	ld		hl,(sp+@sp+2+count+2)
+	ld		d,l
+	ld		a,b
+	or		a
+	jr		z,fsde_noinc
+	inc	de
+fsde_noinc:
+	exx
+	ld		hl,(sp+@sp+2+maplog)
+	ld 	de,1	; Incrementor
+	exx
+fsde_loop2:
+	ld		a,0xFF	; Comparand
+fsde_loop:
+	exx
+	cp		(hl)
+	jr		nz,fsde_exit_loop
+	add	hl,de
+	jr		nc,.noadj
+	ld		hl,0xE000
+	ld		a,xpc
+	add	a,2
+	ld 	xpc,a
+	ld		a,0xFF
+.noadj:
+	exx
+	djnz	fsde_loop
+	dec	de
+	ld		a,d
+	or		e
+	jr		nz,fsde_loop2
+	ld		hl,1
+	jr		.bye
+fsde_exit_loop:
+	bool	hl
+	rr		hl
+.bye:
+	pop	af
+	ld		xpc,a
+#endasm
+}
+
+/*** BeginHeader fs_get_headers */
+int fs_get_headers(FS_lxd * lxd, FSLSnum ls, FS_w * w, FS_h * h, FS_w * w1);
+/*** EndHeader */
+
+fs_nodebug int fs_get_headers(FS_lxd * lxd, FSLSnum ls, FS_w * w, FS_h * h, FS_w * w1)
+{
+	// Read appropriate header(s) from a given LS.  Caller sets w and h to point to
+	// allocated structures which are filled in.  FS_h is also used for FS_b.
+	// If no W-blocks are used, then *w is not touched.  Otherwise, *w is set
+	// to the LS wear block (which may be dummy).  If w1 is not NULL, then it will
+	// be set to the real W-block, which may be different from *w if the LS is not the
+	// first in its PS.  w may also be NULL if not interested in dummy W-block.
+	// Note that the W-block (dummy or real) in the LS is used for checksumming.
+	auto long maplog;
+	auto FS_w wcopy;
+
+	maplog = FS_CALL_MAP(lxd, FS_LS2OFFSET(lxd, ls));
+	if (lxd->wear_leveling) {
+		fs_dev2root(&wcopy, maplog, sizeof(wcopy));
+		if (w) memcpy(w, &wcopy, sizeof(*w));
+		if (h) fs_dev2root(h, maplog + sizeof(*w), sizeof(*h));
+		if (w1) {
+			if (lxd->ls_size < lxd->ps_size && wcopy.magic != FSMAGIC_W) {
+				// Real wear block is at start of PS.
+				maplog = FS_CALL_MAP(lxd, FS_PS2OFFSET(lxd, FS_LS2PS(lxd, ls)));
+				fs_dev2root(w1, maplog, sizeof(*w1));
+			}
+			else
+				memcpy(w1, &wcopy, sizeof(*w1));
+			if (w1->magic == FSMAGIC_F) {
+				// Set initial pseudo wear to 0 if not known
+				w1->wear = 0;
+				w1->rwear = 0;
+				w1->wlo_num = 0;
+			}
+		}
+	}
+	else
+		if (h) fs_dev2root(h, maplog, sizeof(*h));
+
+	return 0;
+}
+
+
+/*** BeginHeader fs_insert_chain, fs_update_wear, fs_erase_physical, fs_erase_logical,
+ fs_erase_pbuf, fs_purge_file, fs_erase_chain, fs_expurgate, fs_free_logical */
+void fs_insert_chain(FS_lxd * lxd, long chainp, FSLSnum entls);
+void fs_update_wear(FS_w * w);
+int fs_erase_physical(FS_lxd * lxd, FSPSnum ps, FSwear wearlevel);
+int fs_erase_logical(FS_lxd * lxd, FSLSnum ls, char * erased);
+void fs_erase_pbuf(word len);
+int fs_purge_file(FS_ef * ef);
+int fs_erase_chain(FS_lxd * lxd, long lsp, unsigned flags, int max_count,
+						 FSseq while_seq, FSLSnum * count);
+int fs_expurgate(FS_lxd * lxd, FSfilenum fn);
+int fs_free_logical(FS_lxd * lxd, long lstabp, FSLSnum ls);
+/*** EndHeader */
+
+fs_nodebug void fs_insert_chain(FS_lxd * lxd, long chainp, FSLSnum entls)
+{
+	// Insert LS entls into chain belonging to
+	// lxd.  The start of the chain is indicated by the LS number at *chainp (which
+	// may not be in the lstab itself).
+	// The list is maintained in order of increasing wear count, so that the next
+	// free block (taken from the head of list) is the least worn.  For the same
+	// wear count, the order is in increasing LS number.  For non wear-leveling,
+	// the wear count is always zero, thus the list is simply in order of LS number.
+	// FIXME: this is a linear search.  Need to improve efficiency.
+	auto FSLSnum chainls;
+	auto long entp;
+	auto FS_w w;
+	auto long wear;
+	int count;
+
+	count = 0;
+	w.wear = 0;
+	entp = FS_LSTABPHYS(lxd, entls);
+	chainls = fs_lstabent(chainp);
+	if (lxd->wear_leveling)
+		fs_get_headers(lxd, entls, NULL, NULL, &w);	// Get new block's wear
+	wear = w.wear;
+	TRACE(("  fs_insert chain: ls=%d, wear=%ld\n", (int)entls, wear));
+	for (;;) {
+		if (chainls == FS_INVALID_LS)
+			break;
+		if (lxd->wear_leveling)
+			fs_get_headers(lxd, chainls, NULL, NULL, &w);
+		if (w.wear > wear || w.wear == wear && chainls > entls)
+			break;
+		count++;
+		chainp = FS_LSTABPHYS(lxd, chainls);
+		chainls = fs_lstabent(chainp);
+	}
+	fs_set_lstabent(entp, chainls);
+	fs_set_lstabent(chainp, entls);
+
+	TRACE(("    count=%d\n", count));
+}
+
+fs_nodebug void fs_update_wear(FS_w * w)
+{
+	if (w->magic != FSMAGIC_W) {
+		w->magic = FSMAGIC_W;
+		w->wear = 0;
+		w->rwear = 0;
+		w->wlo_num = 0;
+	}
+	else {
+		w->wear++;
+		w->rwear++;
+		if (!w->rwear)
+			w->rwear = 0xFFFF;
+	}
+}
+
+fs_nodebug int fs_erase_physical(FS_lxd * lxd, FSPSnum ps, FSwear wearlevel)
+{
+	// Erase the specified physical sector if it is not already erased.  Wear counts
+	// are incremented.  This routine does _not_ update the lxtab.
+	auto int wblock;
+	auto FS_w_aug wcopy;
+	auto FS_w_aug w;
+	auto long pw;			// Physical addr of w.w or w.magic above.
+	auto word len;			// Length of w+mag or just mag
+	auto long maplog;
+	auto char * p;
+	auto int skip_erase;
+	auto long offs;
+	auto int ioffs;
+	auto long i;
+	auto long secsize;
+	auto int rc;
+
+	CPUSH(20)
+	TRACE(("fs_erase_physical: lx=%d ps=%u\n", lxd->this, ps));
+	rc = 0;
+	secsize = lxd->ps_size;
+
+	wblock = lxd->wear_leveling;
+	if (!secsize)
+		secsize = lxd->ls_size;		// For NVRAM with no physical sectors
+	else if (lxd->ps_per_ls > 1) {
+		if (ps & lxd->ps_per_ls-1)
+			// no wear block on PSs which are not first in LS
+			wblock = 0;	// trick works because ls_size is power of 2
+	}
+
+	if (wblock)
+		ioffs = sizeof(FS_w);
+	else
+		ioffs = 0;
+
+	offs = FS_PS2OFFSET(lxd, ps);
+
+	maplog = FS_CALL_MAP(lxd, offs);
+	fs_dev2root(&wcopy, maplog, sizeof(wcopy));
+
+	if (wblock && wcopy.w.magic != FSMAGIC_W) {
+		// If the W-block is invalid, initialise it to the specified wearlevel and
+		// force a write.
+		skip_erase = 0;
+	}
+	else if (FS_IS_SSW(lxd)) {
+		// For SSW we deem the sector to be already erased if it starts with 0xFF (after
+		// the W-block, if any).
+		if (wblock && wcopy.magic == FSMAGIC_F ||
+		    !wblock && wcopy.w.magic == FSMAGIC_F)
+			skip_erase = 1;
+		else
+			skip_erase = 0;
+	}
+	else {
+		// Otherwise, the whole sector must be 0xFF.
+#ifdef __TESTENV__
+		for (i = ioffs, p = maplog + ioffs;
+		     i < secsize;
+		     i++, p++)
+			if ((byte)*p != 0xFF)	// unerased
+				break;
+		skip_erase = i == secsize;
+
+#else
+		skip_erase = fs_deverased(maplog + ioffs, secsize - ioffs);
+#endif
+	}
+
+	if (!skip_erase) {
+		// Unerased byte.
+		TRACE(("  not skipped\n"));
+		w.magic = FSMAGIC_F;		// Set to erased value (F-block)
+		if (wblock) {
+			memcpy(&w.w, &wcopy.w, sizeof(w.w));	// Save WLU header
+			pw = paddr(&w);
+			len = sizeof(FS_w) + 1;
+			if (w.w.magic == FSMAGIC_W) {
+				// Existing valid W-block.  Update erase counts
+				if (wearlevel) {
+					w.w.wear = wearlevel;
+					w.w.rwear = 0;
+				}
+				else {
+					w.w.wear++;
+					w.w.rwear++;
+					if (!w.w.rwear)
+						w.w.rwear--;
+				}
+			}
+			else /* if (w.w.magic != FSMAGIC_BAD) */ {
+				// Not a valid W-block.  Set it to nominated wear.
+				w.w.magic = FSMAGIC_W;
+				if (wearlevel)
+					w.w.wear = wearlevel;
+				else
+					w.w.wear = 1;
+				w.w.rwear = 0;
+				w.w.wlo_num = lxd->high_wlo;
+			}
+		}
+		else {
+			pw = paddr(&w.magic);
+			len = sizeof(w.magic);
+		}
+
+		if (FS_IS_SSW(lxd)) {
+			// Small-sector devices don't really have pure "erase" function, however rewriting
+			// a sector with 0xFF makes sense when initially formating, when completely
+			// deleting a file, or when shifting a file.  Only the magic ID is set to 0xFF.
+			CPUSH(21)
+			rc = FS_CALL_WRITE(lxd, pw, len, maplog);
+			CPOP
+		}
+		else {
+			CPUSH(22)
+			rc = FS_CALL_ERASE(lxd, maplog);
+			if (!rc)
+				rc = FS_CALL_ANDOVER(lxd, pw, len, maplog);
+			CPOP
+		}
+	}
+
+	if (rc) {
+		TRACE(("  i/o error\n"));
+		_set_errno(EIO);	// I/O error
+	}
+	CPOP
+	return rc;
+}
+
+
+fs_nodebug int fs_erase_logical(FS_lxd * lxd, FSLSnum ls, char * erased)
+{
+	// Erase a logical sector in the given LX.  Since LSs may be less than or equal PSs
+	// (in the case of BW device class), greater than or equal (for SSW), or don't care
+	// (for NVRAM), we have to handle each case separately.
+	// If PS == 0, must be NVRAM device.  Mark LS as erased by setting magic number to 0xFF.
+	// If LS < PS, must be a BW device.  We AND out the B- or H-block magic byte to FSMAGIC_DEL.
+	// This marks the LS as deleted, however no physical erase is performed since we don't want
+	// other LSs on this PS to be erased.  These LSs will be reclaimed when necessary.
+	// If LS >= PS, is either BW or SSW.  In either case, we perform a physical erase of all
+	// PSs within this LS.
+	// Note that this routine does _not_ alter any of the lstab chains.
+	// *erased is set to 1 if the underlying PS(s) were actually erased, or 0 if this LS
+	// was only marked for erasure because the PS size was larger than the LS.
+	auto FSPSnum p, i;
+	auto long maplog;
+	auto long offs;
+	auto FSmagic mag;
+	auto long pmag;
+	auto int rc;
+
+	TRACE(("fs_erase_logical: lx=%d ls=%u\n", lxd->this, ls));
+	if (lxd->ps_per_ls) {
+		*erased = 1;
+		for (p = ls * lxd->ps_per_ls, i = 0;
+		     i < lxd->ps_per_ls;
+		     p++, i++)
+			if (fs_erase_physical(lxd, p, 0))
+				return 1;
+		TRACE(("fs_erase_logical: ok\n"));
+		return 0;
+	}
+
+	// Must be BW or NVRAM.  Flip some bits.
+	offs = FS_LS2OFFSET(lxd, ls);
+	if (lxd->ps_size)
+		mag = FSMAGIC_DEL, *erased = 0;
+	else
+		mag = FSMAGIC_F, *erased = 1;
+	pmag = paddr(&mag);
+
+	maplog = FS_CALL_MAP(lxd, offs);
+	if (lxd->wear_leveling)
+		maplog += sizeof(FS_w);		// Skip W-block if necessary
+
+	rc = FS_CALL_ANDOVER(lxd, pmag, sizeof(mag), maplog);
+
+	if (rc)
+		_set_errno(EIO);
+	TRACE(("fs_erase_logical: rc=%d\n", rc));
+	return rc;
+}
+
+#ifndef __TESTENV__
+fs_nodebug void fs_erase_pbuf(word len)
+{
+	// Set _fs.pbuf to all 0xFF to make it look "erased".  len must be even and > 0.
+	TRACE(("fs_erase_pbuf: len=%u\n", len));
+	#asm xmemok
+	push	ix
+	ld	hl,(sp+@sp+2+len)
+	rr	hl			; Convert to words
+	ld	b,l
+	ld	c,h		; CB is counter
+	ld	a,b
+	or	a
+	jr	z,fsep_noinc
+	inc c			; Inc to exit loop properly
+fsep_noinc:
+	ld	ix,(_fs_pbuf)	; Dest physical address
+	ld	a,(_fs_pbuf+2)
+	ld de,2		; Increment amount (word)
+	ld	hl,0FFFFh	; Data to store
+fsep_loop:
+	ldp (ix),hl	; Put word
+	add ix,de
+	adc a,0			; Update bits 16-23 if wrap
+	djnz	fsep_loop	; Count units
+	dec c
+	jr	nz,fsep_loop	; Count multiples of 256
+	pop	ix
+	#endasm
+}
+#endif
+
+fs_nodebug int fs_purge_file(FS_ef * ef)
+{
+	// Delete this file by freeing all blocks in both metadata and data chains.
+	// This routine is called during initialisation, where a file has unrecoverable
+	// inconsistencies, such as missing data or metadata or bad sequencing.
+	TRACE(("Purging file %d\n", ef->name));
+	if (ef->datalx)
+  		fs_erase_chain(FS_LXN2PTR(ef->datalx), paddr(&ef->first_dls), FS_REALLY_ERASE, 0, 0, NULL);
+	if (ef->metalx)
+  		fs_erase_chain(FS_LXN2PTR(ef->metalx), paddr(&ef->first_mls), FS_REALLY_ERASE, 0, 0, NULL);
+	// Delete the EF and eftab entry
+	ef->in_use = 0;
+	_fs.eftab[ef->name] = 0;
+	return 0;
+}
+
+fs_nodebug int fs_erase_chain(FS_lxd * lxd, long lsp, unsigned flags, int max_count,
+						 FSseq while_seq, FSLSnum * count)
+{
+	// Erase a chain of LSs.  Each erased LS is put on the list of free LSs.
+	// The free LS list is maintained in order of increasing wear count.
+	// After each LS is "erased", the LS is moved to the free or deleted list
+	// as appropriate.
+	// On entry, lsp is the paddr of the entry which indicates the first actual
+	// LS in the chain to be erased.  This is necessary to allow the chain
+	// pointers to be updated properly.  lsp need not point into the lstab,
+	// however subsequent entries are assumed to be in the lstab.
+	// flags indicates the halt conditions (one or more of the FSHALT_* bits)
+	// with following parameters giving the halt condition parameters.  If flags
+	// is zero, then all LSs in the chain are erased.
+	// If count is not NULL, then that counter is decremented for every LS erased.
+	auto FSLSnum zapls;			// LS currently being zapped
+	auto long zapp;				// Physical address (paddr) of above lstab entry
+	auto FSLSnum nextls;
+	auto long nextp;
+	auto char erased;
+	auto int num_erased;
+	auto FS_h hdr;
+
+	TRACE(("erase_chain: flags=%x, max_count=%d, while_seq=%u, count=%u\n",
+			flags, max_count, while_seq, count ? *count : -1));
+
+	// prime the pipeline
+	zapp = lsp;
+	nextls = fs_lstabent(zapp);
+	num_erased = 0;
+
+	for (;;) {
+		zapls = nextls;
+		if (zapls == FS_INVALID_LS)
+			break;	// End of chain.
+		if (flags & FSHALT_COUNT && num_erased >= max_count)
+			break;
+		if (flags & FSHALT_SEQ) {
+			fs_get_headers(lxd, zapls, NULL, &hdr, NULL);
+			if (hdr.seq != while_seq)
+				break;
+		}
+		nextp = FS_LSTABPHYS(lxd, zapls);
+		nextls = fs_lstabent(nextp);
+		fs_set_lstabent(lsp, nextls);	// Remove zapls from head of chain
+		TRACE(("  removed LS %u\n", zapls));
+		if (count)
+			(*count)--;
+		if (fs_free_logical(lxd, zapp, zapls))
+			return 1;	// Maybe I/O error
+		if (FS_IS_SSW(lxd) && flags & FS_REALLY_ERASE)
+			fs_erase_logical(lxd, zapls, &erased);
+		zapp = nextp;
+		num_erased++;
+	}
+
+	return 0;
+}
+
+fs_nodebug int fs_expurgate(FS_lxd * lxd, FSfilenum fn)
+{
+	// This is only called when files on a SSW LX are deleted.  It scans the free
+	// chain looking for LSs which used to belong to this file.  These LSs are
+	// physically erased so that they won't get confused with blocks that belong
+	// to the same file number (should it be re-created).  This is an unfortunate
+	// necessity of our "lazy erase" strategy for SSW devices, however it is much
+	// better than always physically erasing for any update.
+	auto FSLSnum nextls;
+	auto long nextp;
+	auto char erased;
+	auto FS_h hdr;
+
+	TRACE(("fs_expurgate: lxn=%d fn=%d", (int)lxd->this, (int)fn));
+
+	// prime the pipeline
+	nextls = lxd->first_free;
+
+	for (;;) {
+		if (nextls == FS_INVALID_LS)
+			break;	// End of chain.
+		fs_get_headers(lxd, nextls, NULL, &hdr, NULL);
+		if (hdr.filenum == fn)
+			fs_erase_logical(lxd, nextls, &erased);
+		nextp = FS_LSTABPHYS(lxd, nextls);
+		nextls = fs_lstabent(nextp);
+	}
+
+	return 0;
+}
+
+fs_nodebug int fs_free_logical(FS_lxd * lxd, long lstabp, FSLSnum ls)
+{
+	// Send a logical sector to the free (or del) chain.
+	// For SSW devices, we don't really need to erase the sector, since the version
+	// number in the updated LS will be higher than this LS -- this is picked up
+	// at fs_init time.  So, to save wear, we just put the LS on the free list without
+	// really erasing it.
+	auto char erased;
+
+	TRACE(("fs_free_logical: ls=%d\n", (int)ls));
+
+	if (FS_IS_SSW(lxd))
+		erased = 1;	// Fake it
+	else
+		if (fs_erase_logical(lxd, ls, &erased))
+			return 1;
+	if (erased) {
+		fs_insert_chain(lxd, paddr(&lxd->first_free), ls);
+		lxd->num_free++;
+	}
+	else {
+		// Deleted, not erased, because this LS part of larger PS.
+		fs_insert_chain(lxd, paddr(&lxd->first_deleted), ls);
+		lxd->num_deleted++;
+	}
+	return 0;
+}
+
+
+/*** BeginHeader fs_verify_data, fs_get_meta, fs_read_data, fs_read_pbuf,
+		fs_verify_headers, fs_compare_ls, fs_qsort, fs_find_create_ef, fs_init_lstab, fs_scan_file,
+		fs_open, fs_locate */
+int fs_verify_data(FS_lxd * lxd, FSLSnum ls);
+FSoffset fs_get_meta(FS_lxd * lxd, FSLSnum ls, FS_h * hdr);
+int fs_read_data(FS_lxd * lxd, FSLSnum ls, FSoffset offs, char * buf, int len,
+							FSseq seq, FSfilenum name);
+root int fs_read_pbuf(FS_lxd * lxd, long dev_offs, word len);
+int fs_verify_headers(FS_lxd * lxd, FS_w * w, FS_h * h);
+int fs_compare_ls(FS_lxd * lxd, FSLSnum a, FSLSnum b);
+int fs_qsort(FS_lxd * lxd, long base, FSLSnum n);
+FS_ef * fs_find_create_ef(FSfilenum name, FSLXnum mlx, FSLXnum dlx);
+int fs_init_lstab(FS_lxd * lxd);
+int fs_scan_file(FS_ef * ef);
+int fs_open(File * f, FileNumber name);
+int fs_locate(FS_ef * ef, long pos, FSLSnum * ls, FSoffset * offs,
+					long * lstabpp, FSseq * seq, FSLSnum * prevlsp);
+/*** EndHeader */
+
+fs_nodebug int fs_verify_data(FS_lxd * lxd, FSLSnum ls)
+{
+	// Read the specified data LS then verify the final checksum.  This
+	// function should only be called for B-blocks which are complete (i.e.
+	// not the last in a file).
+	// Returns 0 if OK, 1 if failed.
+	auto long maplog;
+	auto FS_h * h;
+	auto int rc;
+#ifdef FS2_VERBOSE
+	auto FSchecksum chk;
+#endif
+
+	maplog = FS_CALL_MAP(lxd, FS_LS2OFFSET(lxd, ls));
+	rc = fs_checksum_s(NULL, maplog, lxd->ls_size);
+
+#ifdef FS2_VERBOSE
+	if (rc) {
+		chk = 0;
+		fs_checksum_s(&chk, maplog, lxd->ls_size);
+		TRACE(("Bad complete data checksum: lx=%d ls=%u chk=%x\n", lxd->this, ls, chk));
+	}
+#endif
+
+	return rc;
+}
+
+fs_nodebug FSoffset fs_get_meta(FS_lxd * lxd, FSLSnum ls, FS_h * hdr)
+{
+	// Extract results from metadata LS.  *hdr is set up with initial H-block, then
+	// the first_offs, first_seq, last_offs and last_chk are updated with the most recent
+	// valid log entry.
+	// Returns the next available offset in the metadata log.
+	auto unsigned long maplog, base, log, lastlog;
+	auto FS_l lcopy;
+	auto int rc;
+	auto FSoffset offs;
+
+	maplog = FS_CALL_MAP(lxd, FS_LS2OFFSET(lxd, ls));
+	if (lxd->wear_leveling)
+		maplog += sizeof(FS_w);
+	fs_dev2root(hdr, maplog, sizeof(FS_h));
+	maplog += sizeof(FS_h);
+	base = log = maplog;
+	lastlog = log + (lxd->d_size - FS_INIT_LOGOFFS);
+	while (log < lastlog) {
+		fs_dev2root(&lcopy, maplog, sizeof(lcopy));
+		if (lcopy.log_chk == FS_INVALID_CHK || fs_checksum_s(NULL, maplog, sizeof(lcopy))) {
+		#ifdef FS2_VERBOSE
+			if (lcopy.log_chk != FS_INVALID_CHK)
+				TRACE(("  fs_get_meta: bad log entry checksum\n"));
+		#endif
+			break;	// Bad entry checksum
+		}
+		offs = lcopy.new_offs & FS_OFFS_MASK;
+		if (lcopy.new_offs & FS_LOG_DEL) {
+			hdr->first_offs = offs;
+			hdr->first_seq = lcopy.log_data;
+		}
+		else {
+			hdr->last_offs = offs;
+			hdr->last_chk = lcopy.log_data;
+		}
+		log += sizeof(lcopy);
+		maplog += sizeof(lcopy);
+		// Adjust for possible page overflow (>=4k sectors)
+		#asm
+		ld		hl,(sp+@sp+maplog)
+		ld		a,0xF0
+		and	h
+		cp		0xF0
+		jr		nz,fsgm_no_ovf
+		ld		a,h
+		sub	0x10
+		ld		h,a
+		ld		(sp+@sp+maplog),hl
+		ld		hl,(sp+@sp+maplog+2)
+		inc	l		; compensate XPC
+		ld		(sp+@sp+maplog+2),hl
+	fsgm_no_ovf:
+		#endasm
+	}
+
+	return (FSoffset)(log - base + FS_INIT_LOGOFFS);
+}
+
+fs_nodebug int fs_read_data(FS_lxd * lxd, FSLSnum ls, FSoffset offs,
+			char * buf, int len, FSseq seq, FSfilenum name)
+{
+	// Read given LS, starting at local offset, into buf of given length.
+	// Returns actual number of chars read, which will be the lesser of len
+	// and lxd->d_size - offs, or 0 if error.  buf must _not_ point into XPC window.
+	// seq is the expected sequence number of ls.  If there is a mismatch, the read
+	// 'works' but EBADSEQ will be set.  Similarly for the file number.
+	auto long maplog;
+	auto FS_b bcopy;
+	auto int rc;
+
+	CPUSH(2)
+	maplog = FS_CALL_MAP(lxd, FS_LS2OFFSET(lxd, ls));
+	if (lxd->wear_leveling)
+		maplog += sizeof(FS_w);
+
+	fs_dev2root(&bcopy, maplog, sizeof(bcopy));
+	if (bcopy.magic != FSMAGIC_B) {
+		rc = 0;
+		_set_errno(ENOTB);
+	}
+	else {
+		_set_errno(0);
+		if (bcopy.seq != seq)
+			_set_errno(EBADSEQ);
+		if (name && bcopy.filenum != name)
+			_set_errno(EBADFNUM);
+		maplog += sizeof(FS_b) + offs;
+		rc = lxd->d_size - offs;
+		if (rc > len)
+			rc = len;
+		fs_dev2root(buf, maplog, rc);
+	}
+	CPOP
+	return rc;
+
+}
+
+#ifndef __TESTENV__
+fs_nodebug root int fs_read_pbuf(FS_lxd * lxd, long dev_offs, word len)
+{
+	auto unsigned savedIX;
+   auto unsigned savedXPC;
+
+	// This is a bit tricky since can't use root2xmem.  However, can
+	// take advantage of the even number of bytes (<= 8k).
+	// len must be > 1.  _fs.pbuf must be even aligned to avoid ldp
+	// wrap problems.
+	#asm
+   ld (SP+@SP+savedIX), ix		; preserve IX in case called from costate/cofunc
+   ld a, xpc						; preserve XPC in case called from xmem
+   ld l, a							;
+   ld (SP+@SP+savedXPC), hl	;
+
+c	FS_CALL_MAP(lxd, dev_offs);
+	; BCDE contains segmented mapping
+	ex	de,hl
+	ld	a,c
+	ld	xpc,a
+
+	ld	ix,hl		; Address of mapped area in XPC window
+	ld	hl,(sp+@sp+len)
+	or	a
+	rr	hl			; Convert to words
+	ld	b,l
+	ld	c,h		; CB is counter
+	ld	a,b
+	or	a
+	jr	z,fsrp_noinc
+	inc c			; Inc to exit loop properly
+fsrp_noinc:
+	ld	iy,(_fs_pbuf)	; Dest physical address
+	ld	a,(_fs_pbuf+2)
+	ld de,2		; Increment amount (word)
+fsrp_loop:
+	ld	hl,(ix)	; Get word
+	add ix,de
+	ldp (iy),hl	; Put word
+	add iy,de
+	adc a,0			; Update bits 16-23 if wrap
+	djnz	fsrp_loop	; Count units
+	dec c
+	jr	nz,fsrp_loop	; Count multiples of 256
+
+   ld hl, (SP+@SP+savedXPC)	;
+   ld a, l							;
+   ld xpc, a						; restore XPC in case called from xmem
+   ld	ix, (SP+@SP+savedIX)		; restore IX in casee called from costate/cofunc
+	#endasm
+	return 0;
+}
+#endif
+
+fs_nodebug int fs_verify_headers(FS_lxd * lxd, FS_w * w, FS_h * h)
+{
+	// Verify header(s) using the appropriate checksum.  Returns 0 for OK,
+	// 1 for fail.  LSs starting with a bad block indicator always return
+	// 0 since this will prevent reformatting attempts.
+	auto FSchecksum chk;
+	auto FS_b * b;
+	auto int rc;
+
+	chk = 0;
+	if (lxd->wear_leveling) {
+		if (w->magic == FSMAGIC_BAD) {
+			TRACE(("Bad WL block\n"));
+			return 0;
+		}
+		fs_checksum(&chk, w, sizeof(*w));
+	}
+	switch (h->magic) {
+	case FSMAGIC_H:
+		rc = fs_checksum(&chk, h, sizeof(*h));
+		#ifdef FS2_VERBOSE
+		if (rc) TRACE(("H block checksum failed\n"));
+		#endif
+		break;
+	case FSMAGIC_B:
+		b = (FS_b *)h;
+		rc = fs_checksum(&chk, b, sizeof(*b));
+		#ifdef FS2_VERBOSE
+		if (rc) TRACE(("B block checksum failed\n"));
+		#endif
+		break;
+	case FSMAGIC_BAD:
+		rc = lxd->wear_leveling;	// Bad only if wear-leveling
+		TRACE(("Bad block\n"));
+		break;
+	case FSMAGIC_F:
+		// If h is all 0xFF, we return
+		// OK since freshly erased sectors are acceptable.  Otherwise, we would
+		// mark it as deleted, which would waste time and money.  Note that this
+		// presumes that if the headers are 0xFF, then the rest of the LS is
+		// also erased.
+		rc = fs_checksum(NULL, h, sizeof(*h));	// Returns OK if all 0xFF.
+		#ifdef FS2_VERBOSE
+		if (rc) TRACE(("F block not all 0xFF\n"));
+		#endif
+		break;
+	default:
+		TRACE(("Random magic %u\n", h->magic));
+		rc = 1;
+		break;
+	}
+	return rc;
+}
+
+// Overall LS block classes - this determines the overall sorting order.
+#define FSBCLASS_FREE	1
+#define FSBCLASS_BAD		2
+#define FSBCLASS_B		3
+#define FSBCLASS_H		4
+#define FSBCLASS_DEL		5		// "Deleted" class must be highest numerically
+
+#ifdef FS_BENCHMARK
+static int lv, lvmax;
+static long ncomp, nqsort, tt;
+#endif
+
+fs_nodebug int fs_compare_ls(FS_lxd * lxd, FSLSnum a, FSLSnum b)
+{
+	auto FS_w wa, wb;
+	auto FS_h ha, hb;
+	auto int rc;
+	auto int aclass, bclass;
+	auto char erased;
+	auto long wdiff;
+
+#ifdef FS_BENCHMARK
+	ncomp++;
+#endif
+
+	fs_get_headers(lxd, a, NULL, &ha, &wa);
+	fs_get_headers(lxd, b, NULL, &hb, &wb);
+
+#define FS_MAGIC2CLASS(mag, class, lxd) \
+	switch (mag) { \
+		default:				class = FSBCLASS_BAD; break; \
+		case FSMAGIC_F:	class = FSBCLASS_FREE; break; \
+		case FSMAGIC_DEL:	class = lxd->ps_size <= lxd->ls_size ? FSBCLASS_FREE : FSBCLASS_DEL; break; \
+		case FSMAGIC_BAD:	class = FSBCLASS_BAD; break; \
+		case FSMAGIC_B:	class = FSBCLASS_B; break; \
+		case FSMAGIC_H:	class = FSBCLASS_H; break; \
+	}
+
+	FS_MAGIC2CLASS(ha.magic, aclass, lxd)
+	FS_MAGIC2CLASS(hb.magic, bclass, lxd)
+
+	if (aclass != bclass)
+		rc = aclass - bclass;
+	else switch (aclass) {
+		case FSBCLASS_FREE: case FSBCLASS_DEL:
+			if (lxd->wear_leveling) {
+				wdiff = wa.wear - wb.wear;
+				if (wdiff > 0) {
+					rc = 1; break;
+				}
+				if (wdiff < 0) {
+					rc = -1; break;
+				}
+			}
+			// fall through
+		default:
+			rc = (int)(a - b);
+			break;
+		case FSBCLASS_B: case FSBCLASS_H:
+			rc = (int)(ha.filenum - hb.filenum);
+			if (rc) break;
+			rc = (short)(ha.seq - hb.seq);			// This works with wrap-around too, assuming
+																// number in sequence <= sequence-max-length / 2.
+			if (rc) break;
+			// We don't handle version wrap-around
+			if (hb.version > ha.version)
+				rc = 1;
+			else if (hb.version == ha.version)
+				rc = (int)(a - b);
+			else
+				rc = -1;
+			break;
+	}
+
+	return rc;
+}
+
+
+fs_nodebug int fs_qsort(FS_lxd * lxd, long base, FSLSnum n)
+{
+	auto FSLSnum i, j, piv, lo, hi, atpiv, temp;
+	auto long pivot, p2;
+
+#ifdef FS_BENCHMARK
+	lv++;
+	nqsort++;
+	if (lv > lvmax) lvmax = lv;
+#endif
+
+	lo = 0;
+	hi = n - 1;
+	if (n == 2) {
+		// Sort 2 elements quickly
+		pivot = FS_LS2TABENT(base, 0);
+		atpiv = fs_lstabent(pivot);
+		p2 = FS_LS2TABENT(base, 1);
+		temp = fs_lstabent(p2);
+		if (fs_compare_ls(lxd, atpiv, temp) > 0) {
+			fs_set_lstabent(pivot, temp);
+			fs_set_lstabent(p2, atpiv);
+		}
+#ifdef FS_BENCHMARK
+		lv--;
+#endif
+		return 0;
+	}
+	//if (lo < hi)		// This test omitted: caller must set n >= 2!
+	//{
+		piv = (lo + hi) >> 1; // center pivot
+		i = lo;
+		j = hi;
+		pivot = FS_LS2TABENT(base, piv);
+		atpiv = fs_lstabent(pivot);
+		while (i < j)
+		{
+			while (i < j && fs_compare_ls(lxd, fs_lstabent(FS_LS2TABENT(base, i)), atpiv) <= 0)
+				++i;
+			while (i < j && fs_compare_ls(lxd, fs_lstabent(FS_LS2TABENT(base, j)), atpiv) >= 0)
+				--j;
+			if (i < j) {
+				// Swap entries i, j.
+				temp = fs_lstabent(FS_LS2TABENT(base, j));
+				fs_set_lstabent(FS_LS2TABENT(base, j), fs_lstabent(FS_LS2TABENT(base, i)));
+				fs_set_lstabent(FS_LS2TABENT(base, i), temp);
+				atpiv = fs_lstabent(pivot);
+			}
+		}
+		if (piv < i && fs_compare_ls(lxd, fs_lstabent(FS_LS2TABENT(base, i)), atpiv) > 0)
+			--i;
+		// Swap i and pivot
+		if (i != piv) {
+			fs_set_lstabent(pivot, fs_lstabent(FS_LS2TABENT(base, i)));
+			fs_set_lstabent(FS_LS2TABENT(base, i), atpiv);
+		}
+
+		if ((int)(i - lo) <= (int)(hi - i))
+		{                    // control stack
+			if ((temp = i - lo) > 1)
+				fs_qsort(lxd, FS_LS2TABENT(base, lo), temp);
+			if ((temp = hi - i) > 1)
+				fs_qsort(lxd, FS_LS2TABENT(base, i+1), temp);
+		}
+		else
+		{
+			if ((temp = hi - i) > 1)
+				fs_qsort(lxd, FS_LS2TABENT(base, i+1), temp);
+			if ((temp = i - lo) > 1)
+				fs_qsort(lxd, FS_LS2TABENT(base, lo), temp);
+		}
+	//}
+
+#ifdef FS_BENCHMARK
+	lv--;
+#endif
+	return 0;
+}
+
+fs_nodebug FS_ef * fs_find_create_ef(FSfilenum name, FSLXnum mlx, FSLXnum dlx)
+{
+	// Find existing-file descriptor, or create if not found.  Returns NULL if
+	// cannot create.  name is file number, mlx/dlx are LX numbers for metadata
+	// and data respectively.  If either is zero, then anything matches.  If
+	// the EF exists, but mlx/dlx disagree with the EF, return NULL.  For NULL
+	// returns, errno will be set to EEXIST for mismatch with existing, or
+	// ENFILE if no free entries remain.
+	auto int i;
+	auto FS_ef * ef;
+	auto FSLXnum emlx, edlx;
+
+	TRACE(("fs_find_create_ef: name=%d mlx=%d dlx=%d\n", name, mlx, dlx));
+	if (FS_EXISTS(name)) {
+		ef = FS_EF_OF_FILE(name);
+		_set_errno(EEXIST);
+		emlx = ef->metalx;
+		edlx = ef->datalx;
+		if (mlx && emlx && emlx != mlx) {
+			TRACE(("  mismatching meta LX\n"));
+			return NULL;
+		}
+		if (dlx && edlx && edlx != dlx) {
+			TRACE(("  mismatching data LX\n"));
+			return NULL;
+		}
+		if (!emlx)
+			ef->metalx = mlx;
+		if (!edlx)
+			ef->datalx = dlx;
+		TRACE(("  exists.\n"));
+		return FS_EF_OF_FILE(name);
+	}
+	for (i = 1; i <= FS_MAX_FILES; i++) {
+		ef = _fs.ef + i;
+		if (!ef->in_use) {
+			_fs.eftab[name] = (FSEFnum)i;
+			memset(ef, 0, sizeof(*ef));
+			ef->name = name;
+			ef->in_use = 1;
+			ef->metalx = mlx;
+			ef->datalx = dlx;
+			ef->attrs = 0xFF;	// FIXME: set appropriately
+			ef->first_mls = FS_INVALID_LS;
+			ef->first_dls = FS_INVALID_LS;
+			TRACE(("  created.\n"));
+			return ef;
+		}
+	}
+	TRACE(("  setting ENFILE\n"));
+	_set_errno(ENFILE);
+	return NULL;
+}
+
+fs_nodebug int fs_init_lstab(FS_lxd * lxd)
+{
+	// Initialise the lstab by reading the header blocks of each LS.  The lstab itself is
+	// already allocated.  A temporary buffer of the same size is allocated for the
+	// purpose of sorting the lstab.  The sort is performed in order:
+	//   Free (available) LSs
+	//   Bad
+	//   B-blocks
+	//   H-blocks
+	//   Deleted (i.e. freed LSs within larger PSs)
+	// For H- and B-blocks, the subsequence is in order of file number, sequence number
+	// within file, then version number within sequence.
+	// For F- and DEL- blocks, the subsequence is in order of increasing wear level if
+	// applicable or by LS number if not.  Wear levels for LSs which are not the first
+	// in their PS (i.e. have dummy W-blocks) take the wear level of the first LS in the PS.
+	// An initial pass is performed to verify that the LSs to be sorted have consistent
+	// checksums - any which do not are erased if possible.  Then they are placed at the
+	// end of the table (with the DEL entries), and not sorted further.
+	auto FS_w w, w1;
+	auto FS_h h;
+	auto long ttab;
+	auto long ttabsize;
+	auto FSLSnum i;
+	auto int pclass, kclass;
+	auto long lphy;
+	auto FSLSnum * counter;
+	auto FS_ef * ef;
+	auto int igchain;
+	auto FSLSnum ls;
+	auto FSfilenum pfile;
+	auto FSversion pvers;
+	auto char erased;
+	auto FSLSnum num_to_sort;
+	auto FSLSnum num_deleted;
+
+
+	ttab = xalloc(ttabsize = (long)sizeof(FSLSnum) * lxd->num_ls);
+	if (!ttab) {
+		_set_errno(ENOMEM);
+		return 1;
+	}
+
+	// Perform an initial pass through the LX.  Look for bad header checksums and
+	// erase those LSs.  Also look for uninitialised wear blocks: if found, set them
+	// to wear count 1.
+#ifdef FS_BENCHMARK
+	tt = MS_TIMER;
+#endif
+	num_to_sort = 0;
+	num_deleted = 0;
+	for (i = 0; i < lxd->num_ls; i++) {
+		fs_get_headers(lxd, i, &w, &h, &w1);
+		if (fs_verify_headers(lxd, &w, &h)) {
+			// Bad header checksum.
+			TRACE(("Bad hdr chk LS %u\n", i));
+			if (fs_erase_logical(lxd, i, &erased) || !erased) {
+				// Put unerasable or deleted LSs at end of table (speeds sort).
+				TRACE(("  adding to deleted list.\n"));
+				num_deleted++;
+				fs_set_lstabent(FS_LS2TABENT(ttab, lxd->num_ls - num_deleted), i);
+				continue;
+			}
+		}
+		fs_set_lstabent(FS_LS2TABENT(ttab, num_to_sort), i);
+		num_to_sort++;
+	}
+#ifdef FS_BENCHMARK
+	tt = MS_TIMER - tt;
+	printf("Took %ld ms to scan\n", tt);
+#endif
+
+	num_to_sort += num_deleted;	// Sort everything
+
+	// Specialised qsort algorithm.
+#ifdef FS_BENCHMARK
+	lv = 0;
+	lvmax = 0;
+	nqsort = 0;
+	ncomp = 0;
+	tt = MS_TIMER;
+#endif
+
+	if (num_to_sort > 1)
+		fs_qsort(lxd, ttab, num_to_sort);
+
+#ifdef FS_BENCHMARK
+	tt = MS_TIMER - tt;
+	printf("Max qsort levels = %d, qsort entry=%ld, comparisons=%ld, time=%ld ms\n", lvmax, nqsort, ncomp, tt);
+#endif
+
+	// Scan the generated list, looking for 'breaks'.  Initialise the lstab.  After
+	// this, the lstab file chains may include multiple LSs with the same seq but
+	// different version.  The most recent version with valid checksum will be retained.
+	igchain = 1;
+	pclass = 0;
+	lxd->first_free = FS_INVALID_LS;
+	lxd->first_deleted = FS_INVALID_LS;
+	lxd->first_bad = FS_INVALID_LS;
+	lxd->num_free = 0;
+	lxd->num_deleted = 0;
+	lxd->num_bad = 0;
+	for (i = 0; i < lxd->num_ls; i++) {
+		ls = fs_lstabent(FS_LS2TABENT(ttab, i));	// Get sorted LS number
+		fs_get_headers(lxd, ls, &w, &h, NULL);
+		if (i >= num_to_sort)
+			kclass = FSBCLASS_DEL;	// deleted
+		else
+			FS_MAGIC2CLASS(h.magic, kclass, lxd)
+		if (kclass != pclass || (kclass == FSBCLASS_H || kclass == FSBCLASS_B) && h.filenum != pfile) {
+			// New list starting.  Finish old list, start new
+		#ifdef FS2_VERBOSE
+			if (kclass == FSBCLASS_H || kclass == FSBCLASS_B)
+				TRACE(("Next list: class=%d filenum=%u igchain=%d\n", kclass, h.filenum, igchain));
+			else
+				TRACE(("Next list: class=%d igchain=%d\n", kclass, igchain));
+		#endif
+			if (!igchain)
+				fs_set_lstabent(lphy, FS_INVALID_LS);
+			pclass = kclass;
+			pfile = h.filenum;
+			igchain = 0;
+			switch (kclass) {
+				case FSBCLASS_FREE: lphy = paddr(&lxd->first_free); counter = &lxd->num_free; break;
+				case FSBCLASS_DEL: lphy = paddr(&lxd->first_deleted); counter = &lxd->num_deleted; break;
+				default:
+					TRACE(("Bad class\n"));
+					lphy = paddr(&lxd->first_bad);
+					counter = &lxd->num_bad;
+					break;
+				case FSBCLASS_B:	// Data LSs
+					ef = fs_find_create_ef(h.filenum, 0, FS_PTR2LXN(lxd));
+					lphy = paddr(&ef->first_dls);
+					counter = &ef->num_dls;
+					if (ef) {
+						ef->first_seq = h.seq;
+						ef->vers = h.version;
+						TRACE(("  first seq=0x%04X vers=%lu\n", h.seq, h.version));
+					}
+					goto _check_ef;
+				case FSBCLASS_H:	// Metadata LSs (normally only 1).
+					ef = fs_find_create_ef(h.filenum, FS_PTR2LXN(lxd), 0);
+					lphy = paddr(&ef->first_mls);
+					counter = &ef->num_mls;
+				_check_ef:
+					if (!ef || *counter) {
+						TRACE(("Internal error 1 - ignoring chain\n"));
+						// Something wrong: same file in another LX, or too many EFs.
+						// Set flag to ignore this chain.
+						igchain = 1;
+					}
+					else
+						pvers = 0;
+					break;
+			}
+		}
+
+		if (!igchain) {
+			if (kclass == FSBCLASS_B || kclass == FSBCLASS_H) {
+				if (h.version > ef->vers)
+					ef->vers = h.version;
+			#ifdef FS2_VERBOSE
+				TRACE((" %c block filenum=%u seq=%u vers=%lu\n",
+						kclass == FSBCLASS_B ? 'B' : 'H', h.filenum, h.seq, h.version));
+			#endif
+			}
+			fs_set_lstabent(lphy, ls);
+			(*counter)++;
+			lphy = FS_LSTABPHYS(lxd, ls);
+		}
+
+	}
+
+	// Terminate last chain.
+	if (!igchain)
+		fs_set_lstabent(lphy, FS_INVALID_LS);
+
+	xrelease(ttab, ttabsize);
+	return 0;
+}
+
+fs_nodebug int fs_scan_file(FS_ef * ef)
+{
+	// This routine determines whether a given file (as recognised by fs_init_lstab) is
+	// self-consistent.  Some files may have blocks with the same sequence but different
+	// versions.  The appropriate version is selected and all other versions are purged.
+	// All LSs with invalid header checksums have already been purged.  All completed data LSs
+	// with bad checksums have been purged.  This leaves only incomplete data LSs, whose checksums
+	// need to be checked against the metadata log.  With metadata, the latest version is always
+	// chosen since this only occurs when rewriting the log header and the header checksum has
+	// already been validated.  From the metadata the incomplete data checksum is obtained (and
+	// offset) by reading the log to the most recent valid entry.  If the rest of the metadata
+	// LS is not 0xFF and it's on a BW device, then the metadata entry is rewritten if possible.
+	// Given the incomplete checksum/offset, the most recent data LS version is checked to see
+	// if it's consistent.  If not, the next oldest version is used.  This works because of the
+	// write sequence for LS updates.
+	// Old versions may exist because of a power interruption during the last write.
+	// In addition, sequence numbers may have wrapped.  If sequence numbers are contiguous (modulo
+	// 2**16) then the file is a valid sequence.  If not, then at least one LS is missing and the
+	// file is declared corrupt.  Version numbers cannot be tested for contiguity, however they
+	// do not wrap until 2**32 which is unlikely to cause problems.
+	// Return value is 0 if OK, or 1 if there was an unrecoverable inconsistency in the file
+	// (e.g. inability to fix the log, or missing file sequence).  On return code 1, the caller
+	// should normally purge the file.
+
+	auto FS_h meta;					// Metadata results from header plus log entries
+	auto FS_h data;					// Data LS header (actually an FS_b)
+	auto FS_lxd * mlxd, * dlxd;	// Metadata and data lxd's
+	auto FSseq seq;					// Current data sequence
+	auto FSLSnum mls, dls;			// Current LS numbers
+	auto long lstabp, p2;
+	auto int first, last;
+	auto FSLSnum ls2;
+	auto FS_h data2;
+
+	TRACE(("Scanning file %d...\n", ef->name));
+	mlxd = FS_LXN2PTR(ef->metalx);
+	dlxd = FS_LXN2PTR(ef->datalx);
+
+	// Erase all but 1st in metadata LS chain, then get log results.
+	mls = ef->first_mls;
+	fs_erase_chain(mlxd, FS_LSTABPHYS(mlxd, mls), 0, 0, 0, &ef->num_mls);
+	ef->m_offs = fs_get_meta(mlxd, mls, &meta);
+	ef->first_offs = meta.first_offs;
+	ef->d_offs = meta.last_offs;
+	ef->data_chk = meta.last_chk;
+	TRACE(("  first_offs=%u last_offs=%u\n", meta.first_offs, meta.last_offs));
+
+	// Now scan the data
+	lstabp = paddr(&ef->first_dls);
+	first = 1;
+	for (;;) {
+		dls = fs_lstabent(lstabp);
+		if (dls == FS_INVALID_LS)
+			break;
+		fs_get_headers(dlxd, dls, NULL, &data, NULL);
+		// Throw away any which are less than meta.first_seq
+		if ((short)(data.seq - meta.first_seq) < 0) {
+			TRACE(("  removing because seq %u < %u\n", data.seq, meta.first_seq));
+			fs_erase_chain(dlxd, lstabp, FSHALT_SEQ, 0, data.seq, &ef->num_dls);
+			continue;
+		}
+		if (first)
+			ef->first_seq = seq = data.seq;
+		else {
+			if (data.seq != (FSseq)(seq + 1)) {
+				TRACE(("  missing sequence: %u != %u+1\n", data.seq, seq));
+				return 1;		// Missing sequence number
+			}
+			seq = data.seq;
+		}
+		// Peek ahead to see if this is last in sequence
+		last = 0;
+		ls2 = dls;
+		for (;;) {
+			p2 = FS_LSTABPHYS(dlxd, ls2);
+			ls2 = fs_lstabent(p2);
+			if (ls2 == FS_INVALID_LS) {
+				last = 1;
+				break;
+			}
+			fs_get_headers(dlxd, ls2, NULL, (FS_h *)&data2, NULL);
+			if (data2.seq != seq)
+				break;	// not last
+		}
+
+		if (last) {
+			// Check each version of this seq against metadata.  If inconsistent, purge
+			// and try next older version.  If no older versions left, declare error.
+			// Otherwise, purge any remaining older versions of this seq.
+			// FIXME: implement.  Also, ensure BW devices have trailing 0xFF.
+			p2 = FS_LSTABPHYS(dlxd, dls);
+			ls2 = fs_lstabent(p2);	// Next older LS, or -1 if this is the last
+			fs_erase_chain(dlxd, FS_LSTABPHYS(dlxd, dls), 0, 0, 0, &ef->num_dls);
+		}
+		else {
+			// Not the last, so we can verify the data checksum.
+			if (fs_verify_data(dlxd, dls)) {
+				TRACE(("Data verify failed for LS %u\n", dls));
+				fs_erase_chain(dlxd, lstabp, FSHALT_COUNT, 1, 0, &ef->num_dls);
+				continue;
+			}
+			fs_erase_chain(dlxd, FS_LSTABPHYS(dlxd, dls), FSHALT_SEQ, 0, seq, &ef->num_dls);
+		}
+
+		first = 0;
+		dls = fs_lstabent(lstabp);	// Get again, may have changed
+		lstabp = FS_LSTABPHYS(dlxd, dls);
+	}
+
+	ef->eof = (long)(ef->num_dls - 1) * dlxd->d_size + meta.last_offs - meta.first_offs;
+
+	return 0;
+}
+
+fs_nodebug int fs_open(File * f, FileNumber name)
+{
+	auto FSLXnum dlxn, mlxn;
+
+	FS_SPLITFN(name, mlxn, f->name);
+	if (!FS_EXISTS(f->name) || mlxn && FS_METALX_OF_FILE(f->name) != mlxn) {
+		_set_errno(ENOENT);
+		f->name = 0;
+		return 1;
+	}
+	if (!mlxn)
+		mlxn = FS_METALX_OF_FILE(f->name);
+	dlxn = FS_DATALX_OF_FILE(f->name);
+	f->ef = FS_EF_OF_FILE(f->name);
+	f->mlxd = FS_LXN2PTR(mlxn);
+	f->dlxd = FS_LXN2PTR(dlxn);
+	f->mode = 0;
+	f->position = 0;
+	if (++f->ef->ref_count == 1) {
+		f->ef->cache_valid = 0;
+		f->ef->cache_valid2 = 0;
+	}
+	return 0;
+}
+
+fs_nodebug int fs_locate(FS_ef * ef, long pos, FSLSnum * ls, FSoffset * offs,
+					long * lstabpp, FSseq * seq, FSLSnum * prevlsp)
+{
+	// In existing file ef, locate the LS that contains byte number 'pos'.  Return
+	// parameters are the LS number, the offset within that LS, and the phys. addr.
+	// of the lstab entry which contains that LS.  *seq is set to the expected LS sequence.
+	// Returns 1 if error (i.e. not in the file chain), else 0.
+	// Works by scanning the chain from its start, while the chain exists and pos
+	// is greater than or equal to lxd->d_size.  If pos represents the EOF, and happens to
+	// be the start of an as-yet unallocated LS, then returns 1 -- this may not be an error
+	// for appending data to a file.  In this case, *lstabpp is set to the entry containing
+	// 0xFFFF (end of chain) and *offs will be set to 0.  Otherwise if end-of-chain is
+	// encountered, then *offs will be set to 0xFFFF.  *prevlsp will be set to the previous
+	// LS in the chain, of FS_INVALID_LS if none.
+	auto FS_lxd * lxd;
+	auto long lstabp;
+	auto long cpos;
+	auto int rc;
+	auto FSseq t_seq;
+	auto FSLSnum t_prevls;
+	auto FSLSnum t_ls;
+	auto word d_size;
+	auto word wcache;
+
+	rc = 0;
+	wcache = 0;
+	lxd = FS_LXN2PTR(ef->datalx);
+	d_size = lxd->d_size;
+	pos += ef->first_offs;	// Convert to offset from byte 0 of 1st LS.
+	if (pos < d_size)
+		goto _pos_too_small;
+	if (ef->cache_valid && pos >= ef->cache_pos &&
+		 (!ef->cache_valid2 || pos < ef->cache_pos2 || ef->cache_pos2 < ef->cache_pos)) {
+		wcache = 1;
+		lstabp = ef->cache_lstabp;
+		t_prevls = ef->cache_prevls;
+		t_seq = ef->cache_seq;
+		pos -= ef->cache_pos;
+		cpos = ef->cache_pos;
+	}
+	else if (ef->cache_valid2 && pos >= ef->cache_pos2 &&
+	        (!ef->cache_valid || pos < ef->cache_pos || ef->cache_pos < ef->cache_pos2)) {
+		wcache = 2;
+		lstabp = ef->cache_lstabp2;
+		t_prevls = ef->cache_prevls2;
+		t_seq = ef->cache_seq2;
+		pos -= ef->cache_pos2;
+		cpos = ef->cache_pos2;
+	}
+	else {
+	_pos_too_small:
+		lstabp = paddr(&ef->first_dls);
+		t_prevls = FS_INVALID_LS;
+		t_seq = ef->first_seq;
+		cpos = 0;
+	}
+	for (;;) {
+		t_ls = fs_lstabent(lstabp);
+		if (t_ls == FS_INVALID_LS) {
+			_set_errno(EUNEXEOC);
+			*lstabpp = lstabp;
+			if (pos)
+				*offs = 0xFFFF;
+			else
+				*offs = 0;
+			rc = 1;
+			break;
+		}
+		if (pos < d_size) {
+			// Found it
+			*lstabpp = lstabp;
+			*offs = (FSoffset)pos;
+			break;
+		}
+		pos -= d_size;
+		cpos += d_size;
+		t_prevls = t_ls;
+		lstabp = FS_LSTABPHYS(lxd, t_ls);
+		t_seq++;
+	}
+	// Set cache parameters if possible.  Note that accesses to the first LS are not
+	// cached, since no performance gain would be achieved.  Also, fshift() operates on
+	// the 1st LS, but we don't want it to always reset the cached position to zero.
+	if (wcache == 1) {
+		ef->cache_seq = t_seq;
+		ef->cache_lstabp = lstabp;
+		ef->cache_prevls = t_prevls;
+		ef->cache_pos = cpos;
+	}
+	else if (wcache == 2) {
+		ef->cache_seq2 = t_seq;
+		ef->cache_lstabp2 = lstabp;
+		ef->cache_prevls2 = t_prevls;
+		ef->cache_pos2 = cpos;
+	}
+	else if (lxd->ls_per_ps <= 1 &&
+	         cpos >= d_size) {
+	   if (ef->cache_valid2) {
+	   	// already using cache2, use cache1 since it's slightly faster
+			ef->cache_valid = 1;
+			ef->cache_seq = t_seq;
+			ef->cache_lstabp = lstabp;
+			ef->cache_prevls = t_prevls;
+			ef->cache_pos = cpos;
+		}
+		else {
+			ef->cache_valid2 = 1;
+			ef->cache_seq2 = t_seq;
+			ef->cache_lstabp2 = lstabp;
+			ef->cache_prevls2 = t_prevls;
+			ef->cache_pos2 = cpos;
+		}
+	}
+	*seq = t_seq;
+	*prevlsp = t_prevls;
+	*ls = t_ls;
+	return rc;
+}
+
+
+/*** BeginHeader fs_init */
+#ifndef __TESTENV__
+#use "fs_dev.lib"
+#endif
+int fs_init(long reserveblocks, int num_blocks);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fs_init                      <fs2.lib>
+
+SYNTAX: int fs_init(long reserveblocks, int num_blocks)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Initialize the filesystem.  The static structure _fs
+               contains information which defines the number and
+               parameters associated with each extent or "partition".
+               This function must be called before any of the other
+               functions in this library, except for fs_setup(),
+               fs_get_*_lx() and fs_get_lx_size().
+
+               Pre-main initialization will create up to 3 devices:
+               . The second flash device (if available on the board)
+               . Battery-backed SRAM (if FS2_RAM_RESERVE defined)
+               . The first (program) flash (if XMEM_RESERVE_SIZE and
+                 FS2_USE_PROGRAM_FLASH defined).
+               The LX numbers of the default devices can be obtained
+               using the fs_get_flash_lx(), fs_get_ram_lx() and
+               fs_get_other_lx() calls.
+
+               If none of these devices can be set up successfully,
+               fs_init() will return ENOSPC when called.
+
+               This function performs complete consistency checks
+               and, if necessary, fixups for each LX.  It may take
+               up to several seconds to run.  It should only be called
+               once at application initialization time.
+
+PARAMETER1:    Must be zero.  Retained for backward compatibility.
+PARAMETER2:    Ignored (backward compatibility).
+
+RETURN VALUE:  0 - success
+               non-zero - failure
+
+ERRNO VALUES:  EINVAL - the reserveblocks parameter was non-zero.
+               EIO - I/O error.  This indicates a hardware problem.
+               ENOMEM - Insufficient memory for required buffers.
+               ENOSPC - No valid extents obtained e.g. there is no
+                 recognized flash or RAM memory device available, or
+                 at least one of the extents is allocated with zero
+                 logical sectors.
+
+SEE ALSO:      fs_setup, fs_get_flash_lx
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int fs_init(long reserveblocks, int num_blocks)
+{
+	auto int rc;
+	auto int i;
+	auto FS_lxd * lxd;
+	auto FS_ef * ef;
+	auto word ps_size;	// Set to largest PS size in any SSW
+	auto int zero_size;
+
+	FS_TRACE(("+ fs_init\n"))
+
+	_fs_premain();
+
+	if (!_fs.num_lx) {
+		_set_errno(ENOSPC);
+		FS_TRACE(("- fs_init ENOSPC\n"))
+		return 1;
+	}
+
+	rc = 0;
+	if (reserveblocks) {
+		_set_errno(EINVAL);
+		FS_TRACE(("- fs_init EINVAL\n"))
+		return 1;
+	}
+
+	ps_size = FS_MIN_PBUF_SIZE;
+
+	_fs.init = 1;
+
+	// Initialize the static structures to sane state.  Note that some fields are already
+	// initialized by global init sections which examine the bios and compiled-in info.
+	_fs.cur_meta = 0;
+	_fs.cur_data = 0;
+	for (i = 0; i <= FS_MAX_FILES; i++)
+		_fs.ef[i].in_use = 0;
+
+	memset(_fs.eftab, 0, sizeof(_fs.eftab));
+	zero_size = 0;
+	for (i = 1; i <= _fs.num_lx; i++)
+		if (!FS_IS_DUMMY_LX(i)) {
+			if (!_fs.cur_meta) {
+				_fs.cur_meta = i;		// Set initial defaults to first non-dummy LX
+				_fs.cur_data = i;
+			}
+			lxd = FS_LXN2PTR(i);
+			lxd->this = (FSLXnum)i;
+			lxd->ls_size = 1 << lxd->ls_shift;
+			lxd->num_ls = (FSLSnum)((lxd->num_ps * lxd->ps_size) >> lxd->ls_shift);
+			if (!lxd->num_ls) {
+				zero_size++;
+				continue;
+			}
+			lxd->lstab = xalloc((long)sizeof(FSLSnum) * lxd->num_ls);
+			if (!lxd->lstab) {
+				_set_errno(ENOMEM);
+				rc = 1;
+				break;
+			}
+			if (lxd->ps_size > 0)
+				lxd->ps_per_ls = (word)(lxd->ls_size / lxd->ps_size);
+			else
+				lxd->ps_per_ls = 0;
+			if (lxd->ps_size >= lxd->ls_size)
+				lxd->ls_per_ps = (word)(lxd->ps_size >> lxd->ls_shift);
+			else
+				lxd->ls_per_ps = 0;
+			lxd->d_size = lxd->ls_size - sizeof(FS_b) - sizeof(FSchecksum);
+			if (lxd->wear_leveling)
+				lxd->d_size -= sizeof(FS_w);
+			if (FS_IS_SSW(lxd) && lxd->ps_size > ps_size)
+				ps_size = (word)lxd->ps_size;
+			if (FS_IS_BW(lxd) && lxd->ls_size > ps_size)
+				ps_size = lxd->ls_size;
+			if (lxd->ls_per_ps)
+				lxd->min_free = lxd->ls_per_ps - 1;
+			else
+				lxd->min_free = 0;
+			if (lxd->init)
+				FS_CALL_INIT(lxd);
+		}
+
+	for (i = 1; i <= _fs.num_lx; i++)
+		if (!FS_IS_DUMMY_LX(i)) {
+			// Do the major work of sorting blocks from each LX and setting up RAM tables.
+			lxd = FS_LXN2PTR(i);
+			if (!lxd->num_ls)
+				continue;
+			rc = fs_init_lstab(lxd);
+			if (rc)
+				break;
+		}
+
+	// Clean up any files which have data or metadata but not both.
+	// FIXME: this may be a bit drastic.  Could try to reconstruct metadata.
+	for (i = 1; i <= FS_MAX_FILES; i++) {
+		ef = _fs.ef + i;
+		if (!ef->in_use)
+			continue;
+		if (!ef->metalx || !ef->datalx)
+			fs_purge_file(ef);
+	}
+
+	// Scan all remaining metadata to correctly determine the start and end offsets
+	// of each file, and to reject any old LS versions or corrupted files.
+	for (i = 1; i <= FS_MAX_FILES; i++) {
+		ef = _fs.ef + i;
+		if (!ef->in_use)
+			continue;
+		if (fs_scan_file(ef))
+			fs_purge_file(ef);
+	}
+
+	_fs.pbuf = xalloc(ps_size);
+	if (_fs.pbuf)
+		_fs.pbuf_size = ps_size;
+	else {
+		_fs.pbuf_size = 0;
+		_set_errno(ENOMEM);
+		rc = 1;
+	}
+
+	_fs_pbuf = _fs.pbuf;		// Kludge alert.
+
+	_fs.init = 0;
+
+	if (zero_size) {
+		_set_errno(ENOSPC);
+		rc = 1;
+	}
+	FS_TRACE(("- fs_init rc=%d errno=%d\n", rc, errno))
+	return rc;
+}
+
+/*** BeginHeader _fs_premain */
+void _fs_premain(void);
+/*** EndHeader */
+fs_nodebug void _fs_premain(void)
+{
+	static FS_lxd * lxd;
+#ifdef FS2_NO_PREMAIN
+	static int fs_initialized;
+#endif
+
+#ifndef __TESTENV__
+ #ifdef FS2_NO_PREMAIN
+	#GLOBAL_INIT { fs_initialized = 0; }
+
+	if (!fs_initialized) {
+		fs_initialized = 1;
+ #else
+	#GLOBAL_INIT {
+ #endif
+		// Set up reasonable defaults, based on user and BIOS defines
+		_fs.num_lx = 0;
+		_fs.flash_lx = 0;
+		_fs.ram_lx = 0;
+		_fs.other_lx = 0;
+		_fs.setup_failed = 0;
+		memset(_fs.lx, 0, sizeof(_fs.lx));
+
+#ifndef FS2_DISALLOW_GENERIC_FLASH
+		// not a DLM, nor a DLP, nor running in RAM, nor running in fast RAM,
+		//  so allow "generic" (second) flash access
+		// Get the flash ID, and set up some derived quantities in LXD #1.
+		lxd = _fs.lx + 1;
+		// Set good default for flash - this will give 256 LSs for a 256K flash.
+		lxd->ls_shift = FS_DEFAULT_FLASH_SHIFT;
+		_fs.setup_failed = gflash_setup(lxd, CS_FLASH2|FLASH_WSTATES, &lxd->id);
+		if (!_fs.setup_failed) {
+			_fs.num_lx++;
+			_fs.flash_lx = _fs.num_lx;
+		}
+#endif
+#if (FS2_RAM_RESERVE > 0)
+		// Next device is NVRAM, if requested.
+		if (_fs.num_lx < FS_MAX_LX) {
+			lxd = _fs.lx + _fs.num_lx + 1;
+			lxd->ls_shift = FS_DEFAULT_RAM_SHIFT;	// Set good default for RAM
+			_fs.setup_failed = nvram_setup(lxd, CS_RAM|RAM_WSTATES);
+			lxd->id = 0;	// No ID for RAM.
+			if (!_fs.setup_failed) {
+				_fs.num_lx++;
+				_fs.ram_lx = _fs.num_lx;
+			}
+		}
+#endif
+#ifndef FS2_DISALLOW_PROGRAM_FLASH
+		// not running in RAM, so allow "program" (first) flash access
+#if (FS2_USE_PROGRAM_FLASH > 0 && XMEM_RESERVE_SIZE > 0)
+		// Last device is for program flash.
+		if (_fs.num_lx < FS_MAX_LX) {
+			lxd = _fs.lx + _fs.num_lx + 1;
+			lxd->ls_shift = FS_DEFAULT_FLASH_SHIFT;	// Set good default for program flash
+			_fs.setup_failed = pflash_setup(lxd, CS_FLASH|FLASH_WSTATES, &lxd->id);
+			if (!_fs.setup_failed) {
+				_fs.num_lx++;
+				if (_fs.flash_lx)
+					_fs.other_lx = _fs.num_lx;
+				else
+					_fs.flash_lx = _fs.num_lx;
+			}
+		}
+#endif
+#endif
+	}
+#endif
+}
+
+
+
+/*** BeginHeader fcreate_unused, fcreate */
+FileNumber fcreate_unused(File * f);
+int fcreate(File * f, FileNumber name);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fcreate_unused                      <fs2.lib>
+
+SYNTAX: FileNumber fcreate_unused(File * f)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Create a new file and return the "file name" which is a
+               number between 1 and 255.  The new file will be created on
+               the current default extent(s) as specified by fs_set_lx().
+               Other behavior is the same as fcreate().
+
+PARAMETER1:    Pointer to file descriptor to fill in.
+
+RETURN VALUE:  non-zero - success
+               0 - failure
+
+ERRNO VALUES:  ENFILE - No unused file number available.
+
+SEE ALSO:      fcreate, fs_set_lx, fdelete
+
+END DESCRIPTION **********************************************************/
+fs_nodebug FileNumber fcreate_unused(File * f)
+{
+	// Returns 0 if error.
+	auto FSfilenum name;
+
+	FS_TRACE(("+ fcreate_unused\n"))
+	name = 1 + strlen(_fs.eftab + 1);	// Search for a 0 entry from element 1.
+	if (!name) {
+		_set_errno(ENFILE);
+		FS_TRACE(("- fcreate_unused ENFILE\n"))
+		return 0;
+	}
+	if (fcreate(f, name)) {
+		FS_TRACE(("- fcreate_unused fcreate error\n"))
+		return 0;
+	}
+	FS_TRACE(("- fcreate_unused %d\n", (int)FS_FQFN(FS_METALX_OF_FILE(name), name)))
+	return FS_FQFN(FS_METALX_OF_FILE(name), name);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+fcreate                      <fs2.lib>
+
+SYNTAX: int fcreate(File * f, FileNumber name)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Create a new file with the given "file name" which is
+               composed of two parts: the low byte is the actual file
+               number (1 to 255 inclusive), and the high byte contains
+               an extent number (1 to _fs.num_lx) on which to place
+               the file metadata.  The extent specified by fs_set_lx()
+               is always used to determine the actual data extent.
+               If the high byte contains 0, then the default metadata
+               extent specified by fs_set_lx() is used. The file descriptor
+               is filled in if successful.  The file will be opened
+               for writing, so a further call to fopen_wr() is not
+               necessary.
+
+               The number of files which may be created is limited by
+               the lower of FS_MAX_FILES and 255.  This limit applies
+               to the entire filesystem (all extents).
+
+               Once a file is created, its data and metadata extent
+               numbers are fixed for the life of the file, i.e. until
+               is is deleted.  It is recommended that fs_set_lx() be
+               called immediately before calling fcreate(), to ensure
+               that files are created in the desired extent(s).
+
+               When created, no space is allocated in the file system
+               until the first write occurs for the file.  Thus, if
+               the system power is cycled after creation but before the
+               first byte is written, the file will be effectively
+               deleted.
+
+PARAMETER1:    Pointer to file descriptor to fill in.
+PARAMETER2:    File number including optional metadata extent number.
+
+RETURN VALUE:  0 - success
+               non-zero - failure
+
+ERRNO VALUES:  EINVAL - Zero file number requested, or invalid extent
+                 number.
+               EEXIST - File with given number already exists.
+               ENFILE - No space is available in the "existing file
+                 table".  If this error occurs, increase the definition
+                 of FS_MAX_FILES, which is a #define constant which
+                 should be declared before #use "fs2.lib".
+
+SEE ALSO:      fcreate_unused, fs_set_lx, fdelete
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int fcreate(File * f, FileNumber name)
+{
+	// File creation does not actually write anything to storage, thus file creation
+	// does not create anything persistent unless data is written to the new file.
+	auto FSfilenum n;
+	auto FSLXnum lxn;
+	auto FS_ef * ef;
+#ifdef FS_API_TRACE
+	auto int rc;
+#endif
+
+	FS_TRACE(("+ fcreate name=%d\n", (int)name))
+	f->name = 0;		// Ensure in closed state.
+
+	FS_SPLITFN(name, lxn, n);
+	if (!n || lxn && !FS_IS_VALID_LX(lxn)) {
+		_set_errno(EINVAL);
+		FS_TRACE(("- fcreate EINVAL\n"))
+		return 1;
+	}
+	if (FS_EXISTS(n)) {
+		_set_errno(EEXIST);
+		FS_TRACE(("- fcreate EEXIST\n"))
+		return 1;
+	}
+	if (!lxn)
+		lxn = _fs.cur_meta;
+	ef = fs_find_create_ef(n, lxn, _fs.cur_data);
+	if (!ef) {
+		_set_errno(ENFILE);
+		FS_TRACE(("- fcreate ENFILE\n"))
+		return 1;
+	}
+#ifdef FS_API_TRACE
+	rc = fs_open(f, name);
+	FS_TRACE(("- fcreate rc=%d errno=%d\n", rc, errno))
+	return rc;
+#else
+	return fs_open(f, name);	// Open for writing
+#endif
+}
+
+/*** BeginHeader fdelete */
+int fdelete(FileNumber name);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fdelete                      <fs2.lib>
+
+SYNTAX: int fdelete(FileNumber name)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Delete the file with the given number.  The specified
+               file must not be open.  The file number is composed of
+               two parts: the low byte contains the actual file number,
+               and the high byte (if not zero) contains the metadata
+               extent number of the file.
+
+PARAMETER1:    File number (1 to 255 inclusive).
+
+RETURN VALUE:  0 - success
+               non-zero - failure
+
+ERRNO VALUES:  ENOENT - File does not exist, or metadata extent number
+                 does not match an existing file.
+               EBUSY - File is open.
+               EIO - I/O error when releasing blocks occupied by this file.
+
+SEE ALSO:      fcreate
+
+END DESCRIPTION **********************************************************/
+
+fs_nodebug int fdelete(FileNumber name)
+{
+	auto FSLXnum lxn;
+	auto FSfilenum n;
+	auto FS_lxd * mlxd;
+	auto FS_lxd * dlxd;
+	auto FS_ef * ef;
+	auto int rc;
+	auto FSLSnum mls;
+	auto char dummy;
+
+	FS_TRACE(("+ fdelete %d\n", (int)name))
+
+	FS_SPLITFN(name, lxn, n);
+
+	if (!FS_EXISTS(n)) {
+		_set_errno(ENOENT);
+		FS_TRACE(("- fdelete ENOENT\n"));
+		return 1;
+	}
+
+	ef = FS_EF_OF_FILE(n);
+
+	if (lxn && lxn != ef->metalx) {
+		_set_errno(ENOENT);
+		FS_TRACE(("- fdelete ENOENT [lxn=%d not %d]\n", (int)lxn, (int)ef->metalx))
+		return 1;
+	}
+
+	if (ef->ref_count > 0) {
+		_set_errno(EBUSY);
+		FS_TRACE(("- fdelete EBUSY\n"))
+		return 1;
+	}
+
+	// Delete the data by erasing all LSs in the data chain
+	dlxd = FS_LXN2PTR(ef->datalx);
+	mlxd = FS_LXN2PTR(ef->metalx);
+
+	rc = 0;
+
+	if (fs_erase_chain(dlxd, paddr(&ef->first_dls), FS_REALLY_ERASE, 0, 0, NULL))
+		rc = 1;
+
+	// Erase the metadata chain
+	mls = ef->first_mls;
+	if (fs_erase_chain(mlxd, paddr(&ef->first_mls), FS_REALLY_ERASE, 0, 0, NULL))
+		rc = 1;
+
+	// For SSW LXs, expurgate any old blocks belonging to this file on free list
+	if (FS_IS_SSW(dlxd))
+		fs_expurgate(dlxd, n);
+	if (mlxd != dlxd && FS_IS_SSW(mlxd))
+		fs_expurgate(mlxd, n);
+
+	// Delete the EF and eftab entry
+	ef->in_use = 0;
+	_fs.eftab[n] = 0;
+
+	FS_TRACE(("- fdelete rc=%d errno=%d\n", rc, errno))
+	return rc;
+}
+
+/*** BeginHeader fopen_rd, fopen_wr */
+int fopen_rd(File * f, FileNumber name);
+int fopen_wr(File * f, FileNumber name);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fopen_rd                      <fs2.lib>
+
+SYNTAX: int fopen_rd(File * f, FileNumber name)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Open file for reading only.  See fopen_wr() for a more
+               detailed description.
+
+PARAMETER1:    Pointer to file descriptor (uninitialized).
+PARAMETER2:    File number (1 to 255 inclusive).
+
+RETURN VALUE:  0 - success
+               non-zero - failure
+
+ERRNO VALUES:  ENOENT - File does not exist, or metadata extent number
+                 does not match an existing file.
+
+SEE ALSO:      fclose, fopen_wr
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int fopen_rd(File * f, FileNumber name)
+{
+	FS_TRACE(("+ fopen_rd name=%d\n", (int)name))
+	if (fs_open(f, name)) {
+		FS_TRACE(("- fopen_rd rc=1, errno=%d\n", errno))
+		return 1;
+	}
+	f->mode |= FSMODE_RO;
+	FS_TRACE(("- fopen_rd rc=0\n"))
+	return 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+fopen_wr                      <fs2.lib>
+
+SYNTAX: int fopen_wr(File * f, FileNumber name)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Open file for read or write.  The given file number is
+               composed of two parts: the low byte contains the file
+               number (1 to 255 inclusive) and the high byte, if not
+               zero, contains the metadata extent number.  If the
+               extent number is zero, it defaults to the correct
+               metadata extent - this is for the purpose of validating
+               an expected extent number.  Most applications should
+               just pass the file number with zero high byte.
+
+               A file may be opened multiple times, with a different
+               file descriptor pointer for each call, which allows the
+               file to be read or written at more than one position
+               at a time.  A reference count for the actual file is
+               maintained, so that the file can only be deleted when
+               all file descriptors referring to this file are closed.
+
+               fopen_wr() or fopen_rd() must be called before any other
+               function, which requires a File pointer, is called from
+               this library.  The "current position" is set to zero
+               i.e. the start of the file.
+
+               When a file is created, it is automatically opened for
+               writing thus a subsequent call to fopen_wr() is redundant.
+
+PARAMETER1:    Pointer to file descriptor (uninitialized).
+PARAMETER2:    File number (1 to 255 inclusive).
+
+RETURN VALUE:  0 - success
+               non-zero - failure
+
+ERRNO VALUES:  ENOENT - File does not exist, or metadata extent number
+                 does not match an existing file.
+
+SEE ALSO:      fclose, fopen_rd
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int fopen_wr(File * f, FileNumber name)
+{
+#ifdef FS_API_TRACE
+	auto int rc;
+
+	FS_TRACE(("+ fopen_wr name=%d\n", (int)name))
+	rc = fs_open(f, name);
+	FS_TRACE(("- fopen_wr rc=%d errno=%d\n", rc, errno))
+	return rc;
+#else
+	return fs_open(f, name);
+#endif
+}
+
+/*** BeginHeader fclose */
+int fclose(File * f);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fclose                      <fs2.lib>
+
+SYNTAX: int fclose(File * f)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Close file.  First calls fflush(), and returns the
+               return code from that function.  The reference count
+               for the file is reduced by 1.
+
+PARAMETER1:    Pointer to file descriptor.
+
+RETURN VALUE:  0 - success
+               non-zero - failure
+
+ERRNO VALUES:  EBADFD - file invalid or not open.
+               EIO - I/O error.
+
+SEE ALSO:      fflush, fopen_rd, fopen_wr
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int fclose(File * f)
+{
+	int rc;
+
+	FS_TRACE(("+ fclose name=%d\n", (int)f->name))
+	rc = fflush(f);
+	if (f->ef->ref_count > 0)
+		f->ef->ref_count--;
+	f->name = 0;
+	FS_TRACE(("- fclose rc=%d errno=%d\n", rc, errno))
+	return rc;
+}
+
+/*** BeginHeader fs_write_pbuf, fs_move_ls, fs_recycle_deleted, fs_get_free,
+		fs_add_log, fs_overwrite, fs_append */
+int fs_write_pbuf(FS_lxd * lxd, long dev_offs, word len, word iskip);
+int fs_move_ls(FS_lxd * lxd, FSLSnum ls2move, FSLSnum newls, int bclass, FSfilenum fnum);
+void fs_recycle_deleted(FS_lxd * lxd, FSLSnum ls_lock, FSLSnum ls_lock2);
+FSLSnum fs_get_free(FS_lxd * lxd, FSLSnum ls_lock, FSLSnum ls_lock2);
+int fs_add_log(FS_ef * ef, FSoffset offs, FSchecksum chk, FSLSnum ls);
+int fs_overwrite(FS_ef * ef, long lstabp, FSLSnum * lsp, FSoffset * offsp,
+					  char * buf, int len, FSseq * seqp, int meta, FSLSnum prevls);
+int fs_append(FS_ef * ef, long lstabp, FSLSnum * lsp, FSoffset * offsp,
+				  char * buf, int len, FSseq * seqp, int meta, FSLSnum prevls);
+/*** EndHeader */
+
+fs_nodebug int fs_write_pbuf(FS_lxd * lxd, long dev_offs, word len, word iskip)
+{
+	// len must be <= ps_size and <= ls_size
+	// If non-SSW, iskip indicates an initial number of bytes to _not_ bother writing.
+	auto long maplog;
+	auto int rc;
+
+	maplog = FS_CALL_MAP(lxd, dev_offs);
+	if (FS_IS_SSW(lxd)) {
+		CPUSH(24)
+		rc = FS_CALL_WRITE(lxd, _fs.pbuf, lxd->ps_size, maplog);
+		CPOP
+	}
+	else {
+		CPUSH(25)
+		rc = FS_CALL_ANDOVER(lxd, _fs.pbuf + iskip, len - iskip, maplog + iskip);
+		CPOP
+	}
+
+	return rc;
+}
+
+fs_nodebug int fs_move_ls(FS_lxd * lxd, FSLSnum ls2move, FSLSnum newls, int bclass, FSfilenum fnum)
+{
+	// Copy LS ls2move to LS newls (which is already free).  This should only be
+	// called for BW devices since it does not touch the W-block, and it assumes
+	// _fs.pbuf can contain an entire LS.
+	// bclass indicates the LS type (FSCLASS_B or _H) and the LS belongs to file fnum.
+	// The version number is incremented.  The file chain is updated to include the
+	// new LS, but the ls2move entry is _not_updated.  Returns 0 if OK, else 1.
+	auto int rc;
+	auto FS_ef * ef;
+	auto FS_w w;
+	auto FS_h h;
+	auto FSchecksum chk;
+	auto int hdrlen, iskip;
+	auto long lstabp;		// paddr of entry which points to ls2move (this is updated).
+	auto long p;
+	auto FSLSnum ls, nextls;
+
+	TRACE(("    fs_move_ls  moving %d to %d, class=%d, fnum=%d\n",
+				(int)ls2move, (int)newls, bclass, (int)fnum));
+
+	if (!FS_EXISTS(fnum)) {
+		_set_errno(EUNEXEOC);
+		return 1;
+	}
+
+	ef = FS_EF_OF_FILE(fnum);
+
+	if (bclass == FSBCLASS_H)
+		lstabp = paddr(&ef->first_mls);
+	else
+		lstabp = paddr(&ef->first_dls);
+
+	// Search for entry pointing to ls2move
+	ls = fs_lstabent(lstabp);
+	while (ls != ls2move) {
+		if (ls == FS_INVALID_LS) {
+			TRACE(("      ls2move not in file chain\n"));
+			_set_errno(EUNEXEOC);
+			return 1;
+		}
+		lstabp = FS_LSTABPHYS(lxd, ls);
+		ls = fs_lstabent(lstabp);
+	}
+	p = FS_LSTABPHYS(lxd, ls2move);
+	nextls = fs_lstabent(p);
+
+	chk = 0;
+	if (lxd->wear_leveling) {
+		iskip = sizeof(FS_w);
+		fs_get_headers(lxd, newls, &w, NULL, NULL);
+		fs_checksum(&chk, &w, sizeof(w));
+	}
+	else
+		iskip = 0;
+
+	rc = fs_read_pbuf(lxd, FS_LS2OFFSET(lxd, ls2move), lxd->ls_size);
+	if (rc)
+		return rc;
+	xmem2root(&h, _fs.pbuf + iskip, sizeof(h));
+
+	h.version = ++ef->vers;
+	if (h.magic == FSMAGIC_H) {
+		hdrlen = sizeof(h);
+		fs_checksum(&chk, &h, sizeof(h) - sizeof(FSchecksum));
+		h.chksum = ~chk;
+	}
+	else {
+		hdrlen = sizeof(FS_b);
+		fs_checksum(&chk, &h, sizeof(FS_b) - sizeof(FSchecksum));
+		((FS_b *)&h)->chksum = ~chk;
+	}
+	root2xmem(_fs.pbuf + iskip, &h, hdrlen);
+
+	rc = fs_write_pbuf(lxd, FS_LS2OFFSET(lxd, newls), lxd->ls_size, iskip);
+	if (rc)
+		return rc;
+
+	// Link 'im in
+	fs_set_lstabent(lstabp, newls);
+	p = FS_LSTABPHYS(lxd, newls);
+	fs_set_lstabent(p, nextls);
+
+	TRACE(("      move relink newls %d followed by %d\n", (int)newls, (int)nextls));
+
+	return 0;
+}
+
+fs_nodebug void fs_recycle_deleted(FS_lxd * lxd, FSLSnum ls_lock, FSLSnum ls_lock2)
+{
+	// If there are any deleted LSs (probably because this is a BW device
+	// with PS larger than LS), recycle them into free (erased) blocks.
+	// For this to be possible, there must be a number of "emergency" free
+	// blocks set aside: min_free = ls_per_ps - 1 of them.  This is enough to
+	// contain the maximum possible number of in-use LSs from a PS which has at
+	// least one del LS.
+	// The first step is to locate the PS which has the greatest number of
+	// del/free LSs.  This PS will require the minimum amount of data shuffling.
+	// (An alternative strategy is to find the first lowest-wear PS which
+	// contains at least 1 del or free LS).  The PS selected must _not_ contain
+	// ls_lock or ls_lock2.
+	// Then, all in-use LSs are moved to the emergency free LSs which are
+	// not on this PS.  The PS can then be erased, giving back ls_per_ps
+	// free LSs.  There will be a nett increase in the free LS count, so the
+	// caller should be able to use one without encroaching on the emergency
+	// reserve.
+	// If the user wants to live fast and dangerous, min_free can
+	// be set to a lower value than ls_per_ps - 1.  In this case, if the flash
+	// has a large number of PSs, then there is a good probability of being
+	// able to successfully recycle.  However, there is always a chance that
+	// this routine would be unable to recycle del LSs in spite of there being
+	// a large number of them -- the only recourse would be to delete files
+	// one at a time until a PS has sufficient del LSs.
+	// The alternatives (say, buffering LSs in memory instead of on the flash)
+	// would lead to recovery problems if power was lost during the recycle.
+	// No, we have to copy in-use LSs to the same flash so that at least one
+	// version of the LS is stored at all times.
+	auto FSfilenum files[FS_MAX_LS_PER_PS];	// File number on each LS of the PS
+	auto FSfilenum fnum;
+	auto char classes[FS_MAX_LS_PER_PS];		// LS class of each LS of the PS
+	auto int bclass;
+	auto FSPSnum ps2free;		// The PS to free
+	auto FSPSnum ps;
+	// Counts of LS classes on the above target PS
+	auto unsigned pf_del, pf_inuse, pf_free, pf_bad;
+	auto FSLSnum ls2move;		// The LS which is to be moved off target PS
+	auto FSLSnum freels;			// The free LS to which ls2move is to be moved
+	auto long pdel;				// paddr of del LS list
+	auto long pfree;				// paddr of free LS list
+	auto long nextp;
+	auto FSLSnum dells;			// A deleted LS
+	auto FSLSnum ls;
+	auto FSLSnum lsbase;			// First LS of a candidate PS
+	auto FS_h hdr;
+
+	CPUSH(18)
+	TRACE(("  fs_recycle_deleted num_free=%d\n", (int)lxd->num_free));
+
+	ps2free = (FSPSnum)-1;
+	pdel = paddr(&lxd->first_deleted);
+	dells = fs_lstabent(pdel);
+	if (dells == FS_INVALID_LS) {
+		CPOP
+		return;	// No suitable deletable
+	}
+	ps2free = dells / lxd->ls_per_ps;
+	for (;;) {
+		lsbase = ps2free * lxd->ls_per_ps;
+		pf_del = pf_inuse = pf_free = pf_bad = 0;
+		for (ls = lsbase; ls < lsbase + lxd->ls_per_ps; ls++) {
+			if (ls == ls_lock || ls == ls_lock2) {
+				pf_inuse = 0xFFFF;	// Ensure no use
+				break;
+			}
+			fs_get_headers(lxd, ls, NULL, &hdr, NULL);
+			FS_MAGIC2CLASS(hdr.magic, bclass, lxd)
+			switch (bclass) {
+				case FSBCLASS_BAD: pf_bad++; break;
+				case FSBCLASS_FREE: pf_free++; break;
+				case FSBCLASS_DEL: pf_del++; break;
+				default:
+					pf_inuse++;
+					files[ls - lsbase] = hdr.filenum;
+					break;
+			}
+			classes[ls - lsbase] = bclass;
+		}
+		if (pf_inuse <= lxd->num_free - pf_free)
+			break;	// Found suitable PS
+		do {
+			pdel = FS_LSTABPHYS(lxd, dells);
+			dells = fs_lstabent(pdel);
+			if (dells == FS_INVALID_LS) {
+				CPOP
+				return;	// No suitable deletable
+			}
+			ps = dells / lxd->ls_per_ps;
+		} while (ps == ps2free);
+		ps2free = ps;
+	}
+
+	TRACE(("    ps2free=%d\n", (int)ps2free));
+
+	// Move in-use blocks to free (not on this PS)
+	for (ls2move = lsbase; ls2move < lsbase + lxd->ls_per_ps; ls2move++) {
+		bclass = classes[ls2move - lsbase];
+		if (bclass == FSBCLASS_H || bclass == FSBCLASS_B) {
+			fnum = files[ls2move - lsbase];
+
+			// Find suitable free LS to move to
+			pfree = paddr(&lxd->first_free);
+			freels = fs_lstabent(pfree);
+			while (freels / lxd->ls_per_ps == ps2free) {
+				pfree = FS_LSTABPHYS(lxd, freels);
+				freels = fs_lstabent(pfree);
+				if (freels == FS_INVALID_LS) {
+					TRACE(("    the impossible just happened\n"));
+					CPOP
+					return;	// This should never happen!
+				}
+			}
+			nextp = FS_LSTABPHYS(lxd, freels);
+			ls = fs_lstabent(nextp);
+			fs_set_lstabent(pfree, ls);
+			lxd->num_free--;
+
+			if (fs_move_ls(lxd, ls2move, freels, bclass, fnum)) {
+				CPOP
+				return;	// Maybe I/O error - abort recycle operation.
+			}
+		}
+	}
+
+	TRACE(("    erasing PS %u\n", ps2free));
+
+	if (fs_erase_physical(lxd, ps2free, 0)) {
+		CPOP
+		return;	// Maybe I/O error
+	}
+
+	// All in-use blocks moved, add back to free chain.  Rewrite any bad LS
+	// markers.  Any del LSs are moved to free chain.
+	// We do this separately in case there was an error in any of the above.
+	for (ls2move = lsbase; ls2move < lsbase + lxd->ls_per_ps; ls2move++) {
+		bclass = classes[ls2move - lsbase];
+		if (bclass == FSBCLASS_BAD)
+			fs_mark_bad(lxd, FS_LS2OFFSET(lxd, ls2move));
+		else if (bclass != FSBCLASS_FREE) {
+			// Not already free, nor bad: add back to free list.
+			if (bclass == FSBCLASS_DEL) {
+				// Remove from deleted LS list.  FIXME: improve speed.
+				pdel = paddr(&lxd->first_deleted);
+				dells = fs_lstabent(pdel);
+				while (dells != ls2move) {
+					if (dells == FS_INVALID_LS)
+						return;	// This shouldn't happen
+					pdel = FS_LSTABPHYS(lxd, dells);
+					dells = fs_lstabent(pdel);
+				}
+				nextp = FS_LSTABPHYS(lxd, dells);
+				ls = fs_lstabent(nextp);
+				fs_set_lstabent(pdel, ls);
+				TRACE(("    ls %d -> undeleted (next del = %d)\n", (int)dells, (int)ls));
+				lxd->num_deleted--;
+			}
+			TRACE(("    ls %d -> free\n", (int)ls2move));
+			fs_insert_chain(lxd, paddr(&lxd->first_free), ls2move);
+			lxd->num_free++;
+		}
+	}
+	TRACE(("    returning num_free=%d\n", (int)lxd->num_free));
+	CPOP
+}
+
+fs_nodebug FSLSnum fs_get_free(FS_lxd * lxd, FSLSnum ls_lock, FSLSnum ls_lock2)
+{
+	// Return a LS number for a free LS.  Unchain this LS from the free list.
+	// If none available, return 0xFFFF.
+	// ls_lock/2 are passed to fs_recycle_deleted to prevent that routine from
+	// trying to free a PS which contains ls_lock/2.  This is because a) there
+	// is no point in shuffling a LS which we are updating and b) if it does
+	// try to shuffle that LS then pointer chains will be scrambled.
+	auto long lstabp, nextp;
+	auto FSLSnum ls, nextls;
+
+	CPUSH(17)
+	TRACE(("fs_get_free lx=%d ls_locks=%d/%d\n", (int)lxd->this, (int)ls_lock, (int)ls_lock2));
+
+	if (FS_IS_BW(lxd) && lxd->num_free <= lxd->min_free) {
+		fs_recycle_deleted(lxd, ls_lock, ls_lock2);
+
+		// FIXME: the following behaviour should be configurable.
+		if (lxd->num_free <= lxd->min_free) {
+			CPOP
+			return FS_INVALID_LS;
+		}
+	}
+
+	if (!lxd->num_free) {
+		CPOP
+		return FS_INVALID_LS;
+	}
+
+	lstabp = paddr(&lxd->first_free);
+	ls = fs_lstabent(lstabp);
+	if (ls == FS_INVALID_LS) {
+		// This represents an internal inconsistency.
+		TRACE(("  inconsistent free count %d\n", (int)lxd->num_free));
+		lxd->num_free = 0;
+		CPOP
+		return ls;
+	}
+	nextp = FS_LSTABPHYS(lxd, ls);
+	nextls = fs_lstabent(nextp);
+	fs_set_lstabent(lstabp, nextls);
+	lxd->num_free--;
+
+	TRACE(("  returning free LS %d\n", (int)ls));
+	CPOP
+	return ls;
+}
+
+fs_nodebug int fs_add_log(FS_ef * ef, FSoffset offs, FSchecksum chk, FSLSnum ls)
+{
+	// Add an entry to the metadata for the given file.  chk is really a seq # for a SHIFT
+	// or a valid checksum for an APPEND.  The MSB of offs should be set for a SHIFT entry.
+	// Returns the return code from fs_overwrite() or fs_append() i.e. -1 if error.
+	// ls is the LS for which the log entry is being added.  This is not significant
+	// except that it is passed to fs_overwrite if the data and meta are on the same LX.
+	// In turn, this stops the recycle operation from trying to move this LS again.
+	auto FS_l log[2];
+	auto FSchecksum log_chk;
+	auto FS_lxd * meta;
+	auto FSoffset logoffs;
+	auto FSLSnum logls;
+	auto FSseq logseq;
+	auto long loglstabp;
+	auto int rc;
+
+	CPUSH(12)
+	meta = FS_LXN2PTR(ef->metalx);
+	logoffs = ef->m_offs;
+	logseq = 0;
+	logls = ef->first_mls;
+	loglstabp = paddr(&ef->first_mls);
+
+	TRACE(("fs_add_log: offs=%d chk=0x%x to meta=%d logoffs=%d logls=%d\n",
+				(int)offs, (unsigned)chk, (int)ef->metalx, (int)logoffs, (int)logls));
+
+	if (logls == FS_INVALID_LS || logoffs + sizeof(FS_l) > meta->d_size) {
+		// This log will not fit in the metadata LS.  Need to discard this meta LS then
+		// create a new one with just the H-block describing the current ef data.
+		if (ef->datalx != ef->metalx)
+			ls = FS_INVALID_LS;
+		CPUSH(13)
+		rc = fs_overwrite(ef, loglstabp, &logls, &logoffs, NULL, 0, &logseq, 1, ls);
+		CPOP
+		CPOP
+		return rc;
+	}
+
+	log[0].log_data = chk;
+	log[0].new_offs = offs;
+	log_chk = 0;
+	fs_checksum(&log_chk, log, sizeof(log[0]) - sizeof(FSchecksum));
+	log[0].log_chk = ~log_chk;
+
+	// Append the new log entry.  It will fit in the current metadata LS.  For SSW, we append a further
+	// dummy entry (with invalid checksum) to ensure no old data looks like a valid log entry.
+	if (!FS_IS_BW(meta) && logoffs + sizeof(log) <= meta->d_size) {
+		log[1].log_chk = FS_INVALID_CHK;
+		CPUSH(14)
+		rc = fs_append(ef, loglstabp, &logls, &logoffs, (char *)log, sizeof(log), &logseq, 1, FS_INVALID_LS);
+		CPOP
+		// Back off log offset
+		ef->m_offs -= sizeof(FS_l);
+		CPOP
+		return rc;
+	}
+	CPUSH(15)
+	rc = fs_append(ef, loglstabp, &logls, &logoffs, (char *)log, sizeof(log[0]), &logseq, 1, FS_INVALID_LS);
+	CPOP
+	CPOP
+	return rc;
+}
+
+
+fs_nodebug int fs_overwrite(FS_ef * ef, long lstabp, FSLSnum * lsp, FSoffset * offsp,
+					  char * buf, int len, FSseq * seqp, int meta, FSLSnum prevls)
+{
+	// Overwrite (meta)data in a file with buf/len.  The data must not overlap EOF.  ef
+	// is the file.  lstabp is the paddr of the lstab entry which contains *lsp.  Since
+	// the LS may need to be moved, the lstab contents (and *lsp) will be updated if this
+	// is necessary.  *offsp is the first offset within the LS to overwrite.  *seqp is the
+	// expected sequence number of the LS.  Both *offsp and
+	// *seq will be updated to the next sequential position to write.  The number of bytes
+	// to write is the minimum of len and the remaining bytes in this LS (lxd->d_size -
+	// *offsp).  If the remainder is completely filled, *seqp will be incremented and
+	// *offsp reset to zero.  Otherwise, *seqp will not change and *offsp will increment
+	// by len.  A metadata log entry will be added if this is the last LS in the file,
+	// since the checksum of the last LS will be changed (but not the EOF position).
+	// The meta parameter determines whether it is the data or metadata which is written.
+	// In the case of metadata, buf and len are ignored since the only overwrite on
+	// metadata is to rewrite the H-block, which is completely determined by the contents
+	// of ef.  Also, *offsp and *seqp are initially set to 0.
+	// On return, the number of bytes replaced is returned (to a maximum of lxd->d_size),
+	// or zero if meta.  Returns -1 if error.
+	auto FS_lxd * lxd;
+	auto int rc;
+	auto int is_lastls_in_file;
+	auto int is_last_ps_in_ls;
+	auto int write_chk;
+	auto FSoffset chklen;
+	auto FSoffset write_len;
+	auto FSoffset max_chklen;
+	auto FSLSnum new_ls, nxt_ls;
+	auto FSoffset i, po, polen, xo, xoinit, xolen;
+	auto char * xbuf;
+	auto FSPSnum num_ps;
+	auto long psn, pnn, ntabp;
+	auto word ps_size;
+	auto FS_w wear;
+	auto FS_h hdr;
+	auto int hdrsize;
+	auto FSchecksum chk, hdr_chk;
+
+	TRACE(("fs_overwrite %s: f=%d ls=%d offs=%d len=%d seq=%d pls=%d\n",
+		meta ? "META" : "data", (int)ef->name, (int)*lsp, (int)*offsp, len, (int)*seqp, (int)prevls));
+
+	if (meta) {
+		lxd = FS_LXN2PTR(ef->metalx);
+		rc = 0;
+		*offsp = 0;
+		*seqp = 0;
+		is_lastls_in_file = 1;
+		hdrsize = sizeof(FS_h);
+	}
+	else {
+		lxd = FS_LXN2PTR(ef->datalx);
+		rc = lxd->d_size - *offsp;
+		if (rc > len)
+			rc = len;
+		hdrsize = sizeof(FS_b);
+		// Determine whether this is last LS
+		is_lastls_in_file = *seqp == (FSseq)(ef->first_seq + ef->num_dls - 1);
+	}
+	// rc = bytes to overwrite
+
+	// Get free LS for copy/update.
+	new_ls = fs_get_free(lxd, *lsp, prevls);
+	if (new_ls == FS_INVALID_LS) {
+		_set_errno(ENOSPC);
+		return -1;
+	}
+
+	// SSW devices need to be done physical sector at a time.  A suitable buffer is
+	// already allocated in _fs.pbuf.  If non-SSW, we do it in chunks of the maximum
+	// _fs.pbuf size (unrelated to the actual PS size).  The bigger the buffer, the
+	// more efficient (up to the size of the LS).
+	if (FS_IS_SSW(lxd))
+		ps_size = (word)lxd->ps_size;
+	else {
+		ps_size = _fs.pbuf_size;
+		if (ps_size > lxd->ls_size)
+			ps_size = lxd->ls_size;
+		if (lxd->ps_size && ps_size > lxd->ps_size)
+			ps_size = (word)lxd->ps_size;
+	}
+	psn = FS_LS2OFFSET(lxd, *lsp);
+	pnn = FS_LS2OFFSET(lxd, new_ls);
+
+	for (i = 0, xo = 0, chk = 0, is_last_ps_in_ls = 0;
+		  !is_last_ps_in_ls;
+		  i += ps_size, psn += ps_size, pnn += ps_size, xo += polen) {
+
+		if (!i && lxd->wear_leveling) {
+			fs_read_pbuf(lxd, pnn, ps_size);
+			xmem2root(&wear, _fs.pbuf, sizeof(wear));
+			if (FS_IS_SSW(lxd))
+				// SSW wear does not get incremented by fs_free_logical.  We do
+				// it here.
+				fs_update_wear(&wear);
+		}
+
+		// Get old contents if applicable
+		if (*lsp != FS_INVALID_LS && !meta)
+			fs_read_pbuf(lxd, psn, ps_size);
+		else
+			fs_erase_pbuf(ps_size);
+
+		if (!i) {
+			// First PS of LS - update B-block header and wear if applicable
+			if (lxd->wear_leveling) {
+				po = sizeof(FS_w) + hdrsize;
+				root2xmem(_fs.pbuf, &wear, sizeof(wear));
+			}
+			else
+				po = hdrsize;
+
+			hdr.magic = meta ? FSMAGIC_H : FSMAGIC_B;
+			hdr.version = ++ef->vers;
+			hdr.seq = *seqp;
+			hdr.filenum = ef->name;
+			if (meta) {
+				hdr.lxn = ef->datalx;
+				hdr.attrs = ef->attrs;
+				hdr.first_offs = ef->first_offs;
+				hdr.first_seq = ef->first_seq;
+				hdr.last_offs = ef->d_offs;
+				hdr.last_chk = ef->data_chk;
+			}
+			hdr_chk = 0;
+			fs_checksum(&hdr_chk, &hdr, hdrsize - sizeof(FSchecksum));
+			if (lxd->wear_leveling)
+				fs_checksum(&hdr_chk, &wear, sizeof(wear));
+			if (meta)
+				hdr.chksum = ~hdr_chk;
+			else
+				((FS_b *)&hdr)->chksum = ~hdr_chk;
+			if (lxd->wear_leveling)
+				root2xmem(_fs.pbuf + sizeof(FS_w), &hdr, hdrsize);
+			else
+				root2xmem(_fs.pbuf, &hdr, hdrsize);
+			if (meta) {
+				// Fix up ef to reflect update
+				ef->m_offs = FS_INIT_LOGOFFS;	// No log entries.
+			}
+		}
+		else {
+			po = 0;
+		}
+
+		if (meta) {
+			if (FS_IS_RAM(lxd))
+				po += sizeof(FS_l);	// Write some extra 0xFF for NVRAM
+			if (fs_write_pbuf(lxd, pnn, po, 0))
+				return -1;
+			break;	// Header guaranteed to fit in 1st PS, so we quit now.
+		}
+
+		// FIXME: smooth out the following logic
+		is_last_ps_in_ls =
+			i == lxd->ls_size - ps_size
+			|| is_lastls_in_file && ef->d_offs - xo + po <= ps_size;
+
+		// Compute number of chars to checksum in this PS, how many to write.
+		if (is_lastls_in_file) {
+			chklen = ef->d_offs - xo + po;
+			max_chklen = ps_size - (i == lxd->ls_size - ps_size ? sizeof(FSchecksum) : 0);
+			if (chklen > max_chklen)
+				chklen = max_chklen;
+			write_chk = i == lxd->ls_size - ps_size && ef->d_offs == lxd->d_size;
+			write_len = write_chk ? ps_size : chklen;
+		}
+		else {
+			write_len = ps_size;
+			if (i == lxd->ls_size - ps_size) {
+				write_chk = 1;
+				chklen = ps_size - sizeof(FSchecksum);
+			}
+			else {
+				write_chk = 0;
+				chklen = ps_size;
+			}
+		}
+
+		polen = ps_size - po;
+		if (*offsp < xo + polen && *offsp + len > xo) {
+			// Must be some overlap new data
+			xoinit = *offsp;
+			xbuf = buf;
+			if (xoinit < xo) xoinit = xo, xbuf += xoinit - *offsp;
+			xolen = len - (xoinit - *offsp);
+			if (xolen > xo + polen - xoinit)
+				xolen = xo + polen - xoinit;
+			root2xmem(_fs.pbuf + xoinit - xo + po, xbuf, xolen);
+		}
+
+		fs_checksum_x(&chk, _fs.pbuf, chklen);
+		if (write_chk) {
+			chk = ~chk;
+			root2xmem(_fs.pbuf + (ps_size - sizeof(chk)), &chk, sizeof(chk));
+			chk = ~chk;
+		}
+		if (fs_write_pbuf(lxd, pnn, write_len, 0))
+			return -1;
+
+	} // for
+
+	// New LS is written, free the old one and link new one into file chain.  If *lsp
+	// is 0xFFFF, then there was no old LS because this is a new metadata LS being
+	// created.
+	if (*lsp != FS_INVALID_LS) {
+		ntabp = FS_LSTABPHYS(lxd, *lsp);
+		nxt_ls = fs_lstabent(ntabp);
+		if (fs_free_logical(lxd, lstabp, *lsp))
+			return -1;
+	}
+	else
+		nxt_ls = FS_INVALID_LS;
+	fs_set_lstabent(lstabp, new_ls);
+	ntabp = FS_LSTABPHYS(lxd, new_ls);
+	fs_set_lstabent(ntabp, nxt_ls);
+
+	// Update the return values
+	*offsp += rc;
+	if (*offsp >= lxd->d_size) {
+		(*seqp)++;
+		*offsp = 0;
+	}
+	*lsp = new_ls;
+
+	// If last LS in file, add a metadata log entry to update the incomplete LS checksum.
+	// This may cause single recursion to this function if adding the metadata log causes
+	// the metadata to be reset (overwritten).  Note that this must be done last, otherwise
+	// possible recycling operation might break chains.
+	if (!meta && is_lastls_in_file) {
+		ef->data_chk = chk;
+		if (fs_add_log(ef, ef->d_offs, chk, new_ls) < 0)
+			return -1;
+	}
+
+	TRACE(("return fs_overwrite %s: f=%d ls=%d offs=%d rc=%d seq=%d\n",
+		meta ? "META" : "data", (int)ef->name, (int)*lsp, (int)*offsp, rc, (int)*seqp));
+	return rc;
+}
+
+
+fs_nodebug int fs_append(FS_ef * ef, long lstabp, FSLSnum * lsp, FSoffset * offsp,
+				  char * buf, int len, FSseq * seqp, int meta, FSLSnum prevls)
+{
+	// Append data to a file (buf/len).  The data must start at EOF.  Parameters
+	// are similar to fs_overwrite above.  Appending requires a metadata
+	// APPEND log entry which is performed to update both EOF and LS checksum.
+	// If *lsp == 0xFFFF and *offsp == 0, the start position actually requires a
+	// new LS.  This will be allocated if possible.  If a LS is filled in the course
+	// of appending data, the LS checksum will be computed and placed in the LS.
+	// This "completes" the LS.  Otherwise, the metadata log entry must be used
+	// to compute the EOF offset and checksum of the incomplete LS.
+	// On return, the number of bytes added is returned (to a maximum of lxd->d_size),
+	// or -1 if error.
+	// Note that this function may recurse once for data, since metadata is also
+	// appended using this function.
+	// Wear counts are not updated correctly for SSW appends which are not a
+	// new LS, where the PS affected is not the first in the LS.
+	auto FS_lxd * lxd;
+	auto int rc;
+	auto int is_last_ps_in_ls;
+	auto int write_chk;
+	auto FSoffset chklen;
+	auto FSoffset write_len;
+	auto FSoffset max_chklen;
+	auto FSoffset iskip;
+	auto FSLSnum new_ls;
+	auto FSoffset i, po, polen, xo, xoinit, xolen;
+	auto char * xbuf;
+	auto FSPSnum num_ps;
+	auto long psn, pnn, ntabp, plsstart;
+	auto word ps_size;
+	auto FS_w wear;
+	auto FS_h hdr;
+	auto int hdrsize;
+	auto FSchecksum chk, add_chk;
+	auto int grow;
+
+//FS2_RAM_TEST_MASK = SIMULATED_RESET_MASK;
+//FS2_RAM_TEST_MASK = 0x0000;
+	CPUSH(3)
+	TRACE(("fs_append %s: f=%d ls=%d offs=%d len=%d seq=%d pls=%d\n",
+		meta ? "META" : "data", (int)ef->name, (int)*lsp, (int)*offsp, len, (int)*seqp, (int)prevls));
+
+	if (meta) {
+		lxd = FS_LXN2PTR(ef->metalx);
+		hdrsize = sizeof(FS_h);
+	}
+	else {
+		lxd = FS_LXN2PTR(ef->datalx);
+		hdrsize = sizeof(FS_b);
+	}
+	rc = lxd->d_size - *offsp;
+	if (rc > len)
+		rc = len;
+	// rc = bytes to append
+
+	if (!meta) {
+		if (ef->d_offs & 1) {
+			// Odd bytes in file
+			add_chk = (byte)buf[0] << 8;
+			if (rc > 1)
+				fs_checksum(&add_chk, buf + 1, rc - 1);
+		}
+		else {
+			add_chk = 0;
+			fs_checksum(&add_chk, buf, rc);
+		}
+	}
+
+	if (FS_IS_SSW(lxd))
+		ps_size = (word)lxd->ps_size;
+	else {
+		ps_size = _fs.pbuf_size;
+		if (ps_size > lxd->ls_size)
+			ps_size = lxd->ls_size;
+		if (lxd->ps_size && ps_size > lxd->ps_size)
+			ps_size = (word)lxd->ps_size;
+	}
+
+	if (*lsp == FS_INVALID_LS) {
+		// Require a new LS, since EOF points past last LS in file.  This can
+		// also occur for metadata, when a new file is created.
+		if (meta && ef->num_mls) {
+			_set_errno(EUNEXEOC);
+			CPOP
+			return -1;
+		}
+		CPUSH(4)
+		new_ls = fs_get_free(lxd, FS_INVALID_LS, prevls);
+		CPOP
+		if (new_ls == FS_INVALID_LS) {
+			_set_errno(ENOSPC);
+			CPOP
+			return -1;
+		}
+		// Link new sector into current chain and update ef
+		fs_set_lstabent(lstabp, new_ls);
+		ntabp = FS_LSTABPHYS(lxd, new_ls);
+		fs_set_lstabent(ntabp, FS_INVALID_LS);
+		if (meta) {
+			ef->num_mls = 1;
+			ef->m_offs = FS_INIT_LOGOFFS;
+		}
+		else {
+			ef->num_dls++;
+			ef->d_offs = 0;
+		}
+
+		pnn = FS_LS2OFFSET(lxd, new_ls);
+		hdr.version = ++ef->vers;
+		hdr.filenum = ef->name;
+		if (meta) {
+			hdr.magic = FSMAGIC_H;
+			hdr.seq = ef->num_mls - 1;	// should always be zero
+			hdr.lxn = ef->datalx;
+			hdr.attrs = ef->attrs;
+			hdr.first_offs = ef->first_offs;
+			hdr.first_seq = ef->first_seq;	// ditto
+			hdr.last_offs = ef->d_offs;
+			hdr.last_chk = ef->data_chk;
+		}
+		else {
+			hdr.magic = FSMAGIC_B;
+			hdr.seq = *seqp;
+		}
+		chk = 0;
+		fs_checksum(&chk, &hdr, hdrsize - sizeof(FSchecksum));
+		if (lxd->wear_leveling) {
+			fs_read_pbuf(lxd, pnn, ps_size);	// Get existing wear info
+			if (FS_IS_SSW(lxd)) {
+				// SSW wear does not get incremented by fs_free_logical.  We do
+				// it here.
+				CPUSH(5)
+				xmem2root(&wear, _fs.pbuf, sizeof(wear));
+				fs_update_wear(&wear);
+				root2xmem(_fs.pbuf, &wear, sizeof(FS_w));
+				CPOP
+				iskip = 0;
+			}
+			else
+				iskip = sizeof(FS_w);
+			fs_checksum_x(&chk, _fs.pbuf, sizeof(FS_w));
+			if (meta)
+				hdr.chksum = ~chk;
+			else
+				((FS_b *)&hdr)->chksum = ~chk;
+			CPUSH(6)
+			root2xmem(_fs.pbuf + sizeof(FS_w), &hdr, hdrsize);
+			CPOP
+			psn = pnn + (sizeof(FS_w) + hdrsize);
+		}
+		else {
+			if (meta)
+				hdr.chksum = ~chk;
+			else
+				((FS_b *)&hdr)->chksum = ~chk;
+			CPUSH(7)
+			root2xmem(_fs.pbuf, &hdr, hdrsize);
+			CPOP
+			psn = pnn + hdrsize;
+			iskip = 0;
+		}
+		chk = 0;	// Reset, because header chk totals to 0 (if chksum field included).
+		grow = 1;
+	}
+	else {
+		plsstart = FS_LS2OFFSET(lxd, *lsp);
+		if (lxd->wear_leveling)
+			psn = sizeof(FS_w) + hdrsize;
+		else
+			psn = hdrsize;
+		psn += plsstart + (meta ? ef->m_offs - FS_INIT_LOGOFFS : ef->d_offs);
+		pnn = psn & ~(long)(ps_size - 1);
+		if (FS_IS_SSW(lxd)) {
+			// Have to read in existing data in the first PS affected
+			fs_read_pbuf(lxd, pnn, ps_size);
+			if (lxd->wear_leveling && pnn == plsstart) {
+				// Overwriting first PS of LS.  Update wear count and checksums
+				CPUSH(8)
+				xmem2root(&wear, _fs.pbuf, sizeof(wear));
+				fs_update_wear(&wear);
+				root2xmem(_fs.pbuf, &wear, sizeof(FS_w));
+				chk = 0;
+				fs_checksum_x(&chk, _fs.pbuf, hdrsize + (sizeof(FS_w) - sizeof(FSchecksum)));
+				chk = ~chk;
+				root2xmem(_fs.pbuf + (hdrsize + (sizeof(FS_w) - sizeof(FSchecksum))),
+				          &chk, sizeof(FSchecksum));
+				CPOP
+			}
+		}
+		chk = ef->data_chk;
+		iskip = (FSoffset)(psn - pnn);
+		grow = 0;
+	}
+
+	if (!meta) {
+		ef->eof += rc;
+		fs_checksum(&chk, &add_chk, sizeof(add_chk));
+		ef->data_chk = chk;
+		ef->d_offs += rc;
+		write_chk = ef->d_offs == lxd->d_size;	// If last byte to be written in LS
+	}
+	else {
+		write_chk = 0;
+		ef->m_offs += rc;
+	}
+
+
+	// pnn is device offset of 1st PS affected.
+	// psn is dev offs to write 1st byte of data.
+	// write_chk is true iff LS is going to be completed after rc bytes written.
+	// - the checksum is in ef->data_chk.
+	// iskip is initial bytes in _fs.pbuf which need not be rewritten by non-SSW.
+	// _fs.pbuf contains initial part of first PS which is not to be
+	// changed.  We write PS by PS.
+	po = (FSoffset)(psn - pnn);	// Offset at which to add new data
+	polen = ps_size - po;			// Available space in PS
+	xolen = rc;							// Number of remaining data bytes
+	xbuf = buf;							// Where to get data
+	if (!xolen) {
+		// Special case of where there is no data to write.  This occurs when a file
+		// is completely emptied by shifting out, but a new empty LS needs to be appended.
+		// We still need to write out the new header block.
+		CPUSH(9)
+		if (fs_write_pbuf(lxd, pnn, po, iskip)) {
+			CPOP
+			CPOP
+			return -1;
+      }
+      CPOP
+	}
+	else while (xolen) {
+		// Set i = number of data bytes to add to this PS
+		if (polen < xolen)
+			i = polen;
+		else
+			i = xolen;
+		CPUSH(10)
+		root2xmem(_fs.pbuf + po, xbuf, i);
+		if (write_chk && xolen == i) {
+			chk = ~chk;
+			root2xmem(_fs.pbuf + (ps_size - sizeof(FSchecksum)), &chk, sizeof(FSchecksum));
+			po += sizeof(FSchecksum);
+		}
+		CPOP
+		CPUSH(11)
+		if (fs_write_pbuf(lxd, pnn, po + i, iskip)) {
+			CPOP
+			CPOP
+			return -1;
+		}
+		CPOP
+   	iskip = 0;
+		po = 0;
+		xbuf += i;
+		xolen -= i;
+		polen = ps_size;
+		pnn += ps_size;
+	}
+
+	// Update the return values
+	*offsp += rc;
+	if (*offsp >= lxd->d_size) {
+		(*seqp)++;
+		*offsp = 0;
+	}
+	if (grow)
+		*lsp = new_ls;
+
+	// Add a metadata log entry to update the incomplete LS checksum and new offset.
+	// This may cause single recursion to this function if adding the metadata log
+	// does not cause the metadata to be reset (overwritten).
+	if (!meta && fs_add_log(ef, ef->d_offs, ef->data_chk, *lsp) < 0) {
+		CPOP
+		return -1;
+	}
+
+	TRACE(("return fs_append %s: f=%d ls=%d offs=%d rc=%d seq=%d\n",
+		meta ? "META" : "data", (int)ef->name, (int)*lsp, (int)*offsp, rc, (int)*seqp));
+	CPOP
+	return rc;
+}
+
+
+/*** BeginHeader fs_mark_bad */
+int fs_mark_bad(FS_lxd * lxd, long dev_offs);
+/*** EndHeader */
+int fs_mark_bad(FS_lxd * lxd, long dev_offs)
+{
+	// Mark LS bad by overwriting first byte with 0x00.
+	// Note that dev_offs should point to the start of an LS!
+	auto int rc;
+	auto long p;
+	auto byte voodoo;
+	auto long maplog;
+
+	voodoo = FSMAGIC_BAD;	// Voodoo is bad magic...
+	p = paddr(&voodoo);
+
+	maplog = FS_CALL_MAP(lxd, dev_offs);
+	if (FS_IS_SSW(lxd)) {
+		CPUSH(26)
+		rc = FS_CALL_WRITE(lxd, p, sizeof(voodoo), maplog);
+		CPOP
+	}
+	else {
+		CPUSH(27)
+		rc = FS_CALL_ANDOVER(lxd, p, sizeof(voodoo), maplog);
+		CPOP
+	}
+
+	return rc;
+}
+
+/*** BeginHeader fs_shift_data */
+int fs_shift_data(FS_lxd * lxd, long lstabp, FSLSnum * ls, FSoffset offs, char * buf, int len,
+							FSseq seq, FSfilenum name);
+/*** EndHeader */
+
+fs_nodebug int fs_shift_data(FS_lxd * lxd, long lstabp, FSLSnum * ls, FSoffset offs,
+			char * buf, int len, FSseq seq, FSfilenum name)
+{
+	// Perform shift operation on the given ls.  offs is the current (start of file)
+	// offset in ls.  len is the number of bytes to delete, subject to a maximum
+	// of the remaining chars in the LS.  If buf is not null, it
+	// is first filled with the deleted data.  If the LS is completely deleted, it
+	// will be unlinked from the file chain.  The last LS in the file is not deleted,
+	// even if it contains no data (i.e. d_offs == first_offs, num_dls == 1).
+	// Return number of bytes deleted, or -1 if error.
+	auto long nextp;
+	auto FSLSnum nextls;
+	auto FS_ef * ef;
+	auto int is_last;
+	auto int rem;
+	auto int rc;
+	auto FSseq dseq;
+
+	CPUSH(1)
+	TRACE(("fs_shift_data: f=%d ls=%d offs=%d len=%d seq=%d\n",name,*ls,offs,len,seq));
+	ef = FS_EF_OF_FILE(name);
+	nextp = FS_LSTABPHYS(lxd, *ls);
+	nextls = fs_lstabent(nextp);
+	is_last = nextls == FS_INVALID_LS;
+	TRACE(("  nextls=%d last=%d ef: fdls=%d fseq=%d foffs=%d\n",
+			nextls,is_last,ef->first_dls,ef->first_seq,ef->first_offs));
+	if (is_last)
+		rem = ef->d_offs;
+	else
+		rem = lxd->d_size;
+	rem -= offs;
+	if (len > rem)
+		rc = rem;
+	else
+		rc = len;
+
+	if (buf)
+		fs_read_data(lxd, *ls, offs, buf, rc, seq, name);
+
+	ef->eof -= rc;
+
+	if (!is_last && offs + rc == lxd->d_size ||
+	    is_last && ef->first_offs + rc == lxd->d_size) {
+		// Complete deletion of LS.  If is_last is true, then this is a special case
+		// where the first (and only) LS in the file is being completely shifted out,
+		// and the shifted data extended to the very end of the LS.
+		if (is_last) {
+			// Cannot have file with no LSs, so we have to append a blank one.
+			dseq = ef->first_seq + 1;
+			ef->d_offs = 0;
+			ef->cache_valid = 0;
+			ef->cache_valid2 = 0;
+			if (fs_append(ef, nextp, &nextls, &ef->d_offs, NULL, 0, &dseq, 0, *ls) < 0) {
+				TRACE(("  ERROR appending empty LS for shift\n"));
+				CPOP
+				return -1;
+			}
+		}
+		CPUSH(30)
+		if (fs_free_logical(lxd, lstabp, *ls)) {
+			TRACE(("  ERROR freeing LS for shift\n"));
+			CPOP
+			CPOP
+			return -1;
+		}
+		CPOP
+		fs_set_lstabent(lstabp, nextls);
+		ef->num_dls--;
+		ef->first_offs = 0;
+		ef->first_seq++;
+		*ls = nextls;
+		if (ef->cache_valid) {
+			ef->cache_pos -= lxd->d_size;
+			if (ef->cache_pos < (long)lxd->d_size)
+				ef->cache_valid = 0;
+		}
+		if (ef->cache_valid2) {
+			ef->cache_pos2 -= lxd->d_size;
+			if (ef->cache_pos2 < (long)lxd->d_size)
+				ef->cache_valid2 = 0;
+		}
+	}
+	else
+		ef->first_offs += rc;
+
+	// Add a SHIFT log entry
+	CPUSH(31)
+	if (fs_add_log(ef, ef->first_offs | FS_LOG_DEL, ef->first_seq, *ls) < 0) {
+		TRACE(("  ERROR adding log entry for shift\n"));
+		CPOP
+		CPOP
+		return -1;
+	}
+	CPOP
+	TRACE(("return fs_shift_data: f=%d ls=%d offs=%d len=%d seq=%d\n",name,*ls,offs,len,seq));
+	TRACE(("  ef: fdls=%d fseq=%d foffs=%d\n",
+			ef->first_dls,ef->first_seq,ef->first_offs));
+	CPOP
+	return rc;
+}
+
+
+/*** BeginHeader fwrite */
+int fwrite(File * f, void * buf, int len);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fwrite                      <fs2.lib>
+
+SYNTAX: int fwrite(File * f, void * buf, int len)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Write data to file opened for writing.  The data is written
+               starting at the "current position".  This is zero (start
+               of file) when it is opened or created, but may be changed
+               by fread, fwrite, fshift or fseek functions.  After writing
+               the data, the current position is advanced to the position
+               just after the last byte written.  Thus, sequential calls
+               to fwrite() will add or append data contiguously.
+
+               Unlike the previous file system (FILESYSTEM.LIB), this
+               library allows files to be overwritten not just appended.
+               Internally, overwrite and append are different operations
+               with differing performance, depending on the underlying
+               hardware.  Generally, appending is more efficient especially
+               with byte-writable flash memory.  If the application allows,
+               it is preferable to use append/shift rather than overwrite.
+               In order to ensure that data is appended, use fseek(f, 0,
+               SEEK_END) before calling fwrite().
+
+               The same "current position" pointer is used for both read
+               and write.  If interspersing read and write, then fseek()
+               should be used to ensure the correct position for each
+               operation.  Alternatively, the same file can be opened
+               twice, with one descriptor used for read and the other
+               for write.  This precludes use of fshift(), since it does
+               not tolerate shared files (unless
+               FS2_SHIFT_DOESNT_UPDATE_FPOS is defined).
+
+PARAMETER1:    Pointer to file descriptor (initialized by fopen_wr() or
+               fcreate()).
+PARAMETER2:    Data buffer located in root data memory or stack.
+PARAMETER3:    Length of data (0 to 32767 inclusive).
+
+RETURN VALUE:  == len - success
+               < len - partial success.  Returns amount successfully
+                 written.  errno gives further details (probably ENOSPC).
+               0 - failure, or len was zero.
+
+ERRNO VALUES:  EBADFD - File descriptor not opened, or is read-only.
+               EINVAL - len less than zero.
+               0 - Success, but len was zero.
+               EIO - I/O error.
+               ENOSPC - extent out of space.
+
+SEE ALSO:      fread
+
+END DESCRIPTION **********************************************************/
+
+fs_nodebug int fwrite(File * f, void * buf, int len)
+{
+	// Write a block of data.  buf[0..len-1] must be wholly accessible in non-XPC window.
+	auto int lenow, lenap;	// Overwrite and append lengths (lenow+lenap == len)
+	auto int len2ow;
+	auto char * bufow, * bufap;	// Respective buffer positions
+	auto int written;
+	auto int lswritten;
+	auto FSLSnum ls, prevls;
+	auto FSoffset offs;
+	auto long lstabp;
+	auto FSseq seq;
+	auto FS_ef * ef;
+	auto FS_lxd * lxd;
+
+	if (!f->name || f->mode & FSMODE_RO) {
+		_set_errno(EBADFD);
+		return 0;
+	}
+	if (len < 0) {
+		_set_errno(EINVAL);
+		return 0;
+	}
+	if (!len) {
+		_set_errno(0);
+		return 0;
+	}
+	ef = f->ef;
+
+	written = 0;
+	// Two parts to the write: the part which overlaps existing data; the part which
+	// appends.
+	if (f->position < ef->eof) {
+		ef->cache_valid = 0;
+		ef->cache_valid2 = 0;
+		bufow = (char *)buf;
+		if (f->position + len <= ef->eof) {
+			lenow = len;
+			lenap = 0;
+		}
+		else {
+			lenow = (int)(ef->eof - f->position);
+			lenap = len - lenow;
+			bufap = bufow + lenow;
+		}
+	}
+	else {
+		lxd = FS_LXN2PTR(ef->datalx);
+		if (FS_IS_SSW(lxd)) {
+			ef->cache_valid = 0;
+			ef->cache_valid2 = 0;
+		}
+		lenow = 0;
+		lenap = len;
+		bufap = (char *)buf;
+	}
+
+	if (fs_locate(ef, f->position, &ls, &offs, &lstabp, &seq, &prevls)) {
+		if (lenow || offs)
+			return 0;	// Definitely error if overwriting or not exactly at start
+							// of new LS.
+	}
+
+	len2ow = lenow;
+	while (lenow) {
+		lswritten = fs_overwrite(ef, lstabp, &ls, &offs, bufow, len2ow-written, &seq, 0, prevls);
+		if (lswritten <= 0)
+			break;	// Maybe I/O error
+		written += lswritten;
+		bufow += lswritten;
+		lenow -= lswritten;
+		if (lenow || !offs) {
+			prevls = ls;
+			lstabp = FS_LSTABPHYS(f->dlxd, ls);
+			ls = fs_lstabent(lstabp);
+		}
+	}
+
+	if (lenow)	// Error, don't do append part
+		lenap = 0;
+	while (lenap) {
+		lswritten = fs_append(ef, lstabp, &ls, &offs, bufap, len-written, &seq, 0, prevls);
+		if (lswritten <= 0)
+			break;	// Maybe I/O error
+		written += lswritten;
+		bufap += lswritten;
+		lenap -= lswritten;
+		prevls = ls;
+		lstabp = FS_LSTABPHYS(f->dlxd, ls);
+		ls = fs_lstabent(lstabp);
+	}
+	f->position += written;
+	return written;
+}
+
+/*** BeginHeader fshift */
+int fshift(File * f, int len, void * buf);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fshift                      <fs2.lib>
+
+SYNTAX: int fshift(File * f, int len, void * buf)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Delete data from the start of a file opened for writing.
+               Optionally, the data that was removed can be read into a
+               buffer.  The "current position" of the file descriptor
+               is adjusted to take account of the changed file offsets.
+               If the current position is pointing into the data that is
+               removed, then it is set to zero i.e. the start of data
+               immediately after the deleted section.
+
+               The specified file must not be opened with other file
+               descriptors, otherwise an EBUSY error is returned.
+               The exception to this is if FS2_SHIFT_DOESNT_UPDATE_FPOS
+               is defined before #use fs2.lib.  If defined, multiple
+               file descriptors can be opened, but their current
+               position will not be updated if fshift() is used.
+               In this case, the application should explicitly use
+               fseek() on all file descriptors open on this file
+               (including the one used to perform the fshift()).  If
+               this is not done, then their current position is
+               effectively advanced by the number of characters
+               shifted out by the fshift().
+
+               The purpose of this function is to make it easy to
+               implement files which "worm their way" through the
+               filesystem: adding at the head and removing at the tail,
+               such that the total file size remains approximately
+               constant.
+
+               Surprisingly, it is possible for an out-of-space error
+               to occur, since the addition of the journaling (meta-
+               data) entry for the shift operation may case an error
+               before deleted blocks (if any) are made available.
+
+PARAMETER1:    Pointer to file descriptor (initialized by fopen_wr() or
+               fcreate()).
+PARAMETER2:    Length of data to remove (0 to 32767 inclusive).
+PARAMETER3:    Data buffer located in root data memory or stack.  This
+               must be dimensioned with at least len bytes.  This
+               parameter may also be NULL if the deleted data is not
+               needed.
+
+RETURN VALUE:  == len - success
+               < len - partial success.  Returns amount successfully
+                 deleted.  errno gives further details (probably ENOSPC).
+               0 - failure, or len was zero.
+
+ERRNO VALUES:  EBADFD - File descriptor not opened, or is read-only.
+               EINVAL - len less than zero.
+               0 - Success, but len was zero.
+               EIO - I/O error.
+               ENOSPC - extent out of space.
+               EBUSY - file opened more than once.  This is only possible
+                 if FS2_SHIFT_DOESNT_UPDATE_FPOS is not defined, which
+                 it is the default case.
+
+SEE ALSO:      fread, fwrite
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int fshift(File * f, int len, void * buf)
+{
+	auto int read;
+	auto int lsread;
+	auto FSLSnum ls, prevls;
+	auto FSoffset offs;
+	auto long lstabp;
+	auto long rem;
+	auto FSseq seq;
+	auto FS_ef * ef;
+
+	if (!f->name) {
+		_set_errno(EBADFD);
+		return 0;
+	}
+	if (len < 0) {
+		_set_errno(EINVAL);
+		return 0;
+	}
+	ef = f->ef;
+#ifndef FS2_SHIFT_DOESNT_UPDATE_FPOS
+	if (ef->ref_count > 1) {
+		_set_errno(EBUSY);
+		return 0;
+	}
+#endif
+	_set_errno(0);
+	if (!len) {
+		return 0;
+	}
+	CPUSH(0)
+	read = 0;
+	rem = ef->eof;	// Remaining chars
+	if (len > rem)
+		len = (int)rem;
+	// Locate to zero will not disturb cached position
+	if (len && fs_locate(ef, 0, &ls, &offs, &lstabp, &seq, &prevls)) {
+		CPOP
+		return 0;
+   }
+	while (read < len) {
+		lsread = fs_shift_data(f->dlxd, lstabp, &ls, offs,
+							(char *)buf, len-read, seq, f->name);
+		if (lsread <= 0)
+			break;	// Maybe I/O error
+		read += lsread;
+		if (buf)
+			buf = (char *)buf + lsread;
+		offs = 0;
+		seq++;
+	}
+#ifndef FS2_SHIFT_DOESNT_UPDATE_FPOS
+	f->position -= read;
+	if (f->position < 0)
+		f->position = 0;
+#endif
+	CPOP
+	return read;
+}
+
+
+
+/*** BeginHeader fread */
+int fread(File * f, void * buf, int len);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fread                      <fs2.lib>
+
+SYNTAX: int fread(File * f, void * buf, int len)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Read data from the "current position" of the given file.
+               When the file is opened, the current position is 0, i.e.
+               at the start of file.  Subsequent reads or writes advance
+               the position by the number of bytes read/written.  fseek()
+               can also be used to position the read point.
+
+               If the application permits, it is much more efficient to
+               read multiple data bytes rather than reading one-by-one.
+
+PARAMETER1:    Pointer to file descriptor (initialized by fopen_rd(),
+               fopen_wr() or fcreate()).
+PARAMETER3:    Data buffer located in root data memory or stack.  This
+               must be dimensioned with at least len bytes.
+PARAMETER2:    Length of data to read (0 to 32767 inclusive).
+
+RETURN VALUE:  == len - success
+               < len - partial success.  Returns amount successfully
+                 read.  errno gives further details (probably 0 meaning
+                 that end-of-file was encountered).
+               0 - failure, or len was zero.
+
+ERRNO VALUES:  EBADFD - File descriptor not opened.
+               EINVAL - len less than zero.
+               0 - Success, but len was zero or EOF was reached prior
+                 to reading len bytes.
+               EIO - I/O error.
+
+SEE ALSO:      fseek, fwrite
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int fread(File * f, void * buf, int len)
+{
+	// Read a block of data.  buf[0..len-1] must be wholly accessible in non-XPC window.
+	auto int read;
+	auto int lsread;
+	auto FSLSnum ls, prevls;
+	auto FSoffset offs;
+	auto long lstabp;
+	auto long rem;
+	auto FSseq seq;
+
+	if (!f->name) {
+		_set_errno(EBADFD);
+		return 0;
+	}
+	if (len < 0) {
+		_set_errno(EINVAL);
+		return 0;
+	}
+	_set_errno(0);
+	if (!len || !(f->mode & FSMODE_RAW) && f->position >= f->ef->eof)
+		return 0;
+	read = 0;
+	if (fs_locate(f->ef, f->position, &ls, &offs, &lstabp, &seq, &prevls))
+		return 0;
+	rem = f->ef->eof - f->position;	// Remaining chars
+	if (f->mode & FSMODE_RAW)
+		// Allow reading remainder of last LS
+		rem += f->dlxd->d_size - f->ef->d_offs;
+	if (len > rem)
+		len = (int)rem;
+	while (read < len) {
+		lsread = fs_read_data(f->dlxd, ls, offs, (char *)buf, len-read, seq, f->name);
+		if (!lsread)
+			break;	// Maybe I/O error
+		read += lsread;
+		buf = (char *)buf + lsread;
+		offs = 0;
+		seq++;
+		lstabp = FS_LSTABPHYS(f->dlxd, ls);
+		ls = fs_lstabent(lstabp);
+	}
+	f->position += read;
+	return read;
+}
+
+/*** BeginHeader ftell, fseek */
+long ftell(File * f);
+int fseek(File * f, long where, char whence);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+ftell                      <fs2.lib>
+
+SYNTAX: long ftell(File * f)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Return the current read/write position of the file.
+               Bytes in a file are sequentially numbered starting at
+               zero.  If the current position is zero, then the first
+               byte of the file will be read or written.  If the
+               position equals the file length, then no data can be
+               read, but any write will append data to the file.
+
+               Note that no checking is done to see if the file descriptor
+               is valid.  If the File is not actually open, the
+               return value will be random.
+
+PARAMETER1:    Pointer to file descriptor (initialized by fopen_rd(),
+               fopen_wr() or fcreate()).
+
+RETURN VALUE:  current read/write position (0 to length-of-file).
+
+ERRNO VALUES:  none.
+
+SEE ALSO:      fseek
+
+END DESCRIPTION **********************************************************/
+fs_nodebug long ftell(File * f)
+{
+	return f->position;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+fseek                      <fs2.lib>
+
+SYNTAX: int fseek(File * f, long where, char whence)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Set the current read/write position of the file.
+               Bytes in a file are sequentially numbered starting at
+               zero.  If the current position is zero, then the first
+               byte of the file will be read or written.  If the
+               position equals the file length, then no data can be
+               read, but any write will append data to the file.
+
+               fseek() allows the position to be set relative to
+               the start or end of the file, or relative to its
+               current position.
+
+               In the special case of SEEK_RAW, an unspecified number of
+               bytes beyond the "known" end-of-file may be readable.
+               The actual amount depends on the amount of space left in
+               the last internal block of the file.  This mode only
+               applies to reading, and is provided for the purpose of
+               data recovery in the case that the application knows more
+               about the file structure than the filesystem.
+
+PARAMETER1:    Pointer to file descriptor (initialized by fopen_rd(),
+               fopen_wr() or fcreate()).
+PARAMETER2:    New position, or offset.
+PARAMETER3:    One of the following values:
+                 SEEK_SET: 'where' (non-negative only) is relative to
+                   start of file.
+                 SEEK_CUR: 'where' (positive or negative) is relative
+                   to the current position.
+                 SEEK_END: 'where' (non-positive only) is relative to
+                   the end of the file.
+                 SEEK_RAW: Similar to SEEK_END, except the file descriptor
+                   is set in a special mode which allows reading beyond
+                   the end of the file.
+
+RETURN VALUE:  0 - success.
+               non-zero - the computed position was outside of the current
+               file contents, and has been adjusted to the nearest valid
+               position.
+
+ERRNO VALUES:  none.
+
+SEE ALSO:      ftell, fread, fwrite
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int fseek(File * f, long where, char whence)
+{
+	auto int rc;
+
+	if (!f->name) {
+		_set_errno(EBADFD);
+		return 1;
+	}
+	rc = 0;
+	f->mode &= ~FSMODE_RAW;
+	switch (whence) {
+		case SEEK_SET:
+			f->position = where;
+			break;
+		case SEEK_CUR:
+			f->position += where;
+			break;
+		case SEEK_RAW:
+			f->mode |= FSMODE_RAW;
+			// fall thru
+		case SEEK_END:
+			f->position = f->ef->eof + where;
+			break;
+		default:
+			return 1;
+	}
+	if (f->position < 0)
+		rc = 1, f->position = 0;
+	if (f->position > f->ef->eof)
+		rc = 1, f->position = f->ef->eof;
+	return rc;
+}
+
+/*** BeginHeader fs_level_wear */
+int fs_level_wear(int seconds);
+/*** EndHeader */
+fs_nodebug int fs_level_wear(int seconds)
+{
+	return 0;
+}
+
+/*** BeginHeader fs_reserve_blocks */
+int fs_reserve_blocks(int count);
+/*** EndHeader */
+fs_nodebug int fs_reserve_blocks(int count)
+{
+	return 0;
+}
+
+/*** BeginHeader fsck, lx_check */
+int fsck(int flags);
+int lx_check(FSLXnum lxn, int flags);
+/*** EndHeader */
+fs_nodebug int fsck(int flags)
+{
+	return 0;
+}
+
+fs_nodebug int lx_check(FSLXnum lxn, int flags)
+{
+	return 0;
+}
+
+/*** BeginHeader fs_set_lx */
+int fs_set_lx(FSLXnum meta, FSLXnum data);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fs_set_lx                      <fs2.lib>
+
+SYNTAX: int fs_set_lx(FSLXnum meta, FSLXnum data)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Set the default extent numbers for file creation.  Each
+               file has two parts: the main bulk of data, and the
+               metadata which is a relatively small, fixed, amount of
+               data used to journal changes to the file.  Both data
+               and metadata can reside on the same extent, or they may
+               be separated.
+
+               The file creation functions allow the metadata extent
+               to be explicitly specified (in the high byte of the
+               file number), however it is usually easier to call this
+               function to set appropriate defaults.  Calling fs_set_lx()
+               is the only way to specify the data extent.
+
+               If fs_set_lx() is never called, both data and metadata will
+               default to the first non-reserved extent number.
+
+PARAMETER1:    Extent number for metadata.
+PARAMETER2:    Extent number for data.
+
+RETURN VALUE:  0 - success.
+               non-zero - error.
+
+ERRNO VALUES:  ENODEV - no such extent number, or extent is reserved.
+
+SEE ALSO:      fcreate, fs_get_lx
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int fs_set_lx(FSLXnum meta, FSLXnum data)
+{
+	auto int rc;
+
+	rc = 0;
+	if (meta) {
+		if (FS_IS_VALID_LX(meta))
+			_fs.cur_meta = meta;
+		else
+			rc = 1, _set_errno(ENODEV);
+	}
+	if (data) {
+		if (FS_IS_VALID_LX(data))
+			_fs.cur_data = data;
+		else
+			rc = 1, _set_errno(ENODEV);
+	}
+	return rc;
+}
+
+/*** BeginHeader fs_get_lx */
+FSLXnum fs_get_lx(int meta);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fs_get_lx                      <fs2.lib>
+
+SYNTAX: FSLXnum fs_get_lx(int meta)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Return the current extent number for file creation.  Each
+               file has two parts: the main bulk of data, and the
+               metadata which is a relatively small, fixed, amount of
+               data used to journal changes to the file.  Both data
+               and metadata can reside on the same extent, or they may
+               be separated.
+
+PARAMETER1:    1: return logical extent number for metadata.
+               0: return logical extent number for data.
+
+RETURN VALUE:  Logical extent number.
+
+SEE ALSO:      fcreate, fs_set_lx
+
+END DESCRIPTION **********************************************************/
+fs_nodebug FSLXnum fs_get_lx(int meta)
+{
+	return meta ? _fs.cur_meta : _fs.cur_data;
+}
+
+/*** BeginHeader fs_format, lx_format */
+int fs_format(long reserveblocks, int num_blocks, long wearlevel);
+int lx_format(FSLXnum lxn, long wearlevel);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fs_format                      <fs2.lib>
+
+SYNTAX: int fs_format(long reserveblocks, int num_blocks, unsigned wearlevel)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Format all extents of the filesystem.  This must be called
+               after calling fs_init().  Only extents which are not
+               defined as reserved are formatted.  All files are deleted.
+
+PARAMETER1:    Must be zero.  Retained for backward compatibility.
+PARAMETER2:    Ignored (backward compatibility).
+PARAMETER3:    Initial wearlevel value.  This should be 1 if you have a
+               new flash, and some larger number if the flash is used.
+               If you are reformatting a flash, you can use 0 to use
+               the old flash wear levels.
+
+RETURN VALUE:  0 - success
+               non-zero - failure
+
+ERRNO VALUES:  EINVAL - the reserveblocks parameter was non-zero.
+               EBUSY - one or more files were open.
+               EIO - I/O error during format.  If this occurs, retry
+                 the format operation.  If it fails again, there is
+                 probably a hardware error.
+               ENODEV - no logical extents are defined.
+
+SEE ALSO:      fs_init lx_format
+
+END DESCRIPTION **********************************************************/
+
+fs_nodebug int fs_format(long reserveblocks, int num_blocks, long wearlevel)
+{
+	auto int rc;
+	auto FSLXnum lxn;
+
+	if (!_fs.num_lx) {
+		_set_errno(ENODEV);
+		return 1;
+	}
+
+	rc = 0;
+	if (reserveblocks) {
+		_set_errno(EINVAL);
+		return 1;
+	}
+
+	for (lxn = 1; lxn <= _fs.num_lx; lxn++)
+		if (!FS_IS_DUMMY_LX(lxn))
+			rc |= lx_format(lxn, wearlevel);
+
+	return rc;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lx_format                      <fs2.lib>
+
+SYNTAX: int lx_format(FSLXnum lxn, long wearlevel)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Format a specified filesystem extent.  This must not be
+               called before calling fs_init().  All files which have either
+               or both metadata and data on this extent are deleted.
+               Formatting can be quite slow (depending on hardware) so it
+               is best performed after power-up, if at all.
+
+PARAMETER1:    Logical extent number (1.._fs.num_lx inclusive).
+PARAMETER2:    Initial wearlevel value.  This should be 1 if you have a
+               new flash, and some larger number if the flash is used.
+               If you are reformatting a flash, you can use 0 to use
+               the old flash wear levels.
+
+RETURN VALUE:  0 - success
+               non-zero - failure
+
+ERRNO VALUES:  ENODEV - no such extent number, or extent is reserved.
+               EBUSY - one or more files were open on this extent.
+               EIO - I/O error during format.  If this occurs, retry
+                 the format operation.  If it fails again, there is
+                 probably a hardware error.
+               ENOSPC - the extent has zero logical sectors allocated.
+
+SEE ALSO:      fs_init fs_format
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int lx_format(FSLXnum lxn, long wearlevel)
+{
+	auto int rc;
+	auto int i;
+	auto FSPSnum ps;
+	auto FS_lxd * lxd;
+
+	rc = 0;
+	if (!FS_IS_VALID_LX(lxn)) {
+		_set_errno(ENODEV);
+		return 1;
+	}
+
+	_fs.cur_fmt = lxn;
+	lxd = FS_LXN2PTR(lxn);
+
+	if (!lxd->num_ps || !lxd->num_ls) {
+		_set_errno(ENOSPC);
+		return 1;
+	}
+
+	if (!_fs.init) {
+		// Not initialising everything, need to properly delete files who have data or
+		// metadata on this LX.
+		for (i = 0; i < FS_MAX_FILENUM; i++)
+			if (FS_EXISTS(i) && (FS_METALX_OF_FILE(i) == lxn || FS_DATALX_OF_FILE(i) == lxn))
+				rc |= fdelete(i);
+		if (rc)
+			return rc;		// Maybe because file open (EBUSY).
+	}
+
+	TRACE(("Formatting lx %d...\n", (int)lxn));
+	for (ps = 0; ps < lxd->num_ps; ps++)
+		rc |= fs_erase_physical(lxd, ps, wearlevel);
+
+	rc |= fs_init_lstab(lxd);
+
+	_fs.cur_fmt = 0;
+
+	return rc;
+}
+
+/*** BeginHeader fflush, fs_sync */
+int fflush(File * f);
+int fs_sync(void);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fflush                      <fs2.lib>
+
+SYNTAX: int fflush(File * f)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Flush any buffers, associated with the given file, retained
+               in RAM to the underlying hardware device.  This ensures that
+               the file is completely written to the filesystem.  The
+               filesystem does not currently perform any buffering, however
+               future revisions of this library may introduce buffering to
+               improve performance.
+
+PARAMETER1:    Pointer to open file descriptor.
+
+RETURN VALUE:  0 - success
+               non-zero - failure
+
+ERRNO VALUES:  EBADFD - file invalid or not open.
+               EIO - I/O error.
+
+SEE ALSO:      fs_sync, fclose
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int fflush(File * f)
+{
+	// This version of the filesystem does not do any caching, however the device-level
+	// routines may perform it.  Hence we call the lower-level flush routines for this
+	// file's data and metadata LXs to ensure that any buffered data is written out.
+	auto int rc;
+	auto FS_lxd * lxd;
+
+	if (!f->name) {
+		_set_errno(EBADFD);
+		return 1;
+	}
+	lxd = FS_LXN2PTR(f->ef->datalx);
+	rc = 0;
+	if (lxd->flush)
+		rc = FS_CALL_FLUSH(lxd);
+	if (f->ef->datalx != f->ef->metalx) {
+		lxd = FS_LXN2PTR(f->ef->metalx);
+		if (lxd->flush)
+			rc |= FS_CALL_FLUSH(lxd);
+	}
+
+	return rc;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+fs_sync                      <fs2.lib>
+
+SYNTAX: int fs_sync(void)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Flush any buffers retained in RAM to the underlying
+               hardware device.  The filesystem does not
+               currently perform any buffering, however future revisions
+               of this library may introduce buffering to improve
+               performance.  This function is similar to fflush(),
+               except that the entire filesystem is synchronized instead
+               of the data for just one file.  Use fs_sync() in
+               preference to fflush() if there is only one extent in
+               the filesystem.
+
+RETURN VALUE:  0 - success
+               non-zero - failure
+
+ERRNO VALUES:  EIO - I/O error.
+
+SEE ALSO:      fflush
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int fs_sync(void)
+{
+	auto int rc;
+	auto FSLXnum lxn;
+	auto FS_lxd * lxd;
+
+   rc = 0;
+	for (lxn = 1; lxn <= _fs.num_lx; lxn++)
+		if (!FS_IS_DUMMY_LX(lxn)) {
+			lxd = FS_LXN2PTR(lxn);
+			if (lxd->flush)
+				rc = FS_CALL_FLUSH(lxd);
+		}
+
+	return rc;
+}
+
+
+/*** BeginHeader fs_setup */
+FSLXnum fs_setup(FSLXnum lxn, word ls_shift, int reserve_it, void * rfu,
+                         int command, word part,
+                         word part_ls_shift, int part_reserve, void * part_rfu);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fs_setup                      <fs2.lib>
+
+SYNTAX: FSLXnum fs_setup(FSLXnum lxn, word ls_shift, int reserve_it,
+                         void * rfu, int command, word part,
+                         word part_ls_shift, int part_reserve,
+                         void * part_rfu)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   This function must be called before calling fs_init().  It
+               is used to modify or add to the default extents.  fs_setup()
+               runs in one of two or three basic modes, determined by the
+               command parameter.  The command parameter specifies
+               the type of setup operation to be performed: currently,
+               either partitioning or modification of the LS size.
+
+               Starting with Dynamic C 8.05, a third command can be
+               used to create a new RAM-based extent based on storage
+               xalloc()'ed by the caller.
+
+               command may be FS_MODIFY_EXTENT in which case the
+               base extent, lxn, is modified to use the specified
+               ls_shift and reserve_it parameters (other parameters
+               ignored).
+
+               DC 8 allows FS_CREATE_RAM_EXTENT to create a new logical
+               RAM extent.  In this case, lxn is passed as zero.  The
+               rfu parameter points to a fs2_ramextent structure, which
+               contains the physical address and size of the new extent.
+               Usually, the storage would be battery-backed, however it
+               could be non-BB RAM for a scratchpad extent provided that
+               a subsequent call to fs_format is made to clear out
+               any garbage data.
+
+               command may be set to FS_PARTITION_FRACTION (other
+               values reserved).  This causes extent number lxn to be
+               split.  The first half is still referred to as extent lxn,
+               and the other half is assigned a new extent number, which
+               is returned.
+
+               The base extent number may itself have been previously
+               partitioned, or it should be obtained from one of
+               fs_get_flash_lx(), fs_get_ram_lx or fs_get_other_lx().
+
+               Note: fs_setup() must only be called BEFORE calling
+               fs_init().  If called after fs_init, the filesystem will
+               be corrupted.  An application should always call
+               fs_setup() with the same parameters.  If the parameters
+               are changed, then the LX(s) involved will need to be
+               re-formatted.
+
+PARAMETER1:    Base extent number to partition or modify.
+PARAMETER2:    New logical sector size to assign to base partition, or
+               zero to not alter it.  This is expressed as the log
+               base 2 of the desired size, and must be a number between
+               6 and 13 inclusive.  This must be non-zero if
+               FS_CREATE_RAM_EXTENT is used.
+PARAMETER3:    TRUE if base partition is to be marked reserved.
+PARAMETER4:    Pass as NULL, except for FS_CREATE_RAM_EXTENT this must
+               point to a fs2_ramextent structure which was initialized
+               by the caller.
+PARAMETER5:    Must be set to FS_PARTITION_FRACTION, FS_MODIFY_-
+               EXTENT, or (for DC8 and above) FS_CREATE_RAM_EXTENT.
+               Following parameters are ignored if not FS_PARTITION_-
+               FRACTION.
+PARAMETER6:    The fraction of the existing base extent to assign
+               to the new extent.  This number is expressed as a
+               fixed-point binary number with the binary point to
+               the left of the MSB e.g. 0x3000 assigns 3/16 of the
+               base extent to the new partition, updating the base
+               extent to 13/16 of its original size.  The nearest
+               whole number of physical sectors is used for each
+               extent.  fs_get_lx_size() may be used to help
+               computation of this number.
+PARAMETER7:    Logical sector size to assign to the new extent, or
+               zero to use the same LS size as the base extent.
+               Expressed in same units as parameter 2.
+PARAMETER8:    TRUE if the new extent is to be reserved.
+PARAMETER9:    A pointer reserved for future use.  Pass as NULL.
+
+RETURN VALUE:  0 - failure: extent could not be partitioned.
+               non-zero - returned extent number of the new extent, or
+                 same as lxd for existing extent modification.
+
+ERRNO VALUES:  ENOSPC - one or other half would contain an unusably small
+                 number of logical sectors, or the extent table is full.
+                 In the latter case, #define FS_MAX_LX to a larger value.
+               EINVAL - command set to an invalid value, or other
+                 parameter invalid.
+               ENODEV - specified base extent number not defined.
+
+SEE ALSO:      fs_init, fs_get_flash_lx, fs_get_lx_size
+
+END DESCRIPTION **********************************************************/
+fs_nodebug FSLXnum fs_setup(FSLXnum lxn, word ls_shift, int reserve_it, void * rfu,
+                         int command, word part,
+                         word part_ls_shift, int part_reserve, void * part_rfu)
+{
+	FS_lxd * blxd, * plxd;		// prefix b for base, p for new partition.
+	int bcount, pcount;			// physical sector counts
+	FSLSnum bls, pls;				// logical sector counts
+	int bshift, pshift;			// LS shifts
+	word bsize, psize;			// logical sector sizes
+	long temp;
+#ifdef FS_CREATE_RAM_EXTENT
+	fs2_ramextent * ramex;
+#endif
+
+	blxd = FS_LXN2PTR(lxn);
+#ifdef FS_CREATE_RAM_EXTENT
+	if (!lxn && command == FS_CREATE_RAM_EXTENT) {
+   	ramex = (fs2_ramextent *)rfu;
+		if (_fs.num_lx < FS_MAX_LX) {
+			blxd = _fs.lx + _fs.num_lx + 1;
+         memset(blxd, 0, sizeof(*blxd));
+			blxd->ls_shift = ls_shift;
+			blxd->dev_offs = ramex->base;
+			blxd->ps_size = 1<<ls_shift;
+			blxd->num_ps = (word)(ramex->length >> ls_shift);
+			blxd->dev_class = FSDC_NVRAM;
+			blxd->map = fs_map;
+			blxd->andover = nvram_andover;
+			blxd->erase = nvram_erase;
+			return ++_fs.num_lx;
+		}
+      else
+			_set_errno(ENOSPC);
+		return 0;
+
+   }
+#endif
+	if (!lxn || lxn > _fs.num_lx) {
+		_set_errno(ENODEV);
+		return 0;
+	}
+	if (ls_shift && (ls_shift < 6 || ls_shift > 13)) {
+		_set_errno(EINVAL);
+		return 0;
+	}
+	if (command == FS_MODIFY_EXTENT) {
+		if (ls_shift)
+			blxd->ls_shift = ls_shift;
+		blxd->dummy_lx = reserve_it;
+		return lxn;
+	}
+
+	if (command != FS_PARTITION_FRACTION ||
+	    part_ls_shift && (part_ls_shift < 6 || part_ls_shift > 13)) {
+		_set_errno(EINVAL);
+		return 0;
+	}
+
+	if (_fs.num_lx >= FS_MAX_LX) {
+		_set_errno(ENOSPC);
+		return 0;
+	}
+
+	bshift = pshift = blxd->ls_shift;
+	if (ls_shift)
+		bshift = ls_shift;
+	if (part_ls_shift)
+		pshift = part_ls_shift;
+	pcount = (int)(((long)blxd->num_ps * part) >> 16);
+	bcount = (int)blxd->num_ps - pcount;
+	bls = (FSLSnum)((blxd->ps_size * bcount) >> bshift);
+	pls = (FSLSnum)((blxd->ps_size * pcount) >> pshift);
+	if (bls < 2 || pls < 2 || bcount < 2 || pcount < 2) {
+		_set_errno(ENOSPC);
+		return 0;
+	}
+	_fs.num_lx++;
+	plxd = FS_LXN2PTR(_fs.num_lx);
+	memcpy(plxd, blxd, sizeof(*plxd));
+	blxd->num_ps = bcount;
+	plxd->num_ps = pcount;
+	blxd->ls_shift = bshift;
+	plxd->ls_shift = pshift;
+	plxd->dev_offs = blxd->dev_offs + bcount * blxd->ps_size;
+	blxd->dummy_lx = reserve_it;
+	plxd->dummy_lx = part_reserve;
+
+	return _fs.num_lx;
+}
+
+/*** BeginHeader fs_get_flash_lx, fs_get_ram_lx, fs_get_other_lx */
+FSLXnum fs_get_flash_lx(void);
+FSLXnum fs_get_ram_lx(void);
+FSLXnum fs_get_other_lx(void);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fs_get_flash_lx                      <fs2.lib>
+
+SYNTAX: FSLXnum fs_get_flash_lx(void)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Return the logical extent number of the preferred flash
+               device.  This is the second flash if available on your
+               hardware, otherwise it is the reserved area in your
+               program flash.  In order for the program flash to be
+               available for use by the filesystem, you must define
+               two constants: the first constant is XMEM_RESERVE_SIZE
+               near the top of BIOS\RABBITBIOS.C.  This value is set to
+               the amount of program flash to reserve (in bytes).  This
+               is required by the BIOS.  The second constant is set in
+               your code before #use "fs2.lib".  FS2_USE_PROGRAM_FLASH
+               must be defined to the number of KB (1024 bytes) that will
+               actually be used by the filesystem.  If this is set to a
+               larger value than the actual amount of reserved space,
+               then only the actual amount will be used.
+
+               The sample program SAMPLES\FILESYSTEM\FS2INFO.C
+               demonstrates use of this function.
+
+               This function may be called before calling fs_init().
+
+RETURN VALUE:  0 - there is no flash filesystem available
+               non-zero - logical extent number of the preferred flash.
+
+SEE ALSO:      fs_get_ram_lx, fs_get_other_lx
+
+END DESCRIPTION **********************************************************/
+fs_nodebug FSLXnum fs_get_flash_lx(void)
+{
+	return _fs.flash_lx;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+fs_get_ram_lx                      <fs2.lib>
+
+SYNTAX: FSLXnum fs_get_ram_lx(void)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Return the logical extent number of the RAM filesystem
+               device.  This is only available if you have defined
+               FS2_RAM_RESERVE to a positive number of 4096-byte blocks
+               in the file \BIOS\RABBITBIOS.C.
+
+               A RAM filesystem is only really useful if you have battery-
+               backed SRAM on the board.  You can still use a RAM
+               filesystem on volatile RAM, but of course files will not
+               persist over power cycles and you should explicitly format
+               the RAM filesystem at power-up.
+
+               The sample program SAMPLES\FILESYSTEM\FS2INFO.C
+               demonstrates use of this function.
+
+               This function may be called before calling fs_init().
+
+RETURN VALUE:  0 - there is no RAM filesystem available
+               non-zero - logical extent number of the RAM device.
+
+SEE ALSO:      fs_get_flash_lx, fs_get_other_lx
+
+END DESCRIPTION **********************************************************/
+fs_nodebug FSLXnum fs_get_ram_lx(void)
+{
+	return _fs.ram_lx;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+fs_get_other_lx                      <fs2.lib>
+
+SYNTAX: FSLXnum fs_get_other_lx(void)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Return the logical extent number of the non-preferred
+               flash device.  If it exists, this is usually the program
+               flash.  See the description under fs_get_flash_lx() for
+               details about setting up the program flash for use by the
+               filesystem.
+
+               The sample program SAMPLES\FILESYSTEM\FS2INFO.C
+               demonstrates use of this function.
+
+               This function may be called before calling fs_init().
+
+RETURN VALUE:  0 - there is no other flash filesystem available
+               non-zero - logical extent number of the non-preferred flash.
+
+SEE ALSO:      fs_get_ram_lx, fs_get_flash_lx
+
+END DESCRIPTION **********************************************************/
+fs_nodebug FSLXnum fs_get_other_lx(void)
+{
+	return _fs.other_lx;
+}
+
+/*** BeginHeader fs_get_lx_size */
+long fs_get_lx_size(FSLXnum lxn, int all, word ls_shift);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fs_get_lx_size                      <fs2.lib>
+
+SYNTAX: long fs_get_lx_size(FSLXnum lxn, int all, word ls_shift)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Return the size of the specified logical extent, in bytes.
+               This information is useful when initially partitioning an
+               LX, or when estimating the capacity of an LX for user data.
+               'all' is a flag which indicates whether to return the total
+               data capacity (as if all current files were deleted) or
+               whether to return just the available data capacity.
+               The return value accounts for the packing efficiency
+               which will be less than 100% because of the bookkeeping
+               overhead.  It does not account for the free space required
+               when any updates are performed; however this free space
+               may be shared by all files on the LX.  It also does not
+               account for the space required for file metadata.  You can
+               account for this by adding one logical sector for each
+               file to be created on this LX.  You can also specify that
+               the metadata be stored on a different LX by use of
+               fs_set_lx().
+
+               This function may be called either before or after
+               fs_init().  If called before, then the ls_shift parameter
+               must be set to the value to be used in fs_setup(), since
+               the LS size is not known at this point.  ls_shift can
+               also be passed as zero, in which case the default size
+               will be assumed.  'all' must be non-zero if called
+               before fs_init(), since the number of files in use is
+               not yet known.
+
+PARAMETER1:    Logical extent number to query.
+PARAMETER2:    Boolean: 0 for current free capacity only, 1 for total.
+               Must use 1 if calling before fs_init().
+PARAMETER3:    Logical sector shift i.e. log base 2 of LS size (6 to 13);
+               may be zero to use default.
+
+RETURN VALUE:  0 - the specified LX does not exist
+               non-zero - capacity of the LX in bytes
+
+END DESCRIPTION **********************************************************/
+fs_nodebug long fs_get_lx_size(FSLXnum lxn, int all, word ls_shift)
+{
+	auto long tsize;
+	auto FS_lxd * lxd;
+	auto long num_ls;
+	auto word d_size;
+
+	if (lxn < 1 || lxn > _fs.num_lx)
+		return 0;
+	lxd = _fs.lx + lxn;
+	tsize = lxd->ps_size * lxd->num_ps;
+	if (!ls_shift)
+		ls_shift = lxd->ls_shift;
+	num_ls = tsize >> ls_shift;
+	d_size = (1U << ls_shift) - sizeof(FS_b) - sizeof(FSchecksum);
+	if (lxd->wear_leveling)
+		d_size -= sizeof(FS_w);
+
+	if (all)
+		return num_ls * d_size;
+	else
+		return (long)lxd->num_free * d_size;
+}
+
+
+/*** BeginHeader fs_print_lxs */
+void fs_print_lxs(unsigned options);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+fs_print_lxs                      <fs2.lib>
+
+SYNTAX: void fs_print_lxs(unsigned options)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   For debugging only: print a table indicating the current
+               logical extent setup.
+
+PARAMETER1:    Unused at present.  Pass zero.
+
+END DESCRIPTION **********************************************************/
+
+void fs_print_lxs(unsigned options)
+{
+	auto int i;
+
+	printf("FS2 Extent table:\n");
+	printf("LXD# ps_size  num_ps  num_ls  ls_size  ls_use  dev_offs  ps/ls  ls/ps\n");
+	printf("---- -------  ------  ------  -------  ------  --------  -----  -----\n");
+	for (i = 1; i <= _fs.num_lx; i++)
+		printf("%4d %7ld  %6u  %6u  %7u  %6u  %8ld  %5u  %5u\n",
+			i, _fs.lx[i].ps_size, _fs.lx[i].num_ps, _fs.lx[i].num_ls,
+			_fs.lx[i].ls_size, _fs.lx[i].d_size, _fs.lx[i].dev_offs,
+			_fs.lx[i].ps_per_ls, _fs.lx[i].ls_per_ps);
+
+}
+
+
+
+/*** BeginHeader */
+#ifdef __TESTENV__
+#ifndef __FS2_C__
+#undef fclose
+#undef fflush
+#undef fread
+#undef fwrite
+#undef fseek
+#undef ftell
+#endif
+#endif	// __TESTENV__
+
+#endif	// __FS2_LIB
+/*** EndHeader */

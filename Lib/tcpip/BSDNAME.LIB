@@ -1,0 +1,325 @@
+/*
+ *    bsdname.lib
+ *    Copyright (C) Z-World, Inc. All rights reserved.
+ *    Portions used with permission of Erick Engelke.
+ *
+ *    BSD-style socket info routines
+ *
+ *    Tasks:
+ *       create bsd.c example program.
+ *
+ */
+
+/*** BeginHeader _rs_getpeername */
+
+/* START FUNCTION DESCRIPTION ********************************************
+getpeername                            <BSDNAME.LIB>
+
+SYNTAX: int getpeername(  sock_type *s, void *dest, int *len );
+
+KEYWORDS:		tcpip, bsd, socket, dns
+
+DESCRIPTION: 	get the information for the other side of the socket
+
+PARAMETER1: 	socket
+PARAMETER2: 	sockaddr structure for the socket
+PARAMETER3: 	max length of the sockaddr structure accepted
+
+RETURN VALUE:  0 for success;
+					-1 for failure.
+
+SEE ALSO:      getsockname, setdomainname, gethostname, sethostname,
+               getdomainname, bsd.c
+
+END DESCRIPTION **********************************************************/
+
+_system int _rs_getpeername( _rs_sock_type *s, void *dest, int *len );
+/*** EndHeader */
+
+nodebug _system int _rs_getpeername( _rs_sock_type *s, void *dest, int *len )
+{
+	_SYS_CALL_VARS
+   auto struct sockaddr temp;
+   auto int ltemp;
+
+	if(len)
+	   _RK_CHK_POINTER(len)
+
+   memset( &temp, 0, sizeof( struct sockaddr ));
+   temp.s_ip = s->tcp.hisaddr;
+   temp.s_port = s->tcp.hisport;
+
+   if(!s->tcp.hisaddr || !s->tcp.hisport || ! _chk_socket( s )) {
+      if(len) *len = 0;
+      return( -1 );
+   }
+
+   /* how much do we move */
+   ltemp = (len) ? *len : sizeof( struct sockaddr );
+   if(ltemp > sizeof( struct sockaddr)) ltemp = sizeof( struct sockaddr );
+   _RK_CHK_POINTER_RANGE(dest, ltemp)
+   memcpy( dest, &temp, ltemp );
+
+   if(len) *len = ltemp;
+   return( 0 );
+}
+
+/*** BeginHeader _rs_getsockname */
+
+/* START FUNCTION DESCRIPTION ********************************************
+getsockname                            <BSDNAME.LIB>
+
+SYNTAX: int getsockname(  sock_type *s, void *dest, int *len );
+
+KEYWORDS:		tcpip, bsd, socket, dns
+
+DESCRIPTION: 	get information for our side of the socket
+
+PARAMETER1: 	socket
+PARAMETER2: 	sockaddr structure for the socket
+PARAMETER3: 	max length of the sockaddr structure accepted
+
+RETURN VALUE:  0 for success;
+					-1 for failure.
+
+SEE ALSO:      getpeername, setdomainname, gethostname, sethostname,
+               getdomainname, bsd.c
+
+END DESCRIPTION **********************************************************/
+
+_system int _rs_getsockname(  _rs_sock_type *s, void *dest, int *len );
+
+/*** EndHeader */
+
+nodebug _system int _rs_getsockname(  _rs_sock_type *s, void *dest, int *len )
+{
+	_SYS_CALL_VARS
+   auto struct sockaddr temp;
+   auto int ltemp;
+   auto word iface;
+
+   if(len)
+   	_RK_CHK_POINTER(len)
+
+   memset( &temp, 0, sizeof( struct sockaddr ));
+   _rs_arpcache_iface(s->tcp.sath, &iface);
+	//temp.s_ip = s->tcp.myaddr;
+	temp.s_ip = _if_tab[iface].ipaddr;
+   temp.s_port = s->tcp.myport;
+
+   if(!s->tcp.hisaddr || !s->tcp.hisport || ! _chk_socket( s )) {
+      if(len) *len = 0;
+      return( -1 );
+   }
+
+   /* how much do we move */
+   ltemp = (len) ? *len : sizeof( struct sockaddr );
+   if(ltemp > sizeof( struct sockaddr)) ltemp = sizeof( struct sockaddr );
+   _RK_CHK_POINTER_RANGE(dest, ltemp)
+   memcpy( dest, &temp, ltemp );
+
+   if(len) *len = ltemp;
+   return( 0 );
+}
+
+/*** BeginHeader _rs_getdomainname */
+
+/* START FUNCTION DESCRIPTION ********************************************
+getdomainname                          <BSDNAME.LIB>
+
+SYNTAX: char *getdomainname( char *name, int length );
+
+KEYWORDS:		tcpip, bsd, domain, dns
+
+DESCRIPTION: 	get the domain portion of our name
+
+PARAMETER1: 	buffer to place the name
+PARAMETER2: 	max length of the name, or zero for internal.
+
+RETURN VALUE:  if length==1 name
+                  length==0 internal domain name buffer (do not modify!)
+
+SEE ALSO:      setdomainname, gethostname, sethostname, getpeername,
+               getsockname, bsd.c
+
+END DESCRIPTION **********************************************************/
+
+_system char *_rs_getdomainname( char *name, int length );
+/*** EndHeader */
+
+nodebug _system char *_rs_getdomainname( char *name, int length )
+{
+	_SYS_CALL_VARS
+   if( length )
+   {
+      _RK_CHK_POINTER_RANGE(name, length)
+      if( length < (strlen( def_domain ) + 1) )
+         *name = 0;
+      else
+         strcpy( name, def_domain );
+      return( name );
+   }
+   return( ( def_domain && *def_domain ) ? def_domain : (char*)NULL );
+}
+
+/*** BeginHeader _rs_setdomainname */
+
+/* START FUNCTION DESCRIPTION ********************************************
+setdomainname                          <BSDNAME.LIB>
+
+SYNTAX: char *setdomainname( char *name );
+
+KEYWORDS:		tcpip, bsd, domain, dns
+
+DESCRIPTION: 	set the domain portion of our name
+
+PARAMETER1: 	the new domain name (expects unchanging static buffer)
+
+RETURN VALUE:  name
+
+SEE ALSO:      getdomainname, sethostname, gethostname, getpeername,
+               getsockname, bsd.c
+
+END DESCRIPTION **********************************************************/
+
+_system char *_rs_setdomainname( char *string );
+/*** EndHeader */
+
+nodebug _system char *_rs_setdomainname( char *string )
+{
+	_SYS_CALL_VARS
+   return( def_domain = string );
+}
+
+/*** BeginHeader _rs_gethostname */
+
+/* START FUNCTION DESCRIPTION ********************************************
+gethostname                            <BSDNAME.LIB>
+
+SYNTAX: char *gethostname( char *name, int len );
+
+KEYWORDS:		tcpip, bsd, host, dns
+
+DESCRIPTION: 	set the domain portion of our name
+
+PARAMETER1: 	buffer to place the hostname
+PARAMETER2: 	maximum length to get, or zero to return internal buffer.
+
+RETURN VALUE:  if length==1 name
+                  length==0 internal host name buffer (do not modify!)
+
+SEE ALSO:      sethostname, getdomainname, getpeername, getsockname,
+               setdomainname, bsd.c
+
+END DESCRIPTION **********************************************************/
+
+_system char *_rs_gethostname( char *name, int len );
+/*** EndHeader */
+
+nodebug _system char *_rs_gethostname( char *name, int len )
+{
+	_SYS_CALL_VARS
+
+   if( len )
+   {
+		_RK_CHK_POINTER_RANGE(name, len)
+      if(len < (strlen( _hostname ) + 1) )
+         *name = 0;
+      else
+         strcpy( name, _hostname );
+      return( name );
+   }
+   return *_hostname ?  _hostname  : (char*)NULL;
+}
+
+/*** BeginHeader _rs_sethostname */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sethostname                            <BSDNAME.LIB>
+
+SYNTAX: char *sethostname( char *name );
+
+KEYWORDS:		tcpip, bsd, host, dns
+
+DESCRIPTION: 	set the host portion of our name
+
+PARAMETER1: 	the new host name
+
+RETURN VALUE:  pointer to internal hostname buffer on success, or
+               NULL on error (if hostname is too long)
+
+SEE ALSO:      gethostname, setdomainname, getdomainname, getpeername,
+               getsockname, bsd.c
+
+END DESCRIPTION **********************************************************/
+
+_system char *_rs_sethostname( char *name );
+/*** EndHeader */
+
+nodebug _system char *_rs_sethostname( char *name )
+{
+	_SYS_CALL_VARS
+	if (strlen(name) < MAX_STRING)
+	{
+		strcpy(_hostname, name);
+		return (_hostname);
+	}
+	else
+	{
+		return ((char*)NULL);
+	}
+}
+
+/*** BeginHeader psocket */
+
+/* START FUNCTION DESCRIPTION ********************************************
+psocket                                <BSDNAME.LIB>
+
+SYNTAX: void psocket( void* s );
+
+KEYWORDS:		tcpip, bsd, socket, tcpip debugging
+
+DESCRIPTION: 	print out socket information to the stdio window
+
+PARAMETER1: 	socket
+
+RETURN VALUE:  none
+
+END DESCRIPTION **********************************************************/
+#if _USER
+	void psocket( void *s );
+#else
+	void psocket( _rs_sock_type *s );
+#endif
+/*** EndHeader */
+#if _USER
+nodebug void psocket( void *s )
+#else
+nodebug void psocket( _rs_sock_type *s )
+#endif
+{
+   auto char buffer[255];
+
+   #if _USER
+		s = _sys_get_sock(s);
+   #endif
+
+	putchar( '[' );
+
+	#if _USER
+		puts( inet_ntoa( buffer, ((_sys_sock_type *)s)->tcp.hisaddr) );
+	#else
+		puts( inet_ntoa( buffer, s->tcp.hisaddr) );
+   #endif
+
+   putchar( ':' );
+
+   #if _USER
+   	itoa( ((_sys_sock_type *)s)->tcp.hisport, buffer );
+   #else
+	   itoa( s->tcp.hisport, buffer );
+   #endif
+
+   puts( buffer );
+   putchar( ']' );
+}

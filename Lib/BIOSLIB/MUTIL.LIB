@@ -1,0 +1,884 @@
+/*** BeginHeader */
+#ifndef __MUTIL_LIB
+#define __MUTIL_LIB
+/*** EndHeader */
+
+// math utility functions used by Rabbit targets
+// grouped together by type for access by watch expressions
+
+/*** beginheader L_mod */
+root void L_mod();
+/*** endheader */
+#asm nodebug
+
+; long modulus, divisor in bc-de, dividend in stack
+
+; L_MOD  : Compute Modulus of Two Long Signed Integers
+;
+; INPUT  :
+;          BCDE = Divisor
+;          Stack : (Ret Addr) (Dividend LSW) (Dividend MSW)
+; OUTPUT :
+;          BCDE = Dividend % Divisor
+
+L_mod::
+   call  mod0     ; Check for Zero Modulus
+   pop   iy
+   pop   hl
+   exx
+   pop   hl
+   push  iy
+   push  hl
+   exx
+   push  hl
+   call  L_div
+   ld e,l
+   ld d,h      ; Least
+   exx
+   push  hl
+   exx
+   pop   bc    ; BCDE = modulus
+   ret
+
+#endasm
+
+/*** beginheader G_mod */
+root void G_mod();
+/*** endheader */
+#asm
+; G_MOD  : Compute Modulus of Two Long Unsigned Integers
+;
+; INPUT  :
+;          BCDE = Divisor
+;          Stack : (Ret Addr) (Dividend LSW) (Dividend MSW)
+; OUTPUT :
+;          BCDE = Dividend % Divisor
+G_mod::
+   call  mod0     ; Check for Zero Modulus
+   pop   iy
+   pop   hl
+   exx
+   pop   hl
+   push  iy
+   push  hl
+   exx
+   push  hl
+   call  G_div
+   ld e,l
+   ld d,h      ; Least
+   exx
+   push  hl
+   exx
+   pop   bc    ; BCDE = modulus
+   ret
+#endasm
+
+/*** beginheader L_div */
+root void L_div();
+/*** endheader */
+#asm
+; L_DIV  : Divide Two Long Signed Integers
+;
+; INPUT  :
+;          BCDE = Divisor
+;          Stack : (Ret Addr) (Dividend LSW) (Dividend MSW)
+; OUTPUT :
+;          BCDE  = Dividend / Divisor
+;          HL'HL = Dividend % Divisor
+L_div::
+   ld a,b
+   or c
+   or d
+   or e     ; Check for Zero
+   jp z,div0long	;return divide by zero error
+
+   ld a,b        ; B' = Sign of Divisor
+   and a,0x80    ; Check for Neg
+   ld b',a       ; Save masked sign of divisor in B'
+   jp p,.l_div1
+			   ; Negate BCDE to Make Divisor Positive
+   ld hl,0
+   sbc   hl,de    ; Negate LSW
+   ex de,hl
+   ld hl,0
+   sbc   hl,bc    ; Negate MSW
+   ld c,l
+   ld b,h      ; Now Negated
+.l_div1:
+   pop   iy     ; Return Address
+   push  bc     ; save MSW of Divisor
+   exx
+   pop   de     ; get MSW of Divisor
+   ld    hl,0   ; MSW of Accumulator
+   exx
+   pop   hl     ; get LSW of Dividend
+   pop   bc     ; get MSW of Dividend
+   ld    a,b
+   rla          ; move sign bit to carry
+   ld    a,b
+   rra          ; duplicate dividend sign bit in bit 6 (so now it's in bits 6 & 7)
+   exx          ; Bring B' over to B so we have masked sign of divisor available
+   xor   b      ; XOR bit 7 with masked sign of divisor to create sign of quotient
+   push  af     ; Save Sign of Quotient (bit 7) w/ dividend sign (bit 6)
+   exx
+   bit  6,a     ; Check sign of dividend
+   jp z,.l_div2 ; If Plus
+			   ; Negate BC-Stack
+   push de      ; Save LSW of Divisor
+   ex   de,hl
+   ld   hl,0
+   or   a       ; Clear Carry
+   sbc  hl,de   ; Negate LSW
+   ex   de,hl
+   ld   hl,0
+   sbc  hl,bc   ; Negate MSW
+   ld   b,h
+   ld   c,l
+   ex   de,hl
+   pop  de      ; Restore LSW of Divisor
+.l_div2:
+   push hl      ; Save LSW to Stack
+   ld   hl,0    ; Zero Accumulator LSW
+			       ; Get First 8 Bits
+   ld   a,b     ; MSB
+   call dloop8
+   ex   af,af'
+   ld   a,c
+   call dloop8  ; Next 8 Bits
+   pop  bc      ; Next 16 Bits of Dividend
+   exx
+   ld   c,a     ; 8 Bits
+   ex   af,af'
+   ld   b,a     ; BC = 16 bits of Quotient
+   push bc
+   exx
+   ld   a,b
+   call dloop8  ; 3rd 8 Bits
+   ex   af,af'
+   ld   a,c
+   call dloop8  ; LSB
+			   ; HL'HL = Modulus: Put Result in BCDE
+   pop  bc      ; MSW of Quotient
+   ld   e,a
+   ex   af,af'
+   ld   d,a     ; BCDE = Quotient, HL'HL = Modulus
+			   ; Sign of Result
+   pop  af       ; Get sign of quotient (bit 7) and sign of dividend (bit 6)
+   and  0xC0     ; Mask off all other bits
+   jp z,.l_div7  ; If both positive, all done
+   jp m,.l_div4  ; If Quotient Negation Required, do that first
+   push bc       ; Save LSW of Quotient
+   ld   c,l      ; Move LSW of Modulus to BC
+   ld   b,h
+   jr  .l_div6   ; Go negate modulus
+
+.l_div4:	   ; Negate BCDE
+   push hl       ; Save LSW of Modulus
+   ld   hl,0
+   or   a        ; Clear carry bit
+   sbc  hl,de    ; Negate LSW of Quotient
+   ex   de,hl    ; Move negated LSW back to DE
+   ld   hl,0
+   sbc  hl,bc
+   bit  6,a      ; bit 6 has sign of divisor in it
+   jp nz,.l_div5 ; Jump if modulus is negative too
+   ld   c,l      ; Move negated MSW of Quotient to BC
+   ld   b,h
+   pop  hl       ; Restore LSW of Modulus
+   jr  .l_div7   ; And exit
+
+.l_div5:         ; Negate Modulus
+   pop  bc       ; Get LSW of Modulus
+   push hl       ; Save negated MSW of Quotient
+.l_div6:
+   ld   hl,0
+   or   a        ; Clear carry bit
+   sbc  hl,bc    ; Negate LSW of Modulus
+   exx           ; Bring alternate registers forward
+   ex   de,hl    ; Move MSW of Modulus to DE
+   ld   hl,0
+   sbc  hl,de    ; Negate MSW of Modulus
+   exx           ; Restore primary registers
+   pop  bc       ; Get negated MSW of Quotient
+.l_div7:
+   jp  (iy)
+
+#endasm
+
+/*** beginheader G_div */
+root void G_div();
+/*** endheader */
+#asm
+; G_DIV  : Divide Two Long Signed Integers
+;
+; INPUT  :
+;          BCDE = Divisor
+;          Stack : (Ret Addr) (Dividend LSW) (Dividend MSW)
+; OUTPUT :
+;          BCDE  = Dividend / Divisor
+;          HL'HL = Dividend % Divisor
+
+G_div::
+   ld a,b
+   or c
+   or d
+   or e     ; Check for Zero
+   jp z,div0long
+.g_div1:
+   pop   iy    ; Return Address
+   push  bc    ; MSW of divisor
+   exx
+   pop   de    ; MSW of Divisor: DE'DE =  Divisor
+   ld hl,0     ; MSW of Accumulator
+   exx
+   pop   hl    ; LSW of Dividend
+   pop   bc    ; MSW of Dividend
+   push  hl    ; Save LSW of Dividend
+.g_div2:
+   ld hl,0     ; Zero Accumulator LSW
+
+; | 32 zero bits | divisor 32 bits | 64-bit accumulator
+
+   ld a,b      ; MSB
+   call  dloop8
+   ex af,af'      ; Save 8 Quotient Bits
+   ld a,c
+   call  dloop8      ; Next 8 Bits
+   pop   bc    ; Next 16 Bits of Dividend
+   exx
+   ld c,a      ; 8 Bits
+   ex af,af'
+   ld b,a      ; BC = 16 Bits of Quotient
+   push  bc
+   exx
+   ld a,b
+   call  dloop8      ; 3rd 8 Bits
+   ex af,af'
+   ld a,c
+   call  dloop8      ; LSB
+			   ; HL'HL = Modulus
+   pop   bc    ; Most of Quotient
+   ld e,a
+   ex af,af'
+   ld d,a      ; BCDE = Quotient, HL'HL = Modulus
+   jp (iy)     ; Return
+#endasm
+
+/*** BeginHeader dloop8 */
+root void dloop8();
+/*** Endheader */
+
+#asm nodebug
+; divide 8 steps, part of divisor in a
+; hl'-hl is accumulator, de'-de is divisor
+
+dloop8::
+   ld b,8      ; Count
+.dloop0:
+   rla         ; Shift Left A, Accumulate Quotient
+   adc   hl,hl    ; Shift Left
+   exx
+   adc   hl,hl    ; Shift Left Most
+   exx
+   or a     ; Clear Carry
+   sbc   hl,de    ; Trial Subtraction
+   exx
+   sbc   hl,de    ; Most
+   jr nc,.dloop1   ; If Subtract OK
+			   ; Reverse Subtraction
+   exx
+   add   hl,de
+   exx
+   adc   hl,de    ; Most
+   scf         ; Set Carry
+.dloop1:
+   exx
+   djnz  .dloop0      ; 8 steps, Quotient Bit in Carry
+   rla         ; Get Last Quotient Bit
+   cpl         ; Correct Polarity of Quotient
+   ret         ; A = 8 bits of Quotient
+#endasm
+
+/*** BeginHeader mod0   */
+root void mod0();
+/*** Endheader */
+
+#asm nodebug
+; MOD0   : Check for Zero Modulus
+;
+; INPUT  :
+;     BCDE = Divisor
+; OUTPUT :
+;          BCDE = Divisor
+
+mod0::
+   ld a,b      ; Check for Zero
+   or c
+   or d
+   or e
+   ret   nz    ; Return if No Error
+   pop   hl    ; Return Address of Modulus Routine
+			   ; Return Address of Caller on Stack
+	ld		hl, -ERR_LONGZEROMODULUS	; Long Zero Modulus Error
+	push	hl
+	call	exception
+	add	sp, 2
+	call	_xexit
+#endasm
+
+/*** beginheader L_and,G_and */
+// signed & unsigned long bit operations
+root void L_and();
+root void G_and();
+/*** endheader */
+#asm nodebug
+; utilities for long operations (c) 1988, 1989 Z-World, Davis, CA
+; long argument passed in bcde. if 2 arguments first on stack
+; second in bcde
+; results returned in bcde
+L_and::
+G_and::
+; dummy tag to satisfy header reference
+	pop   iy ;return address
+	pop   hl ;least significant of stack item
+	ld a,d   ;2nd byte (from low) of register item
+	and   h  ;AND 2nd of stack
+	ld d,a   ;put result back to register
+	ld a,e   ;1st of register
+	and   l  ;1st of stack item
+	ld e,a   ;put result back to register
+	pop   hl ;most (same as before)
+	ld a,b
+	and   h
+	ld b,a
+	ld a,c
+	and   l
+	ld c,a
+	jp (iy)  ;return
+#endasm
+
+/*** beginheader L_or,G_or */
+// signed & unsigned long bit operations
+root void L_or();
+root void G_or();
+/*** endheader */
+#asm
+L_or::
+G_or::   ; same principle as L.and
+	pop   iy ;return address
+	pop   hl ;least
+	ld a,d
+	or h
+	ld d,a
+	ld a,e
+	or l
+	ld e,a
+	pop   hl ;most
+	ld a,b
+	or h
+	ld b,a
+	ld a,c
+	or l
+	ld c,a
+	jp (iy)  ;return
+#endasm
+
+/*** beginheader L_xor,G_xor */
+// signed & unsigned long bit operations
+root void L_xor();
+root void G_xor();
+/*** endheader */
+#asm
+L_xor::
+G_xor::  ; same principle as L.and
+	pop   iy ;return address
+	pop   hl ;least
+	ld a,d
+	xor   h
+	ld d,a
+	ld a,e
+	xor   l
+	ld e,a
+	pop   hl ;most
+	ld a,b
+	xor   h
+	ld b,a
+	ld a,c
+	xor   l
+	ld c,a
+	jp (iy)  ;return
+#endasm
+
+/*** beginheader L_asr */
+// signed & unsigned long bit operations
+root void L_asr();
+/*** endheader */
+#asm
+; right shift item on stack by count in bcde
+L_asr::
+	pop   iy ;return
+	ld a,b   ;2nd of count
+	or c  ;or 3rd of count
+	or d  ;or 4th of count
+	jr nz,.L.rmax   ;shift count > 256, jp
+	ld a,e   ;count
+	cp 32
+	jr nc,.L.rmax   ;shift count > 32, jp
+	pop   de ;least
+	pop   hl ;most (the number is thus hlde)
+	or a  ;TA: should check for zero, special case!
+	jp z,L_go   ;TA: nothing to do, bye!
+	ld b,a   ;count
+.l.asr1:  sra   h  ;shift right arithmetic, sign bit preserved
+	rr l  ;rotate
+	rr d
+	rr e
+	djnz  .l.asr1   ;is (--b) zero yet? if not, continue
+	jp	L_go
+.L.rmax:  pop   hl
+	pop   hl ;most
+	ld a,h
+	or a  ;check sign
+	jp p,G_rmax
+.L.r1: ld bc,-1 ;right shift count overflow, exit with negative number
+	ld de,-1
+	jp (iy)
+; right shift unsigned item on stack by count in bcde
+#endasm
+
+/*** beginheader G_asr */
+// signed & unsigned long bit operations
+root void G_asr();
+/*** endheader */
+#asm nodebug
+G_asr::  ; almost the same as L.asr, except sign is not preserved
+	pop   iy ;return
+	ld a,b
+	or c
+	or d
+	jp nz,_ZGLExit
+	ld a,e   ;count
+	cp 32
+	jp nc,_ZGLExit
+	pop   de ;least
+	pop   hl ;most
+	or a
+	jp z,L_go   ;nothing to do, bye!
+	ld b,a   ;count
+.g.asr1:  srl   h
+	rr l
+	rr d
+	rr e
+	djnz  .g.asr1
+	ld b,h
+	ld c,l   ;most
+	jp (iy)  ;return
+#endasm
+
+/*** beginheader L_asl,G_asl */
+// signed & unsigned long bit operations
+root void L_asl();
+root void G_asl();
+/*** endheader */
+#asm nodebug
+G_asl::  ; shift left
+L_asl::
+	pop   iy
+	ld a,b
+	or a,c
+	or a,d
+	jp nz,_ZGLExit   ;zero
+	ld a,e
+	cp 32
+	jp nc,_ZGLExit   ;zero
+	ld b,a   ;count
+	pop   de ;least
+	pop   hl ;most
+	or a
+	jp z,L_go   ;nothing to do, bye!
+.l.asl1:  xor   a  ;clc
+	rl e
+	rl d
+	rl l
+	rl h
+	djnz  .l.asl1
+	jp L_go
+#endasm
+
+/*** beginheader L_go */
+root void L_go();
+/*** endheader */
+
+#asm nodebug
+L_go::
+	ld b,h
+	ld c,l   ;most
+	jp (iy)  ;return
+#endasm
+
+/*** beginheader _ZGLExit, G_rmax */
+root void _ZGLExit();
+root void G_rmax();
+// helper functions for routines in this module
+/*** endheader */
+#asm nodebug
+_ZGLExit::
+	pop	hl
+	pop	hl
+G_rmax::
+	ld bc,0  ;otherwise right shift count overflow, exit with
+	ld de,0  ;zeros.
+	jp (iy)
+#endasm
+
+/*** BeginHeader div0 */
+root void div0();
+// return divide by zero exception
+/*** Endheader */
+#asm nodebug
+div0::
+			   ; Return Address of Caller on Stack
+	ld		hl, -ERR_INTDIVBYZERO	; Integer Divide By Zero Error
+	push	hl
+	call	exception
+	add	sp, 2
+	call	_xexit
+#endasm
+
+/*** BeginHeader  div0long */
+root void div0long();
+// return divide by zero exception
+/*** Endheader */
+#asm nodebug
+div0long::
+			   ; Return Address of Caller on Stack
+	ld		hl, -ERR_LONGDIVBYZERO	; Long Divide By Zero Error
+	push	hl
+	call	exception
+	add	sp, 2
+	call	_xexit
+#endasm
+
+// more math utility functions
+// make integer operations always available for watch expressions
+
+/*** beginheader c_udv, c_div */
+root void c_udv();
+root void c_div();
+/*** endheader */
+// integer operation hl = hl op de
+#asm nodebug
+; C.UDV  : Perform Unsigned Integer Divide of DE by HL
+;
+; INPUT  :
+;          DE = Dividend
+;          HL = Divisor
+; OUTPUT :
+;          HL = Quotient
+;          DE = Modulus
+
+c_udv::
+	ld a,h      ; Check for Zero Divide
+	or l
+	jp z,div0
+	xor   a
+   push  af       ; Save positive sign bits for division routine
+   ex		de',hl
+   exx            ; Swap to have divisor in DE and dividend in DE'
+	jp .c_udv_entry  ; c_div requires negation of an unsigned divisor
+
+
+; C.DIV  : Perform Signed Integer Divide of DE by HL
+;
+; INPUT  :
+;          DE = Dividend (denominator)
+;          HL = Divisor (numerator)
+; OUTPUT :
+;          HL = Quotient
+;          DE = Modulus
+
+c_div::
+	ld a,h      ; Check for Zero Divide
+	or l
+	jp z,div0      	; Don't allow divide by zero
+	ld 	a,d
+	xor   h        	; Create quotient sign in bit 7
+   rla            	; Move quotient sign to Carry flag
+   ld    a,d      	; Get high byte of dividend
+	push  af       	; Save quotient sign (Carry flag) and dividend sign (bit 7)
+	ex		de',hl   	; Put divisor in DE'
+   rla               ; Get sign bit of dividend into carry
+   jr nc,.no_c_neg1
+   bool	hl				; Clear HL
+   ld 	l,h
+   sbc 	hl,de    	; Negate DE (dividend)
+   ex		de,hl			; Move negated result to DE
+.no_c_neg1:
+   exx               ; Swap registers
+	bit 7,d           ; Test sign of divisor
+	jr nz,.no_c_neg2
+.c_udv_entry:
+	bool 	hl       	; Clear HL
+   ld 	l,h
+   sbc 	hl,de    	; Negate DE (divisor)
+   ex    de,hl    	; Move negated result to DE
+.no_c_neg2:
+   ld    bc',de      ; Move divisor to BC'
+   exx               ; and switch registers
+	bool 	hl       	; Clear HL
+   ld 	l,h
+	ld 	a,b
+	inc   a
+	jr nz,.DV3
+	ld a,d
+	add   a,c
+	ld a,16
+	jr c,.DV1
+.DV3:
+	ld l,d
+	ld d,e
+	ld e,h
+	ld a,8
+.DV1:
+	add   hl,hl
+	ex de,hl
+	add   hl,hl
+	ex de,hl
+	jr nc,.DV4
+	inc   hl
+.DV4:
+	push  hl
+	add   hl,bc
+	pop   hl
+	jr nc,.DV5
+	add   hl,bc
+	inc   de
+.DV5:
+	dec   a
+	jr nz,.DV1
+   ex		de',hl   ; Move modulus to DE'
+	pop   af       ; Division done (Quot. in DE, Mod in DE') get sign flags
+   jr nc,.DV6     ; Jump if quotient is positive
+   bool	hl			; Clear HL
+   ld		l,h
+   sbc	hl,de		; Negate the quotient
+   ex		de,hl    ; Move quotient to DE
+.DV6:
+   exx            ; Swap banks
+   rla            ; Move sign of dividend into carry
+   jr nc,.DV7     ; Jump if modulus should be positive
+   bool	hl			; Clear HL
+   ld		l,h
+   sbc	hl,de		; Negate the modulus
+   ex 	de,hl		; Move negated modulus to DE
+.DV7:
+   ex 	de',hl   ; Get quotient into HL
+	ret
+#endasm
+
+/*** beginheader c_divt, c_udivt */
+root void c_divt();
+//root void c_udivt();
+/*** endheader */
+#asm
+; C.DIVT  : Perform Signed Integer Divide of HL by a power of 2
+;
+; INPUT  :
+;          HL = numerator
+;          A = number of shifts
+;          B = sign of denominator (sign bit of DE is set)
+; OUTPUT :
+;          HL = Quotient
+c_divt:: bit 7, h    ; test numerator sign
+	ld c, h            ; save sign
+	jr z, .DT2   		 ; if positive, don't negate
+	ex de, hl     	    ; otherwise negate result
+	bool hl
+	ld l, h
+	sbc hl, de
+.DT2: rra          	; check for divide by 2
+	jr nc, .DT3  		; check for set carry
+	or a
+	rr hl         		; no need to set carry since already set by rr
+.DT3: rra      		; check for divide by 4
+	jr nc,.DT4   		; set carry
+	or a
+	rr hl
+	or a
+	rr hl
+.DT4: rra				; check for divide by 16
+	jr nc, .DT5
+	or a
+	rr hl
+	or a
+	rr hl
+	or a
+	rr hl
+	or a
+	rr hl
+.DT5: rra        ; check for divide by 256
+	jr nc, .DT6
+	ld l,h
+	ld h, 0x00
+.DT6: ld a, c    ; check for sign again
+	xor b
+	ret p 				; if positive return
+	ex de, hl     	; otherwise negate result
+	bool hl
+	ld l, h
+	sbc hl, de
+	ret
+; c_divc is not yet implemented; basic idea is division by constant (reciprocal
+; is precalcuated by compiler)
+;
+; c_divc::	ret
+#endasm
+
+
+
+/*** beginheader L_add,G_add */
+root void L_add();
+root void G_add();
+// signed & unsigned long operations
+/*** endheader */
+#asm nodebug
+L_add::
+G_add::
+	pop   iy ;ret
+	pop   hl ;least
+	add   hl,de
+	ex de,hl
+	pop   hl
+	adc   hl,bc ;most
+	ld c,l
+	ld b,h   ;to bc
+	jp (iy)  ;return
+#endasm
+
+/*** beginheader L_sub,G_sub */
+root void L_sub();
+root void G_sub();
+// signed & unsigned long operations
+/*** endheader */
+#asm nodebug
+L_sub::
+G_sub::
+	pop   iy ;ret
+	pop   hl ;least
+	or a  ;clc
+	sbc   hl,de
+	ex de,hl
+	pop   hl
+	sbc   hl,bc
+	ld c,l
+	ld b,h
+	jp (iy)  ;ret
+#endasm
+
+/*** beginheader L_com,G_com */
+root void L_com();
+root void G_com();
+// signed & unsigned long operations
+/*** endheader */
+#asm nodebug
+; complement bcde
+G_com::
+L_com::  ld a,e
+	cpl
+	ld e,a
+	ld a,d
+	cpl
+	ld d,a
+	ld a,c
+	cpl
+	ld c,a
+	ld a,b
+	cpl
+	ld b,a
+	ret
+#endasm
+
+/*** beginheader L_mul,G_mul */
+root void L_mul();
+root void G_mul();
+// signed & unsigned long operations
+/*** endheader */
+#asm nodebug
+; L_mul, G_mul
+; long x,y
+; x*y = (x1*2^16 + x2)*(y1*2^16 + y2)
+;     = x1*y1*2^32 + (x1*y2 + y1*x2)*2^16 + x2*y2
+;
+; let x1x2=y1y2=0xffffffff
+;
+; 0xffff*0xffff=fffe0001
+;
+;  fffe 0001
+;       fffe 0001
+;       fffe 0001
+;            fffe 0001
+; --------------------
+;  ffff fffe 0000 0001
+;            +++++++++ only care about this portion
+;
+; calc in range:  lsw(x1*y2 + y1*x2)*2^16 + x2*y2
+;
+; worst case clocks:  153 (about 6us at 25mhz)
+;
+L_mul::
+G_mul::
+	exx
+	ld		hl,(sp+2)		; load x1,x2 off of stack
+	ex		de,hl
+	ld		hl,(sp+4)
+
+	exx
+	ex		de',hl
+	ex		de,hl
+	ex		de',hl
+
+	ld		bc',bc
+
+	mul						; y1*x2
+
+	ld		iy,0				; use iy to hold msw of result
+	add	iy,bc
+
+	exx
+	ld		bc',de
+
+	ld		b,h
+	ld		c,l
+
+	mul						; x1*y2
+	add	iy,bc
+
+	exx
+
+	bit	7,d
+	jr		z,.gmul1
+	add	iy,bc				; adjust for signed -> unsigned
+
+.gmul1:
+	bit	7,b
+	mul						; x2*y2
+	jr		z,.gmul2
+	add	hl,de				; adjust for signed -> unsigned
+
+.gmul2:
+	ex		de,hl
+	ld		hl,iy
+	add	hl,de
+	ld		d,b				; pack result
+	ld		e,c
+	ld		b,h
+	ld		c,l
+
+	pop	hl					; remove x1x2 off of stack and return
+	add	sp,4
+	jp		(hl)
+#endasm
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

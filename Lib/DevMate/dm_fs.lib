@@ -1,0 +1,1829 @@
+/* START LIBRARY DESCRIPTION *********************************************
+DM_FS.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+	Support routines for DevMate file system application. These allow
+	the uploading and managing of files on the DevMate, which is useful
+	particularly with the variable application for providing dynamic
+	content on a web server.
+
+PORTING NOTE:
+	For non-Rabbit target processors with an ANSI C compiler, there are
+	equivalent .c and .h files in the LIB\Target subdirectory.
+
+CONFIGURATION MACROS:
+	The following macros may be defined before inclusion of this library.
+
+	DEVMATE_FS_MAXFILES
+		The maximum number of DMFile file handles that may be used
+		simultaneously. Defaults to 4. A file handle is used for all
+		transactions with the DevMate, not just file-upload, so this
+		is equivilant to how many operations may be conducted at the
+		same time.
+
+	DEVMATE_FS_MAXWINDOW
+		Defaults to 16. This is the maximum number of APPENDS that may
+		be pending on the XTC layer in any given transaction. This number
+		should be large for good performance, but will increase the latency
+		in finding out about an error, if one should occour.
+
+	DEVMATE_FS_NUMRXBUFS
+	   Defaults to 2.  Specifies the number of target communications
+	   receive buffers.  A higher number allows greater performance, at
+	   the expense of additional memory usage.
+
+	DEVMATE_FS_NUMTXBUFS
+	   Defaults to 2.  Specifies the number of target communications
+	   transmit buffers.  Probably should not be set higher than 2, as
+		extra will probably not help performance significantly.
+
+	These macros are have their defaults in TC_CONF.LIB, and may be edited
+	there instead.
+
+	TC_FS_TCBUFSIZE
+		Defaults to (128+5). This is the size of the packets used at the
+		lowest level, and therefor limit the size of any given append. Making
+		this larger, while reducing overhead on a file-uploade, may not help
+		performance that much, as it greatly increases the chance of the packet
+		having an error in transmission, and therefor needing to be retransmitted.
+
+	TC_FS_MAXDATA
+		Defaults to 128. The absolute size limit of the data-portion of any
+		append, at the logical (high) level. If the TCBUFSIZE is increased to
+		try and improve performance, this should be increased as well.
+
+	TC_FS_MAXNAME
+		Defaults to 32. This is the maximum number of bytes in length a
+		real-text filename may be, including the NULL ('\0') character.
+
+API FUNCTIONS:
+	The API functions allow the user to connect to the DevMate, upload files,
+	and manage the existing files on the DevMate's filesystem. The 'B' functions
+	are BLOCKING version of the normal API fuction, and should only be used
+	with great care.
+
+	The following API functions are avaliable:
+		devmate_fs_sync
+		devmate_fs_syncB
+		devmate_fs_finish
+		devmate_fs_finishB
+		devmate_fs_open
+		devmate_fs_append
+		devmate_fs_close
+		devmate_fs_rename
+		devmate_fs_renameB
+		devmate_fs_idlookup
+		devmate_fs_idlookupB
+		devmate_fs_delete
+		devmate_fs_deleteB
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#ifndef __DEVMATE_FS_LIB
+#define __DEVMATE_FS_LIB
+/*** EndHeader */
+
+/*** BeginHeader _TCFSbasic_swap, _TCFSdouble_swap, _TCFSSwapHeader, tc_fs_dbgmsg */
+
+#ifndef DEVMATE_XTC_H
+	#use "dm_xtc.lib"
+#endif
+
+#ifndef __TC_FS_LIB
+	#use "tc_fs.lib"
+#endif
+
+#ifdef uCOS
+	/* for references to DMFile handles to be physical, so they can be on the stack */
+	#define DEVMATE_FS_PHYSICALHANDLES
+#endif
+
+/* number of tx/rx buffers for the TC layer */
+#ifndef DEVMATE_FS_NUMTXBUFS
+	#define DEVMATE_FS_NUMTXBUFS	2
+#endif
+#ifndef DEVMATE_FS_NUMRXBUFS
+	#define DEVMATE_FS_NUMRXBUFS	2
+#endif
+
+/* size of the tx/rx stream buffers */
+#ifndef DEVMATE_FS_TXSTREAMSIZE
+	#define DEVMATE_FS_TXSTREAMSIZE	512
+#endif
+#ifndef TC_FS_RXSTREAMSIZE
+	#define DEVMATE_FS_RXSTREAMSIZE	256
+#endif
+
+/* maximum number of file-handles that can be used at once */
+#ifndef DEVMATE_FS_MAXFILES
+	#define DEVMATE_FS_MAXFILES	4
+#endif
+
+/* maximum size of the window - this number of APPENDS may be pending on the XTC layer */
+#ifndef DEVMATE_FS_MAXWINDOW
+	#define DEVMATE_FS_MAXWINDOW	16
+#endif
+
+#ifdef TC_FS_DEBUG
+	/* pull in the dbg string */
+	extern const char tc_fs_dbgmsg[];
+#endif
+
+#ifdef TC_FS_DEBUG
+	#define fs_nodebug
+#else
+	#ifdef __DC__
+		#define fs_nodebug nodebug
+	#else
+		#define fs_nodebug
+	#endif
+#endif
+
+
+/* a file handle */
+typedef struct {
+	int		command;			// current command being processed
+#define TC_FS_CMDSYNC		1
+#define TC_FS_CMDOPEN		2
+#define TC_FS_CMDCLOSE		3
+#define TC_FS_CMDRENAME		4
+#define TC_FS_CMDIDLOOKUP	5
+#define TC_FS_CMDDELETE		6
+
+	int		state;			// state storage for the command handlers
+	FNumber	id;				// id of the file we are talking about
+	FNumber	*id_dest;		// destination of the ID on IDLookup
+
+	/* markers for a transaction */
+	int		transaction_token;	// token representing the current transaction
+	int		window;					// number of packets that may be pending on the XTC layer
+} DMFile;
+
+#ifdef TC_BIG_ENDIAN
+	extern const uint8 _TCFSbasic_swap[];
+	extern const uint8 _TCFSdouble_swap[];
+	extern const uint8 _TCFSSwapHeader[];
+#endif
+
+
+/*** EndHeader */
+
+#ifdef TC_BIG_ENDIAN
+	const uint8 _TCFSbasic_swap[] = { 0,1 };
+	const uint8 _TCFSdouble_swap[] = { 0,1, 2,3 };
+	const uint8 _TCFSSwapHeader[] = { 2,3 };
+#endif
+
+#ifdef TC_FS_DEBUG
+	/* pull in the dbg string */
+	const char tc_fs_dbgmsg[] = "devmate_fs: ";
+#endif
+
+
+/*** BeginHeader _devmate_fs_init */
+void _devmate_fs_init(void);
+int devmate_fs_send(char type, int send_length);
+int devmate_fs_storehandle(DMFile *file);
+#funcchain __devmate_xtc_init _devmate_fs_init
+
+/*
+ * returns true if the XTC layer is ready, and able to accept
+ * commands from the user. otherwise it returns false.
+ */
+/* just a macro to the flag variable... */
+#define devmate_fs_isnotready() _FSState.isnotreadyyet
+
+extern _TC_FSStateType _FSState;
+extern _TC_FSTargetToDevMate	_FSSendBuf;
+extern _TC_FSDevMateToTarget	_FSReceiveBuf;
+#ifdef TC_LOCKING
+	extern TC_LOCKTYPE	_FSLock;
+#endif
+
+#ifdef DEVMATE_FS_PHYSICALHANDLES
+	extern long		_FSHandles[DEVMATE_FS_MAXFILES];
+	extern DMFile	_FSHandleCache;
+	extern int		_FSCurrentHandle;
+#else
+	extern DMFile* _FSHandles[DEVMATE_FS_MAXFILES];
+#endif
+
+/*** EndHeader */
+
+/* the actuall state structure */
+_TC_FSStateType _FSState;
+
+/* currently processing transactions */
+#ifdef DEVMATE_FS_PHYSICALHANDLES
+	// store physical addresses
+	long		_FSHandles[DEVMATE_FS_MAXFILES];
+	// one file handle to cache the xmem versions
+	DMFile	_FSHandleCache;
+	// id in the _FSHandles struct that _FSHandleCache is currently a copy of
+	int		_FSCurrentHandle;
+#else
+	// use normal pointers - faster, but all handles
+	// must be in rootmem at all times
+	DMFile*	_FSHandles[DEVMATE_FS_MAXFILES];
+#endif
+
+/* buffer to transmit out of */
+_TC_FSTargetToDevMate	_FSSendBuf;
+_TC_FSDevMateToTarget	_FSReceiveBuf;
+
+/* a lock, if a preemptive kernel is in use */
+#ifdef TC_LOCKING
+	TC_LOCKTYPE	_FSLock;
+#endif
+
+
+fs_nodebug void _devmate_fs_init(void)
+{
+	auto int rc;
+	static int linit;
+
+#GLOBAL_INIT { linit = 0; }
+
+#ifdef TC_LOCKING
+	if(!linit)
+		/* the lock is not initilized yet */
+		_FSLock = TC_CREATELOCK();
+#endif
+
+	/* erase the entire state struct */
+	memset(&_FSState, 0, sizeof(_FSState));
+	_FSState.app.appno = TC_TYPE_FS;
+	_FSState.app.numchans = 1;
+	_FSState.app.chans = _FSState.chans;
+	_FSState.app.txbufsize = TC_FS_TCBUFSIZE;
+	_FSState.app.rxbufsize = TC_FS_TCBUFSIZE;
+	if(rc = devmate_xtc_register(&_FSState.app, DEVMATE_FS_TXSTREAMSIZE, DEVMATE_FS_RXSTREAMSIZE)) {
+#ifdef TC_FS_DEBUG
+		printf("%sinit: devmate_xtc_register failed with %d!\n",tc_fs_dbgmsg,rc);
+#endif
+		exit(TC_TYPE_FS);
+	}
+
+	_FSState.app.numtxbufs = DEVMATE_FS_NUMTXBUFS;
+	_FSState.app.numrxbufs = DEVMATE_FS_NUMRXBUFS;
+	_FSState.app.aflags = XTC_AF_CONTROL;	// listen on channel 0 automatically
+	_FSState.app.tc_handler = NULL;
+	_FSState.app.reqpacing = 0;
+	_FSState.state = TC_FS_INIT;
+	_FSState.isnotreadyyet = 1; // flag that the driver is still initilizing...
+
+	/* set all of the current-file-handes to NULL */
+	for(rc=0; rc<DEVMATE_FS_MAXFILES; rc+=1)
+#ifdef DEVMATE_FS_PHYSICALHANDLES
+		_FSHandles[rc] = 0;
+#else
+		_FSHandles[rc] = NULL;
+#endif
+
+#ifdef DEVMATE_FS_PHYSICALHANDLES
+	// cache is empty for now
+	_FSCurrentHandle = DEVMATE_FS_MAXFILES;
+#endif
+
+	linit = 1;
+}
+
+/*** BeginHeader devmate_fs_MakeNewToken */
+int devmate_fs_MakeNewToken(void);
+/*** EndHeader */
+/*
+ * Make a transaction token, that is unused.
+ */
+fs_nodebug int devmate_fs_MakeNewToken(void)
+{
+	static int token;
+
+	/*
+	 * Make sure the token does not conflict with the BAD TOKEN
+	 * marker and does not already exist.
+	 */
+	do {
+		token++;
+	} while(TC_FS_TOKEN_BAD == token || NULL != devmate_fs_findhandleTOKEN(token));
+
+	return token;
+}
+
+
+/*** BeginHeader _devmate_fs_tick */
+DMFile *devmate_fs_findhandleTOKEN(int token);
+void _devmate_fs_tick(void);
+#funcchain __devmate_tick _devmate_fs_tick
+/*** EndHeader */
+
+/***************************************************
+ * IMPORTANT NOTE ABOUT THE FINDHANDLE FUNCTIONS!  *
+ *                                                 *
+ * There is only one _FSHandleCache at the moment, *
+ * therefor if a findhandle function is called,    *
+ * the old pointer is renedered invalid! The data  *
+ * _MUST_ be coppied out before a new file handle  *
+ * can be looked up!                               *
+ **************************************************/
+
+/*
+ * Store a file handle in the current-list
+ */
+fs_nodebug int devmate_fs_storehandle(DMFile *file)
+{
+	auto int i;
+#ifdef DEVMATE_FS_PHYSICALHANDLES
+	auto long file_address;
+
+	// find the physical address of the DMFile handle
+	file_address = paddr(file);
+#endif
+
+	for(i=0;i<DEVMATE_FS_MAXFILES;i+=1) {
+#ifdef DEVMATE_FS_PHYSICALHANDLES
+		if(0 == _FSHandles[i]) {
+			_FSHandles[i] = file_address;
+			return TC_SUCCESS;
+		}
+#else
+		if(NULL == _FSHandles[i]) {
+			/* found an empty slot */
+			_FSHandles[i] = file;
+			return TC_SUCCESS;
+		}
+#endif
+	}
+
+	/* no room! */
+	return TC_ERROR;
+}
+
+/*
+ * find a handle based on the CMD
+ */
+fs_nodebug DMFile *devmate_fs_findhandleCMD(int cmd)
+{
+	auto int i;
+
+	for(i=0;i<DEVMATE_FS_MAXFILES;i+=1) {
+#ifdef DEVMATE_FS_PHYSICALHANDLES
+		if(_FSHandles[i]) {
+			xmem2root((void *)&_FSHandleCache, _FSHandles[i], sizeof(DMFile));
+			if(_FSHandleCache.command == cmd) {
+				_FSCurrentHandle = i;	// mark which handle is currently in the cache
+				return &_FSHandleCache;
+			}
+		}
+#else
+		if(_FSHandles[i] && _FSHandles[i]->command == cmd) {
+			return _FSHandles[i];
+		}
+#endif
+	}
+	/* handle not found */
+	return NULL;
+}
+
+/*
+ * find a handle based on the ID
+ */
+fs_nodebug DMFile *devmate_fs_findhandleID(FNumber id)
+{
+	auto int i;
+
+	for(i=0;i<DEVMATE_FS_MAXFILES;i+=1) {
+#ifdef DEVMATE_FS_PHYSICALHANDLES
+		if(_FSHandles[i]) {
+			xmem2root((void *)&_FSHandleCache, _FSHandles[i], sizeof(DMFile));
+			if(_FSHandleCache.id == id) {
+				_FSCurrentHandle = i;	// mark which handle is currently in the cache
+				return &_FSHandleCache;
+			}
+		}
+#else
+		if(_FSHandles[i] && _FSHandles[i]->id == id) {
+			return _FSHandles[i];
+		}
+#endif
+	}
+	/* handle not found */
+	return NULL;
+}
+
+/*
+ * find a handle based on the transaction token
+ */
+fs_nodebug DMFile *devmate_fs_findhandleTOKEN(int token)
+{
+	auto int i;
+
+	for(i=0;i<DEVMATE_FS_MAXFILES;i+=1) {
+#ifdef DEVMATE_FS_PHYSICALHANDLES
+		if(_FSHandles[i]) {
+			xmem2root((void *)&_FSHandleCache, _FSHandles[i], sizeof(DMFile));
+			if(_FSHandleCache.transaction_token == token) {
+				_FSCurrentHandle = i;	// mark which handle is currently in the cache
+				return &_FSHandleCache;
+			}
+		}
+#else
+		if(_FSHandles[i] && _FSHandles[i]->transaction_token == token) {
+			return _FSHandles[i];
+		}
+#endif
+	}
+	/* handle not found */
+	return NULL;
+}
+
+#ifdef DEVMATE_FS_PHYSICALHANDLES
+void devmate_fs_writeback(DMFile *file)
+{
+	if(file == &_FSHandleCache) {
+		// copy the modified cache back to where it came from
+		root2xmem(_FSHandles[_FSCurrentHandle],(void *)&_FSHandleCache,sizeof(DMFile));
+	} else {
+		// the handle isn't in the cache - ignore this...
+		return;
+	}
+}
+#else
+	// no cache exists, so no need to write anything back
+	#define devmate_fs_writeback(file)
+#endif
+
+/*
+ * remove a file-handle from the current-list
+ */
+fs_nodebug void devmate_fs_removehandle(DMFile *file)
+{
+	auto int i;
+#ifdef DEVMATE_FS_PHYSICALHANDLES
+	auto long file_address;
+
+	if(file == &_FSHandleCache) {
+		file_address = _FSHandles[_FSCurrentHandle];	// lookup the actuall address, not the cache's address
+		_FSCurrentHandle = DEVMATE_FS_MAXFILES;			// mark the cache as empty
+	} else {
+		// find the physical address of the DMFile handle
+		file_address = paddr(file);
+	}
+#endif
+
+	for(i=0;i<DEVMATE_FS_MAXFILES;i+=1) {
+#ifdef DEVMATE_FS_PHYSICALHANDLES
+		if(file_address == _FSHandles[i]) {
+			/* found the handle in the list! */
+			_FSHandles[i] = 0;	 /* remove it */
+		}
+#else
+		if(file == _FSHandles[i]) {
+			/* found the handle in the list! */
+			_FSHandles[i] = NULL; /* remove it */
+		}
+#endif
+	}
+}
+
+/*
+ * process a received packet, and put the response in
+ * the header/body buffers to be transmitted to the target
+ *
+ * returns true if the packet is done being processed,
+ * and false if more processing is necessary
+ */
+fs_nodebug int devmate_fs_processpacket(void)
+{
+	static DMFile *file;
+
+	switch(_FSState.header.packet_type) {
+	/*
+	 * The SYNC command
+	 */
+	case TC_FS_SYNC|TC_ACK:
+		/* got an ACK of the INIT command */
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_FSReceiveBuf, sizeof(_TCFSbasic_swap), _TCFSbasic_swap);
+#endif
+		file = devmate_fs_findhandleCMD(TC_FS_CMDSYNC);
+		if(file) {
+			file->state = TC_SUCCESS; // signal the ACK to the user
+			devmate_fs_writeback(file);	 // write the cache back to where it should be
+			devmate_fs_removehandle(file); // remove the handle from the list
+		}
+		/* FIXME!!! handle any information returned in the SYNC|ACK? */
+		break;
+
+	case TC_FS_SYNC|TC_NAK:
+		/* the INIT command was NAKed */
+		file = devmate_fs_findhandleCMD(TC_FS_CMDSYNC);
+		if(file) {
+			file->state = TC_ERROR; // signal the NAK to the user
+			devmate_fs_writeback(file);	 // write the cache back to where it should be
+			devmate_fs_removehandle(file); // remove the handle from the list
+		}
+		break;
+
+	/*
+	 * The TRANSACTION_OPEN command
+	 */
+	case TC_FS_TRANSACTION_OPEN|TC_ACK:
+		/* the transaction opened successfully - open the window for commands */
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_FSReceiveBuf, sizeof(_TCFSbasic_swap), _TCFSbasic_swap);
+#endif
+		file = devmate_fs_findhandleTOKEN(_FSReceiveBuf.TransactionOpenACK.transaction_token);
+		if(NULL != file) {
+			file->window = DEVMATE_FS_MAXWINDOW;
+			devmate_fs_writeback(file);	 // write the cache back to where it should be
+		}
+		break;
+	case TC_FS_TRANSACTION_OPEN|TC_NAK:
+		/* open failed - terminate the transaction */
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_FSReceiveBuf, sizeof(_TCFSbasic_swap), _TCFSbasic_swap);
+#endif
+		file = devmate_fs_findhandleTOKEN(_FSReceiveBuf.TransactionOpenNAK.transaction_token);
+		if(NULL != file) {
+			file->state = TC_ERROR;
+			file->command = TC_ERROR;
+			devmate_fs_writeback(file);	 // write the cache back to where it should be
+			devmate_fs_removehandle(file);
+		}
+		break;
+
+	/*
+	 * The TRANSACTION_CLOSE command
+	 */
+	case TC_FS_TRANSACTION_CLOSE|TC_ACK:
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_FSReceiveBuf, sizeof(_TCFSdouble_swap), _TCFSdouble_swap);
+#endif
+		file = devmate_fs_findhandleTOKEN(_FSReceiveBuf.TransactionCloseACK.transaction_token);
+		if(NULL != file) {
+			file->state = TC_SUCCESS; // signal the transaction is finished
+			/* store the ID of the created file, if necessary */
+			if(file->id_dest)
+				*(file->id_dest) = _FSReceiveBuf.TransactionCloseACK.id;
+			devmate_fs_writeback(file);	 // write the cache back to where it should be
+			devmate_fs_removehandle(file);
+		}
+		break;
+	case TC_FS_TRANSACTION_CLOSE|TC_NAK:
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_FSReceiveBuf, sizeof(_TCFSbasic_swap), _TCFSbasic_swap);
+#endif
+		file = devmate_fs_findhandleTOKEN(_FSReceiveBuf.TransactionCloseNAK.transaction_token);
+		if(NULL != file) {
+			file->state = TC_ERROR; // signal the error
+			devmate_fs_writeback(file);	 // write the cache back to where it should be
+			devmate_fs_removehandle(file);
+		}
+		break;
+
+	/*
+	 * The TRANSACTION_APPEND command
+	 */
+	case TC_FS_TRANSACTION_APPEND|TC_ACK:
+		/* the append succeded - restore one window space */
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_FSReceiveBuf, sizeof(_TCFSbasic_swap), _TCFSbasic_swap);
+#endif
+		file = devmate_fs_findhandleTOKEN(_FSReceiveBuf.TransactionAppendACK.transaction_token);
+		if(NULL != file) {
+			file->window += 1;
+			devmate_fs_writeback(file);	 // write the cache back to where it should be
+		}
+		break;
+	case TC_FS_TRANSACTION_APPEND|TC_NAK:
+		/* transaction failed - terminate everything */
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_FSReceiveBuf, sizeof(_TCFSbasic_swap), _TCFSbasic_swap);
+#endif
+		file = devmate_fs_findhandleTOKEN(_FSReceiveBuf.TransactionAppendNAK.transaction_token);
+		if(NULL != file) {
+			file->state = TC_ERROR;
+			devmate_fs_writeback(file);	 // write the cache back to where it should be
+			devmate_fs_removehandle(file);
+		}
+		break;
+
+	/*
+	 * The RENAME command
+	 */
+	case TC_FS_RENAME|TC_ACK:
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_FSReceiveBuf, sizeof(_TCFSbasic_swap), _TCFSbasic_swap);
+#endif
+		file = devmate_fs_findhandleID(_FSReceiveBuf.RenameACK.id);
+		if(file) {
+			file->state = TC_SUCCESS;
+			devmate_fs_writeback(file);	 // write the cache back to where it should be
+			devmate_fs_removehandle(file);
+		}
+		break;
+	case TC_FS_RENAME|TC_NAK:
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_FSReceiveBuf, sizeof(_TCFSbasic_swap), _TCFSbasic_swap);
+#endif
+		file = devmate_fs_findhandleID(_FSReceiveBuf.RenameNAK.id);
+		if(file) {
+			file->state = TC_ERROR;
+			devmate_fs_writeback(file);	 // write the cache back to where it should be
+			devmate_fs_removehandle(file);
+		}
+		break;
+
+	/*
+	 * The IDLOOKUP command
+	 */
+	case TC_FS_IDLOOKUP|TC_ACK:
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_FSReceiveBuf, sizeof(_TCFSdouble_swap), _TCFSdouble_swap);
+#endif
+		file = devmate_fs_findhandleTOKEN(_FSReceiveBuf.IDLookupNAK.transaction_token);
+		if(file) {
+			/* store the ID the user supplied */
+			if(file->id_dest)
+				*(file->id_dest) = _FSReceiveBuf.IDLookupACK.id;
+
+			file->state = TC_SUCCESS;
+			devmate_fs_writeback(file);	 // write the cache back to where it should be
+			devmate_fs_removehandle(file);
+		}
+		break;
+	case TC_FS_IDLOOKUP|TC_NAK:
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_FSReceiveBuf, sizeof(_TCFSbasic_swap), _TCFSbasic_swap);
+#endif
+		file = devmate_fs_findhandleTOKEN(_FSReceiveBuf.IDLookupNAK.transaction_token);
+		if(file) {
+			/* mark the error to the user */
+			file->state = TC_ERROR;
+			devmate_fs_writeback(file);	 // write the cache back to where it should be
+			devmate_fs_removehandle(file);
+		}
+		break;
+
+	/*
+	 * The DELETE command
+	 */
+	case TC_FS_DELETE|TC_ACK:
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_FSReceiveBuf, sizeof(_TCFSbasic_swap), _TCFSbasic_swap);
+#endif
+		file = devmate_fs_findhandleID(_FSReceiveBuf.DeleteACK.id);
+		if(file) {
+			file->state = TC_SUCCESS;
+			devmate_fs_writeback(file);	 // write the cache back to where it should be
+			devmate_fs_removehandle(file);
+		}
+		break;
+	case TC_FS_DELETE|TC_NAK:
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_FSReceiveBuf, sizeof(_TCFSbasic_swap), _TCFSbasic_swap);
+#endif
+		file = devmate_fs_findhandleID(_FSReceiveBuf.DeleteNAK.id);
+		if(file) {
+			file->state = TC_ERROR;
+			devmate_fs_writeback(file);	 // write the cache back to where it should be
+			devmate_fs_removehandle(file);
+		}
+		break;
+
+	default:
+		/* unknown packet type! */
+		return TC_ERROR;
+	}
+
+	/* normal return */
+	return TC_SUCCESS;
+}
+
+/*
+ * build a header, and try and send the packet out of _FSSendBuf, if there
+ * is room in the outgoing XTC transmit buffer
+ */
+fs_nodebug int devmate_fs_send(char type, int send_length)
+{
+	static _TC_FSHeader header;
+	static int length;
+
+	if(0 != xtc_error(&_FSState.app,0)) {
+		/* XTC connection closed... */
+		_FSState.state = TC_FS_RESET;
+		return TC_ERROR;
+	}
+
+	/* determine if the channel is writable */
+	length = xtc_writable(&_FSState.app,0);
+	if(length > 0) {
+		/* the channel is open... is there enough room? */
+		length -= 1; // fixup the returned length
+		if(length >= (sizeof(_TC_FSHeader) + send_length)) {
+			/* there is enough room to send the packet! */
+
+			/* build the header */
+			header.start_byte = TC_FS_STARTBYTE;
+			header.packet_type = type;
+			header.length = send_length;
+
+#ifdef TC_BIG_ENDIAN
+			_tc_reorder((uint8 *)&header, sizeof(_TCFSSwapHeader), _TCFSSwapHeader);
+#endif
+			/* send the header */
+			if(sizeof(_TC_FSHeader) != xtc_awrite(&_FSState.app, 0, (char *)&header, sizeof(_TC_FSHeader)))
+				goto _devmate_fs_senderror;
+
+			/* send the body */
+			if(send_length != xtc_awrite(&_FSState.app, 0, (char *)&_FSSendBuf, send_length))
+				goto _devmate_fs_senderror;
+
+			/* send was successfull! */
+			return TC_SUCCESS;
+
+		} else {
+			/* not enough room */
+			return TC_ERROR;
+		}
+	} else {
+		/* the channel closed! */
+_devmate_fs_senderror:
+		_FSState.state = TC_FS_RESET;
+		return TC_ERROR;
+	}
+}
+
+/*
+ * receive one packet from the Service Processor
+ *
+ * returns true if the packet arrived, and false if more
+ * processing is necessary
+ */
+fs_nodebug int devmate_fs_getpacket(void)
+{
+	static int	retval;
+
+	retval = xtc_error(&_FSState.app,0); // is our channel still open?
+	if(retval) {
+_devmate_fs_notreadable:
+		/* target was reset - handle this error */
+		_FSState.state = TC_FS_RESET;
+		return 0;
+	}
+
+	switch(_FSState.rxstate) {
+	case TC_FS_RXINIT:
+		_FSState.offset = 0;
+		_FSState.length = sizeof(_FSState.header);
+		_FSState.rxstate = TC_FS_RXHEADER;
+		// fall through to the RXHEADER state
+
+	case TC_FS_RXHEADER:
+		retval = xtc_read(&_FSState.app, 0, (char *)&_FSState.header + _FSState.offset, _FSState.length - _FSState.offset);
+		if(-1 == retval) {
+			/* error! */
+			goto _devmate_fs_notreadable;
+		}
+		_FSState.offset += retval;	// move the offset
+		if(_FSState.offset >= _FSState.length) {
+			/* header is finished - verify it */
+#ifdef TC_BIG_ENDIAN
+			_tc_reorder((uint8 *)&_FSState.header, sizeof(_TCFSSwapHeader), _TCFSSwapHeader);
+#endif
+			if(TC_FS_STARTBYTE != _FSState.header.start_byte) {
+				/* bad start byte */
+#ifdef TC_FS_DEBUG
+				printf("%s bad start byte!\n",tc_fs_dbgmsg);
+#endif
+				xtc_abort(&_FSState.app,0);
+				return 0;
+			}
+
+#if 0
+//#ifdef TC_FS_DEBUG
+			printf("%s RX: type = %d, length = %d\n",tc_fs_dbgmsg,_FSState.header.packet_type,_FSState.header.length);
+#endif
+
+			_FSState.length = _FSState.header.length;
+			if(_FSState.length > sizeof(_FSReceiveBuf)) {
+				/* incoming packet is too big */
+#ifdef TC_FS_DEBUG
+				printf("%s incoming packet too big!\n",tc_fs_dbgmsg);
+#endif
+				xtc_abort(&_FSState.app,0);
+				return 0;
+			}
+
+			_FSState.offset = 0;
+			_FSState.rxstate = TC_FS_RXBODY;
+			// fall through to the RXBODY state
+		} else {
+			/* still more data to receive */
+			break;
+		}
+
+	case TC_FS_RXBODY:
+		/* receive the body of the packet */
+		retval = xtc_read(&_FSState.app, 0, (char *)&_FSReceiveBuf + _FSState.offset, _FSState.length - _FSState.offset);
+		if(-1 == retval) {
+			/* error! */
+			goto _devmate_fs_notreadable;
+		}
+		_FSState.offset += retval;	// move the offset
+		if(_FSState.offset >= _FSState.length) {
+			/* received the body! packet is done! return true */
+			return 1;
+		} else {
+			/* still more data to receive */
+			break;
+		}
+
+	default:
+		/* internal error! */
+#ifdef TC_FS_DEBUG
+		printf("%sRX State machine error!!!\n",tc_fs_dbgmsg);
+#endif
+		/* kill everything */
+		exit(TC_TYPE_FS);
+	}
+
+	return 0;
+}
+
+/*
+ * The main TICK function
+ */
+fs_nodebug void _devmate_fs_tick(void)
+{
+	static int retval;
+
+	// only one task should be here at once
+	TC_LOCK(_FSLock);
+
+	switch(_FSState.state) {
+	case TC_FS_INIT:
+#ifdef TC_FS_DEBUG
+		printf("%sWaiting for XTC to be ready...\n",tc_fs_dbgmsg);
+#endif
+		/* wait for the other side to be ready */
+		_FSState.state = TC_FS_WAITREADY;
+		// fall through to the WAITREADY state
+
+	case TC_FS_WAITREADY:
+		/* wait for the target to startup */
+		retval = devmate_xtc_ready(&_FSState.app);
+		if(retval) {
+			if(retval < 0) {
+				/* error starting XTC */
+#ifdef TC_FS_DEBUG
+				printf("%sError starting XTC!\n",tc_fs_dbgmsg);
+#endif
+			} else {
+				/* Service Processor is ready */
+#ifdef TC_FS_DEBUG
+				printf("%sXTC started successfully! Waiting for a connection...\n",tc_fs_dbgmsg);
+#endif
+				_FSState.isnotreadyyet = 0; // we are ready now
+				_FSState.state = TC_FS_WAITESTAB;
+			}
+		} else {
+			/* still not ready */
+		}
+		break;
+
+	case TC_FS_WAITESTAB:
+		switch(xtc_estab(&_FSState.app,0)) {
+		case -1:
+			/* error in socket */
+			_FSState.state = TC_FS_RESET;
+			break;
+
+		case 0:
+			/* still waiting for a connection... */
+			break;
+
+		default:
+			/* connection established! */
+#ifdef TC_FS_DEBUG
+			printf("%sConnection established!\n",tc_fs_dbgmsg);
+#endif
+			_FSState.state = TC_FS_GETPACKET;
+		}
+		break;
+
+	case TC_FS_GETPACKET:
+		/* start receiving a packet from the target */
+		_FSState.state = TC_FS_PACKETRECEIVE;
+		_FSState.rxstate = TC_FS_RXINIT;
+		// fall through to the PACKETRECEIVE state
+
+	case TC_FS_PACKETRECEIVE:
+		if(devmate_fs_getpacket()) {
+			/* the packet arrived! */
+			_FSState.state = TC_FS_PROCESSPACKET;
+			_FSState.pstate = TC_FS_PROCESSINIT;
+			// fall through to the PROCESSPACKET state
+		} else {
+			/* not done receiving a packet */
+			break;
+		}
+
+	case TC_FS_HAVEPACKET:
+		/* have a packet! */
+		if(TC_PENDING != devmate_fs_processpacket()) {
+			/* done processing the packet - start receiving another */
+			_FSState.state = TC_FS_GETPACKET;
+			break;
+		} else {
+			/* not done processing the packet */
+			break;
+		}
+
+	case TC_FS_RESET:
+		/* the Service Processor reset! cleanup any pending operations... */
+
+		/* fixup channel 0 */
+		xtc_open(&_FSState.app,0);
+
+		/* go back to waiting for requests */
+		_FSState.state = TC_FS_GETPACKET;
+		break;
+
+	default:
+		/* internal error! */
+#ifdef TC_FS_DEBUG
+		printf("%sState machine error!!!\n",tc_fs_dbgmsg);
+#endif
+		/* kill everything */
+		exit(TC_TYPE_FS);
+	}
+
+	// allow other tasks to continue
+	TC_UNLOCK(_FSLock);
+}
+
+/*** BeginHeader devmate_fs_finish */
+int devmate_fs_finish(DMFile *file);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_fs_finish	                  <DM_FS.LIB>
+
+SYNTAX: int devmate_fs_finish(DMFile *file);
+
+KEYWORDS:      DeviceMate, filesystem
+
+DESCRIPTION:   Finish a non-blocking transaction that was started with
+					another API function. If an API function returned TC_PENDING,
+					it is necessary to poll this finish function periodicly to
+					see if the request has finished. It will return TC_PENDING
+					while it is still pending, and then return a value that is
+					specific to the function that was being finished.
+
+PARAMETER1:		The file pointer identifying the transaction to be finished.
+
+RETURN VALUE:  TC_PENDING - Call finish again, as the request has not
+									 finished yet.
+					<anything else> - The actuall result of the request that was
+											being finished.
+
+SEE ALSO:      devmate_fs_sync, devmate_fs_rename, devmate_fs_idlookup,
+					devmate_fs_delete
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int devmate_fs_finish(DMFile *file)
+{
+	/* select the command that is currently being processed */
+	switch(file->command) {
+	case TC_FS_CMDSYNC:
+	case TC_FS_CMDRENAME:
+	case TC_FS_CMDIDLOOKUP:
+	case TC_FS_CMDDELETE:
+		/* state contains the response status */
+		return file->state;
+
+	default:
+		/* unknown command - bad structure? */
+		return TC_ERROR;
+	}
+}
+
+/*** BeginHeader devmate_fs_sync */
+int devmate_fs_sync(DMFile *file, int flags);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_fs_sync	                  <DM_FS.LIB>
+
+SYNTAX: int devmate_fs_sync(DMFile *file, int flags);
+
+KEYWORDS:      DeviceMate, filesystem
+
+DESCRIPTION:   Sync with the DevMate, optionally passing flags
+					to the DevMate to configure it. Currently, this is
+					only the TC_FS_FORMAT flag, to request the DevMate
+					to format it's own filesystem, to start from a known
+					state. This will _NOT_ succeed if there is another
+					application (such as LOGGING) that is using the
+					filesystem at the same time, and an error will be
+					retuned accordingly!
+
+PARAMETER1:		The file pointer identifying the transaction.
+
+RETURN VALUE:  TC_PENDING - Call finish, the transaction is not done yet.
+					TC_ERROR	- The request could not be sent.
+
+FINISH RETURN VALUE:	TC_PENDING - The transaction is still not done yet.
+							TC_SUCCESS - The transaction is finished, and the
+								optional format succeded.
+							TC_ERROR - The optional format failed! (something else
+								was using the filesystem?)
+
+SEE ALSO:      devmate_fs_finish
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int devmate_fs_sync(DMFile *file, int flags)
+{
+	if(devmate_fs_isnotready())
+		return TC_ERROR;
+
+	/* set the command */
+	file->command = TC_FS_CMDSYNC;
+
+	// limit one task at a time to the send buffer
+	TC_LOCK(_FSLock);
+
+	/* try and send the initial packet */
+	_FSSendBuf.Sync.flags = flags;
+#ifdef TC_BIG_ENDIAN
+	_tc_reorder((uint8 *)&_FSSendBuf, sizeof(_TCFSbasic_swap), _TCFSbasic_swap);
+#endif
+	if(TC_SUCCESS != devmate_fs_send(TC_FS_SYNC, sizeof(_TC_FSSync))) {
+		// allow other tasks to continue
+		TC_UNLOCK(_FSLock);
+
+		/* error sending the packet */
+		return TC_ERROR;
+	}
+
+	/* store the current command in the current-list */
+	devmate_fs_storehandle(file);
+
+	/* set the state value, to be the response status, for
+		use by the finish function */
+	file->state = TC_PENDING;
+
+	// allow other tasks to continue
+	TC_UNLOCK(_FSLock);
+
+	/* send the user to the FINISH function */
+	return TC_PENDING;
+}
+
+/*** BeginHeader devmate_fs_open */
+int devmate_fs_open(DMFile *file, FNumber id, char *name, int flags);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_fs_open	                  <DM_FS.LIB>
+
+SYNTAX: int devmate_fs_open(DMFile *file, FNumber id,
+									 char *name, int flags);
+
+KEYWORDS:      DeviceMate, filesystem
+
+DESCRIPTION:   Open a transaction on a file. The file is identified by
+					the 'id' number, and the text name will be associated
+					with it for the webserver to use.
+
+PARAMETER1:		The file pointer identifying the transaction.
+PARAMETER2:		The id to identify the file, if one is being explicitly
+						specified for this transaction. Otherwise, leave it
+						as 0.
+PARAMETER3:		The real-text name of the file. This must be less than
+						TC_FS_MAXNAME in length, including the NULL character!
+PARAMETER4:		Flags on this transaction. Currently supported:
+						TC_FS_FLAGS_NEWID - Ignore the 'id' field, and just
+							create an unused one.
+						TC_FS_FLAGS_REPLACE - Replace the existing file with
+							this real-text name atomicly. If the transaction
+							fails at all, the old file will not be touced.
+
+RETURN VALUE:  TC_PENDING - Open is not ready yet; call it again later.
+					TC_ERROR	- The request could not be sent. It might work
+						later.
+					TC_SUCCESS - The Open request was sent. The transaction
+						may be continuted. (you can call append now)
+
+SEE ALSO:      devmate_fs_append, devmate_fs_close
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int devmate_fs_open(DMFile *file, FNumber id, char *name, int flags)
+{
+#ifdef TC_BIG_ENDIAN
+	const static uint8 open_swap[] = { 0,1, 2,3, 4,5, 6,7 };
+#endif
+
+	if(devmate_fs_isnotready())
+		return TC_PENDING;
+
+	/* set the command */
+	file->command = TC_FS_CMDOPEN;
+
+	// limit one task at a time to the send buffer
+	TC_LOCK(_FSLock);
+
+	/* try and send the initial packet */
+	_FSSendBuf.TransactionOpen.name_length = strlen(name);
+	if(TC_FS_MAXNAME < _FSSendBuf.TransactionOpen.name_length) {
+		// allow other tasks to continue
+		TC_UNLOCK(_FSLock);
+
+		/* they are trying to use a name that is too long */
+		return TC_ERROR;
+	}
+	_FSSendBuf.TransactionOpen.id = id;
+	_FSSendBuf.TransactionOpen.flags = flags;
+	_FSSendBuf.TransactionOpen.transaction_token = devmate_fs_MakeNewToken();
+	strcpy(_FSSendBuf.TransactionOpen.name, name);
+	file->transaction_token = _FSSendBuf.TransactionOpen.transaction_token;
+
+#ifdef TC_BIG_ENDIAN
+	_tc_reorder((uint8 *)&_FSSendBuf, sizeof(open_swap), open_swap);
+#endif
+	if(TC_SUCCESS != devmate_fs_send(TC_FS_TRANSACTION_OPEN, sizeof(_TC_FSTransactionOpen))) {
+		// allow other tasks to continue
+		TC_UNLOCK(_FSLock);
+
+		/* error sending the packet */
+		return TC_ERROR;
+	}
+
+	/* store the current command in the current-list */
+	devmate_fs_storehandle(file);
+
+	/* set the transaction as not-opened-yet */
+	file->window = 0;
+
+	/* set the state value, to be the response status, for
+		use by the finish function */
+	file->state = TC_PENDING;
+
+	// allow other tasks to continue
+	TC_UNLOCK(_FSLock);
+
+	return TC_SUCCESS;
+}
+
+/*** BeginHeader devmate_fs_append */
+int devmate_fs_append(DMFile *file, char *buf, int length);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_fs_append	                  <DM_FS.LIB>
+
+SYNTAX: int devmate_fs_append(DMFile *file, char *buf, int length);
+
+KEYWORDS:      DeviceMate, filesystem
+
+DESCRIPTION:   Appends data to a file, after the transaction has been
+					opened with devmate_fs_open.
+
+PARAMETER1:		The file pointer identifying the transaction, as passed
+					to devmate_fs_open.
+PARAMETER2:		The buffer to send.
+PARAMETER3:		The length of bytes to send in this buffer.
+
+RETURN VALUE:  -1 - The transacion has failed, and completely rolled
+						back. It is necessary to start over with devmate_fs_open
+						at this point.
+					<anything else> - the length, in bytes, that were actuall
+						sent to the DevMate.
+
+SEE ALSO:      devmate_fs_open, devmate_fs_close
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int devmate_fs_append(DMFile *file, char *buf, int length)
+{
+	auto int len;
+
+	if(devmate_fs_isnotready())
+		return -1; // error
+
+	if(file->command != TC_FS_CMDOPEN)
+		return -1; // error
+
+	if(file->state == TC_ERROR)
+		return -1;
+
+	// limit one task at a time to the send buffer
+	// and make the access of 'window' atomic
+	TC_LOCK(_FSLock);
+
+	if(file->window > 0) {
+		/* window is positive - a packet may be sent */
+
+		len = xtc_writable(&_FSState.app, 0);
+		if(len > 0) {
+			len -= 1;	// find the number of bytes that may be written
+			len -= sizeof(_TC_FSHeader); // subtract the size of the header
+			len -= (sizeof(_TC_FSTransactionAppend) - TC_FS_MAXDATA); // subtract the APPEND packet size
+			if(len < 0) {
+				// allow other tasks to continue
+				TC_UNLOCK(_FSLock);
+
+				/* not enough room for the headers! */
+				return 0; // return 0 bytes written
+			}
+
+			if(len > length)
+				len = length; // we have more than enough room - limit to what the user requested
+
+			_FSSendBuf.TransactionAppend.transaction_token = file->transaction_token;
+			_FSSendBuf.TransactionAppend.length = len;
+			memcpy(_FSSendBuf.TransactionAppend.data, buf, len); // copy the user's data
+
+#ifdef TC_BIG_ENDIAN
+			_tc_reorder((uint8 *)&_FSSendBuf, sizeof(_TCFSdouble_swap), _TCFSdouble_swap);
+#endif
+			if(TC_SUCCESS != devmate_fs_send(TC_FS_TRANSACTION_APPEND, len + sizeof(_TC_FSTransactionAppend) - TC_FS_MAXDATA)) {
+				/* error sending the packet */
+				// allow other tasks to continue
+				TC_UNLOCK(_FSLock);
+				return 0; // return 0 bytes written
+			}
+
+			file->window -= 1;	// reduce the window by one
+
+			// allow other tasks to continue
+			TC_UNLOCK(_FSLock);
+
+			return len;				// return the actuall number of bytes written
+		} else {
+			// allow other tasks to continue
+			TC_UNLOCK(_FSLock);
+
+			/* no room to store any data on the XTC layer! */
+			return 0; // return 0 bytes written
+		}
+	} else {
+		// allow other tasks to continue
+		TC_UNLOCK(_FSLock);
+
+		/* too many packets on the network, or the OPEN|ACK has not been received yet */
+		return 0; // return 0 bytes written
+	}
+}
+
+/*** BeginHeader devmate_fs_close */
+int devmate_fs_close(DMFile *file, FNumber *id);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_fs_close	                  <DM_FS.LIB>
+
+SYNTAX: int devmate_fs_close(DMFile *file, FNumber *id);
+
+KEYWORDS:      DeviceMate, filesystem
+
+DESCRIPTION:   Close a transaction, and optionally receiving the
+					current id of the file if one was not specified
+					in devmate_fs_open. After all of the appends have been
+					sent, it is necessary to spin on this function while
+					it returns TC_PENDING, to finish the transaction.
+
+PARAMETER1:		The file pointer identifying the transaction, as passed
+					to devmate_fs_open.
+PARAMETER2:		A pointer to a place to store the id of the file that was
+					uploaded.
+
+RETURN VALUE:  TC_PENDING - The transaction is still finishin. Call
+						close again.
+					TC_ERROR - The transaction has failed, and was completely
+						rolled back. It is nessary to start again from the
+						beginning.
+					TC_SUCCESS - The transaction has succeded, and the file
+						is avaliable on the DevMate.
+
+SEE ALSO:      devmate_fs_open, devmate_fs_append
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int devmate_fs_close(DMFile *file, FNumber *id)
+{
+	if(devmate_fs_isnotready())
+		return TC_ERROR;
+
+	if(TC_FS_CMDOPEN == file->command) {
+		// limit one task at a time to the send buffer
+		TC_LOCK(_FSLock);
+
+		/* this is the first call to close - send the TRANSACTION_CLOSE packet */
+		_FSSendBuf.TransactionClose.transaction_token = file->transaction_token;
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_FSSendBuf, sizeof(_TCFSbasic_swap), _TCFSbasic_swap);
+#endif
+		if(TC_SUCCESS != devmate_fs_send(TC_FS_TRANSACTION_CLOSE, sizeof(_TC_FSTransactionClose))) {
+			// allow other tasks to continue
+			TC_UNLOCK(_FSLock);
+
+			/* error sending the packet */
+			return TC_PENDING;
+		}
+
+		/* packet was sent successfully - setup to wait for the response */
+		file->command = TC_FS_CMDCLOSE;
+		file->id_dest = id;
+
+		// allow other tasks to continue
+		TC_UNLOCK(_FSLock);
+
+		return TC_PENDING;
+	} else {
+		/* waiting for the transaction to finish... */
+		return file->state;
+	}
+}
+
+/*** BeginHeader devmate_fs_rename */
+int devmate_fs_rename(DMFile *file, FNumber id, char *name);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_fs_rename	                  <DM_FS.LIB>
+
+SYNTAX: int devmate_fs_rename(DMFile *file, FNumber id, char *name);
+
+KEYWORDS:      DeviceMate, filesystem
+
+DESCRIPTION:   Rename a file. This will change the association between
+					a file-id and a real-text name.
+
+PARAMETER1:		The file pointer identifying the transaction.
+PARAMETER2:		The id to rename.
+PARAMETER3:		The name to change it to. This must be less than
+					TC_FS_MAXNAME, including the NULL character!
+
+RETURN VALUE:  TC_PENDING - Call finish, the request is not done yet.
+					TC_ERROR	- The request could not be sent.
+
+FINISH RETURN VALUE:	TC_PENDING - The request is still not done yet.
+							TC_SUCCESS - The request is finished, and the
+								rename succeded.
+							TC_ERROR - The rename failed. Maybe the file
+								didn't exist?
+
+SEE ALSO:      devmate_fs_finish
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int devmate_fs_rename(DMFile *file, FNumber id, char *name)
+{
+	if(devmate_fs_isnotready())
+		return TC_ERROR;
+
+	/* set the command */
+	file->command = TC_FS_CMDRENAME;
+
+	// limit one task at a time to the send buffer
+	TC_LOCK(_FSLock);
+
+	/* try and send the initial packet */
+	_FSSendBuf.Rename.name_length = strlen(name);
+	if(TC_FS_MAXNAME < _FSSendBuf.Rename.name_length) {
+		// allow other tasks to continue
+		TC_UNLOCK(_FSLock);
+
+		/* they are trying to query a name that is too long */
+		return TC_ERROR;
+	}
+	strcpy(_FSSendBuf.Rename.name, name);
+	_FSSendBuf.Rename.id = id;
+#ifdef TC_BIG_ENDIAN
+	_tc_reorder((uint8 *)&_FSSendBuf, sizeof(_TCFSdouble_swap), _TCFSdouble_swap);
+#endif
+	if(TC_SUCCESS != devmate_fs_send(TC_FS_RENAME, sizeof(_TC_FSRename))) {
+		// allow other tasks to continue
+		TC_UNLOCK(_FSLock);
+
+		/* error sending the packet */
+		return TC_ERROR;
+	}
+
+	/* store the current command in the current-list */
+	devmate_fs_storehandle(file);
+
+	/* set the state value, to be the response status, for
+		use by the finish function */
+	file->state = TC_PENDING;
+	file->id = id;
+
+	// allow other tasks to continue
+	TC_UNLOCK(_FSLock);
+
+	/* send the user to the FINISH function */
+	return TC_PENDING;
+}
+
+/*** BeginHeader devmate_fs_idlookup */
+int devmate_fs_idlookup(DMFile *file, char *name, FNumber *id);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_fs_idlookup	                  <DM_FS.LIB>
+
+SYNTAX: int devmate_fs_idlookup(DMFile *file, char *name, FNumber *id);
+
+KEYWORDS:      DeviceMate, filesystem
+
+DESCRIPTION:   Lookup the id of a file, based on its real-text name.
+
+PARAMETER1:		The file pointer identifying the transaction.
+PARAMETER2:		The real-text name of the file to lookup. This must be
+						smaller than TC_FS_MAXNAME, including the NULL character!
+PARAMETER3:		A pointer a place to store the id, when it comes in.
+
+RETURN VALUE:  TC_PENDING - Call finish, the transaction is not done yet.
+					TC_ERROR	- The request could not be sent.
+
+FINISH RETURN VALUE:	TC_PENDING - The transaction is still not done yet.
+							TC_SUCCESS - The lookup is finished, and the id
+								has been stored at *id.
+							TC_ERROR - The lookup failed. The file did not exist.
+
+SEE ALSO:      devmate_fs_finish
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int devmate_fs_idlookup(DMFile *file, char *name, FNumber *id)
+{
+	if(devmate_fs_isnotready())
+		return TC_ERROR;
+
+	/* set the command */
+	file->command = TC_FS_CMDIDLOOKUP;
+
+	// limit one task at a time to the send buffer
+	TC_LOCK(_FSLock);
+
+	/* try and send the initial packet */
+	_FSSendBuf.IDLookup.name_length = strlen(name);
+	if(TC_FS_MAXNAME < _FSSendBuf.IDLookup.name_length) {
+		// allow other tasks to continue
+		TC_UNLOCK(_FSLock);
+
+		/* they are trying to query a name that is too long */
+		return TC_ERROR;
+	}
+	strcpy(_FSSendBuf.IDLookup.name, name);
+	_FSSendBuf.IDLookup.transaction_token = devmate_fs_MakeNewToken();
+	file->transaction_token = _FSSendBuf.IDLookup.transaction_token;
+#ifdef TC_BIG_ENDIAN
+	_tc_reorder((uint8 *)&_FSSendBuf, sizeof(_TCFSdouble_swap), _TCFSdouble_swap);
+#endif
+	if(TC_SUCCESS != devmate_fs_send(TC_FS_IDLOOKUP, sizeof(_TC_FSIDLookup))) {
+		// allow other tasks to continue
+		TC_UNLOCK(_FSLock);
+
+		/* error sending the packet */
+		return TC_ERROR;
+	}
+
+	/* mark where to store the ID when we get it back */
+	file->id_dest = id;
+
+	/* store the current command in the current-list */
+	devmate_fs_storehandle(file);
+
+	/* set the state value, to be the response status, for
+		use by the finish function */
+	file->state = TC_PENDING;
+
+	// allow other tasks to continue
+	TC_UNLOCK(_FSLock);
+
+	/* send the user to the FINISH function */
+	return TC_PENDING;
+}
+
+/*** BeginHeader devmate_fs_delete */
+int devmate_fs_delete(DMFile *file, FNumber id);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_fs_delete	                  <DM_FS.LIB>
+
+SYNTAX: int devmate_fs_delete(DMFile *file, FNumber id);
+
+KEYWORDS:      DeviceMate, filesystem
+
+DESCRIPTION:   Delete a file on the DevMate.
+
+PARAMETER1:		The file pointer identifying the transaction.
+PARAMETER2:		The id of the file to delete.
+
+RETURN VALUE:  TC_PENDING - Call finish, the delete is not done yet.
+					TC_ERROR	- The request could not be sent.
+
+FINISH RETURN VALUE:	TC_PENDING - The delete is still not done yet.
+							TC_SUCCESS - The delete is finished.
+							TC_ERROR - The delete failed. Did the file exist?
+
+SEE ALSO:      devmate_fs_finish
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int devmate_fs_delete(DMFile *file, FNumber id)
+{
+	if(devmate_fs_isnotready())
+		return TC_ERROR;
+
+	/* set the command */
+	file->command = TC_FS_CMDDELETE;
+
+	// limit one task at a time to the send buffer
+	TC_LOCK(_FSLock);
+
+	/* try and send the initial packet */
+	_FSSendBuf.Delete.id = id;
+#ifdef TC_BIG_ENDIAN
+	_tc_reorder((uint8 *)&_FSSendBuf, sizeof(_TCFSbasic_swap), _TCFSbasic_swap);
+#endif
+	if(TC_SUCCESS != devmate_fs_send(TC_FS_DELETE, sizeof(_TC_FSDelete))) {
+		// allow other tasks to continue
+		TC_UNLOCK(_FSLock);
+
+		/* error sending the packet */
+		return TC_ERROR;
+	}
+
+	/* store the current command in the current-list */
+	devmate_fs_storehandle(file);
+
+	/* set the state value, to be the response status, for
+		use by the finish function */
+	file->state = TC_PENDING;
+	file->id = id;
+
+	// allow other tasks to continue
+	TC_UNLOCK(_FSLock);
+
+	/* send the user to the FINISH function */
+	return TC_PENDING;
+}
+
+/*** BeginHeader devmate_fs_finishB */
+int devmate_fs_finishB(DMFile *file, long timeout);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_fs_finishB	                  <DM_FS.LIB>
+
+SYNTAX: int devmate_fs_finishB(DMFile *file, long timeout);
+
+KEYWORDS:      DeviceMate, filesystem
+
+DESCRIPTION:   Finish a transaction in a blocking manner. This function
+					will never return TC_PENDING, and therefor does not need
+					to be spun on. This will block for a long time, though,
+					so care should be used in how it is used, or a
+					multitasking kernel such as uC/OS should be used.
+
+PARAMETER1:		The file pointer identifying the transaction to finish.
+PARAMETER2:		The length of time to wait before giving up on the
+					request. If this is 0, it will wait forever.
+
+RETURN VALUE:  The same as devmate_fs_finish. (the return code of the
+					function that is being finished) This will _not_ return
+					TC_PENDING at any time!
+
+SEE ALSO:      devmate_fs_finish
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int devmate_fs_finishB(DMFile *file, long timeout)
+{
+	// a blocking FINISH function
+	auto long timer;
+	auto int retval;
+
+	timer = MS_TIMER;
+	timer += timeout;
+
+	// wait untill FINISH returns successfully...
+	while(TC_PENDING == (retval = devmate_fs_finish(file))) {
+		if(0 != timeout) {
+			// check the timeout...
+			if(MS_TIMER > timer)
+				return TC_ERROR; // timeout expired
+		}
+
+		// drive everything...
+		devmate_tick();
+	}
+
+	return retval;
+}
+
+/*** BeginHeader devmate_fs_syncB */
+int devmate_fs_syncB(DMFile *file, int flags, long timeout);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_fs_syncB	                  <DM_FS.LIB>
+
+SYNTAX: int devmate_fs_syncB(DMFile *file, int flags, long timeout);
+
+KEYWORDS:      DeviceMate, filesystem
+
+DESCRIPTION:   Sync with the DevMate in a blocking fashion, such that
+					spining on devmate_fs_finish is not needed. Otherwise,
+					this is the same as devmate_fs_sync.
+
+PARAMETER1:		The file pointer identifying the transaction.
+PARAMETER2:		The flags to pass to the DevMate, as before.
+PARAMETER3:		The length of time, in ms, to wait before giving
+					up on the request.
+
+RETURN VALUE:  TC_SUCCESS - The sync was successfull, and the optional
+						format succeded.
+					TC_ERROR - There was an error, or the optional format
+						failed due to something else using the filesystem.
+
+SEE ALSO:      devmate_fs_sync
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int devmate_fs_syncB(DMFile *file, int flags, long timeout)
+{
+	auto count;
+	auto long timer;
+	auto long new_timeout;
+
+	timer = MS_TIMER;
+	count = 5; // try 5 times to SYNC with the DM
+
+_DM_syncB_top:
+	devmate_tick();
+	while(TC_PENDING != devmate_fs_sync(file, flags)) {
+		devmate_tick();
+		if(0 != timeout) {
+			if((MS_TIMER - timer) > timeout) {
+				// timeout!
+				return TC_ERROR;
+			}
+		}
+	}
+	if(timeout > 500) {
+		new_timeout = 500;
+	} else {
+		new_timeout = timeout;
+	}
+	if(0 == new_timeout)
+		new_timeout = 500;
+	switch(devmate_fs_finishB(file,new_timeout)) {
+	case TC_SUCCESS:
+		return TC_SUCCESS;
+
+	case TC_ERROR:
+		if(0 != timeout) {
+			if((MS_TIMER - timer) > timeout) {
+				// timeout!
+				return TC_ERROR;
+			}
+		}
+		if(--count > 0) {
+			goto _DM_syncB_top;
+		}
+		// else fall through
+	default:
+		return TC_ERROR;
+	}
+}
+
+/*** BeginHeader devmate_fs_idlookupB */
+int devmate_fs_idlookupB(DMFile *file, char *name, FNumber *id, long timeout);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_fs_idlookupB	                  <DM_FS.LIB>
+
+SYNTAX: int devmate_fs_idlookupB(DMFile *file, char *name,
+											FNumber *id, long timeout);
+
+KEYWORDS:      DeviceMate, filesystem
+
+DESCRIPTION:   A blocking version of devmate_fs_idlookup. It is the
+					same in all respects, except that devmate_fs_finish
+					is not needed, and TC_PENDING will not be returned.
+
+PARAMETER1:		The file pointer identifying the transaction.
+PARAMETER2:		The name to lookup; this must be smaller than
+						TC_FS_MAXNAME, including the NULL character!
+PARAMETER3:		The place to store the id when it is returned from
+						the DevMate.
+PARAMETER4:		The length of time, in ms, to wait before giving up
+						on the lookup. If this is 0, it will wait forever.
+
+RETURN VALUE:  TC_SUCCESS - the lookup succeded, and the id has
+						been stored at *id.
+					TC_ERROR - An error occored, or the file could not
+						be found.
+
+SEE ALSO:      devmate_fs_idlookup
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int devmate_fs_idlookupB(DMFile *file, char *name, FNumber *id, long timeout)
+{
+	auto retval;
+
+	switch(devmate_fs_idlookup(file, name, id)) {
+	case TC_PENDING:
+		return devmate_fs_finishB(file,timeout);
+
+	case TC_SUCCESS:
+		return TC_SUCCESS;
+
+	case TC_ERROR:
+	default:
+		return TC_ERROR;
+	}
+}
+
+/*** BeginHeader devmate_fs_renameB */
+int devmate_fs_renameB(DMFile *file, FNumber id, char *name, long timeout);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_fs_renameB	                  <DM_FS.LIB>
+
+SYNTAX: int devmate_fs_renameB(DMFile *file, FNumber id, char *name,
+										 long timeout);
+
+KEYWORDS:      DeviceMate, filesystem
+
+DESCRIPTION:   Associate a new real-text name with a specified file id.
+					This is a blocking version of devmate_fs_rename, and is
+					identical to it in all respects.
+
+PARAMETER1:		The file pointer identifying the transaction.
+PARAMETER2:		The file id to rename.
+PARAMETER3:		The new name to give the file. It should be less than
+						TC_FS_MAXNAME characters long, including the NULL char!
+PARAMETER4:		The length of time, in ms, to wait for the rename to take
+						place before giving up. If this is 0, it will wait
+						forever.
+
+RETURN VALUE:  TC_SUCCESS - The rename was successfull.
+					TC_ERROR - The rename failed. Did the file exist?
+
+SEE ALSO:      devmate_fs_rename
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int devmate_fs_renameB(DMFile *file, FNumber id, char *name, long timeout)
+{
+	auto retval;
+
+	switch(devmate_fs_rename(file,id,name)) {
+	case TC_PENDING:
+		return devmate_fs_finishB(file,timeout);
+
+	case TC_SUCCESS:
+		return TC_SUCCESS;
+
+	case TC_ERROR:
+	default:
+		return TC_ERROR;
+	}
+}
+
+/*** BeginHeader devmate_fs_deleteB */
+int devmate_fs_deleteB(DMFile *file, FNumber id, long timeout);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_fs_deleteB	                  <DM_FS.LIB>
+
+SYNTAX: int devmate_fs_deleteB(DMFile *file, FNumber id, long timeout);
+
+KEYWORDS:      DeviceMate, filesystem
+
+DESCRIPTION:   Delete a file from the devmate. This is a blocking
+					version of devmate_fs_delete, and is identical to it
+					in all respects.
+
+PARAMETER1:		The file pointer identifying the transaction.
+PARAMETER2:		The id of the file to remove.
+PARAMETER3:		The length of time, in ms, to wait before giving up
+					on the request. If this is 0, it will wait forever.
+
+RETURN VALUE:  TC_SUCCESS - The delete was successfull.
+					TC_ERROR - There was an error.
+
+SEE ALSO:      devmate_fs_delete
+
+END DESCRIPTION **********************************************************/
+fs_nodebug int devmate_fs_deleteB(DMFile *file, FNumber id, long timeout)
+{
+	auto retval;
+
+	switch(devmate_fs_delete(file,id)) {
+	case TC_PENDING:
+		return devmate_fs_finishB(file,timeout);
+
+	case TC_SUCCESS:
+		return TC_SUCCESS;
+
+	case TC_ERROR:
+	default:
+		return TC_ERROR;
+	}
+}
+
+/*** BeginHeader */
+#endif /*__DEVMATE_FS_LIB*/
+/*** EndHeader */

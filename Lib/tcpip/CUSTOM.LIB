@@ -1,0 +1,822 @@
+/*** BeginHeader  ********************************************/
+#ifndef __CUSTOM_LIB
+#define __CUSTOM_LIB
+/*** EndHeader ***********************************************/
+
+/* START LIBRARY DESCRIPTION *********************************************
+CUSTOM.LIB
+	Copyright (c) 2002, ZWorld.
+
+DESCRIPTION:
+	CUSTOM Ethernet packet driver.
+
+   This is a skeleton library which shows what to do to implement a
+   new or custom ethernet driver.  To use it, go through this file in
+   its entirety, following the instructions printed therein.
+
+   You can develop code without renaming it from 'CUSTOM', since there
+   is direct support for a driver of this name in the networking libs.
+   The only thing you may need to do is modify PKTDRV.LIB so that it
+   recognizes your new board type (call it MYBOARD), and calls in this
+   library.  There is some dummy code in pktdrv.lib which shows how to do this.
+
+   Before release, you should rename everything to the unique identifier
+   for the driver.  This is easily done with automatic find/replace:
+	If XXX is your driver name (which should conform to C identifier syntax):
+     Replace all instances of 'CUSTOM' with XXX
+     Replace all instances of 'custom' with xxx
+     Replace all instances of 'Custom' with Xxx
+     Replace all instances of MYBOARD with your board name macro
+   Then, you need to modify a few other libraries so that they know about
+   the new XXX driver:
+
+   [HINT: in libraries which need to be modified, look for a string
+    '*CUSTOM*' - this will locate you to points which need to be
+    modified.]
+
+	.  pktdrv.lib is the top level library which includes all necessary
+	   specific driver libraries.  There is a series of macro settings which
+	   are sensitive to the _BOARD_TYPE_ macro.  Search for that macro name in
+	   pktdrv.lib and create an analogous #if...#elif block.
+
+      There are a few other macros which need to be defined - search for
+      *CUSTOM*
+
+   .  net.lib contains some initialization code which needs to be aware of
+      your new driver.  The dcr_initdcr() function relies on a table which
+      is built from some of the macros defined in this library.
+
+
+   Coding rules:
+
+   .  Remember that this driver must be able to co-exist with other drivers.
+      Use a naming system that will not conflict e.g. prefix all macros and
+      variables with 'XXX_'.
+
+   .  All code should be re-entrant.  Do NOT use static data buffers.  If you
+      need small buffers, add fields to the _XXXConfig structure, which is
+      passed to all functions.
+
+   .  Not essential, but convention has it that IX addresses the _XXXConfig
+      struct, and IY is used as an I/O base address.  Beware that the
+      pktdrv.lib buffer management functions also use IX and IY, so you
+      may need to save them on the stack occasionally.
+
+        Note: never trash IX.  Dynamic C (costates) will not appreciate it.
+        Always push IX at start of function, and pop it at end.  Just
+        remember to offset stack references by +2 to compensate.
+        You are free to trash IY and all other registers.
+
+   .  Use 'local' assembler labels whenever external linkage is not
+      required.  These start with a '.'.
+
+   .  Avoid hard-coding offsets in structures.  Use assembler constructs
+      like  ld hl,(iy+[_llp_]+len1) instead of  ld hl,(iy+20).
+      Use [_llp_] when addressing an ll_prefix struct, and [_llg_] when
+      addressing an ll_Gather.  For your own _XXXCustom (state) parameter,
+      use the function parameter name in brackets e.g. [nic].
+
+        Note: the conventional parameter name is 'nic' for the state
+        struct: this is for historical reasons; it really doesn't have
+        much to do with Ethernet NICs any more.
+
+   .  In fact, avoid using any hard-coded values, since they are not
+      self-documenting and make it much harder for the next guy.
+      In particular, use macros to define bit settings in command registers
+      and the like.  Don't get lazy!
+
+   .  When writing functions, make them xmem (or anymem) unless there is
+      a compelling reason.  There is hardly ever a need to make root
+      functions more than about 40 bytes long.  (ISRs are an exception).
+      For pure asm functions, use '#asm xmem', and call them using lcall.
+      Return from such functions using lret (not ret).  For C functions
+      or C wrappers around asm code, use the 'xmem' attribute (or leave
+      it off altogether).
+
+SUPPORT LIB'S:
+
+REVISION HISTORY:
+21-MAY-04 SJH	Created.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader _CUSTOMController */
+
+#define USING_CUSTOM 1		// Only supports one CUSTOM chip currently.
+
+#define CUSTOM_HWA_SIZE	6	// Size of hardware address (anything other than 6 requires arp.lib changes)
+
+typedef struct
+{
+	NetControllerDevice * ncd;		// Recommended field
+   word	iface;						// Interface number: mandatory, for marking packets appropriately
+	int	iobase;						// Recommended field: I/O address base register
+
+	char	reset_port;
+	char*	reset_port_shadow;
+	char	reset_mask;
+   char	hwa[CUSTOM_HWA_SIZE];	// Current MAC address (shadow): mandatory field
+	int 	flags;						// Recommended for storing bit flags
+	int	(*io_init)();				// Recommended for I/O setup function, which may depend on board type
+
+	word pd_overruns;					// Recommended statistics counters
+	word pd_trashed;
+	word pd_toobig;
+	word pd_nobufs;
+	word pd_received;
+
+} _CUSTOMConfig;
+
+_CUSTOMConfig _custom_conf[USING_CUSTOM];
+
+extern const NetControllerDevice _CUSTOMController;
+
+// These macros are used by net.lib to properly initialize all instances.  Each macro is a C initializer
+// (with trailing comma if not null).  First element points to NetControllerDevice, second is a void
+// pointer which points to the specific state structure for the instance, third field is instance number.
+#define CUSTOM_TABLE1  { &_CUSTOMController, (void *)_custom_conf, 0 },
+// There is no second instance, so this macro must be defined to nothing.
+#define CUSTOM_TABLE2
+// If there was a second instance, you would set it up using e.g.
+//#define CUSTOM_TABLE2  { &_CUSTOMController, (void *)(_custom_conf+1), 1 },
+
+
+/* ***************************************************************************/
+// CUSTOM-specific #defines for I/O register offsets etc.
+#define CUSTOM_foo		0x00
+#define CUSTOM_bar		0xFF
+
+
+/*** EndHeader */
+
+// Pointer to this is stored in IFTEntry.ncd field - basically, pointers to specific driver functions.
+const NetControllerDevice _CUSTOMController =
+{
+	sizeof(_CUSTOMConfig)		// sizeof_state
+  ,NCD_POLL							// flags.  The allowable flags are defined in pktdrv.lib.  Most ethernet
+  										//  drivers need some sort of polling, so NCD_POLL is set here.
+  ,CUSTOM_HWA_SIZE				// sizeof_hwa
+  ,USING_CUSTOM					// instances
+  // The following functions must all be implemented in this library...
+  ,custom_receive 				// receive()
+  ,custom_sendpacket				// sendpacket()
+  ,custom_ioctl					// ioctl()
+#ifdef PKTDRV_VERBOSE
+  ,custom_prt_nicreg  			// prtregs()
+#else
+  ,NULL
+#endif
+  ,custom_ifctl					// ifctl() - this can be a NULL pointer if the interface is 'always up'.
+};
+
+/*** BeginHeader pd_setup_MYBOARD */
+// This is referenced by a macro setting which you should define in pktdrv.lib.
+void pd_setup_MYBOARD(_CUSTOMConfig* cfg);
+/*** EndHeader */
+
+
+/*
+ *		This function intializes the interface for the
+ *		CUSTOM chip on the MYBOARD module which is hooked
+ *		up as follows:
+ *
+ *		Rabbit			CUSTOM
+ *		------			------
+ *		PB2(A0)	->		BE0
+ *		~PB2(A0)	->		BE1
+ *		[Document how the I/Os are set up, which strobes are used etc.]
+ *
+ */
+
+_pktdrv_debug
+nouseix void pd_setup_MYBOARD(_CUSTOMConfig* cfg)
+{
+#asm _pktdrv_debug
+		; Recommended that you use IX to address your config struct...
+		push	ix
+		ld		ix,(sp+@SP+cfg+2)
+
+		; Recommended that you use IY as I/O base register...
+		ld		hl,(ix+[cfg]+iobase)
+      ld		iy,hl
+
+		;
+		; Set up the I/Os as required...
+		;
+
+
+      ; Then when all done...
+		pop	ix
+#endasm
+}
+
+
+
+
+/*** BeginHeader custom_sendpacket */
+int custom_sendpacket(_CUSTOMConfig * nic, ll_Gather * packet);
+/*** EndHeader */
+
+/*
+
+This routine is called by the network layer to send a packet.
+
+The ll_Gather parameter (defined in net.lib) specifies up to 3 data areas
+to gather and send.  The first data area is in root memory, and the other
+two are specified as physical addresses (xmem).  In addition, there are some
+flags which tell the driver whether it needs to copy the data.  Copying is
+only required if the packet cannot be sent to the device in a "short time",
+since this routine should not block while it waits for a slow device (such
+as a serial port).  Copying is automatically handled by routines in pktdrv.lib
+if needed, but this routine has to call _pb_resv_send() if this is needed.
+
+There are thus two basic classes of driver: ones which need to copy data,
+and those which can send it all to the device without waiting.
+
+1) Drivers which need to copy.
+
+  Look at DMAETH.LIB and PPPLINK.LIB for examples of this type of driver.
+  These need to call _pb_resv_send().  _pb_resv_send allocates a transmit
+  buffer and copy the necessary data (if any).  This sendpacket function
+  should only have to "fire off" the transmission, which will be handled
+  in the background via ISRs or DMA.
+
+2) Drivers which can send immediately.
+
+  Look at NE2000.LIB and SMSC.LIB for examples.  These do not generally need
+  to call any _pb_* routines; they just need to gather the data and write
+  it to e.g. an I/O port.
+
+In either case, it is permissible for this function to return a non-zero
+return code if the packet cannot be currently buffered because the
+device is "busy".  The network stack will retry later, however this is
+to be avoided if possible, since there is obviously more overhead
+involved in regenerating the packet, and it can make UDP less reliable.
+
+
+The sample assembler in the following may be used as a starting point
+for writing a non-copying driver.  For a copying driver, you are best off
+looking at existing code in dmaeth.lib.
+
+ */
+
+
+_pktdrv_debug
+nouseix int custom_sendpacket(_CUSTOMConfig * nic, ll_Gather * packet)
+{
+#asm _pktdrv_debug
+		; Recommended to use IX to address the state (config) data, and
+      ; IY the I/O base address...
+		push	ix
+      ld		ix,(sp+@sp+nic+2)
+      ld		hl,(ix+[nic]+iobase)
+		ld		iy,hl
+
+      ; May want code here to check if the device is busy with the
+      ; previous packet.  It is OK to wait for a few ms at most, or
+      ; can return non-zero.
+
+
+		;
+		; Gather packet.  You often need to know its complete length,
+      ; so we show how to do it here...
+		;
+
+		ld		hl,(sp+@SP+packet+2)
+		push	ix
+		ld		ix,hl
+
+.packlen:
+		ld		hl,(ix+[_llg_]+len1)						; ll_Gather.len1
+		ex		de,hl
+		ld		hl,(ix+[_llg_]+len2)						; ll_Gather.len2
+		add	hl,de
+		ex		de,hl
+		ld		hl,(ix+[_llg_]+len3)						; ll_Gather.len3
+		add	hl,de
+		ld		b,h
+		ld		c,l								; BC = total gathered length
+
+      ; You often need to make it a minimum length, shown here...
+		ld		hl,ETH_MIN-1
+		or		a
+		sbc	hl,bc
+		jr		c,.glenok
+		; Total length too small.  Adjust len3 to compensate (will transmit rubbish at end, but doesn't matter)
+		inc	hl
+		ex		de,hl
+		ld		hl,(ix+[_llg_]+len3)			; ll_Gather.len3
+		add	hl,de
+		ld		(ix+[_llg_]+len3),hl			; ll_Gather.len3 updated to make total length correct
+		ld		bc,ETH_MIN						; adjust to minimum length of 60
+.glenok:
+		ld		hl,ix								; Put ll_Gather addr back in HL
+		pop	ix
+
+
+      ; Now we give some hints as to how to write out the 3 sections to the device,
+      ; assuming an external I/O address of IY+CUSTOM_DATA
+
+
+		push	bc									; Save the total length
+      ex		de,hl								; Put ll_Gather addr in DE
+
+		ld		hl,iy								; I/O base in HL
+		push	hl
+		push	ix
+		ld		l,0+CUSTOM_DATA				; The I/O base is multiple of 256, hence this works for offsetting
+		ex		de,hl
+		ld		ix,hl
+		; IX points to ll_Gather struct
+		; DE = external I/O data port address
+		ld		hl,(ix+[_llg_]+len1)						; ll_Gather.len1
+		ld		b,h
+		ld		c,l
+		bool	hl
+		jr		z,.pds_sect2				 				; Skip if zero length
+		ld		hl,(ix+[_llg_]+data1)					; ll_Gather.data1 (logical addr)
+		; HL = source data address
+		; BC = length of 1st section data
+		; DE = dest external I/O data port address
+      _XMEM_MVC_MEM2IOE						; Lcall the root stub to do the move (this is in xmem.lib)
+
+.pds_sect2:
+		ld		hl,(ix+[_llg_]+len2)						; ll_Gather.len2
+		ld		b,h
+		ld		c,l
+		bool	hl
+		jr		z,.pds_sect3
+		ld		hl,(ix+[_llg_]+data2)						; ll_Gather.data2 (16 LSBs of paddr)
+		ld		a,(ix+[_llg_]+data2+2)						; ll_Gather.data2 (8 MSBs of paddr)
+		_LIN2SEG									; A/HL is now segmented address.  This converts xmem address into
+      											; the equivalent xpc window address, with A being the xpc value.
+                                       ; This is necessary for the following macro to work properly.
+      _XMEM_MVC_MEM2IOE						; Lcall the root stub to do the move
+
+.pds_sect3:
+		ld		hl,(ix+[_llg_]+len3)						; ll_Gather.len3
+		ld		b,h
+		ld		c,l
+		bool	hl
+		jr		z,.pds_sect3_end
+		ld		hl,(ix+[_llg_]+data3)						; ll_Gather.data3 (16 LSBs of paddr)
+		ld		a,(ix+[_llg_]+data3+2)						; ll_Gather.data3 (8 MSBs of paddr)
+		_LIN2SEG									; A/HL is now segmented address
+      _XMEM_MVC_MEM2IOE						; Lcall the root stub to do the move
+
+.pds_sect3_end:
+		pop	ix									; restore pointer to state/config struct
+		pop	iy									; restore I/O address
+		pop	bc									; restore total length
+
+		;
+		; There may need to be some post-processing here and possibly a special
+      ; I/O command to start transmitting.
+		;
+
+		bool	hl									; return 0 if all was successful.  HL is the return value.
+		ld		l,h
+      pop	ix
+#endasm
+}
+
+/*** BeginHeader custom_receive */
+int custom_receive(_CUSTOMConfig * nic);
+/*** EndHeader */
+
+/*
+
+This routine is called by the network layer for several purposes:
+
+  1.  Check if there is a new incoming packet buffered in the external device
+      or in memory.
+
+  2.  Copy the new packet to the xmem buffers.  If this is done, return 0.
+      Else, return 1 if there are no new packets.
+
+  3.  Start or re-start the next receive process, if any.
+
+Usually, at least one of the above needs to be done.  Some drivers may be
+coded to receive packets directly into xmem buffers (e.g. DMAETH and PPPLINK).
+Typically, this sort of driver uses DMA or ISRs to copy each incoming byte
+into memory.  In this case, only (3) may need to be performed.
+
+The main other class of driver uses I/O to read a packet from external I/O
+into the xmem buffers.  Examples are the ethernet drivers REALTEK, ASIX,
+or SMSC.  The skeleton code below is an example of this type of driver.
+
+An important function of this routine is to allocate xmem buffers.  The
+_pb_reserve() function (in pktdrv.lib) accomplishes this.  If successful,
+it returns IY pointing to an ll_prefix struct (defined in net.lib).
+The ll_prefix has pointers to up to 3 XMEM buffers of 512 bytes each.
+Incoming data needs to be placed in these buffers: filling up the first,
+second and third in that order.  The last one may have less than 512 bytes
+in it, in which case the ll_prefix.len field contains a short count.
+
+Since filling up these non-contiguous buffers is a bit complicated, there
+are some assist routines in pktdrv.lib which help to copy root, xmem or
+external I/O data into the buffer.  E.g. _pb_xmem2buf copies from an
+xmem area to the xmem buffers.
+
+Note: the _pb_XXX2buf routines are optimized for copying reasonably large
+amounts of data.  Do not use them to copy one byte at a time, since that
+will be realtively inefficient.  For example, if bytes are being received
+one at a time in an ISR, the ISR should be smart enough to directly load
+the xmem buffers, or it should accumulate (say) 256 bytes at a time then
+copy the 256 all at once.
+
+It may happen that _pb_reserve() is unable to allocate a buffer when
+incoming load is heavy.  In this case, you should return 1 (and
+increment the pb_nobufs counter).  If possible, the packet should be
+left in the external device.  Otherwise, you have no choice but to
+discard the packet.
+
+If your driver requires this routine to be called whenever tcp_tick() is
+called, you can indicate this by setting the NCD_POLL flag in the
+_XXXController structure (as it is in this skeleton lib).  If your
+driver is entirely interrupt-driven, then there is no need to set that
+flag unless some other sort of activity needs to be performed semi-
+regularly.
+
+*/
+
+_pktdrv_debug
+nouseix int custom_receive(_CUSTOMConfig * nic)
+{
+#asm _pktdrv_debug
+		; Recommended to use IX to address the state (config) data, and
+      ; IY the I/O base address...
+		push	ix
+      ld		ix,(sp+@sp+nic+2)
+      ld		hl,(ix+[nic]+iobase)
+		ld		iy,hl
+
+
+		;
+		; Code here to check if there are any pending packets ready.
+		;
+
+ioe	ld		a,(iy+CUSTOM_READY)	; check for any pending packets
+		bit	0,a
+		ld		hl,0x0001
+		jp		z,.done					; Jump if nothing ready (return 1).
+
+		;
+		; Start read.  Usually you will want to read the status flags and link-layer header.
+		;
+
+      <test overrun condition>
+		jp		z,.overrun
+
+
+      ; From here, we assume BC has the packet length.  Test if it's reasonable.
+
+		ld		hl,0+ETH_BUFSIZE
+		or		a
+		sbc	hl,bc
+		jp		c,.tosspacket			; Packet too big for our MTU.
+
+		;
+      ; Got through all the tests.  Allocate a receive buffer from pktdrv.lib.
+      ;
+
+.allocpacket:
+		push	ix							; Save config/state struct
+      push	iy							; Save I/O base
+		push	bc							; save length
+      ld		de',1						; Indicate MUST obtain all xmem buffers (else error)
+		lcall	_pb_reserve				; allocate a buffer (ll_prefix) to get pkt in  -> IY
+
+		jr		c,.nobuf					; save the pkt (in device) for another time if no buffers
+
+      pop	bc
+		push	bc							; save length again
+
+.readpacket:
+		ld		hl,(sp+2)				; Get I/O source address (pushed before _pb_reserve call)
+		ld		l,0+CUSTOM_DATA		; Set to I/O source address
+
+      lcall _pb_ioe2buf				; Copy BC bytes from ioe(HL) to xmem buffers
+		pop	bc							; retrieve length
+
+
+		ld		hl,(sp+2)				; Point HL to state/config struct (saved above)
+      ld		hl,(hl+[nic]+iface-1)		; Load interface number into H (not L, hence the -1)
+      ld		l,LL_READY				; Interface number in H, flags in L
+		ld		e,14						; Length of link-layer (ethernet) header
+      lcall	_pb_finish				; finish up the pkt (set interface number, len etc.)
+
+      pop	iy							; restore I/O base
+      pop	ix							; restore config/state struct
+
+      ; Recommended that you keep count of received packets
+      ld		hl,(ix+[nic]+pd_received)
+      inc	hl
+      ld		(ix+[nic]+pd_received),hl
+
+		;
+		; Code here to finalize the device and get it ready for next packet.
+		;
+
+
+      ;
+      ; Then return zero (since we got a packet)
+      ;
+		bool	hl
+		ld		l,h
+		jp		.done
+
+.overrun:
+      ld		hl,(ix+[nic]+pd_overruns)
+      inc	hl
+      ld		(ix+[nic]+pd_overruns),hl
+      jr		.tosspacket
+
+.nobuf:
+		pop	iy
+      pop	ix
+      ld		hl,(ix+[nic]+pd_nobufs)
+      inc	hl
+      ld		(ix+[nic]+pd_nobufs),hl
+
+.tosspacket:
+		; May need code to abort the transfer from the device
+
+      ; Set return code non-zero if no packet received.
+		ld		hl,0x0001
+.done:
+		pop	ix
+#endasm
+}
+
+/*** BeginHeader custom_resetinterface */
+int custom_resetinterface(_CUSTOMConfig * custom, word instance, int iface);
+/*** EndHeader */
+
+/*
+	This is a const initialized version of the state structure.  When the xxx_resetinterface
+   function is called by the network initialization layer, this struct is copied to the
+   appropriate RAM location.  Selected fields can be overwritten if needed (see sample
+   code below).
+
+   It is always declared as an array, albeit with one element.  If your driver supports
+   multiple instances (i.e. USING_XXX is greater than 1) then you need to define this
+   many items in the array of initializers.
+*/
+static const _CUSTOMConfig _custom_config[USING_CUSTOM] =
+{
+	{
+	   &_CUSTOMController        	// ncd
+	  ,0                          // iface
+	  ,CUSTOM_IOBASE                // I/O base address (read and write)
+	  ,CUSTOM_RESPORT               // reset_port
+	  ,&CUSTOM_RESSHAD              // reset_port_shadow
+	  ,CUSTOM_RESMASK               // reset_mask
+	  ,{ 0, }                     // hwa
+	  ,CUSTOM_INIT_FLAGS            // flags
+	  ,CUSTOM_INIT_FUNC             // io_init()
+	}
+#if USING_CUSTOM > 1
+  ,{
+	   &_CUSTOMController        	// ncd
+      // another one (same NCD, other field may be different)...
+   }
+#endif
+};
+
+
+_pktdrv_debug
+nouseix int custom_resetinterface(_CUSTOMConfig * custom, word instance, int iface)
+{
+	// This is boilerplate code.  It checks the instance number for validity,
+   // then copies the appropriate initializer, then sets the interface number
+   // as passed.
+   if (instance >= USING_CUSTOM)
+   	return -6;	// No such instance
+
+	memcpy(custom, _custom_config + instance, sizeof(*custom));
+   custom->iface = iface;
+
+	// Setup the peripheral IO interface, and fill in the reset of the _CUSTOMConfig struct
+	if (custom->io_init)
+		custom->io_init(custom);
+
+   // Add any other initialization required here...
+
+   return 0;
+}
+
+/*** BeginHeader custom_prt_nicreg */
+void custom_prt_nicreg(_CUSTOMConfig * nic);
+/*** EndHeader */
+
+
+#ifdef PKTDRV_VERBOSE
+// Only implement this function if PKTDRV_VERBOSE is defined.  It should printf() all required
+// device registers - this is optional; it's more for your benefit (as the driver writer)
+// than anyone else.
+
+_pktdrv_debug
+nouseix void custom_prt_nicreg(_CUSTOMConfig * nic)
+{
+}
+
+#endif
+
+/*** BeginHeader custom_ioctl */
+int custom_ioctl(_CUSTOMConfig* nic, int cmd, ...);
+/*** EndHeader */
+
+/*
+	All the oddball driver functions are accessed via this ioctl() function.
+   The sample below implements most of the usual features.  You can add and delete
+   them as desired, but make sure you always implement the PD_HASFEATURE command
+   and make it return the correct result (i.e. TRUE if the ioctl command is supported,
+   else FALSE).
+
+   The following are mandatory ioctls:
+     PD_HASFEATURE
+     PD_INITIALIZE
+     PD_HAVELINK - this should return 1 if there is no way of knowing.
+   The others listed are highly recommended.
+
+   Note that the PD_GETHWA returns a reference to the hardware address; it does not copy it.
+ */
+_pktdrv_debug int custom_ioctl(_CUSTOMConfig * nic, int cmd, ...)
+{
+	auto char * stack;	// Used to access the '...' parameters (varargs).
+
+   stack = (char *)(&cmd + 1);	// Point to first variadic parameter
+	switch (cmd) {
+   case PD_HASFEATURE:
+   	// Test for command support.  Get the command we are testing for.
+		cmd = *(int *)stack;
+      // The following assumes we support all standard commands
+      return cmd >= PD_HASFEATURE && cmd <=
+        #ifdef USE_MULTICAST
+        		PD_REMOVEMULTICAST
+        #else
+        		PD_GETHWA
+        #endif
+        ;
+   case PD_INITIALIZE:
+   	// Mandatory command.  Takes two parms: word instance, int iface.
+   	return custom_resetinterface(nic, *(word *)stack, *(int *)(stack+sizeof(word)));
+   case PD_HAVELINK:
+   	// Mandatory command.  Return hard-coded '1' if hardware cannot tell.
+   	return custom_havelink(nic);
+   case PD_POWER:
+   	// If device has power management, do the appropriate thing.  Otherwise, de-feature
+      // this command.
+   	if (*(int *)stack)
+      	return custom_powerup(nic);
+      else
+   		return custom_powerdown(nic);
+   case PD_SETHWA:
+   	// Mandatory command: set the hardware (Ethernet MAC) address.
+   	custom_sethwaddr(nic, *(char **)stack);
+   	break;
+   case PD_GETHWA:
+   	// Mandatory command: set a _pointer to_ the hardware address.  Parm is a char**; the value
+      // at this location is set to point to our hardware address.
+   	**(char ***)stack = nic->hwa;
+      return sizeof(nic->hwa);
+#ifdef USE_MULTICAST
+   case PD_ADDMULTICAST:
+   	// Optional commands, for supporting multicast.  De-feature if not implemented.
+   	return custom_addmulticast(nic, *(char **)stack, *(int **)(stack + sizeof(char *)));
+   case PD_REMOVEMULTICAST:
+   	return custom_removemulticast(nic, *(char **)stack);
+#endif
+   }
+   return 0;
+}
+
+
+/*** BeginHeader custom_ifctl */
+int custom_ifctl(_CUSTOMConfig* nic, int up, int change);
+/*** EndHeader */
+
+_pktdrv_debug int custom_ifctl(_CUSTOMConfig * nic, int up, int change)
+{
+	// Default: just a stub for the default ethernet interface control.
+   // If this is not simple ethernet, you will need to write a more sophisticated function.
+   // See PPPLINK.LIB for example.
+	return ifctl_ethernet(nic->iface, up, change);
+}
+
+
+/*** BeginHeader custom_powerdown */
+int custom_powerdown(_CUSTOMConfig* nic);
+/*** EndHeader */
+
+
+_pktdrv_debug
+nouseix int custom_powerdown(_CUSTOMConfig* nic)
+{
+	return 0;
+}
+
+/*** BeginHeader custom_powerup */
+int custom_powerup(_CUSTOMConfig* nic);
+/*** EndHeader */
+
+_pktdrv_debug
+nouseix int custom_powerup(_CUSTOMConfig* nic)
+{
+	return 0;
+}
+
+/*** BeginHeader custom_havelink */
+int custom_havelink(_CUSTOMConfig* nic);
+/*** EndHeader */
+
+_pktdrv_debug
+nouseix int custom_havelink(_CUSTOMConfig* nic)
+{
+	return 1;
+}
+
+/*** BeginHeader custom_sethwaddr */
+int custom_sethwaddr(_CUSTOMConfig* nic, char* hwa);
+/*** EndHeader */
+
+_pktdrv_debug
+nouseix int custom_sethwaddr(_CUSTOMConfig* nic, char* hwa)
+{
+	memcpy(nic->hwa,hwa,6);		// The hwa field keeps a "shadow copy".  Do this at least.
+
+	return 0;
+}
+
+
+/*** BeginHeader custom_addmulticast, custom_removemulticast */
+
+// Multicast support.  See NE2000.LIB for more details on what is expected of these functions.
+
+int custom_addmulticast(_CUSTOMConfig* nic, char* EthAddress, int* slot);
+int custom_removemulticast(_CUSTOMConfig* nic, char* EthAddress);
+/*** EndHeader */
+
+_pktdrv_debug
+nouseix int custom_addmulticast(_CUSTOMConfig* nic, char* EthAddress, int* slot)
+{
+	auto word hash;
+	auto unsigned long crc;
+	auto int i;
+
+	// Only upper 6 bits used in the hash.  This is the most common type of hash.  The device
+   // may, however, require something completely different.
+	crc = 0xffffffff;
+	for (i = 0; i < 6; i++) {
+		crc = pd_calc_crc(EthAddress[i], crc);
+	}
+	hash = (word)(crc >> 26);
+	if (slot) {
+		*slot = hash;
+	}
+
+   // Insert code to set the device here...
+
+	return 0;
+}
+
+_pktdrv_debug
+nouseix int custom_removemulticast(_CUSTOMConfig* nic, char* EthAddress)
+{
+	auto word hash;
+	auto unsigned long crc;
+	auto int i;
+#ifdef USE_IGMP
+	auto word hashcheck;
+#endif
+
+	// Only upper 6 bits used in the hash
+	crc = 0xffffffff;
+	for (i = 0; i < 6; i++) {
+		crc = pd_calc_crc(EthAddress[i], crc);
+	}
+	hash = (word)(crc >> 26);
+
+#ifdef USE_IGMP
+	// Make sure we aren't removing the hash entry that lets us
+	// receive the ALL-HOSTS (224.0.0.1) IGMP messages
+	multicast_iptohw(EthAddress, _IGMP_ALL_HOSTS_IPADDR);
+	crc = 0xffffffff;
+	for (i = 0; i < 6; i++) {
+		crc = pd_calc_crc(EthAddress[i], crc);
+	}
+	hashcheck = (word)(crc >> 26);
+	if (hash == hashcheck) {
+		return 0;
+	}
+#endif
+
+   // Insert code to set the device here...
+
+	return 0;
+}
+
+/*** BeginHeader  ********************************************/
+#endif /* __CUSTOM_LIB */
+/*** EndHeader ***********************************************/

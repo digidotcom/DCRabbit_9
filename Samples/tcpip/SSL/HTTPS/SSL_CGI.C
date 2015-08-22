@@ -1,0 +1,203 @@
+/*******************************************************************************
+        ssl_cgi.c
+        Z-World, 2003
+
+        A simple web-counter implemented in CGI functions. This
+        demonstrates how to add basic dynamic functionality to
+        your pages.
+
+		  This program has been modified to use SSL via HTTPS. See the
+        SSL comments below for more information.
+
+        ***NOTE*** This sample will NOT compile without first creating a
+        certificate with the name and path specified in the #ximport line
+        ("#ximport 'cert\mycert.dcc' SSL_CERTIFICATE") below. See the SSL
+        Walkthrough, Section 4.1 in the SSL User's Manual for information
+        on creating certificates for SSL programs.
+
+*******************************************************************************/
+#class auto
+
+
+/***********************************
+ * Configuration                   *
+ * -------------                   *
+ * All fields in this section must *
+ * be altered to match your local  *
+ * network settings.               *
+ ***********************************/
+
+/*
+ * Pick the predefined TCP/IP configuration for this sample.  See
+ * LIB\TCPIP\TCP_CONFIG.LIB for instructions on how to set the
+ * configuration.
+ */
+#define TCPCONFIG 1
+
+
+/*
+ * Web server configuration
+ */
+
+/*
+ * only one socket and server are needed for a reserved port
+ */
+#define HTTP_MAXSERVERS 1
+#define MAX_TCP_SOCKET_BUFFERS 1
+
+// This macro determines the number of HTTP servers that will use
+// SSL (HTTPS servers). In this case, we have 1 and this defines
+// it to be HTTPS
+#define HTTP_SSL_SOCKETS 1
+
+/*
+ * Our web server as seen from the clients.
+ * This should be the address that the clients (netscape/IE)
+ * use to access your server. Usually, this is your IP address.
+ * If you are behind a firewall, though, it might be a port on
+ * the proxy, that will be forwarded to the Rabbit board. The
+ * commented out line is an example of such a situation.
+ */
+#define REDIRECTHOST		_PRIMARY_STATIC_IP
+//#define REDIRECTHOST	"proxy.domain.com:1212"
+
+// SSL Stuff
+// This macro tells the HTTP library to use SSL
+#define USE_HTTP_SSL
+
+// Import the certificate
+#ximport "cert\mycert.dcc" SSL_CERTIFICATE
+
+/********************************
+ * End of configuration section *
+ ********************************/
+
+/* where to send the user after the CGI finishes */
+// Note the use of https instead of http
+#define REDIRECTTO 		"https://" REDIRECTHOST "/index.html"
+
+#define TIMEZONE        -8
+
+#memmap xmem
+#use "dcrtcp.lib"
+#use "http.lib"
+
+#ximport "pages/cgi.html"    	index_html
+#ximport "pages/rabbit1.gif"    rabbit1_gif
+
+/*
+ *  Notice that cgi doesn't have a MIME type or a handler.
+ *  The handler for this type of entity is make the the HttpSpec
+ *  structure.
+ *
+ */
+
+
+/* the default mime type for '/' must be first */
+const HttpType http_types[] =
+{
+   { ".html", "text/html", NULL},
+   { ".gif", "image/gif", NULL},
+   { ".cgi", "", NULL}
+};
+
+
+/*
+ *  there is a new entry in the http_flashspec:  "/test.cgi"
+ *
+ *  This entry includes the online name of CGI routine and the
+ *  internal routine that it maps to.
+ *
+ */
+
+int test_cgi(HttpState* state);
+
+const HttpSpec http_flashspec[] =
+{
+   { HTTPSPEC_FILE,  "/",              index_html,    NULL, 0, NULL, NULL},
+   { HTTPSPEC_FILE,  "/index.html",    index_html,    NULL, 0, NULL, NULL},
+   { HTTPSPEC_FILE,  "/rabbit1.gif",   rabbit1_gif,   NULL, 0, NULL, NULL},
+
+   { HTTPSPEC_FUNCTION, "/test.cgi",   0, test_cgi, 0, NULL, NULL}
+};
+
+
+void main()
+{
+   sock_init();
+   http_init();
+
+   tcp_reserveport(443);
+
+/*
+ *  http_handler needs to be called to handle the active http servers.
+ */
+
+   while (1) {
+      http_handler();
+   }
+}
+
+/*
+ *  test string what is served by test_cgi.  It is used
+ *  as one of the parameters to sprintf() to build a buffer
+ *  that is later sent.  The format of the first three lines
+ *  is important.
+ *
+ *  HTTP/1.0 200 OK\r\n
+ *  Date: <current date/time from http_date_str()>\r\n
+ *  Content-Type: text/html\r\n\r\n
+ *
+ *  The first line tells the internet browser that the content
+ *  was found and will be returned in the body.  The next line
+ *  is the date which is followed by the mime type of the body.
+ *  Notice the \r\n\r\n.  If you leave out the second \r\n the
+ *  browser will assume that the next line is part of the header.
+ *  The document follows.
+ *
+ *  There are many books and online references for the format
+ *  of CGI responses.
+ *
+ */
+
+const char teststr[] =
+	"HTTP/1.0 200 OK\r\n" \
+	"Date: %s" \
+	"Content-Type: text/html\r\n\r\n" \
+	"<!DOCTYPE HTML PUBLIC \"-//W3C//DTD W3 HTML//EN\">\r\n" \
+	"<HTML>" \
+	"<HEAD><TITLE><cgi.c></TITLE></HEAD>" \
+	"<BODY><H1>cgi.c, hit count %d</H1>" \
+	"      <BR><BR><BR><A HREF=\"%s\">home</A>" \
+	"</BODY>" \
+	"</HEAD>";
+
+/*
+ *  This is the internal cgi routine.  It uses teststr to build
+ *  a buffer which it uses to respond to the request.
+ *
+ *  This routine increments the hit count value and uses the
+ *  cgi_sendstring routine to send the page.  The cgi_sendstring
+ *  routine immediately returns and the string is sent the next
+ *  time this server gets a tick.  If you want the server to
+ *  immediately close the connection return a one otherwise you
+ *  should return a zero.
+ *
+ */
+
+int test_cgi(HttpState* state)
+{
+	static char date[30];
+	static char buffer[512];
+	static int hitcount;
+
+	#GLOBAL_INIT { hitcount=0; }
+
+	hitcount++;
+	http_date_str(date);
+
+	sprintf(buffer,teststr,date,hitcount,REDIRECTTO);
+
+	cgi_sendstring(state,buffer);
+   return 0;
+}

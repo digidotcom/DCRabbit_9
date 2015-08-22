@@ -1,0 +1,11 @@
+
+PUT
+   ASCII mode usage: "put <filename>"
+   Open the new file <filename> for writing.  After this
+   command is entered, send the file contents, terminating 
+   it with a ^D or ^Z (0x04 or 0x1A).
+
+   BINARY mode usage: "put <filename> <size>"
+   Open the new file <filename> for writing.  After this
+   command is entered, send exactly <size> bytes of the 
+   file contents.

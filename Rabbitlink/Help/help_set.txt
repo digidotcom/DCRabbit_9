@@ -1,0 +1,17 @@
+
+SET
+   Usage: "set <variable> <value>"
+   The following variables can be set with this command:
+   dhcp       - Enable/disable the use of DHCP to automagicly
+                acquire the network address. Options are
+                "on" or "off".
+   ip         - The IP address of the device (ie: w.x.y.z)
+   netmask    - The netmask for the device (ie: 255.255.255.0)
+   gateway    - The gateway for the device (eg: w.x.y.z)
+   hostname   - The hostname of the device
+   port       - TCP port to listen on for the DynamicC integration
+   mail       - See "help set mail" for all options
+   consbaud   - The baud rate of the console communications.
+   passphrase - The passphrase used to authenticate over the network.
+                Note that the value for this variable is entered
+                on a separate line.

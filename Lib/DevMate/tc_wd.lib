@@ -1,0 +1,94 @@
+/* START LIBRARY DESCRIPTION *********************************************
+TC_WD.LIB
+	Copyright (c) 2001, ZWorld. (jjb)
+
+DESCRIPTION:
+	DeviceMate Watchdog Common Library
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#ifndef TC_WD_H
+#define TC_WD_H
+
+#ifndef __TC_LIB
+	#use "tc.lib"
+#endif
+
+/*
+ *		Dynamic C nodebug flag
+ */
+
+#ifdef WD_DEBUG
+	#define wd_nodebug
+#else
+	#ifdef __DC__
+		#define wd_nodebug nodebug
+	#else
+		#define wd_nodebug
+	#endif
+#endif
+
+/*
+ *		Target Communcation Subtypes
+ */
+
+#define DEVMATE_WD_INIT 	0x00
+#define DEVMATE_WD_ADD		0x01
+#define DEVMATE_WD_REMOVE	0x02
+#define DEVMATE_WD_HIT		0x03
+
+/*
+ *		Fixed/shared DeviceMate watchdog configuration
+ */
+
+#define DEVMATE_WD_MAXNAME			16
+#define DEVMATE_WD_PKTSIZE  		(sizeof(TCDevMateWd))
+#define DEVMATE_WD_PKTHDRSIZE		6		// Size not counting name field (var length)
+
+#define DEVMATE_WD_TIMEOUT			-1
+#define DEVMATE_WD_UNALLOCATED	0
+#define DEVMATE_WD_SENDING			1
+#define DEVMATE_WD_WAITING			2
+#define DEVMATE_WD_ACKED			3
+#define DEVMATE_WD_NAKED			4
+#define DEVMATE_WD_ERROR			5
+
+/*
+ *		DeviceMate watchdog structures.  Note that this structure is
+ *    already packed.  When transmitted, only the non-null characters in
+ *		the name string are sent (i.e. no null terminator).
+ */
+
+typedef struct
+{
+	uint32 updatewith;
+	uint16 sequence;
+	char name[DEVMATE_WD_MAXNAME];
+} TCDevMateWd;
+
+/*** EndHeader */
+
+/*** BeginHeader _dmwd_chktimeout */
+int _dmwd_chktimeout(uint16 timeout);
+/*** EndHeader */
+
+/*
+ *		int _dmwd_chktimeout(uint16 timeout)
+ *		return 1 if timeout has not expired, 0 otherwise.
+ *		Note that timeouts range from 0 to 32.767 seconds, however a
+ *		watchdog can be set for longer timeouts (up to about 24 days)
+ *		since the "updatewith" fields is 32 bits.
+ */
+
+wd_nodebug
+int _dmwd_chktimeout(uint16 timeout)
+{
+	return (int16)(timeout - (uint16)MS_TIMER) > 0;
+}
+
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

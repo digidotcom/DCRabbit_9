@@ -1,0 +1,199 @@
+/* tc_tcp.lib.
+ * There must not be any executable code in this library.  It is only
+ * structure definitions for TCP tunneling over XTC.  These structures
+ * (in their little-endian order) are sent over the wire.
+ */
+
+/* START LIBRARY DESCRIPTION *********************************************
+TC_TCP.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains structure and object definitions which are
+   common to the DeviceMate and target processors.  TC_TCP.LIB is
+   automatically included by DM_TCP.LIB and TARGETPROC_TCP.LIB.
+   In turn, this library includes TC_XTC.LIB since TCP/IP
+   tunnelling makes extensive use of XTC.
+
+   Note that the existence of particular fields in the following
+   definitions does not imply that the option is actually supported
+   by the current TCP API.  Many of the fields are reserved for
+   future implementation and API enhancements.
+
+PORTING NOTE:
+   For non-Rabbit target processors with an ANSI C compiler, there is
+   an equivalent .h file in the LIB\Target subdirectory.
+
+   The structures defined herein are designed to align and pack
+   the same way on most architectures.  Specifically, 16-bit values
+   always start on even offsets, and 32-bit values start on multiple-
+   of-4 offsets.  All structures' total length is a multiple of the
+   size of their largest field, avoiding padding.  This is important,
+   since the structures are sent on the wire.  The main incompatibility
+   is one of byte ordering.  On the wire, little-endian ordering is
+   used.  This is no issue for Intel-derived processors, however most
+   other processors (e.g. Motorola, Sparc, ARM, IBM mainframe (!))
+   use big-endian byte ordering.  Such processors will need to perform
+   byte-swapping on the structures defined here before transmitting
+   them.
+
+END DESCRIPTION **********************************************************/
+ 
+/*** BeginHeader */
+#ifndef TC_TCP_H
+#define TC_TCP_H
+
+#ifndef TC_XTC_H
+	#use "tc_xtc.lib"
+#endif
+
+
+
+// Header for all administrative structs.  This is always at the start of each
+// request sent on the control channel.
+typedef struct
+{
+	uint8		version;					// TCP over XTC Protocol version
+#define TC_TCPIP_VERSION		0x01
+	uint8		typecode;				// Type code (TC_TCPIP_*)
+	uint16	length;					// Length of following data (remainder of struct)
+} TCTCPHdr;
+
+
+/*
+ * This struct is basically reserved for future use.  Currently, only the
+ * DeviceMate has any say in TCP/IP configuration parameters such as its
+ * home IP address, or whether it uses DHCP.  Nevertheless, this struct must
+ * be initialized and sent by the target to start the TCP/IP subsystem.
+ * It should be set to zeros, except for the max_socket field which should
+ * be set to the largest valid channel number.
+ */
+#define TC_TCPIP_INIT	0x01		// Type code field value
+typedef struct
+{
+	TCTCPHdr	hdr;
+	
+	uint16	flags;					// Flags as follows:  (unlisted bits should be set zero)
+#define TC_TI_IPADDRESS		0x0001	// "my" IP address specified
+#define TC_TI_NETMASK		0X0002	// Subnet mask specified
+#define TC_TI_GATEWAY		0x0004	// Router specified
+#define TC_TI_NAMESERVER_1 0x0008	// DNS 1 specified
+#define TC_TI_NAMESERVER_2 0x0010	// DNS 2 specified
+#define TC_TI_CLASSID		0x0020	// DHCP class ID specified
+#define TC_TI_CLIENTID		0x0040	// DHCP client ID specified
+#define TC_TI_FIND_ROUTER	0x4000	// Use ICMP router discovery
+#define TC_TI_USE_DHCP		0x8000	// Use DHCP to assign above
+	uint8		max_socket;				// Maximum socket number supported on target
+	uint8		reserved;				// Field reserved - set zero for now.
+	uint32	ipaddress;				// Optional IP address
+	uint32	netmask;					// Optional subnet mask
+	uint32	gateway;					// Optional router IP
+	uint32	nameserver[2];			// Optional preferred and secondary nameservers
+	uint8		classid[96];			// DHCP class ID (null term) followed by client ID (NT)
+} TCTcpipInit;
+
+#define TC_TCPIP_ACKINIT	0x02		// Type code field value
+typedef struct
+{
+	TCTCPHdr	hdr;
+	
+	uint16	flags;					// Flags as follows:
+#define TC_ATI_BCNET			0x0100	// Broadcast net
+#define TC_ATI_PPNET			0x0200	// Point-point net
+#define TC_ATI_NET			0x0400	// Network available
+#define TC_ATI_FOUND_ROUTER 0x4000	// Router discovered via ICMP
+#define TC_ATI_USED_DHCP	0x8000 	// Parameters set via DHCP
+	uint8		max_socket;				// Max concurrent TCP+UDP sockets allowed: this is
+											//  the minimum of the max_socket field in the init request,
+											//  and the number actually supported on the DeviceMate.
+	uint8		reserved;				// Field reserved - set zero for now.
+	uint32	ipaddress;				// Current IP address
+	uint32	netmask;					// Current subnet mask
+	uint32	gateway;					// Current router IP
+	uint32	nameserver[2];			// Current nameserver(s)
+} TCAckTcpipInit;
+
+
+#define TC_TCPIP_TCPOPEN	0x03		// Type code field value
+typedef struct
+{
+	TCTCPHdr	hdr;
+	uint16	local_port;		// Local TCP/UDP port number (0 for any)
+	uint16	remote_port;	// Remote TCP/UDP port number (0 for listen)
+	uint16	flags;			// Flags as follows:
+#define TC_TOPN_TOSMASK	0x000F	// IP TOS mask (TCP or UDP)
+#define TC_TOPN_NOBIND	0x0400	// No bind (UDP only)
+#define TC_TOPN_PASSIVE	0x0800	// Passive open i.e. Listen
+#define TC_TOPN_RESV		0x1000	// Reserved port
+#define TC_TOPN_HOSTBIN	0x8000	// Hostname is binary (TCP or UDP)
+	uint8		socket;			// Requested socket (channel) number (1..n), 0 for
+									//   socket number to be assigned by DeviceMate.
+	uint8		sc;				// Socket class:
+#define TC_SC_TCP	'T'			// TCP socket
+#define TC_SC_UDP	'U'			// UDP socket
+
+	uint8		hostname[96];	// Remote host name or dotted quad.  Null term.
+} TCTcpOpen;
+
+
+#define TC_TCPIP_TCPACKOPEN	0x04		// Type code field value
+typedef struct
+{
+	TCTCPHdr	hdr;
+	
+	uint16	local_port;		// Local TCP/UDP port number (assigned)
+	uint16	remote_port;	// Remote host port number
+	uint16	flags;			// Socket flags as follows:
+#define TC_SS_ACTIVE		0x0010	// Actively opened
+#define TC_SS_ERROR		0x0020	// Error
+#define TC_SS_LISTEN		0x0040	// Passively opened
+	uint8		socket;			// Socket number (i.e. XTC channel number 1..n) - 0 if failed
+	uint8		sc;				// Socket class as for TCTcpOpen.sc (above)
+	uint32	remote_host;	// Remote host IP address
+} TCAckTcpOpen;
+
+
+
+
+// The following struct is used to delimit UDP datagrams in the reliable
+// (TCP) stream between target and DeviceMates.  Used only for
+// socket class UDP.
+typedef struct
+{
+	uint16	len;				// Length including this header
+	uint16	reserved;		// Field reserved, set zero for now.
+   uint16	local_port;		// 0 for bound port
+   uint16	remote_port;	// 0 for bound port
+   uint32	remote_host;	// -1 for broadcast, 0 for bound host
+   /*
+   uint8		data[N];		// Datagram payload (length = len-sizeof(TCUdpHeader))
+   */
+} TCUdpHeader;
+
+
+#define TC_TCPIP_RESOLVE		0x12		// Type code field value
+typedef struct
+{
+	TCTCPHdr	hdr;
+	uint16	request_id;			// Request ID to match response.  This should increment by
+										// 1 for each new request.
+   uint8		hostname[96];		// Host name to resolve.  Null term. - not all of
+   									// this array needs to be transmitted
+} TCResolve;
+
+#define TC_TCPIP_ACKRESOLVE	0x13		// Type code field value
+typedef struct
+{
+	TCTCPHdr	hdr;
+	uint16	request_id;			// ID to match responses to requests
+	uint16	errcode;				// Error code as follows:
+#define TC_RES_OK			0			// No error
+#define TC_RES_TIMEOUT	1			// DNS request timed out
+#define TC_RES_FAILED	2			// Host not resolved
+#define TC_RES_MAXRQ		3			// Maximum concurrent requests exceeded
+#define TC_RES_NSR		4			// No such request ID
+   uint32 ip;						// Resolved IP address (-1 if unresolvable)
+} TCAckResolve;
+
+#endif
+/*** EndHeader */

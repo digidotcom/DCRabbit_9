@@ -1,0 +1,125 @@
+/*** BeginHeader */
+#ifndef __BIOSFSM_LIB
+#define __BIOSFSM_LIB
+/*** EndHeader */
+
+/*** BeginHeader  */
+#define _DCID "DynamiC"
+
+#define STEPON _OP_JP
+#define STEPOFF _OP_RET
+
+/*** #defines for instructions */
+
+/*** other #defines */
+#define DKC_READ_BOARDTYPE	0xa5
+#define DKC_READ_HDR		0xa2
+#define DKC_WRITE_HDR	0xa1
+#define DKC_POLL_HDR		0xa0
+
+#define DKC_ACK_FLAG		0x06
+#define DKC_NAK_FLAG		0x15
+
+#define DKC_IS_CLONE		0xC1
+#define DKC_NOT_CLONE	0xC0
+
+char	iAmAClone;
+
+char statusPinState;
+
+/*** type definitions (shared with Dynamic C f80bios.lib) */
+
+struct _dkcHeader {		//	structure for a communication header
+	char  count;				//	number of bytes to transmit/receive
+	int  address;			//	address
+	char XPCval;				//	XPC
+	char chksum;			//	checksum
+	char *cPointer;		//	content pointer
+	int  length;
+};
+
+struct _fcTable {
+	char DCID[7];			//	this field should contain "DynamiC"
+	char majorRev;			//	major revision
+	char minorRev;			//	minor revision
+	char targetName[8];	//	name of target
+	void *symTable;		//	pointer to symbol table
+	unsigned checksum;	//	checksum for library
+	void *codeBase;		//	base of code area
+	void *dataTop;			//	top of code
+	void *dataBase;		//	base (bottom) of data
+	void *codeTop;			//	top of data
+	void *dbgStack;		//	pointer to debug stack
+	void *stepVector;		//	stepping breakpoint vector
+	char chDisStep;		//	character to stop stepping breakpoint
+	char chEnbStep;		//	character to enable stepping breakpoint
+	char PrintToCon;     // print to the mini-web console?
+	char PendingGetch;   // data pending yet to reach the getchar buffer?
+	void *rst38Vector;	//	pointer to RST 38 development vector
+	void *PFVector;		//	pointer to powerfail vector
+	void *commTable;		//	pointer to communication table
+	char ramSize;			//	size of ram in 4kbyte pages
+	char memBreak;			//	CBAR value
+	void *nextBankV;		//	next bank vector
+	void *biosEnd;			//	end of BIOS
+	char xcodeTop;			//	top of xmem code
+	char ramStart;			//	start address of RAM in 4kbyte pages
+};
+
+typedef unsigned word;
+typedef unsigned char byte;
+
+struct _dkControl {
+	word intStatus;	//	interrupt status, used to communicate
+	byte breakReq;		//	indicates Dynamic C wants the target to get
+							//	into the debugger kernel, same as brkreq
+	word commPtr;		//	indicates the location DC should read if the
+							//	target has something to show in STDIO
+	word regPtr;		//	set up to point to register buffer
+	byte commAttn;		//	indicates the target has STDIO message to send
+							//	back to DC
+	byte breakAttn;	//	indicates the target is in the debug kernel,
+							//	request Dynamic C attention, same as brkattn
+	byte breakLock;	//	indicates whether a break is already being serviced
+							//	same as brksem
+	byte watchReq;		//	indicates Dynamic C wants the target to
+							//	evaluate a watch expression, same as watchreq
+	byte watchLock;	//	indicates whether a watch expression is already
+							//	being processed, same as watchsem
+	word watchPtr;		//
+	word watchAddr;	//	address of watch expression to call, same
+							//	as watchadr
+	byte keyReq;		//	indicates DC wants the target to read a key
+							//	pressed in the STDIO window
+	byte keyBuffer;	//	the value of key to read
+	byte hardBreak;	//	indicates DC wants to make a hard break
+							//	interrupt enable/disable status
+	byte initReq;		//	indicates whether an initialization is requested
+							//	same as doreset
+	byte showMem;		//	indicates Dynamic C wants the target to
+							//	expose more ROM, same as showmem
+};
+
+struct _dcParam {
+	word auxStackLimit;	//	aux stack limit
+	word auxStackPtr;		//	aux stack pointer
+	word errorExit;		//	errorExit routine pointer
+	word stackLimit;		//	stack limit
+	word rst28Swt;			//	RST28 switch
+	word rst28SwtOff;		//	rst28 switch off
+	word startUpAddr;		//	where is start up?
+};
+
+struct _DCSrcDebug {
+	char fEntryCount;		//	flag to indicate whether to count function
+								//	entry and exit
+	int nestCount;			//	counter to count levels
+};
+
+#define ERROR_EXIT DCParam+errorExit
+struct _dkcHeader curHeader;		//	current header information
+/*** EndHeader */
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

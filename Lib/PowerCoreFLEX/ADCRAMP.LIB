@@ -1,0 +1,1644 @@
+/*** Beginheader */
+#ifndef __ADCRAMP_LIB
+#define __ADCRAMP_LIB
+
+//#define ADCRAMP_DEBUG
+#ifdef ADCRAMP_DEBUG
+#define _adcramp_nodebug debug
+#else
+#define _adcramp_nodebug nodebug
+#endif
+
+#if RCM3800_SERIES
+#define  anaIn _anaIn
+#define  anaInVolts _anaInVolts
+#define  anaInCalib _anaInCalib
+#define  anaInExternalInit _anaInExternalInit
+#define  anaInEERd _anaInEERd
+#define  anaInEEWr _anaInEEWr
+#endif
+
+/*** endheader   */
+
+/* START LIBRARY DESCRIPTION *********************************************
+ADCRAMP.LIB
+
+DESCRIPTION:	This library provides API functions for the Ramp A/D
+					circuit to reads the core module thermistor, voltage
+               reference, and end-of-ramp voltage. It also is set up
+               to read an external A/D converter if enabled by the
+               customer's application program.
+
+REVISION HISTORY:
+	06/25/04	EK 	Initial Creation
+
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader _rampadc,
+                 adc_conversion_done,
+                 temp_conversion_done,
+                 ref_conversion_done,
+                 ramp_conversion_done	*/
+
+// Macro's for calculating the temperature
+#define 	_Tc  		25.0				//standard temp in Celcius
+#define 	_Tkstd 	Tc + 273.15  	//convert to Kelvins
+#define	_Bth  	4500.0			//thermistor beta
+#define	_Rs  		1000.0			//series resistor
+#define  _Rth  	3000.0			//standard temp resistance
+
+
+
+// Macro for adjusting the ADC resultion
+#ifndef ADC_RESOLUTION
+#define ADC_RESOLUTION	4095.0	// 12 bit resolution
+#endif
+
+#ifndef ADC_RAMP_VOLTAGE
+#define ADC_RAMP_VOLTAGE	3.0
+#endif
+
+#ifndef ADC_REF_VOLTAGE
+#define ADC_REF_VOLTAGE		2.5
+#endif
+
+#ifndef ADC_RAMP_RESOLUTION
+#define ADC_RAMP_RESOLUTION	ADC_REF_VOLTAGE/(ADC_RAMP_VOLTAGE/ADC_RESOLUTION)
+#endif
+
+#ifndef MAX_ADCHANNELS
+#define MAX_ADCHANNELS 1
+#endif
+
+#define ADOVERFLOW  -4096
+#define ADUNDERFLOW -4097
+
+
+#ifdef __TRIAC_LIB
+	// Force interrupt to 3 when using triac phase control
+	#ifdef PHASECONTROL
+	#define RAMP_INT_LEVEL 3
+   #else
+   #define RAMP_INT_LEVEL 1
+   #endif
+#else
+// RAMP only needs level 1 interrupt priority.
+#define RAMP_INT_LEVEL 1
+#endif
+
+
+// Offset addresses into userblock for calibration data
+#define ADC_RAMP_ADDR  (4096*GetIDBlockSize()-ZWORLD_RESERVED_SIZE)
+#define ADC_THERM_ADDR ADC_RAMP_ADDR  + 32
+#define ADC_CALIB_ADDR ADC_THERM_ADDR + 8
+
+typedef struct {
+ int ref_rawdata;
+ int ramp_rawdata;
+ int thermistor_rawdata;
+ char ramp_channel;
+ int adc_external_enable;
+ int adc_status;
+ char adc_clear;
+} _ramp;
+
+extern int _adc_rawdata[MAX_ADCHANNELS];
+extern int _adc_avgdata[MAX_ADCHANNELS];
+extern unsigned int _adc_avgfractiondata[MAX_ADCHANNELS];
+extern int _adc_alpha[MAX_ADCHANNELS];
+extern int _adc_overflow[MAX_ADCHANNELS];
+extern int _adcrampInit;
+extern int _adcexternalInit;
+extern int _adc_mux_channel;
+extern int _adc_interrupt_lock;
+extern int _adc_temprawdata;
+extern int _adc_tempavgdata;
+extern unsigned int _adc_tempavgfractiondata;
+extern int _adc_overflow;
+extern int _adc_k;
+
+// Customer accessable variables
+extern int adc_conversion_done;
+extern int temp_conversion_done;
+extern int ref_conversion_done;
+extern int ramp_conversion_done;
+extern int mux_conversion_done[MAX_ADCHANNELS];
+
+/*** EndHeader */
+int _adc_rawdata[MAX_ADCHANNELS];
+int _adc_avgdata[MAX_ADCHANNELS];
+unsigned int _adc_avgfractiondata[MAX_ADCHANNELS];
+int _adc_alpha[MAX_ADCHANNELS];
+int _adc_overflow[MAX_ADCHANNELS];
+int _adcrampInit;
+int _adcexternalInit;
+int _adc_mux_channel;
+int _adc_interrupt_lock;
+int _adc_temprawdata;
+int _adc_tempavgdata;
+unsigned int _adc_tempavgfractiondata;
+int _adc_k;
+
+// Customer accessable variables
+int adc_conversion_done;
+int temp_conversion_done;
+int ref_conversion_done;
+int ramp_conversion_done;
+int mux_conversion_done[MAX_ADCHANNELS];
+
+
+/*** BeginHeader anaInDisable */
+void anaInDisable(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInDisable 				<ADCRAMP.LIB>
+
+SYNTAX:        void anaInDisable(void);
+
+DESCRIPTION:   Disables A/D ramp interrupt, when writing to flash and
+					for exiting applications while using Dynamic C for an
+               user interface.
+
+PARAMETER1:    None.
+
+RETURN VALUE:  None.
+
+SEE ALSO:		anaInRamp, anaInRampVolts, anaInCalibRamp, anaInEERdRamp,
+					anaInEEWrRamp, anaInEnable
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+void anaInDisable(void)
+{
+	WrPortI(I1CR, &I1CRShadow,  (I1CRShadow & ~0x0C));
+}
+
+
+/*** BeginHeader anaInEnable */
+void anaInEnable(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInEnable 				<ADCRAMP.LIB>
+
+SYNTAX:        void anaInEnable(void);
+
+DESCRIPTION:   Re-enables A/D ramp interrupt, after the interrupt was
+					disabled by the anaInDisable API function.
+
+PARAMETER1:    None.
+
+RETURN VALUE:  None.
+
+SEE ALSO:		anaInRamp, anaInRampVolts, anaInCalibRamp, anaInEERdRamp,
+					anaInEEWrRamp, anaInDisable
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+void anaInEnable(void)
+{
+	WrPortI(I1CR, &I1CRShadow, (I1CRShadow|0x08|RAMP_INT_LEVEL));
+}
+
+
+/*** BeginHeader anaInRampInit */
+void anaInRampInit(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInRampInit 				<ADCRAMP.LIB>
+
+SYNTAX:        void anaInRampInit(void);
+
+DESCRIPTION:   Initializes the A/D converter ramp low-level driver for
+					internal A/D operation to read the thermistor, reference,
+               and end-of-ramp voltages. This function is non-reentrant.
+
+               Note:
+               ----
+               To enable external A/D operation, see the function
+               anaInExternalInit.
+
+PARAMETER1:    None.
+
+RETURN VALUE:  None.
+
+SEE ALSO:		anaInRamp, anaInRampVolts, anaInCalibRamp, anaInEERdRamp,
+					anaInEEWrRamp
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+void anaInRampInit(void)
+{
+	auto int adc_clk;
+   auto float perclk;
+   auto unsigned long macro;
+
+   #GLOBAL_INIT
+   {
+   	rampadc.ramp_channel = 0;
+      rampadc.adc_external_enable = 0;
+      ref_conversion_done = FALSE;
+      ramp_conversion_done = FALSE;
+      temp_conversion_done = FALSE;
+		_adcrampInit = FALSE;
+   }
+
+	// Just return if the ADC ramp has already been initialized
+   if (_adcrampInit) {
+   	return;
+   }
+
+   //     _DC_3800OPT0_
+   //     bits    0-2     Power supply options (0 None, 1 or 2 A)
+   //     bits    3-4     Input circuit options (0 Center tapped, 1, Full Wave, 2 half wave 3 +5 only)
+   //     bit     5       Zero Crossing (0 not installed, 1 installed)
+   //     bit     6       Ramp Generator (0 not installed, 1 installed)
+   //     bit     7       Battery (0 not installed, 1 installed)
+   //     bit     8       Clock double okay (0 don't double, 1 okay to double)
+   //     bits    9-31    Reserved for future use (set to 0 for now)
+
+   _GetSysMacroValue("_DC_3800OPT0_", &macro);
+   if(!(macro & 0x00000040))
+	{
+		// The initialization functions has not been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   // Initialize ISR control flags
+   _initialize_isr_variables();
+
+   // Initialize interrupt vector
+   #if __SEPARATE_INST_DATA__ && (_RK_FIXED_VECTORS)
+      interrupt_vector ext1_intvec _ramp_isr;
+   #else
+      SetVectExtern3000(1, _ramp_isr);
+   #endif
+
+   anaInEERdRamp();
+   _thermEERd();
+   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  & ~0x8A));
+   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow & ~0x8A));
+   WrPortI(PDCR,  &PDCRShadow,  0x00);
+   rampadc.adc_clear = 0x04;
+   perclk = ((19200.0*32.0)/2) * freq_divider;
+   adc_clk = (int) (((1.0/(1000))/4096) * perclk);
+   WrPortI(TAT8R, NULL, adc_clk);
+   WrPortI(ICS1R, NULL, 0xC7);
+   WrPortI(ICT1R, NULL, 0x5A);
+   WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow&~0x02));
+   WrPortI(ICCSR, &ICCSRShadow, 0x0C);
+   WrPortI(ICCR, &ICCRShadow, 0x00);
+
+   WrPortI(I1CR, &I1CRShadow, (I1CRShadow|0x08|RAMP_INT_LEVEL));
+   _adcramp_interrupt = TRUE;
+	_adcrampInit = TRUE;
+}
+
+/*** BeginHeader _anaInExternalInit */
+void _anaInExternalInit(int port, int pin, int edge);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInExternalInit			<ADCRAMP.LIB>
+
+SYNTAX:        void anaInExternalInit(int port, int pin, int edge);
+
+DESCRIPTION:   Initializes the A/D converter low-level driver for reading
+					an	external A/D converter. To use an external A/D converter
+               you must first call the funtion anaInRampInit to initalize
+               A/D converter ramp circuit. This function is non-reentrant.
+
+PARAMETER1:    Value to identify the CPU I/O port being used for the
+					external A/D comparator.
+					0 = Port C
+               1 = Port D
+               2 = Port F
+               3 = Port G
+
+PARAMETER2:    Value to identify the I/O port pin being used for the
+					external A/D comparator.
+					0 = I/O pin 1
+               1 = I/O pin 3
+               2 = I/O pin 5
+               3 = I/O pin 7
+
+PARAMETER3:    Value to indicate which signal edge to use for the external
+					A/D comparator.
+               0 = Rising edge.
+               1 = Falling edge.
+
+RETURN VALUE:  None.
+
+SEE ALSO:      See all ADCRAMP.LIB functions.
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+void _anaInExternalInit(int port, int pin, int edge)
+{
+	auto int i;
+
+   #GLOBAL_INIT
+   {
+   	_adcrampInit = FALSE;
+   	_adc_mux_channel = 0;
+      adc_conversion_done = FALSE;
+   }
+   if(!_adcrampInit)
+	{
+		// the brdInit function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+ 	for(i=0; i < MAX_ADCHANNELS; i++)
+   {
+   	_anaInEERd(i);
+   }
+
+   for(i=0; i<MAX_ADCHANNELS; i++)
+   {
+   	_adc_overflow[i] = 0;
+   }
+
+#ifdef ADC_DISCOUNT_AVERAGE
+   // Set alpha value for all channels be 1.0, no averaging
+   for(i=0; i < MAX_ADCHANNELS; i++)
+   {
+   	_adc_alpha[i] = (int)32768;
+   }
+#endif
+
+   rampadc.adc_clear = 0x0C;
+   rampadc.adc_external_enable = 0xFFFF;
+   WrPortI(ICS2R, NULL, (0xC0 | (port<<2) | pin));
+   WrPortI(ICT2R, NULL, (0x58 | ++edge));
+   _adcexternalInit = TRUE;
+}
+
+
+
+/*** BeginHeader anaInCalibRamp, _adcCalibRamp */
+int anaInCalibRamp(float value1, float volts1,
+                   float value2, float volts2);
+extern float _adcCalibRamp[4];
+/*** EndHeader */
+float _adcCalibRamp[4];
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInCalibRamp 			<ADCRAMP.LIB>
+
+SYNTAX:        void anaInCalibRamp(int value1, float volts1,
+                                   int value2, float volts2);
+
+DESCRIPTION:   Calibrates the response of the analog ramp circuit as a
+               linear function using the two conversion points provided.
+               Gain, offset and ADC resolution constants are calculated
+               and placed into the global table _adcCalibRamp. This
+               function is non-reentrant.
+
+PARAMETER1:    The first ADC value.
+PARAMETER2:    The voltage corresponding to the first ADC value.
+PARAMETER3:    The second ADC value.
+PARAMETER4:    The voltage corresponding to the second ADC value.
+
+RETURN VALUE:   0 = if sucessful.
+               -1 = if not able to make calibration constants.
+
+SEE ALSO:      anaInRampInit, anaInRamp, anaInRampVolts, anaInEERdRamp,
+					anaInEEWrRamp
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+int anaInCalibRamp(float value1, float volts1,
+                   float value2, float volts2)
+{
+   auto float gain, offset, refvolts;
+
+
+   if( (volts1 == volts2) || (value1 == value2) ) return -1;
+
+   offset = (volts2*value1 -volts1*value2)/(volts2-volts1);
+   if (offset == value1)
+      gain = volts2/(offset-value2);
+   else
+      gain = volts1/(offset-value1);
+
+	if( !(volts1 < (ADC_REF_VOLTAGE - .2)) &&
+       !(volts1 > (ADC_REF_VOLTAGE + .2)) )
+   {
+    	refvolts = volts1;
+   }
+   else if( !(volts2 < (ADC_REF_VOLTAGE - .2)) &&
+            !(volts2 > (ADC_REF_VOLTAGE + .2)) )
+   {
+   	refvolts = volts2;
+   }
+   else
+   { 	// the brdInit function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+   }
+   _adcCalibRamp[0] = gain;
+   _adcCalibRamp[1] = offset;
+   _adcCalibRamp[2] = refvolts / (ADC_RAMP_VOLTAGE/ADC_RESOLUTION);
+   _adcCalibRamp[3] = refvolts;
+  	return 0;
+}
+
+
+/*** BeginHeader anaInRamp */
+unsigned int anaInRamp(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInRamp      			<ADCRAMP.LIB>
+
+SYNTAX:        int anaInRamp(int channel);
+
+DESCRIPTION:   Reads the state of a ramp A/D channel.
+
+               The state being read is located in memory, and is updated
+               by the ADC interrupt. The update rate is ~7.5ms for each
+               ADC channel.
+
+               Note: To read the ramp channels synchronously use the
+               following flags:
+
+               A/D Channel 				Flag
+               ------------            ----
+               2.5V reference				ref_conversion_done
+               End-of-ramp voltage		ramp_conversion_done
+               Thermistor					temp_conversion_done
+
+               See adc_rd_ramp for an example.
+
+PARAMETER1:    The analog input channel 0 - 2 to read.
+					0 = 2.5v reference
+               1 = End of ramp voltage.
+               2 = Thermistor.
+
+RETURN VALUE:  A value corresponding to the voltage on the analog input
+               channel. The normal operating range is 0 to 4095.
+
+               Note: When reading the end-of-ramp A/D channel the rawdata
+               value may exceed 4095.
+
+SEE ALSO:      anaInRampInit, anaInCalibRamp, anaInRampVolts,
+					anaInEERdRamp, anaInEEWrRamp
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+unsigned int anaInRamp(int channel)
+{
+	static int rawdata, refvoltdata, tempchannel;
+   auto float ramp_rawdata_ratio;
+   auto float normalized_rawdata;
+
+   #GLOBAL_INIT{_adcrampInit = FALSE;}
+
+   if(!_adcrampInit)
+	{
+		// the brdInit function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   // Get copy of channel value due to adjusted stack to do atomic ADC read
+   tempchannel = channel;
+
+   #asm
+   push 	ip
+	ipset	RAMP_INT_LEVEL
+   #endasm
+   // Get Voltage reference rawdata value
+   refvoltdata = rampadc.ref_rawdata;
+
+   // Get rawdata value for channel selected
+   switch(tempchannel)
+   {
+    	case 0:
+        	rawdata = rampadc.ref_rawdata;
+         refvoltdata = rawdata;
+         break;
+
+      case 1:
+      	rawdata = rampadc.ramp_rawdata;
+         break;
+
+      case 2:
+         rawdata = rampadc.thermistor_rawdata;
+      	break;
+   }
+   #asm
+   pop	ip
+	#endasm
+
+   if(rawdata == ADOVERFLOW || refvoltdata ==  ADOVERFLOW)
+   {
+      return(ADOVERFLOW);
+   }
+   ramp_rawdata_ratio = (float)rawdata/(float)refvoltdata;
+
+   normalized_rawdata = (ramp_rawdata_ratio * ADC_RAMP_RESOLUTION) + .5;
+   if(channel == 0 || channel == 2)
+   {
+   	if(normalized_rawdata > ADC_RESOLUTION)
+      	return(ADOVERFLOW);
+   }
+   return((int)normalized_rawdata);
+}
+
+/*** BeginHeader anaInRampVolts */
+float anaInRampVolts(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInRampVolts 			<ADCRAMP.LIB>
+
+SYNTAX:        float anaInRampVolts(unsigned int channel);
+
+DESCRIPTION:   Reads the state of the ramp ADC channel and uses the
+               previously set calibration constants to convert it to
+               volts. This function is non-reentrant.
+
+               Note: To read the ramp channels synchronously use the
+               following flags:
+
+               A/D Channel 				Flag
+               ------------            ----
+               2.5V reference				ref_conversion_done
+               End-of-ramp voltage		ramp_conversion_done
+               Thermistor					temp_conversion_done
+
+               See adc_rd_ramp for an example.
+
+PARAMETER1:    The analog input channel (0 - 2) to read.
+					0 = 2.5V reference
+               1 = End-of-ramp voltage.
+               2 = Thermistor.
+
+RETURN VALUE:  A value corresponding to the voltage on the analog input
+               channel, which will be 0 - 3 volts.
+
+SEE ALSO:      anaInRampInit, anaInCalibRamp, anaInRamp, anaInEERdRamp,
+					anaInEEWrRamp
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+float anaInRampVolts(int channel)
+{
+	auto float gain, voltage, offset;
+   auto int rawdata;
+
+   rawdata = anaInRamp(channel);
+   if(rawdata == ADOVERFLOW)
+   {
+      return(ADOVERFLOW);
+   }
+
+   gain = _adcCalibRamp[0];
+   offset = _adcCalibRamp[1];
+   voltage = gain * (offset - (float)rawdata);
+   return(voltage);
+}
+
+
+/*** BeginHeader  _adcCalib  */
+
+// Save the gain and offset for each channel
+extern float _adcCalib[MAX_ADCHANNELS][2];
+/*** EndHeader */
+
+float _adcCalib[MAX_ADCHANNELS][2];
+
+
+/*** BeginHeader _anaInCalib */
+int _anaInCalib(int channel, int value1, float volts1,
+                int value2, float volts2);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInCalib     			<ADCRAMP.LIB>
+
+SYNTAX:        int anaInCalib(int channel, int value1, float volts1,
+                              int value2, float volts2);
+
+DESCRIPTION:   Calibrates the response of the ADC channel desired as a
+               linear function using the two conversion points provided.
+               Gain and offset constants are calculated and placed into
+               global table _adcInCalib. This function is non-reentrant.
+
+PARAMETER1:    The analog input channel to read. The valid range of
+					channels are 0 to MAX_ADCHANNELS-1.
+
+               Note:
+               -----
+               The MAX_ADCHANNELS macro is set to a default value of 1,
+               which can be changed by adding the following line to your
+               application program:
+
+                     #define MAX_ADCHANNELS <new value>
+
+PARAMETER2:    The first ADC value.
+PARAMETER3:    The voltage corresponding to the first ADC value.
+PARAMETER4:    The second ADC value.
+PARAMETER5:    The voltage corresponding to the second ADC value.
+
+RETURN VALUE:   0 = if sucessful.
+               -1 = if not able to make calibration constants.
+
+SEE ALSO:      anaInExternalInit, anaInVolts, anaIn
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+int _anaInCalib(int channel, int value1, float volts1,
+                int value2, float volts2)
+{
+   auto float gain, offset;
+
+   if( (volts1 == volts2) || (value1 == value2) ) return -1;
+
+   if(channel != _adc_mux_channel)
+   {
+    	// The ADC MUX control not set to the correct channel!
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+   }
+
+   offset = (volts2*value1 - volts1*value2)/(volts2-volts1);
+   if (offset == value1)
+      gain = volts2/(offset-value2);
+   else
+      gain = volts1/(offset-value1);
+
+   _adcCalib[channel][0] = gain;
+   _adcCalib[channel][1] = offset;
+	return 0;
+}
+
+
+/*** BeginHeader _anaIn */
+int _anaIn(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaIn          			<ADCRAMP.LIB>
+
+SYNTAX:        int anaIn(int channel);
+
+DESCRIPTION:   Reads the state of the external analog channel.
+
+               Note: To read the ramp channels synchronously use the
+               ref_conversion_done flag. See adc_rd_external for an
+               example.
+
+              	The state being read is located in memory, and is updated
+               by the ADC interrupt. The update rate is as follows:
+
+               - For single-channel designs, the state of the analog
+                 channel will be updated approximately every 2.5 ms.
+
+               - For multiple-channel designs, the update rate will
+                 depend on the number of channels you have and the
+                 way you have implemented your MUX control (round-
+                 robin vs. random channel selection).
+
+                   a) For round-robin, the update rate will be the
+                      number of channels times 2.5 ms.
+
+               	 b) For ramdom channel selection, the update rate
+                      will be >2.5 ms for initial channel selection
+                      and ~2.5 ms thereafter.
+
+               This function is non-reentrant.
+
+               Application info for round-robin MUX control:
+               --------------------------------------------
+               There's a macro/hook in the interrupt service routine
+               for you add your ADC mux control code. To implement
+               do the following steps:
+
+               1. Set the maximum number of external ADC channels.
+
+                     #define MAX_ADCHANNELS <new value>
+
+               2. Create pointer to your custom mux control routine
+               	by defining the following.
+
+                 		#define ADC_MUX_CNTRL call adcmux
+
+                 The above will insert a call to the adcmux routine
+					  at the end of interrupt service routine. This will
+                 allow the channel to be ready on the next conversion
+                 cycle.
+
+               3. Write your adcmux routine to switch the hardware and
+               	_adc_mux_channel index to the next ADC channel. Make
+                  sure you initialize your I/O before executing the
+                  function anaInExternalInit.
+
+               Application info for random channel selection:
+               ----------------------------------------------
+                1. Set the maximum number of external ADC channels.
+
+                     #define MAX_ADCHANNELS <new value>
+
+                2. Provide a application function which will provide
+                	 and do the following:
+
+                   Functions provides:
+                   a) ADC channel selection via your hardware MUX circuit.
+                      Make sure you initialize your I/O before executing
+                      the anaInExternalInit and new MUX function.
+                   b) Change _adc_mux_channel index to the channel selected.
+                   c) Set adc_conversion_done flag FALSE.
+
+                   Then do:
+                   a) Call your routine with ADC channel selected.
+                   b) Wait in a non-blocking wait routine for the
+                      adc_conversion_done flag to become TRUE.
+                   c) Read ADC.
+                   d) Start sequence over again.
+
+PARAMETER1:    The analog input channel to read. The valid range of
+					channels is 0 to MAX_ADCHANNELS-1.
+
+					Note:
+               -----
+               The MAX_ADCHANNELS macro is set to a default value of 1,
+               which can be changed by adding the following line to your
+               application program:
+
+                     #define MAX_ADCHANNELS <new value>
+
+RETURN VALUE:  A value corresponding to the voltage on the analog input
+               channel (0 - 4095) or a value of -4096 which indicates
+               an overflow or out of range condition.
+
+SEE ALSO:      anaInExternalInit, anaInVolts, anaInCalib
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+int _anaIn(int channel)
+{
+	auto float normalized_rawdata;
+   auto float ramp_rawdata_ratio;
+   static int adc_overflow, rawdata, refvoltdata;
+   static int tempchannel;
+
+   if(!_adcrampInit || !_adcexternalInit)
+	{
+		// The initialization functions has not been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   tempchannel = channel;
+   #asm
+   push 	ip
+	ipset	RAMP_INT_LEVEL
+   #endasm
+   adc_overflow = _adc_overflow[tempchannel];
+   rawdata = _adc_rawdata[tempchannel];
+   refvoltdata = rampadc.ref_rawdata;
+   #asm
+   pop	ip
+	#endasm
+   if((adc_overflow == ADOVERFLOW) || (refvoltdata == ADOVERFLOW))
+   {
+      return(ADOVERFLOW);
+   }
+   ramp_rawdata_ratio = (float)rawdata/(float)refvoltdata;
+   normalized_rawdata = (ramp_rawdata_ratio * _adcCalibRamp[2]) + .5;
+   if(normalized_rawdata > ADC_RESOLUTION)
+   	return(ADOVERFLOW);
+   else
+   	return((int)normalized_rawdata);
+}
+
+
+/*** BeginHeader _anaInVolts */
+float _anaInVolts(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInVolts     			<ADCRAMP.LIB>
+
+SYNTAX:        float anaInVolts(int channel);
+
+DESCRIPTION:   Reads the state of the external analog channel and uses
+               the previously set calibration constants to convert it
+               to volts. This function is non-reentrant.
+
+               The state being read is located in memory, and is updated
+               by the ADC interrupt. The update rate is as follows:
+
+             	- For single-channel designs, the state of the analog
+                 channel will be updated approximately every 2.5 ms.
+
+               - For multiple-channel designs, the update rate will
+                 depend on the number of channels you have and the
+                 way you have implemented your MUX control (round-
+                 robin vs. ramdom channel selection).
+
+                   a) For round-robin, the update rate will be the
+                      number of channels times 2.5 ms.
+
+               	 b) For random channel selection, the update rate
+                      will be >2.5 ms for initial channel selection
+                      and ~2.5 ms thereafter.
+
+               Application info for round-robin MUX control:
+               --------------------------------------------
+               There's a macro/hook in the interrupt service routine
+               for you add your ADC mux control code. To implement
+               do the following steps:
+
+               1. Set the maximum number of external ADC channels.
+
+                     #define MAX_ADCHANNELS <new value>
+
+               2. Create pointer to your custom mux control routine
+               	by defining the following.
+
+                 		#define ADC_MUX_CNTRL call adcmux
+
+                 The above will insert a call to the adcmux routine
+					  at the end of interrupt service routine. This will
+                 allow the channel to be ready on the next conversion
+                 cycle.
+
+               3. Write your adcmux routine to switch the hardware and
+               	_adc_mux_channel index to the next ADC channel. Make sure
+                  you initialize your I/O before executing the function
+                  anaInExternalInit.
+
+               Application info for random channel selection:
+               ----------------------------------------------
+               1. Set the maximum number of external ADC channels.
+
+                     #define MAX_ADCHANNELS <new value>
+
+               2. Provide an application function that will provide
+                	and do the following:
+
+                   Functions provides:
+                   a) ADC channel selection via your hardware MUX circuit.
+                      Make sure you initialize your I/O before executing
+                      the anaInExternalInit and new MUX function.
+                   b) Change _adc_mux_channel index to the channel selected.
+                   c) Set adc_conversion_done flag FALSE.
+
+                   Then do:
+                   a) Call your routine with ADC channel selected.
+                   b) Wait in a nonblocking wait routine for the
+                      adc_conversion_done flag to become TRUE.
+                   c) Read ADC.
+                   d) Start sequence over again.
+
+PARAMETER1:    The analog input channel to read. The valid range of
+					channels is 0 to MAX_ADCHANNELS-1.
+
+               Note:
+               -----
+               The MAX_ADCHANNELS macro is set to a default value of 1,
+               which can be changed by adding the following line to your
+               application program:
+
+                     #define MAX_ADCHANNELS <new value>
+
+RETURN VALUE:  A voltage value corresponding to the voltage on the
+					analog input channel, or a value of -4096 which indicates
+               an overflow or out of range condition.
+
+SEE ALSO:      anaInExternalInit, anaIn, anaInCalib
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+float _anaInVolts(int channel)
+{
+	auto float gain, offset, voltage;
+   auto int rawdata;
+
+   rawdata = _anaIn(channel);
+   if(rawdata == ADOVERFLOW)
+   {
+      return(ADOVERFLOW);
+   }
+   gain = _adcCalib[channel][0];
+   offset = _adcCalib[channel][1];
+   voltage = gain * (offset - (float)rawdata);
+  	return(voltage);
+}
+
+/*** BeginHeader	thermOffset */
+void thermOffset(int units, float reading);
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+thermOffset				<ADCRAMP.LIB>
+
+SYNTAX:			void thermOffset(int units, float reading);
+
+DESCRIPTION:   Creates an offset for any temperature difference between
+					the thermistor and the external reference temperature, and
+               writes the offset data to the simulated EEPROM in flash
+               located at the top 2K of the reserved UserBlock memory
+               area. This offset value is then used by the thermReading
+               function to calculate the temperature at the thermistor
+               within the resolution specified for the thermistor’s A/D
+               converter circuit.
+
+PARAMETER1:		Temperature unit selection.
+					0 = Celsius.
+               1 = Fahrenheit.
+               2 = Kelvins.
+
+PARAMETER2:		Value from the external temperature reference in the
+					units selected in parameter1.
+
+RETURN VALUE:  None.
+
+SEE ALSO:		anaInRampInit, thermReading
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+void thermOffset(int units, float reading)
+{
+   auto float  A,      		//	Calculated constant
+   				Tk,			//	calculated temperature kelvins
+					Tf,			//	temperature farenheit
+               Rt,         // Calculated thermistor resistance
+               T,				// Computed temp in Kevin
+   	         Vread,   	// Voltage read from thermistor sensor
+               Radjusted; 	// Resistance to reflect temp reading
+   auto unsigned long done_time;
+
+   A = 1/298.0 - ( (1/_Bth) * log(_Rth) );
+   switch(units)
+   {
+   	case 0:	// Convert Celsius to Kevin
+   		reading = reading + 273.15;
+			break;
+   	case 1:	// Convert Fahrenheit to Kevin
+        	reading = (reading/1.8) + 255.37;
+      	break;
+      case 2:	// No conversion
+         break;
+   }
+
+   Vread = anaInRampVolts(2);
+   if ((int)Vread == ADOVERFLOW)
+   {
+   	// Report invalid A/D reading
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+   }
+
+   Rt = Vread/((_adcCalibRamp[3]-Vread)/_Rs); 	// compute resistance
+   T = 1 / (A + ((1/_Bth)*(log(Rt))));				// compute Temp in Kelv.
+    _thermCalib = reading - T;
+
+   // Write calibration data to flash
+   _thermEEWr();
+
+   // 50 ms delay for A/D to re-sync due to flash write operation
+	done_time = MS_TIMER + 50;
+   while( (long) (MS_TIMER - done_time) < 0 );
+}
+
+/*** BeginHeader	thermReading, _thermCalib */
+float thermReading(int units);
+
+extern float _thermCalib;
+/*** EndHeader */
+float _thermCalib;
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+thermReading				<ADCRAMP.LIB>
+
+SYNTAX:			float thermReading(int units)
+
+DESCRIPTION:   Reads the core module thermistor via the ramp ADC. The
+					value	read from the ADC is converted to a temperature
+               in the units specified by parameter1. This function is
+               non-reentrant.
+
+PARAMETER1:		Temperature unit selection.
+					0 = Celsius.
+               1 = Fahrenheit.
+               2 = Kelvins.
+
+RETURN VALUE:	Returns a temperature calculated from the thermistor
+					located on the core module. The value return will be
+               in the units specified by parameter1.
+
+SEE ALSO:      anaInRampInit, thermOffset
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+float thermReading(int units)
+{
+	static float A;      //	Calculated constant
+	auto float 	Tk,		//	calculated temperature kelvins
+					Tf,		//	temperature farenheit
+               Rt,		// Calculated thermeistor resistance
+               T,			// Computed temp in Kevin
+   	         Vread;   // Voltage read from thermistor sensor
+
+   #GLOBAL_INIT
+   {
+   	A = 1/298.0 - ( (1/_Bth) * log(_Rth) );
+   }
+
+   Vread = anaInRampVolts(2);
+   if ((int)Vread == ADOVERFLOW)
+   {
+      return(ADOVERFLOW);
+   }
+
+  	Rt = Vread/((_adcCalibRamp[3]-Vread)/_Rs); 	// compute resistance
+   T = 1 / (A + ((1/_Bth)*(log(Rt))));				// compute Temp in Kelv.
+   T = T + _thermCalib;
+
+   switch(units)
+   {
+   	case 0:	// Convert to Celsius
+   		T = T - 273.15;
+			break;
+   	case 1:	// Convert to Fahrenheit
+        	T = 1.8*(T - 255.37);
+      	break;
+      case 2:	// No conversion
+         break;
+   }
+   return (T);
+}
+
+
+
+/*** BeginHeader anaInEERdRamp */
+int anaInEERdRamp(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInEERdRamp				<ADCRAMP.LIB>
+
+SYNTAX:			int anaInEERdRamp(void);
+
+DESCRIPTION:	Reads the calibration constants, gain and offset for the
+					ramp ADC from simulated EEPROM in flash, located at the
+               top 2K of the reserved UserBlock memory area. This
+               function is non-reentrant.
+
+               See the PowerCore FLEX User's Manual for information on the
+               size of the user block area.
+
+PARAMETER1:		None.
+
+RETURN VALUE:	 0 = successful write to simulated EEPROM.
+					-1 = invalid address or range.
+
+SEE ALSO:		anaInEEWrRamp
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+int anaInEERdRamp(void)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	// read calibration constants from flash
+	status = readUserBlock( _adcCalibRamp, ADC_RAMP_ADDR,
+									sizeof(_adcCalibRamp[0])*4);
+	return(status);
+}
+
+
+/*** BeginHeader anaInEEWrRamp */
+int anaInEEWrRamp(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInEEWrRamp				<ADCRAMP.LIB>
+
+SYNTAX:			int anaInEEWrRamp(void);
+
+DESCRIPTION:	Writes the calibration constants, gain and offset for the
+					ramp ADC to simulated EEPROM in flash, located at the top
+               2K of the reserved UserBlock memory area. This function is
+               non-reentrant.
+
+               See the PowerCore FLEX User's Manual for information on
+               the size of the user block area.
+
+PARAMETER1:		None.
+
+RETURN VALUE:	 0 = if successful.
+					-1 = invalid address or range.
+
+
+SEE ALSO:		anaInEERdRamp
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+int anaInEEWrRamp(void)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	// write calibration constants to flash
+	status = writeUserBlock(ADC_RAMP_ADDR, &_adcCalibRamp[0],
+								   sizeof(_adcCalibRamp[0])*4);
+	return(status);
+}
+
+
+/*** BeginHeader _anaInEERd */
+int _anaInEERd(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInEERd					<ADCRAMP.LIB>
+
+SYNTAX:			int anaInEERd(int channel);
+
+DESCRIPTION:	Reads the calibration constants, gain and offset for the
+					external ADC from simulated EEPROM in flash, located at
+               the top 2K of the reserved UserBlock memory area. This
+               function is non-reentrant.
+
+               See the PowerCore FLEX User's Manual for information on
+               the size of the user block area.
+
+PARAMETER1:    The analog input channel to read. The valid range of
+					channels is 0 to MAX_ADCHANNELS-1.
+
+               Note:
+               -----
+               The MAX_ADCHANNELS macro is set to a default value of 1,
+               which can be changed by adding the following line to your
+               application program:
+
+               #define MAX_ADCHANNELS <new value>
+
+RETURN VALUE:	 0 = if successful.
+					-1 = invalid address or range.
+
+SEE ALSO:      anaInExternalInit, anaInCalib, anaInEEWr, anaIn,
+					anaInVolts
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+int _anaInEERd(int channel)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	//	Calculate the offset into the user block of where the calibration
+	// constants are stored for a given A/D channel.
+	offset = ADC_CALIB_ADDR + ((&_adcCalib[channel][0] - _adcCalib[0])*4);
+
+ 	// read calibration constants from flash
+	status = readUserBlock( _adcCalib[channel], offset,
+									sizeof(_adcCalib[0][0])*2);
+	return(status);
+}
+
+
+/*** BeginHeader _anaInEEWr */
+int _anaInEEWr(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInEEWr					<ADCRAMP.LIB>
+
+SYNTAX:			int anaInEEWr(int channel);
+
+DESCRIPTION:	Writes the calibration constants, gain and offset for the
+					external ADC to simulated EEPROM in flash, located at the
+               top 2K of the reserved UserBlock memory area. This function
+               is non-reentrant.
+
+               See the PowerCore FLEX User's Manual for information on the
+               size of the user block area.
+
+PARAMETER1:    The analog input channel to read. The valid range of
+					channels is 0 to MAX_ADCHANNELS-1.
+
+               Note:
+               -----
+               The MAX_ADCHANNELS macro is set to a default value of 1,
+               which can be changed by adding the following line to your
+               application program:
+
+               #define MAX_ADCHANNELS <new value>
+
+RETURN VALUE:	 0 = successful write to simulated EEPROM.
+					-1 = invalid address or range.
+
+
+SEE ALSO:		anaInExternalInit, anaInCalib, anaInEERd, anaIn,
+					anaInVolts
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+int _anaInEEWr(int channel)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	// Calculate the offset into the user block of where the calibration
+	// constants are stored for a given A/D channel.
+	offset = ADC_CALIB_ADDR + ((&_adcCalib[channel][0] - _adcCalib[0])*4);
+
+	// write calibration constants to flash
+	status = writeUserBlock(offset, &_adcCalib[channel][0],
+								   sizeof(_adcCalib[0][0])*2);
+	return(status);
+}
+
+
+
+/*** BeginHeader _thermEERd */
+int _thermEERd(void);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_thermEERd					<ADCRAMP.LIB>
+
+SYNTAX:			int _thermEERd(void);
+
+DESCRIPTION:   Reads the calibration constant for the thermistor from
+					simulated EEPROM in flash, located at the top 2K of the
+               reserved UserBlock memory area. This function is intended
+               for internal use only.
+
+               See the PowerCore FLEX User's Manual for information on the
+               size of the user block area.
+
+PARAMETER1:   	None.
+
+RETURN VALUE:	 0 = if successful.
+					-1 = invalid address or range.
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+int _thermEERd(void)
+{
+ 	// read calibration constant from flash
+	return(readUserBlock(&_thermCalib, ADC_THERM_ADDR,
+   		 				   sizeof(_thermCalib)));
+
+}
+
+
+/*** BeginHeader _thermEEWr */
+int _thermEEWr(void);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_thermEEWr					<ADCRAMP.LIB>
+
+SYNTAX:			int _thermEEWr(void);
+
+DESCRIPTION:	Writes the calibration constant for the thermistor to
+					simulated EEPROM in flash, located at the top 2K of the
+               reserved UserBlock memory area. This function is intended
+               for internal use only.
+
+               See the PowerCore FLEX User's Manual for information on
+               the size of the user block area.
+
+PARAMETER1:		None.
+
+RETURN VALUE:	 0 = successful write to simulated EEPROM.
+					-1 = invalid address or range.
+
+END DESCRIPTION **********************************************************/
+
+_adcramp_nodebug
+int _thermEEWr(void)
+{
+	// write calibration constant to flash
+	return(writeUserBlock(ADC_THERM_ADDR, &_thermCalib,
+                         sizeof(_thermCalib)));
+
+}
+
+
+/*** BeginHeader	_ramp_routine, rampadc */
+root void _ramp_routine();
+extern _ramp rampadc;
+/*** EndHeader */
+
+// Macro to allow mux control code to be added to the ADC interrupt
+// routine from the application program.
+#ifndef ADC_MUX_CNTRL
+#define ADC_MUX_CNTRL
+#endif
+
+
+// Macro to allow averaging code to be added to the ADC interrupt
+// routine from the application program.
+#ifndef ADC_AVERAGING
+#define ADC_AVERAGING
+#endif
+
+_ramp rampadc;
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_ramp_routine				<ADCRAMP.LIB>
+
+SYNTAX:        void _ramp_routine(void);
+
+DESCRIPTION:   ADC ramp ISR function. Reads the core module thermistor,
+               voltage reference, and end-of-ramp voltage. It also is
+               set up to read an external A/D converter if enabled by
+               the customer's application program.
+
+               This function is intended for internal use only!
+
+END DESCRIPTION **********************************************************/
+
+#asm root nodebug
+_ramp_routine::
+	IOREAD_A(ICCSR)
+   ld		(rampadc+[rampadc]+adc_status),a
+   and	a,0x3C
+   cp		a,0x30
+   jp		nz,.adc_ramp_error
+
+   ld		a,(rampadc+[rampadc]+ramp_channel)
+   cp		a,0x00
+   jr		nz,.ramp_channel_1
+
+.ramp_channel_0: 	; Voltage reference rawdata
+   ld		de,ICL1R
+	IOREAD_A(de)
+   ld		l,a
+   inc	de
+	IOREAD_A(de)
+   ld		h,a
+	ld		(rampadc+[rampadc]+ref_rawdata),hl
+   ld		a,0xC7
+   ld		de,ICS1R
+	IOWRITE_A(de)
+   ld		a,0x01
+   ld		(rampadc+[rampadc]+ramp_channel),a
+   ld		hl,0xFFFF
+   ld		(ref_conversion_done),hl
+   jp		.adc_external
+
+.ramp_channel_1:	; End of ramp rawdata
+   ld		a,(rampadc+[rampadc]+ramp_channel)
+   cp		a,0x01
+   jr		nz,.ramp_channel_2
+	ld		de,ICL1R
+	IOREAD_A(de)
+   ld		l,a
+   inc	de
+	IOREAD_A(de)
+   ld		h,a
+	ld		(rampadc+[rampadc]+ramp_rawdata),hl
+   ld		a,0xC5
+   ld		de,ICS1R
+	IOWRITE_A(de)
+   ld		a,0x02
+   ld		(rampadc+[rampadc]+ramp_channel),a
+   ld		hl,0xFFFF
+   ld		(ramp_conversion_done),hl
+   jr		.adc_external
+
+.ramp_channel_2:	; Thermistor rawdata
+   ld		de,ICL1R
+	IOREAD_A(de)
+   ld		l,a
+   inc	de
+	IOREAD_A(de)
+   ld		h,a
+   ld		(rampadc+[rampadc]+thermistor_rawdata),hl
+   ld		a,0xC4
+   ld		de,ICS1R
+	IOWRITE_A(de)
+   ld		a,0x00
+   ld		(rampadc+[rampadc]+ramp_channel),a
+   ld		hl,0xFFFF
+   ld		(temp_conversion_done),hl
+   jr		.adc_external
+
+.adc_ramp_error:
+	ld		a,(rampadc+[rampadc]+ramp_channel)
+
+.adc_ramp_error0:
+	cp		a,0x00
+   jr		nz,.adc_ramp_error1
+   ld		hl,ADOVERFLOW
+	ld		(rampadc+[rampadc]+ref_rawdata),hl
+   jr		.adc_external
+
+.adc_ramp_error1:
+   cp		a,0x01
+   jr		nz,.adc_ramp_error2
+   ld		hl,ADOVERFLOW
+	ld		(rampadc+[rampadc]+ramp_rawdata),hl
+   jr		.adc_external
+
+.adc_ramp_error2:
+   ld		hl,ADOVERFLOW
+   ld		(rampadc+[rampadc]+thermistor_rawdata),hl
+
+.adc_external:
+#ifndef CUSTOM_ADC_ROUTINE_ENABLE
+   ld		a,(rampadc+[rampadc]+adc_external_enable)
+   cp		a,0xFF
+   jp		nz,.adc_skip_external
+
+   c _adc_overflow[_adc_mux_channel] = 0;
+
+   ld		a,(rampadc+[rampadc]+adc_status)
+   and	a,0xCC
+   cp		a,0xC0
+   jr		nz,.adc_external_error
+
+	//channel 2 stop occured
+	//read capture value, LSB first
+	c _adc_rawdata[_adc_mux_channel]  = RdPortI(ICL2R);
+	c _adc_rawdata[_adc_mux_channel] += (RdPortI(ICM2R) << 8);
+   jr		.adc_exit
+.adc_external_error:
+	IOREAD_A(PGDR)
+   and	a,0x20
+   cp		a,0x00
+   jr		nz,.adc_over_range
+
+.adc_under_range:
+   ld		a,(_adc_mux_channel)
+   ld		c,a
+   ld		b,0
+   ld		de,0x0002
+   mul
+   ld		ix,_adc_overflow
+   add	ix,bc
+   ld		hl,ADOVERFLOW
+   ld		(ix),hl
+   c _adc_rawdata[_adc_mux_channel] = 0;
+   jr		.adc_exit
+
+.adc_over_range:
+   ld		a,(_adc_mux_channel)
+   ld		c,a
+   ld		b,0
+   ld		de,0x0002
+   mul
+   ld		ix,_adc_overflow
+   add	ix,bc
+   ld		hl,ADOVERFLOW
+   ld		(ix),hl
+   c _adc_rawdata[_adc_mux_channel] = 4095;
+
+#else
+	ADC_CUSTOM_ROUTINE
+#endif
+
+.adc_exit:
+
+#ifdef ADC_DISCOUNT_AVERAGE
+   ; Do conditional check per channel to do the discount averaging
+   ; Calculate the new discounted average
+   ld	  	a,(_adc_mux_channel)
+   rlc   a
+   ld	  	b,0
+   ld	  	c,a
+   ld		ix,_adc_rawdata
+   add	ix,bc
+   ld	   hl,(ix)
+   ld	   (_adc_temprawdata),hl
+
+   ld		ix,_adc_avgdata
+   add	ix,bc
+   ld	   hl,(ix)
+   ld	   (_adc_tempavgdata),hl
+
+	ld		ix, _adc_avgfractiondata
+	add	ix,bc
+	ld		hl,(ix)
+	ld		(_adc_tempavgfractiondata),hl
+
+   ld   	ix,_adc_alpha
+   add	ix,bc
+   ld	   hl,(ix)
+   ld	   (_adc_k),hl
+   ex		de, hl
+	ld 	hl, 32768
+   or 	a
+   sbc 	hl, de
+   bool 	hl
+   jp 	z, .AverageBypass
+
+   ; Calculate new discount average for the current A/D conversion
+   ld		hl,(_adc_temprawdata) 	; New value
+   ld		de,(_adc_tempavgdata)	; Old average
+	or		a								; Clear carry flag
+	sbc	hl,de							; New value - Old average
+	ex		de,hl							; Put result into de
+	ld		bc,(_adc_k)					; Get the multiplier
+	mul									; k * (new value - old average)
+	ex		de,hl							; Put result in de
+
+	; The adjustment to the average is now mostly in DE.  Actually, bits
+	; 1-15 are in DE, and bit 0 is in B (top bit).  We must rotate B and DE
+	; left to put the complete adjustment into DE.
+.average:
+   or		a						; Clear carry flag
+	rl		c
+	rl		b						; Rotate 1 bit, to account for signed multiplication
+	rl		de						; Rotate 1 bit, to account for signed multiplication
+	ld		hl,(_adc_tempavgfractiondata)
+	add	hl,bc
+	ld		(_adc_tempavgfractiondata),hl
+	ld		hl,(_adc_tempavgdata)	; Load the old average
+	adc	hl,de					; Add the old average and the new adjustment
+
+	// Write the calculated average to memory for use by AVG API functions
+   ld	  	a,(_adc_mux_channel)
+   rlc   a
+   ld	  	b,0
+   ld	  	c,a
+   ld		ix,_adc_avgdata
+   add	ix,bc
+   ld	   (ix),hl
+   ld		ix,_adc_avgfractiondata
+   add	ix,bc
+   ld		hl,(_adc_tempavgfractiondata)
+   ld		(ix),hl
+   jr		.Avgdone
+
+.AverageBypass:
+	// Use rawdata value for avg data since alpha is set to 1.0
+	ld		ix,_adc_temprawdata
+   ld		hl,(ix)
+   ld	  	a,(_adc_mux_channel)
+   rlc   a
+   ld	  	b,0
+   ld	  	c,a
+   ld		ix,_adc_avgdata
+   add	ix,bc
+   ld	   (ix),hl
+.Avgdone:
+
+#endif
+
+	; Macro for custom averaging code to be added to the ADC
+   ; interrupt routine from your application program.
+	ADC_AVERAGING
+
+   ; A macro to include external ADC channel round-robin A/D
+   ; MUX control. If this macro is used, then the routine you
+   ; write should switch your MUX to next A/D channel and set
+   ; _adc_mux_channel index to next A/D channel to be converted.
+   ADC_MUX_CNTRL
+
+   ; Flag to indicate that an A/D conversion has completed. The
+   ; main use is for synchronization of switching A/D channels
+   ; from your application program, for example:
+   ;
+   ; - Change to new A/D channel.
+   ; - Clear adc_conversion_done flag.
+   ; - Wait non-blocking for adc_conversion_done to become TRUE.
+   ; - Read data for new A/D channel.
+   ld		hl,0xFFFF
+   ld		(adc_conversion_done),hl
+
+.adc_skip_external:
+   ; Clear input capture counter(s)
+   ld		a,(rampadc+[rampadc]+adc_clear)
+	IOWRITE_A(ICCSR)
+	ret
+#endasm
+
+/*** Beginheader */
+#endif
+/*** endheader */

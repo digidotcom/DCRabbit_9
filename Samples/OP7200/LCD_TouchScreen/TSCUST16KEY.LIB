@@ -1,0 +1,826 @@
+/* BEGIN LIBRARY DESCRIPTION **********************************************
+
+TSCUSTKEYPAD.LIB
+
+DESCRIPTION:			Sample library demonstrating out to make a custom
+							keysets using the gltouchscreen.lib.
+							This sample requires a Touchscreen controller.
+
+
+SEE ALSO:				gltouchscreen.lib
+
+END LIBRARY DESCRIPTION **************************************************/
+
+
+/*** BeginHeader */
+#ifndef	__TSCUSTKEYPAD_LIB
+	#define	__TSCUSTKEYPAD_LIB
+	#ifndef	__GLTOUCHSCREEN_LIB
+		#fatal " REQUIRES THE LIBRARY 'GLTOUCHSCREEN.LIB'"
+	#endif
+/*** EndHeader */
+
+/*** BeginHeader BtnXVKP */
+
+#define	BTN_VKP_AMOUNT	16L					// Number of Buttons in this set
+#define	BTN_VKP_S		0						// First Button 
+#define	BTN_VKP_E		BTN_VKP_AMOUNT		// Last Button
+
+#define	BTN_VKP_DIGITS	25						// MaxAmount of Digits
+#define	BTN_VKP_L		1						// Level
+#define	BTN_VKPHDG		40,11,240,40		// Heading Box coords.
+#define	BTN_VKPENT		40,51,240,50		// Text Entry Box coords.
+#define	BTN_VKPOUTLN	35,6,253,230		// Outline around Keypad coords.
+#define	BTN_VKP_SZ		60,32					// Size of the Buttons
+
+#define	BTN_VKP_DOT		(int)(10)			// BtnID of the '.' key
+#define	BTN_VKP_MIN		(int)(11)			// BtnID of the '-' Key
+#define	BTN_VKP_ESC		(int)(12)			// BtnID of the 'ESC' Key
+#define	BTN_VKP_DEL		(int)(13)			// BtnID of the 'DEL' key
+#define  BTN_VKP_RET		(int)(14)			// BtnID of the 'RET' key
+#define	BTN_VKP_CLR		(int)(15)			// BtnID of the 'CLR' key
+
+extern	unsigned long	BtnXVKP;		// Storage space for restoring the
+												// the screen when the keypad is
+												// removed.
+
+/*** EndHeader */
+
+unsigned long	BtnXVKP;
+
+/*** BeginHeader tscVKPInit */
+unsigned long tscVKPInit (int NumKeys, fontInfo *pInfo1, fontInfo *pInfo2);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+tscVKPInit					<TSCUSTKEYPAD.LIB>
+
+SYNTAX:			unsigned long  tscVKPInit (int NumKeys, fontInfo *pInfo1,
+										 				fontInfo *pInfo2);
+
+DESCRIPTION:	Initializes the The Keypad Keyset.  btnInit must be run prior
+					to this function.
+
+PARAMETER1:		Number of keys in this keyset.					
+PARAMETER1:		Pointer to the single character text.
+PARAMETER2:		Pointer to the multi character text.
+RETURN VALUE:	unsigned long value that will be used when referencing
+					these keys.
+
+SEE ALSO:		tscVKPDisplay, tscVKPClear, tscVKPCtrl, tscVKPGetInt,
+					tscVKPGetLong, tscVKPGetString, tscVKPGetFloat
+
+END  DESCRIPTION *********************************************************/
+
+nodebug
+unsigned long tscVKPInit (int NumKeys, fontInfo *pInfo1, fontInfo *pInfo2)
+{
+	static unsigned long xmemPtr;		// return value to be used with the
+												// rest of the keyset
+	auto int index;
+	// Allocate some xmem storage area for the keyset
+	xmemPtr     = xalloc(( (long)NumKeys * (long)sizeof(BtnData) ));
+	// Allocate 9600 bytes of xmem for restoring the user keys when the
+	// keypad is removed.
+	BtnXVKP		= xalloc (9600);
+	// Clear out the BtnData structure
+	memset ( &BtnData,0,sizeof(BtnData) );
+	// Store the LastBtn value.
+	BtnData.LastBtn = NumKeys;
+	// Clear out the xmem area and assign the LastBtn val to all of the
+	// buttons.
+	for (index = 0 ; index < NumKeys ; index++)     btnStore(xmemPtr,index);
+
+	// Create the buttons and store them into xmem.
+	btnCreateText(xmemPtr, 0,   40,197,BTN_VKP_SZ,1,BTN_VKP_L,pInfo1,"0");
+	btnCreateText(xmemPtr, 10,100,197,BTN_VKP_SZ,1,BTN_VKP_L,pInfo1,".");
+	btnCreateText(xmemPtr, 11,160,197,BTN_VKP_SZ,1,BTN_VKP_L,pInfo1,"-");
+	btnCreateText(xmemPtr, 14,220,197,BTN_VKP_SZ,1,BTN_VKP_L,pInfo2,"RET");
+	btnCreateText(xmemPtr, 1, 40,165,BTN_VKP_SZ,1,BTN_VKP_L,pInfo1,"1");
+	btnCreateText(xmemPtr, 2,100,165,BTN_VKP_SZ,1,BTN_VKP_L,pInfo1,"2");
+	btnCreateText(xmemPtr, 3,160,165,BTN_VKP_SZ,1,BTN_VKP_L,pInfo1,"3");
+	btnCreateText(xmemPtr, 13,220,165,BTN_VKP_SZ,1,BTN_VKP_L,pInfo2,"DEL");
+	btnCreateText(xmemPtr, 4,40,133,BTN_VKP_SZ,1,BTN_VKP_L,pInfo1,"4");
+	btnCreateText(xmemPtr, 5,100,133,BTN_VKP_SZ,1,BTN_VKP_L,pInfo1,"5");
+	btnCreateText(xmemPtr, 6,160,133,BTN_VKP_SZ,1,BTN_VKP_L,pInfo1,"6");
+	btnCreateText(xmemPtr, 15,220,133,BTN_VKP_SZ,1,BTN_VKP_L,pInfo2,"CLR");
+	btnCreateText(xmemPtr, 7,40,101,BTN_VKP_SZ,1,BTN_VKP_L,pInfo1,"7");
+	btnCreateText(xmemPtr, 8,100,101,BTN_VKP_SZ,1,BTN_VKP_L,pInfo1,"8");
+	btnCreateText(xmemPtr, 9,160,101,BTN_VKP_SZ,1,BTN_VKP_L,pInfo1,"9");
+	btnCreateText(xmemPtr, 12,220,101,BTN_VKP_SZ,1,BTN_VKP_L,pInfo2,"ESC");
+	// return the unsigned long value for use throughout this keyset.
+	return xmemPtr;
+}
+
+/*** BeginHeader tscVKPDisplay */
+int tscVKPDisplay(unsigned long xmemPtr, fontInfo *pfont, char *Heading);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+tscVKPDisplay				<TSCUSTKEYPAD.LIB>
+
+SYNTAX:			int tscVKPDisplay(unsigned long xmemPtr, fontInfo *pfont,
+											char *Heading);
+
+DESCRIPTION:	Displays a Virtual Keypad,   
+
+PARAMETER1:		The unsigned long value supplied by tscVKPInit.
+PARAMETER1:		Font Descripter for the Heading Box.
+PARAMETER2:		Text to display in the Heading Box.
+
+RETURN VALUE:	1 when completed.
+
+SEE ALSO:		tscVKPDisplay, tscVKPClear, tscVKPCtrl, tscVKPGetInt,
+					tscVKPGetLong, tscVKPGetString, tscVKPGetFloat
+
+END  DESCRIPTION *********************************************************/
+
+nodebug
+int tscVKPDisplay(unsigned long xmemPtr, fontInfo *pfont, char *Heading)
+{
+	static int state;
+	#GLOBAL_INIT {state = 0; }
+	switch (state)
+	{
+		case 0:
+			glBuffLock();
+			// Copy the current screen, for replacement when finished.
+			glXGetBitmap(0,0,320,240,BtnXVKP);
+			glBlankScreen();
+			// Display the outline box
+			btnMsgBox(BTN_VKPOUTLN,pfont,"",1,0);
+			state++;
+			break;
+			
+		case 1:
+			if (btnDisplayLevel(xmemPtr, BTN_VKP_L))// Display all btns.
+			{
+				state++;
+			}
+			break;
+
+		case 2:
+			// Display the Heading Box
+			btnMsgBox(BTN_VKPHDG,pfont,Heading,1,0);
+			// Display the TextEntry box
+			btnMsgBox(BTN_VKPENT,pfont,"",1,0);
+			glBuffUnlock();
+			state = 0;
+			return BTN_SUCCESS;
+			break;
+	}
+	return BTN_PENDING;
+}
+
+/*** BeginHeader tscVKPClear */
+int tscVKPClear(unsigned long xmemPtr);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+btnClearVKP					<TSCUSTKEYPAD.LIB>
+
+SYNTAX:			int tscVKPClear(unsigned long xmemPtr);
+
+DESCRIPTION:	Removes the Virtual Keypad, and restores the screen to
+					the condition was before the Keypad was displayed.
+
+PARAMETER1:		unsigned long value assigned by tscVKPInit					
+RETURN VALUE:	1 when completed.
+
+SEE ALSO:		tscVKPDisplay, tscVKPClear, tscVKPCtrl, tscVKPGetInt,
+					tscVKPGetLong, tscVKPGetString, tscVKPGetFloat
+
+END  DESCRIPTION *********************************************************/
+
+nodebug
+int tscVKPClear(unsigned long xmemPtr)
+{
+	static int state;
+	#GLOBAL_INIT {state = 0;}
+	switch (state)
+	{
+		case 0:
+			glBuffLock();
+			glBlankScreen();
+			state++;
+			break;
+		case 1:
+			if (btnClearLevel(xmemPtr, BTN_VKP_L))
+			{
+				state++;
+			}
+			break;
+		case 2:
+			glXPutBitmap(0,0,320,240,BtnXVKP);
+			glBuffUnlock();
+			state = 0;
+			return BTN_SUCCESS;
+			break;
+	}
+	return BTN_PENDING;
+}
+
+/*** BeginHeader tscVKPCtrl */
+int	tscVKPCtrl (unsigned long xmemPtr, fontInfo *pfont, byte Digits,
+						char *Result);
+extern	const char 		tscVKPpad[] ;
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+tscVKPCtrl			<TSCUSTKEYPAD.LIB>
+
+SYNTAX:			int	tscVKPCtrl (unsigned long xmemPtr, fontInfo *pfont,
+											byte Digits, char *Result);
+											
+DESCRIPTION:   Controls the virtual keypad.  This function is called by
+					  the tscVKPGetx functions. 	
+
+PARAMETER1:		The unsigned long value supplied by tscVKPInit.		
+PARAMETER1:		Font descriptor for the Text Entry box.
+PARAMETER2:		Maximum number of digits accepted.
+PARAMETER3:		pointer to store the result in.
+RETURN VALUE:	1 when completed.
+
+SEE ALSO:		tscVKPDisplay, tscVKPClear, tscVKPCtrl, tscVKPGetInt,
+					tscVKPGetLong, tscVKPGetString, tscVKPGetFloat
+
+END DESCRIPTION **********************************************************/
+
+const char 		tscVKPpad[] =
+{
+	'0','1','2','3','4','5','6','7','8','9'
+};
+
+nodebug
+int	tscVKPCtrl (unsigned long xmemPtr, fontInfo *pfont,
+						byte Digits, char *Result)
+{
+	static int state,btn,index,dotChk;
+	static char tscVKPRetStr[BTN_VKP_DIGITS];
+	#GLOBAL_INIT {state = 0;}
+	switch (state)
+	{
+		case 0:
+			sprintf(tscVKPRetStr,"");
+			btn = -1;
+			index = 0;
+			dotChk = 0;
+			state ++;
+			break;
+		case 1:
+			if (( btn = btnGet(xmemPtr) ) > -1) state ++;
+			break;
+		case 2:
+			switch (btn)
+			{
+				case BTN_VKP_ESC:
+					state = 0;
+					return BTN_FAILURE;
+					break;
+				case BTN_VKP_CLR:
+					btnMsgBox(BTN_VKPENT,pfont,"",1,0);
+					state = 0;
+					break;
+				case BTN_VKP_DEL:
+					if (index > 0 )
+					{
+						index --;
+						if ( tscVKPRetStr[index] == '.' ) dotChk = 0;
+						tscVKPRetStr[index] = '\0';
+						btnMsgBox(BTN_VKPENT,pfont,tscVKPRetStr,1,0);
+					}
+					state = 1;
+					break;
+				case BTN_VKP_RET:
+					tscVKPRetStr[index] = '\0';
+					sprintf(Result,"%s",tscVKPRetStr);
+					state = 0;
+					return BTN_SUCCESS;
+					break;
+				case BTN_VKP_MIN:
+					if (index == 0)
+					{
+						tscVKPRetStr[index] = '-';
+						index++;
+						tscVKPRetStr[index] = '\0';
+						btnMsgBox(BTN_VKPENT,pfont,tscVKPRetStr,1,0);
+					}
+					state = 1;
+					break;
+				case BTN_VKP_DOT:
+					if (index < Digits)
+					{
+						if (dotChk);
+						else
+						{
+							tscVKPRetStr[index] = '.';
+							index++;
+							tscVKPRetStr[index] = '\0';
+							btnMsgBox(BTN_VKPENT,pfont,tscVKPRetStr,1,0);
+							dotChk = 1;
+						}
+					}
+					state = 1;
+					break;
+				default:
+					if (index < Digits)
+					{
+						tscVKPRetStr[index] = tscVKPpad[btn - BTN_VKP_S];
+						index++;
+						tscVKPRetStr[index] = '\0';
+						btnMsgBox(BTN_VKPENT,pfont,tscVKPRetStr,1,0);
+					}
+					state = 1;
+					break;
+			}
+	}
+	return BTN_PENDING;	
+}
+/*** BeginHeader tscVKPGetInt */
+int	tscVKPGetInt  (unsigned long xmemPtr, int *Value, int Min, int Max,
+							int Digits,fontInfo *pfont1, fontInfo *pfont2,
+							char *Heading);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+tscVKPGetInt					<TSCUSTKEYPAD.LIB>
+
+SYNTAX:			int	tscVKPGetInt  (unsigned long xmemPtr, int *Value,
+												int Min, int Max, int Digits,
+												fontInfo *pfont1, fontInfo *pfont2,
+												char *Heading);
+											
+DESCRIPTION:   Displays the virtual keypad for accepting an integer
+					input from the touchscreen.	
+
+PARAMETER1:		Unsigned long value supplied by tscVKPInit
+PARAMETER2:		Pointer to store the integer.
+PARAMETER3:		Minimum value accepted.
+PARAMETER4:		Maximum value accepted.
+PARAMETER5:		Maximum number of digits accepted.
+PARAMETER6:		Font descriptor for the Heading box.
+PARAMETER7:		Font descriptor for the text entry box.
+PARAMETER8:    Heading.	
+
+RETURN VALUE:	1 when completed.
+
+SEE ALSO:		tscVKPDisplay, tscVKPClear, tscVKPCtrl, tscVKPGetInt,
+					tscVKPGetLong, tscVKPGetString, tscVKPGetFloat
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int	tscVKPGetInt  (unsigned long xmemPtr, int *Value, int Min, int Max,
+							int Digits,fontInfo  *pfont1, fontInfo *pfont2,
+							char *Heading)
+{
+	static int state,retval;
+	static long chk;
+	static unsigned long ErrLen;
+	static char RetStr[BTN_VKP_DIGITS];
+	#GLOBAL_INIT { state = 0; }
+	switch (state)
+	{
+		case 0:
+			sprintf( RetStr,"" );
+			chk = 0;
+			state++;
+			break;
+		case 1:
+			if ( tscVKPDisplay(xmemPtr, pfont2, Heading) )
+			{
+				state++;
+			}
+			break;
+		case 2:
+			if ( (retval = tscVKPCtrl(xmemPtr, pfont1, Digits, RetStr) ) != 0)
+			{
+				state++;
+			}
+			break;
+		case 3:
+			if ( retval == BTN_FAILURE )
+			{
+				state = 6;
+			}
+			else
+			{
+				chk = atol(RetStr);
+				if (chk < Min || chk > Max)
+				{
+					chk = 0;
+					sprintf(RetStr,"");
+					state ++;
+				}
+				else
+				{
+					*Value = atoi(RetStr);
+					state = 6;
+				}
+			}
+			break;
+
+		case 4:
+			ErrLen = MS_TIMER + 2000;
+			btnMsgBox(BTN_VKPHDG,pfont2,"VALUE OUT\nOF RANGE",1,1);
+			state++;
+			break;
+		case 5:
+			if ( ErrLen - MS_TIMER > 0 )
+			{
+			}
+			else
+			{
+				glBuffLock();
+				btnMsgBox( BTN_VKPHDG,pfont2,Heading,1,0 );
+				btnMsgBox(BTN_VKPENT,pfont1,"",1,0);
+				glBuffUnlock();
+				state = 2;		
+			}
+			break;
+		case 6:
+			if (tscVKPClear(xmemPtr))
+			{
+				state = 0;
+				return retval;
+			}
+			break;
+	}
+	return BTN_PENDING;
+}
+
+
+/*** BeginHeader tscVKPGetLong */
+int	tscVKPGetLong(unsigned long xmemPtr,long *Value, long Min, long Max,
+						  int Digits,fontInfo *pfont1, fontInfo *pfont2,
+							char *Heading);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+tscVKPGetLong					<TSCUSTKEYPAD.LIB>
+
+SYNTAX:			int	tscVKPGetLong(unsigned long xmemPtr,long *Value,
+												long Min, long Max, int Digits,
+												fontInfo *pfont1, fontInfo *pfont2,
+												char *Heading);
+											
+DESCRIPTION:   Displays the virtual keypad for accepting a long integer
+					input from the touchscreen.	
+
+PARAMETER1:		Unsigned long value supplied by tscVKPInit
+PARAMETER2:		Pointer to store the integer.
+PARAMETER3:		Minimum value accepted.
+PARAMETER4:		Maximum value accepted.
+PARAMETER5:		Maximum number of digits accepted.
+PARAMETER6:		Font descriptor for the Heading box.
+PARAMETER7:		Font descriptor for the text entry box.
+PARAMETER8:    Heading.	
+
+RETURN VALUE:	1 when completed.
+
+SEE ALSO:		tscVKPDisplay, tscVKPClear, tscVKPCtrl, tscVKPGetInt,
+					tscVKPGetLong, tscVKPGetString, tscVKPGetFloat
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int	tscVKPGetLong(	unsigned long xmemPtr,long *Value, long Min, long Max,
+							int Digits,fontInfo  *pfont1, fontInfo *pfont2,
+							char *Heading)
+{
+	static int state,retval;
+	static long chk;
+	static unsigned long ErrLen;
+	static char RetStr[BTN_VKP_DIGITS];
+	#GLOBAL_INIT { state = 0; }
+	switch (state)
+	{
+		case 0:
+			sprintf( RetStr,"" );
+			chk = 0;
+			state++;
+			break;
+		case 1:
+			if ( tscVKPDisplay(xmemPtr,pfont2, Heading) )
+			{
+				state++;
+			}
+			break;
+		case 2:
+			if ( (retval = tscVKPCtrl(xmemPtr,pfont1, Digits, RetStr) ) != 0 )
+			{
+				state++;
+			}
+			break;
+		case 3:
+			if ( retval == BTN_FAILURE )
+			{
+				state = 6;
+			}
+			else
+			{
+				chk = atol(RetStr);
+				if (chk < Min || chk > Max)
+				{
+					chk = 0;
+					sprintf(RetStr,"");
+					state ++;
+				}
+				else
+				{
+					*Value = atol(RetStr);
+					state = 6;
+				}
+			}
+			break;
+
+		case 4:
+			ErrLen = MS_TIMER + 2000;
+			btnMsgBox(BTN_VKPHDG,pfont2,"VALUE OUT\nOF RANGE",1,1);
+			state++;
+			break;
+		case 5:
+			if ( ErrLen - MS_TIMER > 0 )
+			{
+			}
+			else
+			{
+				glBuffLock();
+				btnMsgBox( BTN_VKPHDG,pfont2,Heading,1,0 );
+				btnMsgBox(BTN_VKPENT,pfont1,"",1,0);
+				glBuffUnlock();
+				state = 2;		
+			}
+			break;
+		case 6:
+			if (tscVKPClear(xmemPtr))
+			{
+				state = 0;
+				return retval;
+			}
+			break;
+	}
+	return BTN_PENDING;
+}
+
+/*** BeginHeader tscVKPGetFloat */
+int tscVKPGetFloat(unsigned long xmemPtr,float *Value, float Min,float Max,
+						 int Digits,fontInfo *pfont1, fontInfo *pfont2,
+						 char *Heading);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+tscVKPGetFloat					<TSCUSTKEYPAD.LIB>
+
+SYNTAX:			int	tscVKPGetFloat(unsigned long xmemPtr,float *Value,
+												float Min, float Max, int Digits,
+												fontInfo *pfont1, fontInfo *pfont2,
+												char *Heading);
+
+DESCRIPTION:   Displays the virtual keypad for accepting a float
+					input from the touchscreen.	
+
+PARAMETER1:		Unsigned long value supplied by tscVKPInit
+PARAMETER2:		Pointer to store the integer.
+PARAMETER3:		Minimum value accepted.
+PARAMETER4:		Maximum value accepted.
+PARAMETER5:		Maximum number of digits accepted.
+PARAMETER6:		Font descriptor for the Heading box.
+PARAMETER7:		Font descriptor for the text entry box.
+PARAMETER8:    Heading.	
+
+RETURN VALUE:	1 when completed.
+
+SEE ALSO:		tscVKPDisplay, tscVKPClear, tscVKPCtrl, tscVKPGetInt,
+					tscVKPGetLong, tscVKPGetString, tscVKPGetFloat
+END DESCRIPTION **********************************************************/
+
+nodebug
+int tscVKPGetFloat(unsigned long xmemPtr,float *Value, float Min,float Max,
+						 int Digits,fontInfo *pfont1, fontInfo *pfont2,
+						 char *Heading)
+{
+	static int state,retval;
+	static float chk;
+	static unsigned long ErrLen;
+	static char RetStr[BTN_VKP_DIGITS];
+	#GLOBAL_INIT { state = 0; }
+	switch (state)
+	{
+		case 0:
+			sprintf( RetStr,"" );
+			chk = 0;
+			state++;
+			break;
+		case 1:
+			if ( tscVKPDisplay(xmemPtr,pfont2, Heading) )
+			{
+				state++;
+			}
+			break;
+		case 2:
+			if ( (retval = tscVKPCtrl(xmemPtr,pfont1, Digits, RetStr) ) != 0 )
+			{
+				state++;
+			}
+			break;
+		case 3:
+			if ( retval == BTN_FAILURE )
+			{
+				state = 6;
+			}
+			else
+			{
+				chk = atof(RetStr);
+				if (chk < Min || chk > Max)
+				{
+					chk = 0;
+					sprintf(RetStr,"");
+					state ++;
+				}
+				else
+				{
+					*Value = atof(RetStr);
+					state = 6;
+				}
+			}
+			break;
+
+		case 4:
+			ErrLen = MS_TIMER + 2000;
+			btnMsgBox(BTN_VKPHDG,pfont2,"VALUE OUT\nOF RANGE",1,1);
+			state++;
+			break;
+		case 5:
+			if ( ErrLen - MS_TIMER > 0 )
+			{
+			}
+			else
+			{
+				glBuffLock();
+				btnMsgBox( BTN_VKPHDG,pfont2,Heading,1,0 );
+				btnMsgBox(BTN_VKPENT,pfont1,"",1,0);
+				glBuffUnlock();
+				state = 2;		
+			}
+			break;
+		case 6:
+			if (tscVKPClear(xmemPtr))
+			{
+				state = 0;
+				return retval;
+			}
+			break;
+	}
+	return BTN_PENDING;
+}
+
+/*** BeginHeader tscVKPGetString */
+int tscVKPGetString(unsigned long xmemPtr, char *Value, int Digits,
+						  fontInfo *pfont1,fontInfo *pfont2,
+						  char *Heading);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+tscVKPGetString			<TSCUSTKEYPAD.LIB>
+
+SYNTAX:			int	tscVKPGetString(unsigned long xmemPtr, char *Value,
+												 int Digits,fontInfo *pfont1,
+												 fontInfo *pfont2, char *Heading);
+
+DESCRIPTION:   Displays the virtual keyboard for accepting a string
+					input.	
+
+PARAMETER1:		Unsigned long value supplied by tscVKPInit
+PARAMETER2:		Pointer to store the integer.
+PARAMETER3:		Maximum number of digits accepted.
+PARAMETER4:		Font descriptor for the Heading box.
+PARAMETER5:		Font descriptor for the text entry box.
+PARAMETER6:    Heading.	
+
+RETURN VALUE:	1 when completed.
+
+SEE ALSO:		tscVKPDisplay, tscVKPClear, tscVKPCtrl, tscVKPGetInt,
+					tscVKPGetLong, tscVKPGetString, tscVKPGetFloat
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int tscVKPGetString(unsigned long xmemPtr, char *Value, int Digits,
+						  fontInfo *pfont1,fontInfo *pfont2,
+						  char *Heading)
+{
+	static int state,retval;
+	static char RetStr[BTN_VKP_DIGITS];
+	#GLOBAL_INIT { state = 0; }
+	switch (state)
+	{
+		case 0:
+			sprintf( RetStr,"" );
+			state++;
+			break;
+		case 1:
+			if ( tscVKPDisplay(xmemPtr,pfont2, Heading) )
+			{
+				state++;
+			}
+			break;
+		case 2:
+			if ((retval=tscVKPCtrl(xmemPtr,pfont1,Digits,RetStr))!= 0)
+			{
+				state++;
+			}
+			break;
+		case 3:
+			if (retval == BTN_FAILURE)
+			{
+				state = 4;
+			}
+			else
+			{
+				sprintf(Value,"%s",RetStr);
+				state = 4;
+
+			}
+			break;
+		case 4:
+			if (tscVKPClear(xmemPtr))
+			{
+				state = 0;
+				return retval;
+			}
+			break;
+	}
+	return BTN_PENDING;
+}
+
+/*** BeginHeader tscVKPAttributes */
+int tscVKPAttributes (unsigned long xmemPtr,int RepeatCntrl,
+							 int InitRepeatDelay,int RepeatDelay,
+							 int BuzzerCntrl);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+tscVKPAttributes			<TSCUSTKEYPAD.LIB>
+
+SYNTAX:			int	tscVKPAttributes (unsigned long xmemPtr,
+													int RepeatCntrl,int InitRepeatDelay,
+													int RepeatDelay,int BuzzerCntrl);
+
+DESCRIPTION:   Sets the button Attributes for action taken when pressed on
+					all of the virtual keyboard buttons.	
+
+PARAMETER1:		Unsigned long value supplied by tscVKPInit
+PARAMETER1:		Set Repeat Enable/Disable (0 = Repeat off, 1 = Repeat On)
+PARAMETER2:		Set the Initial Delay for the Repeat when repeat is enabled
+PARAMETER3:		Sets the RepeatDelay between repeats
+PARAMETER4:		Enables/Disables the buzzer on activate.	
+
+RETURN VALUE:	1 when completed.
+
+END DESCRIPTION **********************************************************/
+nodebug
+int tscVKPAttributes (unsigned long xmemPtr,int RepeatCntrl,
+							 int InitRepeatDelay,int RepeatDelay,
+							 int BuzzerCntrl)
+{
+	static int state, index ;
+	#GLOBAL_INIT {state = 0;}
+	switch (state)
+	{
+		case 0:
+			index = 0;
+			state = 1;
+			break;
+		case 1:
+			btnRecall(xmemPtr,index);
+			if (BtnData.Set)
+			{
+				if(BuzzerCntrl)
+					BtnData.Flags = BtnData.Flags | 0x02;
+				else
+					BtnData.Flags = BtnData.Flags & ~0x02;
+	
+				if(RepeatCntrl)
+					BtnData.Flags = BtnData.Flags | 0x10;
+				else
+					BtnData.Flags = BtnData.Flags & ~0x10;
+				BtnData.InitRepeatDelay = InitRepeatDelay;
+				BtnData.RepeatDelay = RepeatDelay;
+				btnStore(xmemPtr,index);
+			 }
+				if (index == BTN_VKP_E) state = 2;
+				else index++;
+				break;
+		case 2:
+			state = 0;
+			return BTN_SUCCESS;
+			break;
+	}
+	return BTN_PENDING;
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

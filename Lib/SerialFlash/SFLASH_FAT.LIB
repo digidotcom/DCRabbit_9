@@ -1,0 +1,523 @@
+/*********************
+sflash_fat.lib
+Copyright Rabbit Semiconductor Inc, December 2006
+
+Filesystem specific functions for serial flash devices. Used as a device
+driver with the FAT filesystem module.
+
+The only function that will need to be called directly is sf_InitDriver()
+
+
+********************/
+
+/*** BeginHeader */
+
+#if _BOARD_TYPE_ >= RCM3700A && _BOARD_TYPE_ < RCM3700A+0x0100
+	#define SF_SPI_CSPORT PEDR
+	#define SF_SPI_CSSHADOW PEDRShadow
+	#define SF_SPI_CSDD PEDDR
+	#define SF_SPI_CSDDSHADOW PEDDRShadow
+	#define SF_SPI_CSPIN 6
+#elif _BOARD_TYPE_==RCM3300A || _BOARD_TYPE_==RCM3350A ||  \
+		_BOARD_TYPE_==RCM3305 || _BOARD_TYPE_==RCM3309 ||  \
+		_BOARD_TYPE_==RCM3315 || _BOARD_TYPE_==RCM3319 ||  \
+       _BOARD_TYPE_==RCM3310A  || (POWERCOREFLEX_SERIES && _DF_TYPE_SER)
+	#define SF_SPI_CSPORT PDDR
+	#define SF_SPI_CSSHADOW PDDRShadow
+	#define SF_SPI_CSDD PDDDR
+	#define SF_SPI_CSDDSHADOW PDDDRShadow
+ #if POWERCOREFLEX_SERIES
+ 	#if _DF_TYPE_SER
+		#define SF_SPI_CSPIN 6
+   #else
+   	#warnt "No Core Module Serial Flash, Must define custom settings."
+   #endif
+ #else
+	#define SF_SPI_CSPIN 1
+ #endif
+#elif RCM4200_SERIES
+	// already set up if using RCM42xx.LIB
+	#ifndef SF_SPI_CSPORT
+	   #define SF_SPI_CSPORT NAPCR
+	   #define SF_SPI_CSSHADOW NAPCRShadow
+	   #define SF_SPI_CSDD 0x00
+	   #define SF_SPI_CSPIN 5
+	   #define SF_SPI_CSINVERTED
+	   #define SF_SERPORT SCDR
+	   #define SF_ALTCLOCK        // use PE7 instead of PD2 for clock
+	#endif
+#endif
+
+#ifndef MBR_DRIVER_INIT
+#define MBR_DRIVER_INIT sf_InitDriver( root_driver, NULL )
+#define MBR_SIG "SFLASH-1"
+#endif
+
+#use "sflash.lib"
+#use "part_defs.lib"
+#ifndef errno
+#use "ErrNo.lib"
+#endif
+
+//allow bit reverse of data by default
+#ifndef SF_FS_BITREV
+#define SF_FS_BITREV SF_BITSREVERSED
+#endif
+
+/*** EndHeader */
+
+/*** BeginHeader sf_getDevice */
+sf_device *sf_getDevice(sf_device *head, int index);
+
+/* _START FUNCTION DESCRIPTION ********************************************
+sf_getDevice                 <SFLASH_FAT.LIB>
+
+SYNTAX: int sf_getDevice(sf_device *head, int index);
+
+DESCRIPTION:   Helper function. Walks a linked list of sf_device structures,
+					to retreive the one at position 'index'
+
+PARAMETER1:		head - first sf_device struct in linked list
+PARAMETER2:    index - order in list of the desired sf_device struct
+
+
+RETURN VALUE:  address of sf_device struct in list or NULL if
+					end of list is reached.
+
+END DESCRIPTION **********************************************************/
+
+/*** EndHeader */
+
+_sflash_nodebug sf_device *sf_getDevice(sf_device *head, int index)
+{
+	auto int i;
+   auto sf_device *element;
+
+   element = head;
+   for(i = 0;i < index;i++)
+   {
+   	if(element->next)
+      {
+      	element = element->next;
+      }
+      else
+      {
+      	return NULL;
+      }
+   }
+   return element;
+}
+
+/*** BeginHeader sf_EnumDevice */
+int sf_EnumDevice(mbr_drvr *driver, mbr_dev *dev, int devnum);
+
+/* _START FUNCTION DESCRIPTION ********************************************
+sf_EnumDevice                <SFLASH_FAT.LIB>
+
+SYNTAX: int sf_EnumDevice(mbr_drvr *driver, mbr_dev *dev, int devnum);
+
+DESCRIPTION:   Callback used by FAT filesystem code to initialize the
+					storage device
+
+PARAMETER1:		driver - pointer to the device controller handle
+PARAMETER2:    dev - pointer to a device structure that will be filled in
+PARAMETER3:		the number of the device that is being initialized
+
+
+RETURN VALUE:  returns 0 on success, or a FAT filesystem error code
+
+END DESCRIPTION **********************************************************/
+
+/*** EndHeader */
+
+
+_sflash_nodebug int sf_EnumDevice(mbr_drvr *driver, mbr_dev *device,int devnum)
+{
+	auto long sectors, sectors_per_track;
+   auto int tracks, base_size, sector_size, pages_per_sector;
+   sf_device *dev;
+
+   dev = sf_getDevice( (sf_device *)(driver->dev_struct), devnum);
+
+   if(!dev)
+   {
+   	return -EIO;
+   }
+	base_size = dev->pagesize & 0xff00; //get size on 256 byte boundary
+   if(base_size < 512)
+   {
+   	//bytes per page must be >= 512
+   	sector_size = 512;
+      pages_per_sector = 512/base_size;
+		sectors = dev->pages/pages_per_sector;
+   }
+   else
+   {
+   	sector_size = base_size;
+      pages_per_sector = 1;
+      sectors = dev->pages * (base_size/512);
+   }
+
+   sectors_per_track = sectors;
+   tracks = 1;
+   while(sectors_per_track > 0xFFFF)
+   {
+   	sectors_per_track /= 2;
+      tracks *= 2;
+   }
+
+   //fill in device structure
+	device->cylinder = tracks;
+   device->sec_track = (unsigned int)sectors_per_track;
+   device->seccount = sectors_per_track * tracks;
+   device->heads = 1;
+   device->byte_sec = 512;
+   device->byte_page = base_size*pages_per_sector;
+   device->driver = driver;
+   device->dev_num = devnum;
+
+   return 0;
+}
+
+/*** BeginHeader sf_ReadSector */
+int sf_ReadSector(unsigned long page,
+					   char *buffer,
+    					mbr_dev *device,
+                  long xbuffer);
+
+/* _START FUNCTION DESCRIPTION ********************************************
+sf_ReadSector                <SFLASH_FAT.LIB>
+
+SYNTAX: int sf_ReadSector(unsigned long page,
+							     char *buffer,
+                          mbr_dev *device,
+                          long xbuffer);
+
+DESCRIPTION:   Callback used by FAT filesystem code.
+					Reads out a sector from the device.
+
+PARAMETER1:		page - the "sector" to read. This is a data page of the same
+						size as byte_page set in EnumDevice
+PARAMETER2:    buffer - a buffer in root memory to read the data into
+                     If this argument is NULL, xbuffer will be used instead
+PARAMETER3:		device - mbr_dev structure for the device being read
+PARAMETER4:		xbuffer - buffer in xmem to read data into
+
+
+RETURN VALUE:  returns 0 on success, or a FAT filesystem error code
+
+END DESCRIPTION **********************************************************/
+
+/*** EndHeader */
+
+_sflash_nodebug int sf_ReadSector(unsigned long page,
+					   					 char *buffer,
+                  					 mbr_dev *device,
+                  					 long xbuffer)
+{
+   auto long firstpage;
+   auto int readsize, i, blocks_per_page;
+   auto sf_device *dev;
+
+   dev = sf_getDevice( (sf_device *)(device->driver->dev_struct),
+   						 	device->dev_num );
+   if(!dev)
+   {
+   	return -EIO;
+   }
+
+	//block if previous write operation has not completed
+   if(dev->write_state)
+   {
+   	if(sf_WriteContinue(device))
+      {
+      	return -EBUSY; //last write in progress, try again
+      }
+   }
+
+
+   readsize = dev->pagesize & 0xff00;
+   //some devices with small physical block(page) sizes need to
+   //read/write multiple times to fulfill the minimum device page size of 512
+   blocks_per_page = device->byte_page/readsize;
+   firstpage = (long)(page*blocks_per_page);
+   for(i = 0;i < blocks_per_page;i++)
+   {
+   	sf_readPage(dev, 1, firstpage+i);
+   	if(buffer)
+      {
+         sf_readDeviceRAM(dev, paddr(buffer + readsize*i), 0, readsize,
+         							SF_FS_BITREV);
+      }
+      else
+      {
+      	sf_readDeviceRAM(dev, xbuffer+readsize*i, 0, readsize, SF_FS_BITREV);
+      }
+   }
+	return 0;
+}
+
+/*** BeginHeader sf_WriteSector */
+int sf_WriteSector(unsigned long page,
+						char *buffer,
+                  mbr_dev *device,
+                  long xbuffer);
+
+/* _START FUNCTION DESCRIPTION ********************************************
+sf_WriteSector                <SFLASH_FAT.LIB>
+
+SYNTAX: int sf_WriteSector(unsigned long page,
+							     char *buffer,
+                          mbr_dev *device,
+                          long xbuffer);
+
+DESCRIPTION:   Callback used by FAT filesystem code.
+					Writes to a sector on the specified device
+
+PARAMETER1:		page - the "sector" to write to. This is a data page of the
+						same size as byte_page set in EnumDevice
+PARAMETER2:    buffer - a buffer in root memory to write the data from.
+                     If this argument is NULL, xbuffer will be used instead
+PARAMETER3:		device - mbr_dev structure for the device being written to
+PARAMETER4:		xbuffer - buffer in xmem to write data from
+
+
+RETURN VALUE:  returns 0 on success, or a FAT filesystem error code
+
+END DESCRIPTION **********************************************************/
+
+/*** EndHeader */
+
+_sflash_nodebug int sf_WriteSector(unsigned long page,
+											  char *buffer,
+                  					  mbr_dev *device,
+                  					  long xbuffer)
+{
+	auto long firstpage;
+   auto int writesize, i, blocks_per_page;
+   auto sf_device *dev;
+
+	dev = sf_getDevice( (sf_device *)(device->driver->dev_struct),
+   							device->dev_num );
+
+   if(!dev)
+   {
+   	return -EIO;
+   }
+	//block if previous write operation has not completed
+   if(dev->write_state)
+   {
+   	return sf_WriteContinue(device);
+   }
+
+	writesize = dev->pagesize & 0xff00;
+   blocks_per_page = device->byte_page/writesize;
+	firstpage = (long)(page*blocks_per_page);
+
+   if(buffer)
+   {
+   	//use root buffer
+      sf_writeDeviceRAM(dev, paddr(buffer), 0, writesize, SF_FS_BITREV);
+   }
+   else
+   {
+   	//use xmem buffer
+      sf_writeDeviceRAM(dev, xbuffer, 0, writesize, SF_FS_BITREV);
+   }
+   if(blocks_per_page == 2)
+   {
+      //load 2nd RAM buffer
+      if(buffer)
+      {
+      	sf_writeDeviceRAM(dev,
+         			    paddr(buffer + writesize),
+                      0,
+                      writesize,
+                      SF_FS_BITREV | SF_RAMBANK2);
+      }
+      else
+      {
+      	sf_writeDeviceRAM(dev,
+         			    xbuffer + writesize,
+                      0,
+                      writesize,
+                      SF_FS_BITREV | SF_RAMBANK2);
+      }
+	}
+	sf_writePage(dev, 1, firstpage);
+   dev->write_page = firstpage;
+   dev->write_state = 1;
+	return -EBUSY;  //not done until flash write completes
+}
+
+/*** BeginHeader sf_WriteContinue */
+int sf_WriteContinue(mbr_dev *device);
+
+/* _START FUNCTION DESCRIPTION ********************************************
+sf_WriteContinue                <SFLASH_FAT.LIB>
+
+SYNTAX: int sf_WriteContinue(mbr_dev *device);
+
+DESCRIPTION:   Checks current progress of a sector write operation, and
+					begins the next write if necessary for a multi-page write
+               operation.
+
+PARAMETER1:		device - mbr_dev structure for the device
+
+RETURN VALUE:  returns 0 if there is no pending write activity,
+							 -EBUSY if a write is still in progress
+                      -EIO if a device error occured
+
+END DESCRIPTION **********************************************************/
+
+/*** EndHeader */
+
+_sflash_nodebug int sf_WriteContinue(mbr_dev *device)
+{
+	auto int blocks_per_page;
+	auto sf_device *dev;
+
+   dev = sf_getDevice( (sf_device *)(device->driver->dev_struct),
+   							device->dev_num);
+
+
+#ifdef SFLASH_VERBOSE
+	printf("sf_WriteContinue called - sf_isWriting()==%d\n", sf_isWriting(dev) );
+	sf_print_dev(dev);
+#endif
+
+   if(!dev)
+   {
+   	return -EIO;
+   }
+   blocks_per_page = device->byte_page / (dev->pagesize & 0xff00);
+
+	if(dev->write_state)
+   {
+   	if(!sf_isWriting(dev))
+      {
+      	//flash device is not busy
+      	if(dev->write_state == blocks_per_page)
+         {
+            //that was the last write operation
+            dev->write_state = 0;
+            return 0;
+         }
+         else
+         {
+            //begin write to second page
+          	dev->write_state++;
+            dev->write_page++;
+         #ifdef SFLASH_VERBOSE
+            printf("dev->write_state=%d\n", dev->write_state);
+         #endif
+            sf_writePage(dev, 2, dev->write_page);
+         	return -EBUSY;
+         }
+      }
+      else
+      {
+      	return -EBUSY;
+      }
+   }
+   //no write in progress
+   return 0;
+}
+
+/*** BeginHeader sf_InformStatus */
+int sf_InformStatus(mbr_dev *device, int status);
+
+/* START FUNCTION DESCRIPTION ********************************************
+sf_InformStatus                <SFLASH_FAT.LIB>
+
+SYNTAX: int sf_InformStatus(mbr_dev *device, int status);
+
+DESCRIPTION:   Callback used by FAT filesystem code
+
+PARAMETER1:		device - mbr_dev structure for the device
+PARAMETER2:		status - device status passed to driver from filesystem.
+							Currently ignored.
+
+RETURN VALUE:  returns 0 if there is no pending write activity,
+							 -EBUSY if a write is in progress
+                      -EIO if a device error occured
+
+END DESCRIPTION **********************************************************/
+
+/*** EndHeader */
+
+_sflash_nodebug int sf_InformStatus(mbr_dev *device, int status)
+{
+	auto sf_device *dev;
+
+   dev = sf_getDevice( (sf_device *)(device->driver->dev_struct),
+   							device->dev_num);
+   if(!dev)
+   {
+   	return -EIO;
+   }
+	if(dev->write_state)
+   {
+   	return sf_WriteContinue(device);
+   }
+   else
+   {
+		return 0;
+   }
+}
+
+/*** BeginHeader sf_InitDriver */
+int sf_InitDriver(mbr_drvr *driver, void *device_list);
+
+/* START FUNCTION DESCRIPTION ********************************************
+sf_InitDriver               <SFLASH_FAT.LIB>
+
+SYNTAX: int sf_InitDriver(mbr_drvr *driver, void *device_list);
+
+DESCRIPTION:   Initializes the serial flash controller.
+
+PARAMETER1:		driver - empty mbr_drvr structure. It must be initialized
+						with this function before it can be used with the FAT
+                  filesystem.
+PARAMETER2:    device_list - if this argument is NULL, then a single device
+						will be initialized using sf_init(). Otherwise it must point
+                  to a linked list of sf_device structures for flash devices
+                  that have already been initialized.
+
+RETURN VALUE:  returns 0, or an sf_init() error code
+
+END DESCRIPTION **********************************************************/
+
+/*** EndHeader */
+
+_sflash_nodebug int sf_InitDriver(mbr_drvr *driver, void *device_list)
+{
+   	/* pointer to function able to identify the devices */
+	driver->xxx_EnumDevice = sf_EnumDevice;
+	/* pointer to function able to read a sector */
+	driver->xxx_ReadSector = sf_ReadSector;
+	/* pointer to function able to write a sector */
+	driver->xxx_WriteSector = sf_WriteSector;
+	/* pointer to function able to physically format a cylinder */
+	driver->xxx_FormatCylinder = NULL;
+	/* pointer to function for returning status of a device */
+	driver->xxx_InformStatus = sf_InformStatus;
+
+   //setup other parameters in driver struct
+ 	driver->ndev = 0;
+   driver->maxdev = 1;
+   driver->dlist = NULL;
+   driver->next = NULL;
+   driver->type[0] = 0x80;
+   if(device_list == NULL)
+   {
+
+   	driver->dev_struct = &sf_dev;
+      return sf_init(); //use compile-time default device
+   }
+   else
+   {
+   	driver->dev_struct = device_list;
+      return 0; // must be initialized beforehand
+   }
+}

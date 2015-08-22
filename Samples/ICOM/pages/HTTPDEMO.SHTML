@@ -1,0 +1,51 @@
+<HTML>
+<HEAD>
+<TITLE>HTTP Demo</TITLE>
+</HEAD>
+<BODY>
+<H1>HTTP Demo</H1>
+<HR>
+<H2>LEDs</H2>
+<TABLE BORDER="0" CELLSPACING="2" CELLPADDING="1">
+	<TR>
+		<TD> <IMG HEIGHT=90 WIDTH=90 SRC="<!--#echo var="led1"-->"> </TD>
+		<TD> <IMG HEIGHT=90 WIDTH=90 SRC="<!--#echo var="led2"-->"> </TD>
+		<TD> <IMG HEIGHT=90 WIDTH=90 SRC="<!--#echo var="led3"-->"> </TD>
+		<TD> <IMG HEIGHT=90 WIDTH=90 SRC="<!--#echo var="led4"-->"> </TD>
+	</TR>
+	<TR>
+		<TD> <A HREF="/led1tog.cgi"> <IMG HEIGHT=90 WIDTH=90 SRC="button.gif"></A> </TD>
+		<TD> <A HREF="/led2tog.cgi"> <IMG HEIGHT=90 WIDTH=90 SRC="button.gif"></A> </TD>
+		<TD> <A HREF="/led3tog.cgi"> <IMG HEIGHT=90 WIDTH=90 SRC="button.gif"></A> </TD>
+		<TD> <A HREF="/led4tog.cgi"> <IMG HEIGHT=90 WIDTH=90 SRC="button.gif"></A> </TD>
+	</TR>
+</TABLE>
+<HR>
+<H2>Switches</H2>
+<PRE>
+<!--#echo var="sw1"--><!--#echo var="sw2"--><!--#echo var="sw3"--><!--#echo var="sw4"-->
+</PRE>
+<HR>
+<H2>Keypad</H2>
+<PRE>
+<!--#echo var="key1"--><!--#echo var="key2"--><!--#echo var="key3"--><!--#echo var="key4"--><!--#echo var="key5"--><!--#echo var="key6"-->
+<!--#echo var="key7"--><!--#echo var="key8"--><!--#echo var="key9"--><!--#echo var="key10"--><!--#echo var="key11"--><!--#echo var="key12"-->
+</PRE>
+<HR>
+<H2>Current LCD Message:</H2>
+<PRE>
+<!--#echo var="line1"-->
+<!--#echo var="line2"-->
+<!--#echo var="line3"-->
+<!--#echo var="line4"-->
+</PRE>
+<HR>
+<H2>Set New LCD Message:</H2>
+<FORM ACTION="newmessage.cgi" METHOD="POST">
+<TEXTAREA ROWS=4 COLS=20 NAME="message">
+</TEXTAREA>
+<P>
+<INPUT TYPE="SUBMIT" VALUE="Change message">
+</FORM>
+</BODY>
+</HTML>

@@ -1,0 +1,742 @@
+/* START LIBRARY DESCRIPTION *********************************************
+TC_CONF.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+	Configuration file for the DeviceMate.  This file contains the
+	configuration macros and #use's of the other DeviceMate libaries.
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#ifndef __TC_CONF_LIB
+#define __TC_CONF_LIB
+
+/* tc_conf.lib - configuration, porting and customization of
+ * the Target Communications Library (TCL).
+ *
+ */
+
+/*
+ * Definitions which are common to target and DeviceMate.
+ */
+
+/*	Maximum TC application types supported */
+#define TC_MAX_XTC_APPS		6
+
+/* Internal target communications debugging */
+/*#define TC_DEBUG*/
+
+/* Default (common) async serial speed */
+#define TC_SERIAL_SPEED		115200
+
+/*
+ * Common definitions for the filesystem subsystem
+ */
+#define TC_FS_TCBUFSIZE			(128+5)	// Enough for 128 bytes data + XTC header
+/* maximum data-field size in any one packet */
+#define TC_FS_MAXDATA			128
+/* maximum real-text name length for a file */
+#define TC_FS_MAXNAME			32
+
+/*
+ * Common definitions for the variable subsystem
+ */
+#define TC_VAR_TCBUFSIZE		(128+5)	/* Enough for 128 bytes data + XTC header */
+/* This is used for XTC streams - default buffer size for XTC */
+#define TC_VAR_XTCBUFSIZE		128
+/* maximum name length */
+#define TC_VAR_MAXNAME			8
+/* maximum format specifier length */
+#define TC_VAR_MAXFORMAT		8
+/* maximum string data length */
+#define TC_VAR_MAXDATA			32
+
+#ifdef TC_I_AM_DEVMATE
+	/*
+	 * Definitions for DeviceMate
+	 */
+
+   #if __SEPARATE_INST_DATA__
+		#error "Separate Instruction and Data space is not compatible with Dev Mate."
+	#endif
+
+	#ifndef TARGETPROC_SERIAL_SPEED
+		#define TARGETPROC_SERIAL_SPEED TC_SERIAL_SPEED
+	#endif
+
+	/* Force Ser-B if Ethernet-Loading is on */
+	#ifdef USE_TC_LOADER
+		/* did they try and use another serial port? */
+		#ifdef TARGETPROC_SERA
+			#error	"USE_TC_LOADER requires ser-B - remove TARGETPROC_SERA from your program"
+		#endif
+		#ifdef TARGETPROC_SERC
+			#error	"USE_TC_LOADER requires ser-B - remove TARGETPROC_SERC from your program"
+		#endif
+		#ifdef TARGETPROC_SERD
+			#error	"USE_TC_LOADER requires ser-B - remove TARGETPROC_SERD from your program"
+		#endif
+
+		/* turn on serial-B */
+		#define TARGETPROC_SERB
+		/* should the Alt-B port be used? */
+		#if ((_BOARD_TYPE_ == RCM2200) || (_BOARD_TYPE_ == RCM2250) || \
+           (_BOARD_TYPE_ == RCM2260A) || (_BOARD_TYPE_ == RCM3000))
+			#define SERB_USEPORTD
+		#endif
+	#endif
+
+	/* Serial port to use on DeviceMate */
+	#ifndef TARGETPROC_SERA
+	#ifndef TARGETPROC_SERB
+	#ifndef TARGETPROC_SERC
+	#ifndef TARGETPROC_SERD
+	#ifndef TARGETPROC_SERE
+	#ifndef TARGETPROC_SERF
+		#define TARGETPROC_SERD
+	#endif
+	#endif
+	#endif
+	#endif
+	#endif
+	#endif
+
+	/*
+	 * Definitions for DeviceMate variable subsystem
+	 */
+	/* Size of the variable buffer */
+	#ifndef TARGETPROC_VAR_BUFFERSIZE
+		#define TARGETPROC_VAR_BUFFERSIZE	1024
+	#endif
+	#ifndef TARGETPROC_VAR_NUMTXBUFS
+		#define TARGETPROC_VAR_NUMTXBUFS		1
+	#endif
+	#ifndef TARGETPROC_VAR_NUMRXBUFS
+		#define TARGETPROC_VAR_NUMRXBUFS		2
+	#endif
+	#ifndef TARGETPROC_VAR_TCBUFSIZE
+		#define TARGETPROC_VAR_TCBUFSIZE		TC_VAR_TCBUFSIZE
+	#endif
+	#ifndef TARGETPROC_VAR_XTCBUFSIZE
+		#define TARGETPROC_VAR_XTCBUFSIZE	TC_VAR_XTCBUFSIZE
+	#endif
+	#ifndef TARGETPROC_VAR_MAXNAME
+		#define TARGETPROC_VAR_MAXNAME		TC_VAR_MAXNAME
+	#endif
+	#ifndef TARGETPROC_VAR_MAXFORMAT
+		#define TARGETPROC_VAR_MAXFORMAT		TC_VAR_MAXFORMAT
+	#endif
+	#ifndef TARGETPROC_VAR_MAXDATA
+		#define TARGETPROC_VAR_MAXDATA		TC_VAR_MAXDATA
+	#endif
+	#ifndef TARGETPROC_TCP_TCBUFSIZE
+		#define TARGETPROC_TCP_TCBUFSIZE		(256+5)
+	#endif
+	#ifndef TARGETPROC_TCP_XTCBUFSIZE
+		#define TARGETPROC_TCP_XTCBUFSIZE	512
+	#endif
+	#ifndef TARGETPROC_TCP_MAXSOCK
+		#define TARGETPROC_TCP_MAXSOCK		6
+	#endif
+	#ifndef TARGETPROC_TCP_NUMRXBUF
+		#define TARGETPROC_TCP_NUMRXBUF		4
+	#endif
+	#ifndef TARGETPROC_TCP_NUMTXBUF
+		#define TARGETPROC_TCP_NUMTXBUF		2
+	#endif
+	#ifndef TARGETPROC_TCP_MAXRESOLVE
+		#define TARGETPROC_TCP_MAXRESOLVE	4
+	#endif
+	#ifndef TARGETPROC_LOG_TCBUFSIZE
+		#define TARGETPROC_LOG_TCBUFSIZE		(256+5)
+	#endif
+	#ifndef TARGETPROC_LOG_XTCBUFSIZE
+		#define TARGETPROC_LOG_XTCBUFSIZE	512
+	#endif
+	#ifndef TARGETPROC_LOG_NUMRXBUF
+		#define TARGETPROC_LOG_NUMRXBUF		3
+	#endif
+	#ifndef TARGETPROC_LOG_NUMTXBUF
+		#define TARGETPROC_LOG_NUMTXBUF		1
+	#endif
+
+#else
+	/*
+	 * Definitions for target processor
+	 */
+
+   #if __SEPARATE_INST_DATA__
+		#error "Separate Instruction and Data space is not compatible with Dev Mate."
+	#endif
+
+	#ifndef DEVMATE_SERIAL_SPEED
+		#define DEVMATE_SERIAL_SPEED TC_SERIAL_SPEED
+	#endif
+
+	/* Force serial A if ethernet loading is to be used */
+	#ifdef USE_TC_LOADER
+		/* tell the driver to send DevMate stuff up the programming port */
+		#define DEVMATE_ETHERNET_LOADING
+		/* test to see if they tried to use another serial port */
+		#ifdef DEVMATE_SERB
+			#error	"USE_TC_LOADER uses ser-A for devmate messages - remove DEVMATE_SERB"
+		#endif
+		#ifdef DEVMATE_SERC
+			#error	"USE_TC_LOADER uses ser-A for devmate messages - remove DEVMATE_SERC"
+		#endif
+		#ifdef DEVMATE_SERD
+			#error	"USE_TC_LOADER uses ser-A for devmate messages - remove DEVMATE_SERD"
+		#endif
+		/* turn on serial A */
+		#define DEVMATE_SERA
+	#endif
+
+	/* Serial port to use on target (only used if Rabbit target) */
+	#ifndef DEVMATE_SERA
+	#ifndef DEVMATE_SERB
+	#ifndef DEVMATE_SERC
+	#ifndef DEVMATE_SERD
+		#define DEVMATE_SERD
+	#endif
+	#endif
+	#endif
+	#endif
+
+	/*
+	 * Definitions for target processor variable subsystem
+	 */
+	/* Maximum number of variables supported by the target processor */
+	#ifndef DEVMATE_VAR_MAXVARS
+		#define DEVMATE_VAR_MAXVARS 		10
+	#endif
+	#ifndef DEVMATE_VAR_NUMTXBUFS
+		#define DEVMATE_VAR_NUMTXBUFS 	1
+	#endif
+	#ifndef DEVMATE_VAR_NUMRXBUFS
+		#define DEVMATE_VAR_NUMRXBUFS 	2
+	#endif
+	#ifndef DEVMATE_VAR_TCBUFSIZE
+		#define DEVMATE_VAR_TCBUFSIZE		TC_VAR_TCBUFSIZE
+	#endif
+	#ifndef DEVMATE_VAR_XTCBUFSIZE
+		#define DEVMATE_VAR_XTCBUFSIZE	TC_VAR_XTCBUFSIZE
+	#endif
+	#ifndef DEVMATE_VAR_MAXNAME
+		#define DEVMATE_VAR_MAXNAME		TC_VAR_MAXNAME
+	#endif
+	#ifndef DEVMATE_VAR_MAXFORMAT
+		#define DEVMATE_VAR_MAXFORMAT		TC_VAR_MAXFORMAT
+	#endif
+	#ifndef DEVMATE_VAR_MAXDATA
+		#define DEVMATE_VAR_MAXDATA		TC_VAR_MAXDATA
+	#endif
+
+	#ifndef DEVMATE_TCP_TCBUFSIZE
+		#define DEVMATE_TCP_TCBUFSIZE		(128+5)
+	#endif
+	#ifndef DEVMATE_TCP_XTCBUFSIZE
+		#define DEVMATE_TCP_XTCBUFSIZE	256
+	#endif
+	#ifndef DEVMATE_TCP_MAXCHANS
+		#define DEVMATE_TCP_MAXCHANS		4
+	#endif
+	#ifndef DEVMATE_TCP_NUMRXBUF
+		#define DEVMATE_TCP_NUMRXBUF		3
+	#endif
+	#ifndef DEVMATE_TCP_NUMTXBUF
+		#define DEVMATE_TCP_NUMTXBUF		1
+	#endif
+	#ifndef DEVMATE_TCP_MAXRESOLVE
+		#define DEVMATE_TCP_MAXRESOLVE	1
+	#endif
+	#ifndef DEVMATE_SMTP_TIMEOUT
+		#define DEVMATE_SMTP_TIMEOUT 		300
+	#endif
+	#ifndef DEVMATE_SMTP_SERVER
+		#define DEVMATE_SMTP_SERVER 		""
+	#endif
+	#ifndef DEVMATE_SMTP_DOMAIN
+		#define DEVMATE_SMTP_DOMAIN 		""
+	#endif
+	#ifndef DEVMATE_SMTP_SOCK
+		#define DEVMATE_SMTP_SOCK		 	2
+	#endif
+	#ifndef DEVMATE_LOG_TCBUFSIZE
+		#define DEVMATE_LOG_TCBUFSIZE		(128+5)
+	#endif
+	#ifndef DEVMATE_LOG_XTCBUFSIZE
+		#define DEVMATE_LOG_XTCBUFSIZE	256
+	#endif
+	#ifndef DEVMATE_LOG_NUMRXBUF
+		#define DEVMATE_LOG_NUMRXBUF		1
+	#endif
+	#ifndef DEVMATE_LOG_NUMTXBUF
+		#define DEVMATE_LOG_NUMTXBUF		1
+	#endif
+
+#endif
+
+/*#define XTC_VERBOSE*/						/* Print state transitions etc. */
+/*#define XTC_PRINTPKT*/					/* Dump packets transmitted or received */
+/*#define XTC_PRINTPKT_COLOR_DARKBG*/	/* Print using ANSI color escapes on a tube */
+/*#define XTC_PRINTPKT_COLOR_LIGHTBG*/	/*   ...with dark or light background. */
+
+/* SMTP currently makes use of TCP subsystem */
+#ifdef USE_TC_SMTP
+	#ifndef USE_TC_TCPIP
+		#define USE_TC_TCPIP
+	#endif
+#endif
+
+
+#ifdef CC_VER
+	/* This section is for Dynamic C environment, for both
+	 *  Rabbit target processors and the DeviceMate itself.
+	 */
+
+	#ifdef TC_I_AM_DEVMATE
+		#ifdef USE_TC_LOADER
+			#use "targetproc_loader.lib"
+		#endif
+		#ifdef USE_TC_WD
+			#use "targetproc_wd.lib"
+		#endif
+		#ifdef USE_TC_TCPIP
+			#use "targetproc_tcp.lib"
+		#endif
+		#ifdef USE_TC_FS
+			#use "targetproc_fs.lib"
+		#endif
+		#ifdef USE_TC_VAR
+			#use "targetproc_var.lib"
+		#endif
+		#ifdef USE_TC_LOG
+			#use "targetproc_log.lib"
+		#endif
+	#else
+		#ifdef USE_TC_WD
+			#use "dm_wd.lib"
+		#endif
+		#ifdef USE_TC_TCPIP
+			#use "dm_tcp.lib"
+		#endif
+		#ifdef USE_TC_FS
+			#use "dm_fs.lib"
+		#endif
+		#ifdef USE_TC_VAR
+			#use "dm_var.lib"
+		#endif
+		#ifdef USE_TC_LOG
+			#use "dm_log.lib"
+		#endif
+		#ifdef USE_TC_SMTP
+			#use "dm_smtp.lib"
+		#endif
+	#endif /* TC_I_AM_DEVMATE */
+
+#else  /* if not CC_VER... */
+
+/* This section is for non-Dynamic C environment, for
+ * target processors which are not Rabbit-based.
+ */
+#define FUNCPTR_PROTOTYPES
+
+#if defined(USE_TC_TCPIP) || defined(USE_TC_FS) || defined(USE_TC_VAR) || defined(USE_TC_LOG)
+	#define USE_TC_XTC		/* The above require XTC */
+	#define TC_FUNCCHAINS
+#endif
+
+#if defined(USE_TC_WD)
+	/* these don't need XTC */
+	#ifndef TC_FUNCCHAINS
+		#define TC_FUNCCHAINS
+	#endif
+#endif
+
+
+/*
+ * Define some characteristics of the target architecture
+ */
+
+
+/* Define if big-endian (else assumed little-endian). */
+/*#define TC_BIG_ENDIAN*/
+
+/*	Define if struct elements must be aligned
+	on address boundaries appropriate to their
+	size e.g. short on even address, long on
+	multiple of 4; and structs padded out to be
+	multiple of their longest contained field.
+	If not defined, struct elements are assumed
+	to pack without any padding. */
+#define TC_STRICT_ALIGN
+
+#ifdef TC_STRICT_ALIGN
+/*	Define if processor must read/write multi-byte
+	words on addresses which are a multiple of their
+	size.  This is _not_ necessary on 80x86, but
+	may be necessary on some RISC machines such as
+	Sparc.  This may be defined only if STRICT_ALIGN
+	is also defined. */
+	/*#define TC_BUS_ALIGN*/
+#endif
+
+/*	Define this if the address space is linear
+	and all data pointers are the same size.  If not
+	defined, then it is assumed that near and
+	far pointers are fundamentally different.  Note
+	that this definition can be used if the appropriate
+	memory model is chosen, even for 8086 processors. */
+#define TC_LINEAR_MEMORY
+
+/*	Define this if the compiler supports far
+	pointers directly via a qualifier.  If not,
+	then 'long' will be used and the appropriate
+	routines will need to be implemented. */
+/*#define TC_FAR_QUALIFIER	far*/
+
+/*	Define this if TCL routines may be called from
+	an ISR (Interrupt Service Routine).  This will
+	require that _tc_queue_buffer() and _tc_get_
+	buffer() be implemented to disable interrupts to
+	avoid race conditions in the buffer management
+	queues.  If not defined, then _tc_*_buffer() will
+	just be a macro alias for __tc_*_buffer().  The
+	double underscore versions, in tc.c, do not do
+	any locking. */
+/*#define TC_CALLED_FROM_ISR*/
+
+/* Define this if using a multi-threading environment
+   i.e. TCL API functions may be called from more than
+   one execution thread or context.  If this is defined,
+   then you will also need to add some definitions
+   below to tell TCL how to perform the necessary
+   serialization of resources. */
+/*#define TC_USE_MULTITHREADING*/
+
+#ifdef TC_LINEAR_MEMORY
+	#define FARADDR_NULL ((uint8 *)0)
+	typedef uint8 *		faraddr_t;
+#else
+	#ifdef TC_FAR_QUALIFIER
+		#define FARADDR_NULL	((TC_FAR_QUALIFIER uint8 *)0)
+		typedef TC_FAR_QUALIFIER uint8 *		faraddr_t;
+	#else
+		#define FARADDR_NULL 0L
+		typedef long		faraddr_t;
+	#endif
+#endif
+typedef int (*tc_callback)(uint16 flags, uint8 appno, uint8 subtype,
+									uint16 length, faraddr_t buffer, long userdata);
+
+
+/*
+ * Far memory management routines.
+ */
+
+#ifdef TC_LINEAR_MEMORY
+	/*	No functions need to be defined if there is no distinction
+		between near and far pointers.  However, it is assumed that
+		malloc() and memcpy() are available. */
+	#define xalloc(l) ((faraddr_t)malloc(l))
+	#define paddr(a)	((faraddr_t)(a))
+	#define xmem2root(d, s, l) memcpy(d, s, l)
+	#define root2xmem(d, s, l) memcpy(d, s, l)
+	#define xmem2xmem(d, s, l) memcpy(d, s, l)
+	#ifdef TC_BUS_ALIGN
+		extern void _tc_setnext(faraddr_t p, faraddr_t n);
+		extern faraddr_t _tc_getnext(faraddr_t p);
+	#else
+		#define _tc_setnext(p, n)	(*(faraddr_t *)(p) = (n))
+		#define _tc_getnext(p)		(*(faraddr_t *)(p))
+	#endif
+	#define _tc_getbyte(p)		(*(p))
+#else
+	/* If not the simplest case (linear memory), define the following functions */
+	extern faraddr_t xalloc(long sz);			/* Allocate far buffer */
+	extern faraddr_t paddr(void * virt);		/* Convert near pointer to far */
+	/* Move between near (root) and far (xmem) etc. */
+	extern void xmem2root(void *dest, faraddr_t src, unsigned len);
+	extern void root2xmem(faraddr_t dest, void *src, unsigned len);
+	extern void xmem2xmem(faraddr_t dest, faraddr_t src, unsigned len);
+	/* Set and get far pointers at a far address */
+	extern void _tc_setnext(faraddr_t buf, faraddr_t next);
+	extern faraddr_t _tc_getnext(faraddr_t buf);
+	/* Get byte at far address */
+	extern uint8 _tc_getbyte(faraddr_t buf);
+#endif
+
+#ifdef TC_BIG_ENDIAN
+	/* A general-purpose byte-swapping routine in tc.c */
+	extern void _tc_reorder(uint8 * data, uint16 len, const uint8 * table);
+#endif
+
+/*
+ * Timer handler.  The TCL assumes that a millisecond counter exists.  This counter
+ * is at least 16 bits wide, and increments once per millisecond.  This does not
+ * have to be terribly accurate: within about 20% of the true value is adequate.
+ * The granularity should be 1/20 second or better.  It is acceptable if, for example,
+ * the counter increments by 20 every 20ms.
+ *
+ * _tc_getSeconds() should return a (long) number of seconds since some arbitrary
+ * epoch.  If this is not actually available, some of the demos may not link
+ * properly, however the seconds timer is _not_ required by TCL itself.
+ */
+
+#define MS_TIMER _tc_getMilliseconds()
+uint16 _tc_getMilliseconds(void);
+#define SEC_TIMER _tc_getSeconds()
+uint32 _tc_getSeconds(void);
+
+
+/*
+ * These functions must be implemented by the user.  They are called from the
+ * TC library in order to notify the serial peripheral driver and/or application
+ * whenever a significant "event" arises.
+ */
+
+/* A new TC packet is ready for transmission.  The next call to _tc_txdata() or
+   tc_txpacket() will return a non-zero number of bytes. */
+extern void _tc_start(void);
+
+/* Either a new packet has arrived, or has completed transmission.  This indicates
+   that the TC state has changed significantly, and processing may continue if
+   blocked waiting for an event. */
+extern void _tc_signal(void);
+
+/* Main state-machine driver.  These functions must be coded to call the
+   individual state machines (tick) or initializations which are in use.
+   Note that these may be automatically defined if any of the appropriate
+   USE_TC_* macros are defined [see below]. */
+extern void devmate_tick(void);
+extern void devmate_init(void);
+
+/* Initialize serial communications */
+extern void sio_init(void);
+
+
+#ifndef TC_CALLED_FROM_ISR
+	/* All TCL code runs in the one thread, thus we don't have
+	   to worry about disabling interrupts in the queueing routines.
+	*/
+	#define _tc_queue_buffer __tc_queue_buffer
+	#define _tc_get_buffer __tc_get_buffer
+#else
+	/* TC_CALLED_FROM_ISR is defined, so user must implement these
+	   functions to disable further interrupts from the UART.
+	   NB: the functions _tc_rxdata, _tc_tcdata and _tc_txpacket
+	   assume that interrupts are already disabled, so they call
+	   the double underscore versions to avoid double-disabling.
+	   However, the implementation should correctly handle
+	   nesting since these functions are called from other
+	   parts of the library.
+	*/
+	extern int _tc_queue_buffer(faraddr_t *chain, faraddr_t buffer);
+	extern faraddr_t _tc_get_buffer(faraddr_t *chain);
+#endif
+
+/*
+ * System includes
+ */
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+
+
+/*
+ * Compiler-specific stuff.
+ */
+#ifdef __BORLANDC__
+	/* Suppress some unimportant warnings */
+	#pragma warn -pia
+	#pragma warn -par
+#endif
+
+
+/* Don't change the following def'n: it's set if either STRICT_ALIGN or BIG_ENDIAN,
+   meaning that internal structs must be transformed before sending on the wire */
+#ifdef TC_STRICT_ALIGN
+	#define TC_NEEDS_XFORM
+#endif
+#ifdef TC_BIG_ENDIAN
+	#ifndef TC_STRICT_ALIGN
+		#define TC_NEEDS_XFORM
+	#endif
+#endif
+
+
+/*
+ * Definitions to set up for multithreading applications.
+ */
+#ifdef TC_USE_MULTITHREADING
+
+#define TC_LOCKING
+
+#ifdef MCOS
+	/* Set up some defaults for uC/OS, in case it is being used as
+	   a multitasking kernel. */
+	extern uint8 _tc_mcos_lockstatus;
+
+	#define TC_LOCKTYPE OS_EVENT*
+	#define TC_CREATELOCK() OSSemCreate(1)
+	#define TC_LOCK(lock) OSSemPend((lock), 0, &_tc_mcos_lockstatus)
+	#define TC_UNLOCK(lock) OSSemPost(lock)
+	#define TC_ENTER_CRITICAL() OS_ENTER_CRITICAL()
+	#define TC_EXIT_CRITICAL() OS_EXIT_CRITICAL()
+
+#else
+	/* Otherwise, make your own arrangements...
+	 */
+	/* Define the parameter type for calls to TC_LOCK, TC_UNLOCK and the
+	   return value from TC_CREATELOCK.  An instance of this type is
+	   allocated in several of the TCL internal structures which need
+	   to be serialized. */
+	/*#define TC_LOCKTYPE ...*/
+
+	/* Returns a new lock.  This is called from the initialization
+	   functions, once only for each lock. */
+	/*#define TC_CREATELOCK() ...*/
+
+	/* Enter serialized section.  Should grab the lock if it is free,
+	   otherwise it should yield control to the next dispatchable
+	   task and suspend until the lock is available.  TCL ensures
+	   that the same lock is not obtained twice by the one task. */
+	/*#define TC_LOCK(lock) ...*/
+
+	/* Exit serialized section. */
+	/*#define TC_UNLOCK(lock) ...*/
+
+	/* Enter/exit critical sections.  These are "stronger" than
+	   lock/unlock, but are only held for short intervals.
+	   These should correctly handle nesting in the same thread */
+	/*#define TC_ENTER_CRITICAL() ...*/
+	/*#define TC_EXIT_CRITICAL() ...*/
+
+#endif
+
+#endif /* TC_USE_MULTITHREADING */
+
+/* Set defaults for macros which are not defined - the defaults
+   do nothing, which is what you want if not multi-threading. */
+#ifndef TC_CREATELOCK
+	#define TC_CREATELOCK()
+#endif
+
+#ifndef TC_LOCK
+	#define TC_LOCK(lock)
+#endif
+
+#ifndef TC_UNLOCK
+	#define TC_UNLOCK(lock)
+#endif
+
+#ifndef TC_ENTER_CRITICAL
+	#define TC_ENTER_CRITICAL()
+#endif
+
+#ifndef TC_EXIT_CRITICAL
+	#define TC_EXIT_CRITICAL()
+#endif
+
+/*
+ * Automatic construction of "tick" and "init" functions, depending on
+ * the TC applications which are required.
+ *
+ * In the application main program (the c file containing the definition
+ * of main()), the following macro(s) may be defined.  These macros should
+ * only be defined in this one place, before inclusion of this header
+ * file, since code is generated for definitions of devmate_init() and
+ * devmate_tick() functions.
+ *
+ *   USE_TC_WD      Watchdogs
+ *   USE_TC_TCPIP   TCP tunnelling
+ *   USE_TC_FS      Filesystem
+ *   USE_TC_VAR     Variables
+ *   USE_TC_LOG     Logging
+ *   USE_TC_SMTP    Email
+ */
+
+#ifdef TC_FUNCCHAINS
+	/* Generate default implementations of devmate_init() and
+	   devmate_tick() function chains.  Also include the appropriate
+	   header files. */
+	#ifdef USE_TC_WD
+		#include "dm_wd.h"
+	#endif
+	#ifdef USE_TC_TCPIP
+		#include "dm_tcp.h"
+	#endif
+	#ifdef USE_TC_FS
+		#include "dm_fs.h"
+	#endif
+	#ifdef USE_TC_VAR
+		#include "dm_var.h"
+	#endif
+	#ifdef USE_TC_LOG
+		#include "dm_log.h"
+	#endif
+	#ifdef USE_TC_SMTP
+		#include "dm_smtp.h"
+	#endif
+
+	void devmate_tick(void)
+	{
+	#ifdef TC_DEBUG
+		_tc_printerror();
+	#endif
+	#ifdef USE_TC_XTC
+		_devmate_xtc_tick();
+	#endif
+	#ifdef USE_TC_WD
+		_devmate_wd_tick();
+	#endif
+	#ifdef USE_TC_TCPIP
+		_devmate_tcp_tick();
+	#endif
+	#ifdef USE_TC_FS
+		_devmate_fs_tick();
+	#endif
+	#ifdef USE_TC_VAR
+		_devmate_var_tick();
+	#endif
+	#ifdef USE_TC_LOG
+		_devmate_log_tick();
+	#endif
+	#ifndef TC_CALLED_FROM_ISR
+		wait_serial();
+	#endif
+	}
+
+	void devmate_init(void)
+	{
+	#ifdef USE_TC_WD
+		_devmate_wd_init();
+	#endif
+	#ifdef USE_TC_TCPIP
+		_devmate_tcp_init();
+	#endif
+	#ifdef USE_TC_FS
+		_devmate_fs_init();
+	#endif
+	#ifdef USE_TC_VAR
+		_devmate_var_init();
+	#endif
+	#ifdef USE_TC_LOG
+		_devmate_log_init();
+	#endif
+	#ifdef USE_TC_XTC
+		/* Must be last */
+		_devmate_xtc_init();
+	#endif
+	sio_init();		/* Call serial initialization too. */
+	}
+#endif
+
+#endif /* CC_VER */
+
+#endif /* __TC_CONF_LIB */
+
+/*** EndHeader */

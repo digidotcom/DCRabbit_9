@@ -1,0 +1,2185 @@
+/*** BeginHeader */
+#ifndef DOWNLOADMANAGER_LIB
+#define DOWNLOADMANAGER_LIB
+
+/* START LIBRARY DESCRIPTION *********************************************
+DOWNLOADMANAGER.LIB
+	Copyright (c) 2003, ZWorld.
+
+DESCRIPTION:
+
+	This library provides functionality for a download manager which is
+   stored in parallel flash and run from fast ram, with DLP images being
+   stored in serial flash.  An external loader, which resides in the lowest
+   8k of parallel flash is responsible for loading this download manager or
+   a DLP to fast ram and starting it running.
+
+   The main sections of this library (Configuration, Initialization,
+   Stored Images, etc) can be searched for quickly by searching for the string
+   "SECTION:", as this string appears in a comment block at the start of each
+   section.
+
+END DESCRIPTION **********************************************************/
+
+
+////////////////////////////////////////////////////////////////////////////////
+//		SECTION: Configuration
+////////////////////////////////////////////////////////////////////////////////
+
+// By default, debug information is turned off in this file.  To enable
+// debugging, undefine the following macro.
+//#define DLM_DEBUG
+
+// The following macros will be used to determine the number of times a DLP
+// can be restarted within a specified number of seconds due to a watchdog
+// timeout, secondary watchdog timeout (if configured) or runtime error.  By
+// default, a DLP can be restarted 1 time within 1 day before the DLM decides to
+// take action.
+#ifndef DLM_WATCHDOG_RESTART_LIMIT
+#define DLM_WATCHDOG_RESTART_LIMIT					1
+#endif
+#ifndef DLM_WATCHDOG_RESTART_TIME_UNIT
+#define DLM_WATCHDOG_RESTART_TIME_UNIT 			DLM_RESTART_DAY
+#endif
+#ifndef DLM_WATCHDOG_RESTART_TIME_UNIT_COUNT
+#define DLM_WATCHDOG_RESTART_TIME_UNIT_COUNT		1
+#endif
+
+// The following macros will be used to determine the number of times a DLP
+// can be restarted within a specified number of seconds due to a hardware reset
+// or power failure.  By default, a DLP can be restarted 10 times within 3
+// days, before the DLM decides to take action.
+#ifndef DLM_RESTART_LIMIT
+#define DLM_RESTART_LIMIT								10
+#endif
+#ifndef DLM_RESTART_TIME_UNIT
+#define DLM_RESTART_TIME_UNIT							DLM_RESTART_DAY
+#endif
+#ifndef DLM_RESTART_TIME_UNIT_COUNT
+#define DLM_RESTART_TIME_UNIT_COUNT					3
+#endif
+
+// DLM_REVERT_TO_OLD_DLP: If set to one, the DLM will attempt to revert to an
+// older version of the DLP if the current DLP is not runnable
+#ifndef DLM_REVERT_TO_OLD_DLP
+#define DLM_REVERT_TO_OLD_DLP						1
+#endif
+
+// Email alerts
+// This section will allow the user to enable or disable the sending of email
+// alerts as well as the email address to send alerts to.  Alerts are sent by
+// the DLM when possible user intervention is required, e.g. if the DLP has
+// been restarted the maximum number of times.
+
+// This macro must be set to 1 in order for the DLM to send email alerts
+#ifndef DLM_ALERT_EMAIL_ENABLE
+#define DLM_ALERT_EMAIL_ENABLE      	1
+#endif
+
+// This macro specifies the email address for DLM alerts to be sent to
+#ifndef DLM_ALERT_EMAIL_ADDRESS_TO
+#define DLM_ALERT_EMAIL_ADDRESS_TO     "myaddress@mydomain.com"
+#endif
+
+// This macro specifies the email address DLM alerts are sent from
+#ifndef DLM_ALERT_EMAIL_ADDRESS_FROM
+#define DLM_ALERT_EMAIL_ADDRESS_FROM   "myaddress@mydomain.com"
+#endif
+
+// This macro specifies where the mail server is
+#ifndef SMTP_SERVER
+#define SMTP_SERVER							"mymailserver.mydomain.com"
+#endif
+
+// DLM_ALERT_EVERY_DLM_RESTART: If this macro is set to one, the DLM will send
+// an alert each time it is restarted due to either a hardware reset or watchdog
+// timeout
+#ifndef DLM_ALERT_EVERY_DLM_RESTART
+	#if DLM_ALERT_EMAIL_ENABLE > 0
+		#define DLM_ALERT_EVERY_DLM_RESTART		1
+   #else
+		#define DLM_ALERT_EVERY_DLM_RESTART		0
+   #endif
+#endif
+
+// DLM_ALERT_EVERY_DLM_WDTIMEOUT: With this macro set to 1, the DLM will send an
+// alert each time it starts after a watch dog timeout
+#ifndef DLM_ALERT_EVERY_DLM_WDTIMEOUT
+	#if DLM_ALERT_EMAIL_ENABLE > 0
+		#define DLM_ALERT_EVERY_DLM_WDTIMEOUT	1
+   #else
+		#define DLM_ALERT_EVERY_DLM_WDTIMEOUT	0
+   #endif
+#endif
+
+// DLM_ALERT_DLP_RESTART_LIMIT: If set to one, the DLM will send an email alert
+// once the DLP has been restarted due to hardware reset or power failure the
+// maximum number of times within the allowed time frame
+#ifndef DLM_ALERT_DLP_RESTART_LIMIT
+	#if DLM_ALERT_EMAIL_ENABLE > 0
+		#define DLM_ALERT_DLP_RESTART_LIMIT		1
+   #else
+		#define DLM_ALERT_DLP_RESTART_LIMIT		0
+   #endif
+#endif
+
+// DLM_ALERT_DLP_RESTART_LIMIT: If set to one, the DLM will send an email alert
+// once the DLP has been restarted due to watchdog timeout the maximum number of
+// times within the allowed time frame.
+#ifndef DLM_ALERT_DLP_WDRESTART_LIMIT
+	#if DLM_ALERT_EMAIL_ENABLE > 0
+		#define DLM_ALERT_DLP_WDRESTART_LIMIT	1
+   #else
+   	#define DLM_ALERT_DLP_WDRESTART_LIMIT	0
+   #endif
+#endif
+
+// DLM_ALERT_DLP_RUNTIME_ERROR: If set to one, the DLM will send an email alert
+// once the DLP has been restarted due to secondary watchdog timeout or runtime
+// error the maximum number of times within the allowed time frame.
+#ifndef DLM_ALERT_DLP_RUNTIME_ERROR
+	#if DLM_ALERT_EMAIL_ENABLE > 0
+		#define DLM_ALERT_DLP_RUNTIME_ERROR		1
+   #else
+	   #define DLM_ALERT_DLP_RUNTIME_ERROR		0
+   #endif
+#endif
+
+// DLM_ALERT_REVERT_TO_OLD_DLP: If set to one, the DLM will send an email alert
+// if it reverts to an older version of the DLP
+#ifndef DLM_ALERT_REVERT_TO_OLD_DLP
+	#if DLM_ALERT_EMAIL_ENABLE > 0
+		#define DLM_ALERT_REVERT_TO_OLD_DLP		1
+   #else
+		#define DLM_ALERT_REVERT_TO_OLD_DLP		0
+   #endif
+#endif
+
+// DLM_ALERT_DLP_NOT_RUNNABLE: If set to one, the DLM will send an email alert
+// if the DLP image is not runnable, and will indicate the reason for not being
+// able to run the image
+#ifndef DLM_ALERT_DLP_NOT_RUNNABLE
+	#if DLM_ALERT_EMAIL_ENABLE > 0
+		#define DLM_ALERT_DLP_NOT_RUNNABLE		1
+   #else
+		#define DLM_ALERT_DLP_NOT_RUNNABLE		0
+   #endif
+#endif
+
+// DLM_ALERT_SFLASH_INIT_FAIL: If set to one, the DLM will send an email alert
+// if it was unable to initialize serial flash on startup
+#ifndef DLM_ALERT_SFLASH_INIT_FAIL
+	#if DLM_ALERT_EMAIL_ENABLE > 0
+		#define DLM_ALERT_SFLASH_INIT_FAIL		1
+	#else
+  		#define DLM_ALERT_SFLASH_INIT_FAIL		0
+   #endif
+#endif
+
+// Serial flash partition configuration.  The parititon sizes given in these
+// macros are designed specifically for an 8MB serial flash so that the
+// partition is made up of an even number of serial flash pages.
+#ifdef DLM_PARTITION_ONE_MB
+	#define DLM_MB_MULTIPLIER				1
+	#ifndef DLM_IMAGE_COUNT
+		#define DLM_IMAGE_COUNT          3
+   #endif
+#else
+   #ifdef DLM_PARTITION_TWO_MB
+		#define DLM_MB_MULTIPLIER			2
+      #ifndef DLM_IMAGE_COUNT
+	      #define DLM_IMAGE_COUNT       6
+      #endif
+   #else
+      #ifdef DLM_PARTITION_THREE_MB
+			#define DLM_MB_MULTIPLIER		3
+         #ifndef DLM_IMAGE_COUNT
+	         #define DLM_IMAGE_COUNT    9
+         #endif
+      #else
+         // Default to partitioning one MB and divide it into storage for 3
+         // images.
+         #define DLM_PARTITION_ONE_MB
+			#define DLM_MB_MULTIPLIER		1
+         #ifndef DLM_IMAGE_COUNT
+	         #define DLM_IMAGE_COUNT    3
+         #endif
+      #endif
+   #endif
+#endif
+
+
+/*
+		End configuration section
+*/
+
+#if !FAST_RAM_COMPILE
+#error "Must compile this DLM to flash, to run in RAM!"
+#error "Incompatible with FLASH_COMPILE and RAM_COMPILE modes."
+#endif
+
+#if __SEPARATE_INST_DATA__
+#error "Must compile this DLM with separate instruction and data spaces " \
+       "turned off"
+#endif
+
+#use "remoteuploaddefs.lib"
+
+// The dlmRestartLimits struct is stored at DLM_TYPE_USERBLOCK_RESTARTS_OFS in
+// the user block.
+#define DLM_TYPE_USERBLOCK_RESTARTS			  RUPL_TYPE_USERBLOCK_BASE + 1
+#define DLM_TYPE_USERBLOCK_RESTARTS_OFS	  RUPL_USER_BLOCK_OFFSET + \
+														  sizeof(ruplNetworkPowerOnParameters)
+typedef struct
+{
+	int           head;
+   int           tail;
+	unsigned long timelimit;
+}dlmRestarts;
+
+// The following macros insure that the hwtstamps and wdtstamps members in the
+// dlmRestartLimits struct defined below have at least 1 element.
+#if DLM_WATCHDOG_RESTART_LIMIT == 0
+#define DLM_WD_RST_LIMIT 								(DLM_WATCHDOG_RESTART_LIMIT + 1)
+#else
+#define DLM_WD_RST_LIMIT 								DLM_WATCHDOG_RESTART_LIMIT
+#endif
+
+#if DLM_RESTART_LIMIT == 0
+#define DLM_RST_LIMIT                  			(DLM_RESTART_LIMIT + 1)
+#else
+#define DLM_RST_LIMIT                  			DLM_RESTART_LIMIT
+#endif
+typedef struct
+{
+	dlmRestarts hwrestarts;
+   dlmRestarts wdrestarts;
+   unsigned long hwtstamps[DLM_RST_LIMIT];
+   unsigned long wdtstamps[DLM_WD_RST_LIMIT];
+   int			  checksum;
+}dlmRestartLimits;
+
+#define DLM_PARTITION_SIZE		(((0x100000 * DLM_MB_MULTIPLIER) /  \
+										DLM_IMAGE_COUNT) /                  \
+                              sf_blocksize) *                     \
+                              DLM_IMAGE_COUNT * sf_blocksize
+#define DLM_IMAGE_SIZE			(DLM_PARTITION_SIZE) / DLM_IMAGE_COUNT
+
+// DLM_MAX_ALERT_EMAIL_SIZE: This macro gives the maximum buffer size for
+// formatting an email message.  The buffer for outgoing email is allocated on
+// the stack, so the stack size must be adequate for the size of the buffer
+// specified by this macro.
+#ifndef DLM_MAX_ALERT_EMAIL_SIZE
+#define DLM_MAX_ALERT_EMAIL_SIZE 				1024
+#endif
+
+
+#ifdef DLM_DEBUG
+	#define _dlm_nodebug
+#else
+	#define _dlm_nodebug nodebug
+#endif
+/*** EndHeader */
+
+
+////////////////////////////////////////////////////////////////////////////////
+//		SECTION: Initialization
+////////////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader dlm_init, DLMStartParms */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_init                                        <DOWNLOADMANANGER.LIB>
+
+SYNTAX: 			void dlm_init(void);
+
+DESCRIPTION:	This function takes care of all initialization for the
+					download manager.  This includes initializing serial flash,
+               checking the reason for restart, sending email alerts as
+               necessary and as configured, and starting the flash resident
+               loader to start a DLP.
+
+RETURN VALUE:  None.  If the function returns, no DLP was started.  If a DLP
+               is started, the function will not return.
+
+END DESCRIPTION **********************************************************/
+void dlm_init(void);
+extern ldrDLMStartParms DLMStartParms;
+extern char dlm_sflashpresent;
+extern unsigned long dlm_simages_start;
+/*** EndHeader */
+
+ldrDLMStartParms DLMStartParms;
+char dlm_sflashpresent;
+unsigned long dlm_simages_start;
+
+_dlm_nodebug
+void dlm_init(void)
+{
+	auto int rc, i;
+	auto unsigned long starttime;
+   auto int hwrlreached, wdrlreached;
+   auto unsigned long dlpaddr, dlplength;
+   auto ldrRunTimeErrorInfo rterror;
+   auto dlmRestartLimits rslimits;
+
+	auto ldrRAMLoadInfo ldinfo;
+   auto unsigned int calcCRC;
+
+	// assume serial flash is not present
+   dlm_sflashpresent = 0;
+	// assume hardware restart limit has not been reached
+   hwrlreached       = 0;
+	// assume watchdog restart limit has not been reached
+   wdrlreached       = 0;
+
+	memset((void*)&DLMStartParms, 0, sizeof(DLMStartParms));
+	xmem2root((void*)&DLMStartParms, LDR_TYPE_DLMSTARTPARMS_OFS,
+             sizeof(DLMStartParms));
+
+   starttime = SEC_TIMER;
+
+	// If checksum stored in struct matches computed checksum, then proceed with
+   // initialization.  This should always be the case as the download manager
+   // should only be started via the flash resident loader.
+	if(DLMStartParms.checksum == rupl_dochecksum((void*)&DLMStartParms,
+                                                sizeof(DLMStartParms) -
+                                                sizeof(DLMStartParms.checksum)))
+   {
+      // Get restart information struct from user block
+      readUserBlock((void*)&rslimits, DLM_TYPE_USERBLOCK_RESTARTS_OFS,
+                    sizeof(rslimits));
+
+      // If checksum in struct is not correct, assume information is invalid and
+      // initialize all values in struct
+      if(rslimits.checksum != rupl_dochecksum((void*)&rslimits,
+                                              sizeof(rslimits) -
+                                              sizeof(rslimits.checksum)))
+      {
+         dlm_initrestarts();
+      }
+      else
+      {
+      	// Check for run time errors from DLP.  Run time errors cause the DLP
+         // to force a watchdog timeout.  If configured, send an email alert to
+         // the user to inform that a runtime error has occurred.
+         if(dlm_checkforruntimeerror(&rterror))
+         {
+#if DLM_ALERT_DLP_RUNTIME_ERROR > 0
+				dlm_alert_runtime_error(rterror);
+#endif
+         }
+
+         if(dlm_wdrestart(DLMStartParms.gcsr_value))
+         {
+            // If this is a restart due to a watchdog timeout, then check to see
+            // if too many watchdog timeouts have occurred in the allowable time
+            // frame.
+            if(wdrlreached = dlm_checkrestarts(starttime, &rslimits.wdrestarts,
+            					  					rslimits.wdtstamps, DLM_WD_RST_LIMIT,
+                                          DLM_WATCHDOG_RESTART_LIMIT))
+            {
+#if DLM_ALERT_DLP_WDRESTART_LIMIT > 0
+					// Too many watchdog timeouts have occurred in the allowable time
+               // frame.  Send an alert - the current dlp will be marked as not
+               // runnable later in the initialization process.
+               dlm_alert_wdrestart_limit(rslimits.wdrestarts);
+#endif
+            }
+            else
+            {
+#if DLM_ALERT_EVERY_DLM_WDTIMEOUT > 0
+					// Send an alert to let the user know that a watchdog timeout
+               // occurred, and that the DLP is being restarted
+               dlm_alert_dlm_wdrestart(&rslimits.wdrestarts, rslimits.wdtstamps,
+               								DLM_WD_RST_LIMIT,
+                                       DLMStartParms.gcsr_value,
+                                       starttime);
+#endif
+            }
+   		}
+         if(dlm_hardrestart(DLMStartParms.gcsr_value))
+         {
+         	// If this is a restart due to a hardware restart or power failure,
+            // check to see if too many restarts have occurred in the allowable
+            // time frame.
+            if(hwrlreached = dlm_checkrestarts(starttime, &rslimits.hwrestarts,
+            					  					rslimits.hwtstamps, DLM_RST_LIMIT,
+                              				DLM_RESTART_LIMIT))
+            {
+#if DLM_ALERT_DLP_RESTART_LIMIT > 0
+					// Too many hardware resets or power failures have occurred in
+               // the allowable time frame.  Send an alert - the current dlp
+               // will be marked as not runnable later in the initialization
+               // process.
+	            dlm_alert_hwrestart_limit(rslimits.hwrestarts);
+#endif
+      		}
+            else
+            {
+#if DLM_ALERT_EVERY_DLM_RESTART > 0
+					// Send an alert to let the user know that a hardware reset or
+               // power failure occurred, and that the DLP is being restarted.
+            	dlm_alert_dlm_restart(&rslimits.hwrestarts, rslimits.hwtstamps,
+               							 DLM_RST_LIMIT, starttime);
+#endif
+            }
+         }
+         // calculate checksum for struct and store in user block.
+         rslimits.checksum = rupl_dochecksum((void*)&rslimits,
+                                             sizeof(rslimits) -
+                                             sizeof(rslimits.checksum));
+         i = writeUserBlock(DLM_TYPE_USERBLOCK_RESTARTS_OFS,
+                            (void*)&rslimits,
+                            sizeof(rslimits));
+      }
+   }
+/*
+   else
+   {
+   	// Start up parameters were not valid from loader.  This should not
+      // happen.
+   }
+*/
+
+	// Initialize serial flash, and attempt to allocate and initialize a
+   // partition for use by the download manager if a partition does not already
+   // exist.
+	if(dlm_initserialflash())
+   {
+#ifdef DLM_VERBOSE
+      dlm_checkstoredimgs();
+#endif
+   }
+   else
+   {
+#ifdef DLM_VERBOSE
+   	printf("DLM >> Sflash NOT initialized\n");
+#endif
+#if DLM_ALERT_SFLASH_INIT_FAIL > 0
+		dlm_alert_dlm_sflashinitfail();
+#endif
+   }
+
+   // Invalidate run time error structure in parameter area in RAM.
+   memset((void*)&rterror, 0, sizeof(rterror));
+   rterror.checksum = 1;
+   root2xmem(LDR_TYPE_RUNTIMEERROR_OFS, (void*)&rterror, sizeof(rterror));
+
+   // if the hardware reset/power failure or watchdog reset restart limit has
+   // been reached, mark the current dlp as not runnable.
+	if(hwrlreached || wdrlreached)
+   {
+      dlm_markcurdlpnotrunnable();
+   }
+
+   // If the loader was started due to a hardware reset or watchdog timeout,
+   // then the DLP needs to be restarted, as long as the maximum number of
+   // restarts has not been reached.
+   if((dlm_hardrestart(DLMStartParms.gcsr_value) ||
+       dlm_wdrestart(DLMStartParms.gcsr_value))
+   	 && !hwrlreached && !wdrlreached)
+   {
+	   // Check to see if there is a valid DLP image stored in serial flash.  If
+      // present and good, restart the loader to load the DLP from serial flash.
+		if(dlm_sflashpresent)
+      {
+			if(dlm_getcurdlpimgaddress(&dlpaddr, &dlplength))
+         {
+            dlpaddr   += sizeof(long);
+            dlplength  = dlplength - sizeof(ldrImageInfo) - sizeof(long);
+				dlplength |= IMAGE_IN_SFLASH_MASK;
+				dlm_startdlp(dlpaddr, dlplength);
+         }
+         else
+         {
+         	// Check to make sure loader passed valid information for DLP in
+            // parallel flash.
+				if(DLMStartParms.checksum ==
+            	rupl_dochecksum((void*)&DLMStartParms,
+               			sizeof(DLMStartParms) - sizeof(DLMStartParms.checksum)))
+            {
+               // A dlp image was not found in serial flash.  Start the DLP that
+               // is stored in parallel flash.
+               dlm_startdlp(DLMStartParms.dlp_parallel_addr,
+               				 DLMStartParms.dlp_parallel_len);
+            }
+         }
+      }
+		else
+      {
+         // Check to make sure loader passed valid information for DLP in
+         // parallel flash.
+         if(DLMStartParms.checksum ==
+            rupl_dochecksum((void*)&DLMStartParms,
+                     sizeof(DLMStartParms) - sizeof(DLMStartParms.checksum)))
+         {
+            // A dlp image was not found in serial flash.  Start the DLP that
+            // is stored in parallel flash.
+            dlm_startdlp(DLMStartParms.dlp_parallel_addr,
+                         DLMStartParms.dlp_parallel_len);
+         }
+      }
+   }
+
+   // If this is a restart due to a watchdog timeout or hardware reset/power
+   // fail, and if the limit of either watchdog restarts or reset restarts has
+   // been reached, then an older DLP version may be loaded if the DLM has been
+   // so configured.
+   if((dlm_hardrestart(DLMStartParms.gcsr_value) ||
+       dlm_wdrestart(DLMStartParms.gcsr_value))
+   	 && (hwrlreached || wdrlreached))
+   {
+#if DLM_REVERT_TO_OLD_DLP > 0
+		if(dlm_getfallbackdlpimgaddress(&dlpaddr, &dlplength))
+      {
+			// move the starting address past the four bytes of length
+         dlpaddr   += sizeof(long);
+			// the length returned is the full length, including the length bytes
+         // at the beginning of the image, and the image info bytes at the end
+         // of the image
+         dlplength  = dlplength - sizeof(ldrImageInfo) - sizeof(long);
+         dlplength |= IMAGE_IN_SFLASH_MASK;
+			#if DLM_ALERT_REVERT_TO_OLD_DLP > 0
+			// send alert to inform user that older DLP is being started
+         dlm_alert_revert_dlp();
+			#endif
+         dlm_startdlp(dlpaddr, dlplength);
+      }
+      else
+      {
+#if DLM_ALERT_DLP_NOT_RUNNABLE > 0
+         // no runnable DLP can be found, let DLM start as normal and send alert
+         // informing user that no runnable DLP was found
+			dlm_alert_dlp_notrunnable();
+#endif
+		}
+#endif
+	}
+}
+
+/*** BeginHeader dlm_wdrestart */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_wdrestart                                 <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			int dlm_wdrestart(char gcsr_value);
+
+DESCRIPTION:   This function masks out the upper bits of the GCSR register value
+					as received from the flash resident loader on startup.  If bit 6
+               is set, the device was restarted due to watchdog timeout.
+
+PARAMETER1:    Value of GCSR register.
+
+RETURN VALUE:  1 if bit 6 is set which indicates a restart due to watchdog
+					timeout.
+               0 if bit 6 is not set.
+
+END DESCRIPTION **********************************************************/
+
+int dlm_wdrestart(char gcsr_value);
+/*** EndHeader */
+
+_dlm_nodebug
+int dlm_wdrestart(char gcsr_value)
+{
+	return (gcsr_value & 0xc0) == 0x40;
+}
+
+/*** BeginHeader dlm_hardrestart */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_hardrestart                               <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			int dlm_hardrestart(char gcsr_value)
+
+DESCRIPTION:   This function masks out the upper bits of the GCSR register value
+					as received from the flash resident loader on startup.  If bits
+               6 and 7 are set, the device was restarted due to a hardware
+               reset.
+
+PARAMETER1:    Value of GCSR register.
+
+RETURN VALUE:  1 if bits 6 and 7 are set which indicates a restart due to a
+					hardware reset.
+               0 if bits 6 and 7 are not set.
+
+END DESCRIPTION **********************************************************/
+/*** EndHeader */
+
+_dlm_nodebug
+int dlm_hardrestart(char gcsr_value)
+{
+	return (gcsr_value & 0xc0) == 0xc0;
+}
+
+/*** BeginHeader dlm_checkforruntimeerror */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_checkforruntimeerror                        <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			int dlm_checkforruntimeerror(ldrRunTimeErrorInfo *rterror);
+
+DESCRIPTION:   Given a pointer to a ldrRunTimeErrorInfo struct, this function
+					will fill the struct with information passed to the download
+               manager in the RAM parameter area from the flash resident loader.
+
+PARAMETER1:    The address of a a ldrRunTimeErrorInfo struct.
+
+RETURN VALUE:  Zero if the stored checksum of the ldrRunTimeErrorInfo struct
+					does not match the calculated checksum.
+               Non-zero if the checksums match.
+
+END DESCRIPTION **********************************************************/
+
+int dlm_checkforruntimeerror(ldrRunTimeErrorInfo *rterror);
+/*** EndHeader */
+
+_dlm_nodebug
+int dlm_checkforruntimeerror(ldrRunTimeErrorInfo *rterror)
+{
+   memset((void*)rterror, 0, sizeof(ldrRunTimeErrorInfo));
+	xmem2root((void*)rterror, LDR_TYPE_RUNTIMEERROR_OFS,
+             sizeof(ldrRunTimeErrorInfo));
+   return (rterror->checksum ==
+   		  rupl_dochecksum((void*)rterror,
+                           sizeof(ldrRunTimeErrorInfo) -
+                           sizeof(rterror->checksum)));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//		SECTION: Stored Images
+////////////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader dlm_getstoredimages, dlm_putstoredimages */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_getstoredimages                           <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			int dlm_getstoredimages(DLMStoredImages *simages);
+
+DESCRIPTION:   Given a pointer to a DLMStoredImages struct, this function
+					will retreive the copy of the struct stored at the beginning
+               of the download manager's serial flash partition.
+
+PARAMETER:		Pointer to a DLMStoredImages struct to be populated
+
+RETURN VALUE:  1 if the computed checksum of the struct matches the stored
+					checksum in the struct indicating valid information
+               0 if the checksums do not match
+
+END DESCRIPTION **********************************************************/
+
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_putstoredimages                           <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			void dlm_putstoredimages(DLMStoredImages *simages);
+
+DESCRIPTION:   Given a pointer to a DLMStoredImages struct, this function
+					will write the copy of the struct to the beginning
+               of the download manager's serial flash partition.
+
+PARAMETER:		Pointer to a DLMStoredImages struct to be stored
+
+RETURN VALUE:  None
+
+END DESCRIPTION **********************************************************/
+
+#define RLDR_DLM_SIMAGES_STARTMARKER			0x55AA
+#define RLDR_DLM_SIMAGES_ENDMARKER				0xAA55
+#define RLDR_DLM_SIMAGES_START					sf_prefixsize + 512
+#define RLDR_DLM_SIMAGES_TYPE_DLM         	1
+#define RLDR_DLM_SIMAGES_TYPE_DLP         	2
+#define RLDR_DLM_SIMAGES_TYPE_COMPRESSED  	4
+#define RLDR_DLM_SIMAGES_TYPE_NOTRUNNABLE		8
+// This macro assumes an 8.3 naming convention for uploaded image files.
+#define DLM_MAX_IMAGE_NAME 13
+typedef struct
+{
+	unsigned long start;
+   unsigned long length;
+   unsigned char type;
+	char          name[DLM_MAX_IMAGE_NAME];
+   unsigned long timestamp;
+} DLMStoredImage;
+
+typedef struct
+{
+   unsigned int   startmarker;        // 0x55AA
+	unsigned char  activedlp;
+	DLMStoredImage images[DLM_IMAGE_COUNT];
+   unsigned int   checksum;
+   unsigned int   endmarker;          // 0xAA55
+}DLMStoredImages;
+
+int dlm_getstoredimages(DLMStoredImages *simages);
+void dlm_putstoredimages(DLMStoredImages *simages);
+/*** EndHeader */
+
+_dlm_nodebug
+int dlm_getstoredimages(DLMStoredImages *simages)
+{
+	auto int checksum;
+
+   if(!dlm_sflashpresent)
+   	return 0;
+
+   memset((void*)simages, 0, sizeof(DLMStoredImages));
+
+   rupl_serial_flash_read((void*)simages, dlm_simages_start,
+                          sizeof(DLMStoredImages));
+   checksum = rupl_dochecksum((void*)simages,
+                              sizeof(DLMStoredImages) -
+                              sizeof(simages->checksum) -
+                              sizeof(simages->endmarker));
+	return simages->checksum == checksum;
+}
+
+_dlm_nodebug
+void dlm_putstoredimages(DLMStoredImages *simages)
+{
+	// Calculate checksum of struct.  Checksum includes all fields except the
+   // checksum itself and end marker.
+	simages->checksum = rupl_dochecksum((void*)simages,
+                                       sizeof(DLMStoredImages) -
+                                       sizeof(simages->checksum) -
+                                       sizeof(simages->endmarker));
+
+   rupl_serial_flash_write(dlm_simages_start, (void*)simages,
+                           sizeof(DLMStoredImages));
+}
+
+/*** BeginHeader dlm_setactivedlp */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_setactivedlp                              <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			void dlm_setactivedlp(int index);
+
+DESCRIPTION:   Marks the DLP given by index as active in the DLMStoredImages
+               structure stored at the beginning of the download manager's
+               serial flash partition.
+
+PARAMETER1:    The index of the stored DLP to be marked as active.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void dlm_setactivedlp(int index);
+/*** EndHeader */
+
+_dlm_nodebug
+void dlm_setactivedlp(int index)
+{
+	auto DLMStoredImages simages;
+   if(dlm_getstoredimages(&simages))
+   {
+		simages.activedlp = index;
+		dlm_putstoredimages(&simages);
+   }
+}
+
+/*** BeginHeader dlm_setcurdlpinfo */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_setcurdlpinfo                             <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			void dlm_setcurdlpinfo(unsigned long dlplength, char* fname);
+
+DESCRIPTION:	Updates information in the DLMStoredImages struct stored at
+					the beginning of the download manager's serial flash partition.
+               This function makes the next image in the partition the active
+               DLP (images are made active in a round robin fashion).
+
+PARAMETER1:		The length of the DLP, including the the four bytes of length
+					which precedes the actual executable portion of the image, and
+               the ldrImageInfo struct which follows the exeuctable portion
+               of the image.
+
+PARAMETER2:		Optional name of the image - up to DLM_MAX_IMAGE_NAME bytes
+					will be copied (default assumes 8.3 name).
+
+RETURN VALUE:	None
+
+END DESCRIPTION **********************************************************/
+
+void dlm_setcurdlpinfo(unsigned long dlplength, char* fname);
+/*** EndHeader */
+
+_dlm_nodebug
+void dlm_setcurdlpinfo(unsigned long dlplength, char* fname)
+{
+	auto DLMStoredImages simages;
+   if(dlm_getstoredimages(&simages))
+   {
+		// Mark the next index as active.
+		simages.activedlp = (simages.activedlp + 1) % DLM_IMAGE_COUNT;
+      // Store the length, timestamp, type, and name (if available) at the
+      // active index.
+		simages.images[simages.activedlp].length    = dlplength;
+      simages.images[simages.activedlp].timestamp = SEC_TIMER;
+      simages.images[simages.activedlp].type     &=
+                                             ~RLDR_DLM_SIMAGES_TYPE_NOTRUNNABLE;
+      if(fname)
+      {
+			strncpy(simages.images[simages.activedlp].name, fname,
+                 DLM_MAX_IMAGE_NAME - 1);
+         simages.images[simages.activedlp].name[DLM_MAX_IMAGE_NAME - 1] = 0;
+      }
+		dlm_putstoredimages(&simages);
+   }
+}
+
+/*** BeginHeader dlm_getcurdlpimgaddress */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_getcurdlpimgaddress                       <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			int dlm_getcurdlpimgaddress(unsigned long *addr,
+                                           unsigned long *length);
+
+DESCRIPTION:   This function loads the DLMStoredImages struct from the beginning
+					of the download manager's serial flash partition, and returns the
+               starting address and length for the active DLP image.  The
+               calling function is responsible for verifying the validity of the
+               DLP stored at the address returned by this function.
+
+PARAMETER1:		Pointer to an unsigned long which will contain the address of the
+					currently active DLP stored in serial flash.  This parameter is
+               set to 0 on entry to the function.
+
+PARAMETER2:		Pointer to an unsigned long which will contain the length of the
+					currently active DLP stored in serial flash.  The length includes
+               the four bytes of length which precedes the actual executable
+               portion of the DLP image as well as the ldrImageInfo struct which
+               follows the executable portion of the image.
+
+RETURN VALUE:  0 if serial flash is not present or if the length of the active
+					image is zero.
+               1 if the length of the active image is greater than zero.
+
+END DESCRIPTION **********************************************************/
+
+int dlm_getcurdlpimgaddress(unsigned long *addr, unsigned long *length);
+/*** EndHeader */
+
+_dlm_nodebug
+int dlm_getcurdlpimgaddress(unsigned long *addr, unsigned long *length)
+{
+	auto DLMStoredImages simages;
+
+   *addr   = 0;
+   *length = 0;
+
+   if(!dlm_sflashpresent)
+   	return 0;
+
+	if(dlm_getstoredimages(&simages))
+   {
+		*addr   = simages.images[simages.activedlp].start;
+      *length = simages.images[simages.activedlp].length;
+   }
+   return (*length > 0);
+}
+
+/*** BeginHeader dlm_getfallbackdlpimgaddress */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_getfallbackdlpimgaddress                  <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			int dlm_getfallbackdlpimgaddress(unsigned long *addr,
+                                                unsigned long *length);
+
+DESCRIPTION:	This function will find the first previous DLP image which
+					appears to be runnable, meaning that the type does not have the
+               RLDR_DLM_SIMAGES_TYPE_NOT_RUNNABLE flag set, and the length of
+               the image is greater than zero.  The DLP whose information is
+               returned will be marked as the active DLP.  The calling function
+               is responsible for verifying the validity of the DLP stored at
+               the address returned by this function.
+
+PARAMETER1:    Pointer to an unsigned long which will contain the address of the
+					currently active DLP stored in serial flash.  This parameter is
+               set to 0 on entry to the function.
+
+PARAMETER2:		Pointer to an unsigned long which will contain the length of the
+					currently active DLP stored in serial flash.  The length includes
+               the four bytes of length which precedes the actual executable
+               portion of the DLP image as well as the ldrImageInfo struct which
+               follows the executable portion of the image.
+
+RETURN VALUE:  0 if serial flash is not present or if the length of the active
+					image is zero.
+               1 if the length of the active image is greater than zero.
+
+END DESCRIPTION **********************************************************/
+int dlm_getfallbackdlpimgaddress(unsigned long *addr, unsigned long *length);
+/*** EndHeader */
+
+_dlm_nodebug
+int dlm_getfallbackdlpimgaddress(unsigned long *addr, unsigned long *length)
+{
+	auto DLMStoredImages simages;
+   auto int i, j;
+
+   *addr   = 0;
+   *length = 0;
+
+   if(!dlm_sflashpresent)
+   	return 0;
+
+	if(dlm_getstoredimages(&simages))
+   {
+      // As a sanity check, start at the active DLP index.  If this function is
+      // called by accident and the current active DLP is runnable, we will
+      // return information about the current active DLP.
+		j = simages.activedlp;
+		for(i = 0; i < DLM_IMAGE_COUNT; i++)
+      {
+      	// Check to see if current DLP is runnable
+			if((simages.images[j].type & RLDR_DLM_SIMAGES_TYPE_NOTRUNNABLE) !=
+             RLDR_DLM_SIMAGES_TYPE_NOTRUNNABLE)
+         {
+				// Image is runnable, make sure length is greater than zero
+				if(simages.images[j].length > 0)
+            {
+					// Mark DLP at index j as current active, and set address and
+               // length information.
+               *addr   = simages.images[j].start;
+               *length = simages.images[j].length;
+               simages.activedlp = j;
+               dlm_putstoredimages(&simages);
+               break;
+            }
+         }
+         if(j == 0)
+         	j = DLM_IMAGE_COUNT;
+			j--;
+
+      }
+   }
+   return (*length > 0);
+}
+
+/*** BeginHeader dlm_markcurdlpnotrunnable */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_markcurdlpnotrunnable                     <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			void dlm_markcurdlpnotrunnable(void);
+
+DESCRIPTION:   This function marks the currently active DLP as not runnable.
+
+RETURN VALUE:  None
+
+END DESCRIPTION **********************************************************/
+
+void dlm_markcurdlpnotrunnable(void);
+/*** EndHeader */
+
+_dlm_nodebug
+void dlm_markcurdlpnotrunnable(void)
+{
+	auto DLMStoredImages simages;
+	if(dlm_getstoredimages(&simages))
+   {
+   	simages.images[simages.activedlp].type |=
+                                              RLDR_DLM_SIMAGES_TYPE_NOTRUNNABLE;
+      simages.activedlp = (simages.activedlp == 0) ?
+                          (DLM_IMAGE_COUNT - 1) :
+                          (simages.activedlp - 1);
+      dlm_putstoredimages(&simages);
+   }
+}
+
+/*** BeginHeader dlm_getnextimgaddress */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_getnextimgaddress                         <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			long dlm_getnextimgaddress(char type);
+
+DESCRIPTION:	This function returns the starting address of the next
+					available slot in serial flash for storing a DLP image.
+
+PARAMETER:		The type of image, currently only RLDR_DLM_SIMAGES_TYPE_DLP
+					is used.
+
+RETURN VALUE:  Starting address of next DLP image in serial flash.
+
+END DESCRIPTION **********************************************************/
+
+long dlm_getnextimgaddress(char type);
+/*** EndHeader */
+
+_dlm_nodebug
+long dlm_getnextimgaddress(char type)
+{
+	auto int i;
+	auto DLMStoredImages simages;
+   auto int  nextimg;
+	auto long addr;
+
+   addr = 0;
+
+	if(dlm_getstoredimages(&simages))
+   {
+      nextimg = simages.activedlp;
+		for(i = 0; i < DLM_IMAGE_COUNT; i++)
+      {
+         nextimg = (nextimg + 1) % DLM_IMAGE_COUNT;
+			if((simages.images[nextimg].type & type) == type)
+         {
+         	addr = simages.images[nextimg].start;
+            break;
+         }
+      }
+   }
+   return addr;
+}
+
+/*** BeginHeader dlm_getcurdlpimginfo */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_getcurdlpimginfo                          <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			int dlm_getcurdlpimginfo(ldrImageInfo *imginfo);
+
+DESCRIPTION:	This function retrieves the ldrImageInfo struct which is
+					stored at the end of a DLP image.
+
+PARAMETER1:		A pointer to a ldrImageInfo struct to be populated.
+
+RETURN VALUE:	1 if the checksum stored in the ldrImageInfo struct matches
+					the computed checksum of the struct.
+               0 if the checksums do not match.
+
+END DESCRIPTION **********************************************************/
+
+int dlm_getcurdlpimginfo(ldrImageInfo *imginfo);
+/*** EndHeader */
+
+_dlm_nodebug
+int dlm_getcurdlpimginfo(ldrImageInfo *imginfo)
+{
+   auto unsigned long dlplength;
+   auto unsigned long dlpaddr;
+
+	// Get starting address of the currently active DLP and entire length,
+   // including length at beginning of image, and ldrImageInfo struct at end
+   // of image.
+	dlm_getcurdlpimgaddress(&dlpaddr, &dlplength);
+	// Adjust dlpaddr and dlplength to be the starting address and length of the
+   // executable portion of the image.
+   dlpaddr  += sizeof(long);
+   dlplength = dlplength - sizeof(ldrImageInfo) - sizeof(long);
+   // Read the the ldrImageInfo struct from the end of the DLP image.
+	rupl_serial_flash_read((void*)imginfo, dlpaddr + dlplength,
+                          sizeof(ldrImageInfo));
+   return (imginfo->checksum == rupl_dochecksum((void*)imginfo,
+                                                sizeof(ldrImageInfo) -
+                                                sizeof(imginfo->checksum)));
+}
+
+/*** BeginHeader dlm_checkstoredimgs */
+void dlm_checkstoredimgs();
+/*** EndHeader */
+
+// Debugging output only
+_dlm_nodebug
+void dlm_checkstoredimgs()
+{
+	auto int i;
+	auto DLMStoredImages simages;
+   memset((void*)&simages, 0, sizeof(simages));
+
+   rupl_serial_flash_read((void*)&simages, dlm_simages_start, sizeof(simages));
+	printf("DLM >>\n");
+   printf("\tsimages.startmarker\t\t0x%04x\n", simages.startmarker);
+   printf("\tsimages.activedlp\t\t0x%02x\n",   simages.activedlp);
+	for(i = 0; i < DLM_IMAGE_COUNT; i++)
+   {
+	   printf("\timage %d start\t\t0x%08lx\n",  i, simages.images[i].start);
+   	printf("\timage %d length\t\t0x%08lx\n", i, simages.images[i].length);
+	   printf("\timage %d type\t\t0x%02x\n",    i, simages.images[i].type);
+   }
+   printf("\tsimages.checksum\t\t0x%04x\n",  simages.checksum);
+   printf("\tsimages.endmarker\t\t0x%04x\n", simages.endmarker);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//		SECTION: Serial flash initialization
+////////////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader dlm_initserialflash, dlm_dosctrl, dlm_drive, dlm_mbrpart */
+#define SF_RCM3300
+
+#define SFLASH_FILESYSTEM
+#define PARTTYPE_NONFSDATA				0xDA
+
+#define SF_SPI_CSPORT 					PDDR
+#define SF_SPI_CSSHADOW 				PDDRShadow
+#define SF_SPI_CSDD 						PDDDR
+#define SF_SPI_CSDDSHADOW 				PDDDRShadow
+#define SF_SPI_CSPIN 					1
+
+#use sflash_fat.lib
+#use sflash.lib
+#use part.lib
+int dlm_initserialflash();
+
+extern mbr_drvr dlm_dosctrl;
+extern mbr_dev dlm_drive;
+extern mbr_part dlm_mbrpart[4];
+/*** EndHeader */
+
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_partitioninit                             <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			void dlm_partitioninit(void);
+
+DESCRIPTION:   This function sets up information stored in the serial flash
+					which pertains to each of the stored DLP images.  The
+               structure which is initialized here and written to serial flash
+               keeps track of the the active DLP, and the starting address,
+               length, type, name, and timestamp when received for each of the
+               DLP images.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+// This function takes a 512 byte sector number in serial flash and converts it
+// to an absolute address offset in the serial flash.
+_dlm_nodebug
+unsigned long dlm_convertsflashaddr(unsigned long sector)
+{
+	auto unsigned long addr, prefix;
+   addr   = sector * 512;
+   prefix = (sector / (sf_blocksize / 512)) * sf_prefixsize;
+   addr  += prefix;
+   return addr;
+}
+
+_dlm_nodebug
+void dlm_partitioninit(void)
+{
+	auto int i;
+	auto DLMStoredImages simages;
+   auto unsigned long start;
+   memset((void*)&simages, 0, sizeof(simages));
+
+   simages.startmarker = RLDR_DLM_SIMAGES_STARTMARKER;
+   simages.endmarker   = RLDR_DLM_SIMAGES_ENDMARKER;
+
+	// First image starts on page boundry following stored image information
+   // struct.  This assumes that dlm_simages_start starts on a page boundry.
+   start = dlm_simages_start + sf_blocksize;
+
+   // The descriptors for each of the images is initialized so that the starting
+   // address and the type of the stored image are known.
+   for(i = 0; i < DLM_IMAGE_COUNT; i++)
+   {
+   	simages.images[i].start = start;
+      simages.images[i].type  = RLDR_DLM_SIMAGES_TYPE_DLP |
+                                RLDR_DLM_SIMAGES_TYPE_NOTRUNNABLE;
+		start += DLM_IMAGE_SIZE;
+   }
+
+   simages.activedlp = 0;
+	dlm_putstoredimages(&simages);
+}
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_initserialflash                           <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			int dlm_initserialflash();
+
+DESCRIPTION:   This function prepares the serial flash for download manager
+               use.  If an MBR has not already been written to the serial
+               flash, an MBR will be written and a partition table set up on
+               the serial flash device.  If an MBR already exists, a
+               pre-existing DLM partition will be searched for.  If a partition
+               is not found, this function will attempt to set up a partition on
+               the serial flash for the DLM to use.
+
+RETURN VALUE:  1 if serial flash is formatted and ready to be used by the
+                 download manager.
+               0 if any problems occurred and serial flash is not useable
+
+END DESCRIPTION **********************************************************/
+
+mbr_drvr dlm_dosctrl;
+mbr_dev dlm_drive;
+
+// Utility function used by dlm_initserialflash to set up the members of the
+// partition structure for the given parition table index.
+_dlm_nodebug
+int dlm_initmbrpart(int partnum, unsigned long start)
+{
+	auto int rc;
+   dlm_drive.part[partnum].bootflag    = 0;
+   dlm_drive.part[partnum].starthead   = 0xfe;
+   dlm_drive.part[partnum].startseccyl = 0;
+   dlm_drive.part[partnum].parttype    = PARTTYPE_NONFSDATA;
+   dlm_drive.part[partnum].endhead     = 0xfe;
+   dlm_drive.part[partnum].endseccyl   = 0;
+   dlm_drive.part[partnum].startsector = start;
+   dlm_drive.part[partnum].partsecsize = ((DLM_PARTITION_SIZE) / 512) + 1;
+   while((rc = mbr_CreatePartition(&dlm_drive, partnum, 0xda)) == -EBUSY);
+   return rc;
+}
+
+_dlm_nodebug
+int dlm_initserialflash()
+{
+	auto int rc, i;
+   auto unsigned long dlm_startsector;
+
+   memset(&dlm_dosctrl, 0, sizeof(mbr_drvr));
+   memset(&dlm_drive, 0, sizeof(dlm_drive));
+
+	dlm_sflashpresent = 0;
+   dlm_startsector   = 1;
+
+   rc = sf_InitDriver(&dlm_dosctrl, NULL);
+	if(!rc)
+   {
+   	rc = sf_EnumDevice(&dlm_dosctrl, &dlm_drive, 0);
+      if(!rc)
+      {
+	      while((rc=mbr_EnumDevice(&dlm_dosctrl, &dlm_drive, 0, NULL)) == -EBUSY);
+
+			// Unformatted media - format and create partition
+        	if (rc == -EUNFORMAT || rc == -EBADPART)
+         {
+         	rc = sf_EnumDevice(&dlm_dosctrl, &dlm_drive, 0);
+				rc = mbr_FormatDevice(&dlm_drive);
+            if(rc == -EBUSY || rc == -EAGAIN)
+            	while((rc = sf_WriteContinue(&dlm_drive)) == -EBUSY)
+               	continue;
+            if(!rc)
+            {
+			      while((rc = mbr_EnumDevice(&dlm_dosctrl, &dlm_drive, 0, NULL)) ==
+                      -EBUSY);
+					dlm_initmbrpart(0, dlm_startsector);
+					dlm_simages_start = dlm_convertsflashaddr(dlm_startsector + 1);
+               dlm_sflashpresent = 1;
+					dlm_partitioninit();
+               return 1;
+            }
+            else
+            {
+            	// Could not create partition
+               return 0;
+            }
+         }
+
+			// Drive is already formatted, so we need to first determine if the DLM
+         // has already created a partition.
+         for(i = 0; i < 4; i++)
+         {
+            if(dlm_drive.part[i].parttype == PARTTYPE_NONFSDATA)
+            {
+					dlm_startsector   = dlm_drive.part[i].startsector;
+               dlm_simages_start = dlm_convertsflashaddr(dlm_startsector + 1);
+               dlm_sflashpresent = 1;
+               return 1;
+            }
+         }
+
+         // Drive is already formatted, and the DLM has not created its own
+         // partition, so we need to determine if there is an available
+         // partition, and if there is a large enough space for the partition
+         // requirements of the DLM.
+
+			// Search through the partition table for an available partition
+         for(dlm_startsector = 1, i = 0; i < 4; i++)
+         {
+            if(dlm_drive.part[i].partsecsize == 0)
+            {
+              	// This partition is available - set up the partition
+               // info structure and attempt to create a partition.  If
+               // partition creation fails, continue trying to find
+               // suitable space to create a partition
+               rc = dlm_initmbrpart(i, dlm_startsector);
+               if(rc == 0)
+               {
+                  dlm_simages_start = dlm_convertsflashaddr(dlm_startsector + 1);
+                  dlm_sflashpresent = 1;
+                  dlm_partitioninit();
+                  return 1;
+               }
+				}
+            else
+            {
+             	// Set the starting sector for the new partition to the
+               // sector immediately this partition and see if next
+               // partition is not in use.
+               dlm_startsector = dlm_drive.part[i].startsector +
+                                 dlm_drive.part[i].partsecsize;
+            }
+         }
+         // Not able to create a partition, treated as serial flash not present
+         // dlm_sflashpresent already set to 0
+      }
+/*
+      else
+      {
+      	// Could not enumerate serial flash, treated as serial flash not
+         // present - dlm_sflashpresent already set to 0
+      }
+*/
+   }
+/*
+   else
+   {
+      // Serial flash did not initialize properly, treated as serial flash not
+      // present - dlm_sflashpresent already set to 0
+   }
+*/
+   return 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//		SECTION: Restarts
+////////////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader dlm_initrestarts */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_initrestarts                              <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			void dlm_initrestarts(void);
+
+DESCRIPTION:   This function intializes the dlmRestartLimits struct which is
+					stored in the user block area of parallel flash.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+void dlm_initrestarts(void);
+/*** EndHeader */
+
+_dlm_nodebug
+void dlm_initrestarts(void)
+{
+	auto dlmRestartLimits rslimits;
+	memset((void*)&rslimits, -1, sizeof(rslimits));
+   rslimits.hwrestarts.timelimit = DLM_RESTART_TIME_UNIT *
+   										  DLM_RESTART_TIME_UNIT_COUNT;
+   rslimits.wdrestarts.timelimit = DLM_WATCHDOG_RESTART_TIME_UNIT *
+   										  DLM_WATCHDOG_RESTART_TIME_UNIT_COUNT;
+   rslimits.checksum = rupl_dochecksum((void*)&rslimits,
+                                       sizeof(rslimits) -
+                                       sizeof(rslimits.checksum));
+	writeUserBlock(DLM_TYPE_USERBLOCK_RESTARTS_OFS, (void*)&rslimits,
+                  sizeof(rslimits));
+}
+
+/*** BeginHeader dlm_checkrestarts */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_checkrestarts                             <DOWNLOADMANAGER.LIB>
+
+SYNTAX:        int dlm_checkrestarts(unsigned long tstamp,
+												 dlmRestarts* restarts,
+							 					 unsigned long tstamps[],
+                                     int array_size, int limit);
+
+DESCRIPTION:	This function checks to see whether the download manager has
+					been restarted too many times in a given time frame.  This
+               function should only be called if the download manager is
+               restarted due to a watchdog timeout or hardware reset.  The list
+               of timestamps is treated as a circular FIFO queue.  This function
+               assumes that the real time clock is battery backed.
+
+
+PARAMETER1:		The current time in seconds read from the real time clock.
+
+PARAMETER2:    Pointer to the list structure to check (either watchdog or
+					hardware reset list contained in dlmRestartLimits struct).
+
+PARAMETER3:		Array of timestamps to check and append to (either watchdog or
+					hardware reset list contained in dlmRestartLimits struct).
+
+PARAMETER4:		Actual size of the timestamp array.
+
+PARAMETER5:		Upper bound on number of times DLP can be restarted before either
+               attempting to find fallback image or waiting for new upload.
+
+RETURN VALUE:  1 if the given timestamp causes the list to be full and is
+               within restarts->timelimit seconds from the first entry in the
+               timestamps list.
+               0 if it ok for the download manager to proceed with restarting
+               the DLP.
+
+END DESCRIPTION **********************************************************/
+
+int dlm_checkrestarts(unsigned long tstamp, dlmRestarts* restarts,
+							 unsigned long tstamps[], int array_size, int limit);
+/*** EndHeader */
+
+_dlm_nodebug
+int dlm_checkrestarts(unsigned long tstamp, dlmRestarts* restarts,
+							 unsigned long tstamps[], int array_size, int limit)
+{
+	auto unsigned long elapsedtime;
+
+	// No need to do any processing if the limit of restarts is zero
+	if(limit == 0)
+   {
+      return 1;
+   }
+	// If the list is empty, append the given time stamp.
+   if(dlm_rslistempty(restarts))
+   {
+   	dlm_rslistappend(tstamp, restarts, tstamps, array_size);
+   }
+	// If the lsit is full, make sure that the given time stamp does not fall
+   // within the time bound.  If not, append the given time stamp to the end
+   // of the list.
+   else if(dlm_rslistfull(restarts, array_size))
+   {
+		elapsedtime = tstamps[restarts->tail] - tstamps[restarts->head];
+		if(elapsedtime <= restarts->timelimit)
+		{
+         return 1;
+      }
+      else
+	      dlm_rslistappend(tstamp, restarts, tstamps, array_size);
+   }
+   else
+   {
+   	// List isn't full, just append.
+   	dlm_rslistappend(tstamp, restarts, tstamps, array_size);
+   }
+   return 0;
+}
+
+/*** BeginHeader dlm_rslistfull */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_rslistfull                                <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			int dlm_rslistfull(dlmRestarts* restarts, int array_size);
+
+DESCRIPTION:	This function determines whether restarts is full.
+
+PARAMETER1:		Pointer to a dlmRestarts list structure.
+
+PARAMETER2:    The size of the array used by the dlmRestarts structure
+
+RETURN VALUE:	1 if the list is full
+					0 if the list is not full
+
+END DESCRIPTION **********************************************************/
+
+int dlm_rslistfull(dlmRestarts* restarts, int array_size);
+/*** EndHeader */
+
+_dlm_nodebug
+int dlm_rslistfull(dlmRestarts* restarts, int array_size)
+{
+	// If the array size is larger than 1 entry, determine whether the
+   // tail pointer and head pointer are pointing at the same entry.
+	if(array_size > 1)
+   {
+	   return ((restarts->tail + 1) % array_size) ==
+   	       ((restarts->head + array_size) % array_size);
+   }
+   // There is only one element in the array - list is full if tail and head
+   // are both pointing at the first (and only) item.
+	else
+   {
+   	return restarts->tail == 0 && restarts->head == 0;
+   }
+}
+
+/*** BeginHeader dlm_rslistempty */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_rslistempty                               <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			int dlm_rslistempty(dlmRestarts* restarts);
+
+DESCRIPTION:	This function determines whether restarts is full.
+
+PARAMETER1:    Pointer to a dlmRestarts list structure.
+
+RETURN VALUE:  1 if the list is empty
+					0 if the list is not empty
+
+END DESCRIPTION **********************************************************/
+
+int dlm_rslistempty(dlmRestarts* restarts);
+/*** EndHeader */
+
+_dlm_nodebug
+int dlm_rslistempty(dlmRestarts* restarts)
+{
+	// The list is empty if both head and tail are -1
+   return restarts->head == -1 && restarts->tail == -1;
+}
+
+/*** BeginHeader dlm_rslistappend */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_rslistappend                              <DOWNLOADMANAGER.LIB>
+
+SYNTAX:        void dlm_rslistappend(unsigned long tstamp,
+												 dlmRestarts* restarts,
+                                     unsigned long tstamps[],
+                                     int array_size);
+
+DESCRIPTION:	This function appends the timestamp given in tstamp to the
+					restarts list (the tstamps array).
+
+PARAMETER1:		The timestamp to append to the list.
+
+PARAMETER2:		A pointer to the list structure (tail, head, etc).
+
+PARAMETER3:		The array of storage for the list.
+
+PARAMETER4:		The size of the list storage array.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void dlm_rslistappend(unsigned long tstamp, dlmRestarts* restarts,
+							 unsigned long tstamps[], int array_size);
+/*** EndHeader */
+
+_dlm_nodebug
+void dlm_rslistappend(unsigned long tstamp, dlmRestarts* restarts,
+							 unsigned long tstamps[], int array_size)
+{
+	if(dlm_rslistempty(restarts))
+   {
+   	// The list is empty, add the timestamp at the front of the list.
+		restarts->head = restarts->tail = 0;
+      tstamps[restarts->tail] = tstamp;
+      return;
+   }
+   if(dlm_rslistfull(restarts, array_size))
+   {
+   	// The list is full, move the tail pointer to the head pointer, and move
+      // the head pointer up one (circular list).
+		restarts->tail = restarts->head;
+		restarts->head = ++(restarts->head) % array_size;
+   }
+   else
+   {
+		// The list is neither full nor empty, move the tail pointer up.
+		if(restarts->head == -1)
+			restarts->head = 0;
+      restarts->tail = ++(restarts->tail) % array_size;
+   }
+   tstamps[restarts->tail] = tstamp;
+}
+
+/*** BeginHeader dlm_startdlp */
+/* START FUNCTION DESCRIPTION ********************************************
+dlm_startdlp                                  <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			void dlm_startdlp(unsigned long address, unsigned long length);
+
+DESCRIPTION:	This function sets information in the RAM parameter area so
+					that the flash resident loader can load and start the
+               appropriate DLP image.
+
+PARAMETER1:		The address where the executable portion of the DLP starts
+					(the first four bytes of the DLP are the length of the DLP)
+
+PARAMETER2:		The length of the executable portion of the DLP image.
+
+RETURN VALUE:	This function does not return - the flash resident loader will
+					be started after this function completes.
+
+END DESCRIPTION **********************************************************/
+
+void dlm_startdlp(unsigned long address, unsigned long length);
+/*** EndHeader */
+
+_dlm_nodebug
+void dlm_startdlp(unsigned long address, unsigned long length)
+{
+	auto ldrStartDLP startDLP;
+	auto ldrStartDLM startDLM;
+
+	auto unsigned long waittime;
+
+#ifdef RUPL_SAVE_RESTORE_NETWORK_PARAMS
+	// This function may write to flash and should be called before any of
+   // the loader parameters are set since the flash write will most likely
+   // overwrite the area in the flash transfer buffer where these lie.
+  	rupl_savenetworkparameters();
+#endif
+
+   memset((void*)&startDLP, 0, sizeof(startDLP));
+   memset((void*)&startDLM, 0, sizeof(startDLM));
+
+	// Invalidate startDLM struct in parameter area.
+	startDLM.type = LDR_TYPE_LDRSTARTDLM;
+   root2xmem(LDR_TYPE_LDRSTARTDLM_OFS, (void*)&startDLM, sizeof(startDLM));
+
+	startDLP.type = LDR_TYPE_LDRSTARTDLP;
+   startDLP.address = address;
+   startDLP.length  = length;
+
+	// Calculate checksum for startDLP struct and store it in RAM parameter area
+   // so that the flash resident loader can load the DLP
+	startDLP.checksum = rupl_dochecksum((void*)&startDLP,
+                                       sizeof(startDLP) -
+                                       sizeof(startDLP.checksum));
+   root2xmem(LDR_TYPE_LDRSTARTDLP_OFS, (void*)&startDLP, sizeof(startDLP));
+
+   waittime = MS_TIMER + 500;
+   while(waittime > MS_TIMER);
+
+	// Remap memory and run flash resident loader.
+	rupl_switch_to_loader();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//		SECTION: Email alerts
+////////////////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader dlm_alert_dlm_restart */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_alert_dlm_restart                         <DOWNLOADMANAGER.LIB>
+
+SYNTAX:        void dlm_alert_dlm_restart(dlmRestarts *restarts,
+														unsigned long tstamps[],
+                                          unsigned int array_size,
+                                          unsigned long starttime);
+
+DESCRIPTION:   This function sends an email alert when the download manager
+					is restarted after a hardware reset.
+
+PARAMETER1:		Pointer to the dlmRestarts structure for the hardware resets
+					timestamp list.
+
+PARAMETER2:		Hardware restart timestamp array.
+
+PARAMETER3:		Array size of tstamps array
+
+PARAMETER4:		Current SEC_TIMER value.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void dlm_alert_dlm_restart(dlmRestarts *restarts, unsigned long tstamps[],
+	  								unsigned int array_size, unsigned long starttime);
+/*** EndHeader */
+
+xdata S_DLM_RESTARTED_1
+{
+	"The download manager was restarted on "
+};
+
+xdata S_DLM_RESTARTED_2
+{
+   ", due to a hardware reset.  This message may be followed by further " \
+   "alerts if a suitable DLP image cannot be run.\nPrevious DLM restarts:\n"
+};
+
+_dlm_nodebug
+void dlm_alert_dlm_restart(dlmRestarts *restarts, unsigned long tstamps[],
+	  								unsigned int array_size, unsigned long starttime)
+{
+	auto struct tm time;
+	auto char buf[DLM_MAX_ALERT_EMAIL_SIZE];
+	mktm(&time, starttime);
+   sprintf(buf, "%ls%02d/%02d/%04d at %02d:%02d:%02d%ls", S_DLM_RESTARTED_1,
+			  time.tm_mon, time.tm_mday, 1900+time.tm_year, time.tm_hour,
+           time.tm_min, time.tm_sec, S_DLM_RESTARTED_2);
+   dlm_alert_append_restarts(buf, restarts, tstamps, array_size);
+	dlm_alert_send("DLM Restart", buf);
+}
+
+/*** BeginHeader dlm_alert_dlm_wdrestart */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_alert_dlm_wdrestart                       <DOWNLOADMANAGER.LIB>
+
+SYNTAX:        void dlm_alert_dlm_wdrestart(dlmRestarts *restarts,
+														  unsigned long tstamps[],
+									  					  unsigned int array_size,
+                                            char gcsr_value,
+                                            unsigned long starttime);
+
+DESCRIPTION:   This function sends an email alert when the download manager
+					is restarted after a reset due to a watchdog timeout.
+
+PARAMETER1:		Pointer to the dlmRestarts structure for the watchdog
+					timeouts timestamp list.
+
+PARAMETER2:		Watchdog timeouts timestamp array.
+
+PARAMETER3:		Array size of tstamps array
+
+PARAMETER4:		Startup value of GCSR register as received from the flash
+					resident loader.
+
+PARAMETER5:		Current SEC_TIMER value.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void dlm_alert_dlm_wdrestart(dlmRestarts *restarts, unsigned long tstamps[],
+									  unsigned int array_size, char gcsr_value,
+                             unsigned long starttime);
+/*** EndHeader */
+
+xdata S_DLM_WDRESTARTED_1
+{
+	"DLM restarted on "
+};
+
+xdata S_DLM_WDRESTARTED_2
+{
+	" due to a watchdog timeout (GCSR value: 0x"
+};
+
+xdata S_DLM_WDRESTARTED_3
+{
+	").\nPrevious watch dog restarts:\n"
+};
+
+_dlm_nodebug
+void dlm_alert_dlm_wdrestart(dlmRestarts *restarts, unsigned long tstamps[],
+									  unsigned int array_size, char gcsr_value,
+                             unsigned long starttime)
+{
+	auto struct tm time;
+	auto char buf[DLM_MAX_ALERT_EMAIL_SIZE];
+	mktm(&time, starttime);
+   sprintf(buf, "%ls%02d/%02d/%04d at %02d:%02d:%02d%ls%02x%ls",
+           S_DLM_WDRESTARTED_1, time.tm_mon, time.tm_mday, 1900+time.tm_year,
+           time.tm_hour, time.tm_min, time.tm_sec, S_DLM_WDRESTARTED_2,
+           gcsr_value, S_DLM_WDRESTARTED_3);
+   dlm_alert_append_restarts(buf, restarts, tstamps, array_size);
+	dlm_alert_send("DLM watch dog restart", buf);
+}
+
+/*** BeginHeader dlm_alert_hwrestart_limit */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_alert_hwrestart_limit                     <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			void dlm_alert_hwrestart_limit(dlmRestarts restarts);
+
+DESCRIPTION:   This function sends an email alert when the download manager
+					is restarted too many times do to hardware resets / power
+               failures.
+
+PARAMETER:		The dlmRestarts structure for hardware resets.
+
+RETURN VALUE:	None
+
+END DESCRIPTION **********************************************************/
+
+void dlm_alert_hwrestart_limit(dlmRestarts restarts);
+/*** EndHeader */
+
+xdata S_DLP_RESTARTLIMIT_1
+{
+	"The DLP has been restarted too many times in its allowable time frame.  " \
+   "In the given time frame of "
+};
+
+xdata S_DLP_RESTARTLIMIT_2
+{
+	" seconds, the DLP has restarted "
+};
+
+xdata S_DLP_RESTARTLIMIT_3
+{
+	" time(s)."
+};
+
+_dlm_nodebug
+void dlm_alert_hwrestart_limit(dlmRestarts restarts)
+{
+	auto char buf[DLM_MAX_ALERT_EMAIL_SIZE];
+   sprintf(buf, "%ls%ld%ls%d%ls", S_DLP_RESTARTLIMIT_1, restarts.timelimit,
+   		  S_DLP_RESTARTLIMIT_2, DLM_RESTART_LIMIT, S_DLP_RESTARTLIMIT_3);
+	dlm_alert_send("DLP restart limit reached", buf);
+}
+
+/*** BeginHeader dlm_alert_wdrestart_limit */
+/* START FUNCTION DESCRIPTION ********************************************
+dlm_alert_wdrestart_limit                     <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			void dlm_alert_wdrestart_limit(dlmRestarts restarts);
+
+DESCRIPTION:   This function sends an email alert when the download manager
+					is restarted too many times do to watchdog timeouts.
+
+PARAMETER:		The dlmRestarts structure for watchdog timeouts.
+
+RETURN VALUE:	None
+
+END DESCRIPTION **********************************************************/
+
+void dlm_alert_wdrestart_limit(dlmRestarts restarts);
+/*** EndHeader */
+
+xdata S_DLP_WDRESTARTLIMIT_1
+{
+   "The DLP has been restarted too many times due to watch dog timeouts in " \
+   "its allowable time frame.  In the given time frame of "
+};
+xdata S_DLP_WDRESTARTLIMIT_2
+{
+   " seconds, the DLP has restarted "
+};
+xdata S_DLP_WDRESTARTLIMIT_3
+{
+   " time(s)."
+};
+
+_dlm_nodebug
+void dlm_alert_wdrestart_limit(dlmRestarts restarts)
+{
+	auto char buf[DLM_MAX_ALERT_EMAIL_SIZE];
+	sprintf(buf, "%ls%ld%ls%d%ls\n", S_DLP_WDRESTARTLIMIT_1, restarts.timelimit,
+		    S_DLP_WDRESTARTLIMIT_2, DLM_WATCHDOG_RESTART_LIMIT,
+          S_DLP_WDRESTARTLIMIT_3);
+	dlm_alert_send("DLP restart limit reached", buf);
+}
+
+/*** BeginHeader dlm_alert_runtime_error */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_alert_runtime_error                       <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			void dlm_alert_runtime_error(ldrRunTimeErrorInfo rterror);
+
+DESCRIPTION:   This function sends an email alert when the download manager
+					is restarted after a run time error from the DLP.
+
+PARAMETER:		A ldrRunTimeErrorInfo structure which is received in the RAM
+					parameter area from the DLP.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void dlm_alert_runtime_error(ldrRunTimeErrorInfo rterror);
+/*** EndHeader */
+
+xdata S_DLP_RUNTIMEERROR_1
+{
+   "The DLP caused a run time error ("
+};
+
+xdata S_DLP_RUNTIMEERROR_2
+{
+	") at address "
+};
+
+xdata S_DLP_RUNTIMEERROR_3
+{
+	".  This run time error is counted as a watchdog timeout and may result " \
+   "in the DLP becoming non-runnable."
+};
+
+xdata S_DLP_ERR_SECONDARYWDTO    { "ERR_SECONDARYWDTO" };
+xdata S_DLP_ERR_ASSERTFAILURE    { "ERR_ASSERTFAILURE" };
+xdata S_DLP_ERR_LZINPUTBUFFERS   { "ERR_LZINPUTBUFFERS" };
+xdata S_DLP_ERR_LZOUTPUTBUFFERS  { "ERR_LZOUTPUTBUFFERS" };
+xdata S_DLP_ERR_BADPOINTER       { "ERR_BADPOINTER" };
+xdata S_DLP_ERR_BADARRAYINDEX    { "ERR_BADARRAYINDEX" };
+xdata S_DLP_ERR_DOMAIN           { "ERR_DOMAIN" };
+xdata S_DLP_ERR_RANGE            { "ERR_RANGE" };
+xdata S_DLP_ERR_FLOATOVERFLOW    { "ERR_FLOATOVERFLOW" };
+xdata S_DLP_ERR_LONGDIVBYZERO    { "ERR_LONGDIVBYZERO" };
+xdata S_DLP_ERR_LONGZEROMODULUS  { "ERR_LONGZEROMODULUS" };
+xdata S_DLP_ERR_BADPARAMETER     { "ERR_BADPARAMETER" };
+xdata S_DLP_ERR_INTDIVBYZERO     { "ERR_INTDIVBYZERO" };
+xdata S_DLP_ERR_UNEXPECTEDINTRPT { "ERR_UNEXPECTEDINTRPT" };
+xdata S_DLP_ERR_CORRUPTEDCODATA  { "ERR_CORRUPTEDCODATA" };
+xdata S_DLP_ERR_VIRTWDOGTIMEOUT  { "ERR_VIRTWDOGTIMEOUT" };
+xdata S_DLP_ERR_BADXALLOC        { "ERR_BADXALLOC" };
+xdata S_DLP_ERR_BADSTACKALLOC    { "ERR_BADSTACKALLOC" };
+xdata S_DLP_ERR_BADSTACKDEALLOC  { "ERR_BADSTACKDEALLOC" };
+xdata S_DLP_ERR_BADXALLOCINIT    { "ERR_BADXALLOCINIT" };
+xdata S_DLP_ERR_NOVIRTWDOGAVAIL  { "ERR_NOVIRTWDOGAVAIL" };
+xdata S_DLP_ERR_INVALIDMACADDR   { "ERR_INVALIDMACADDR" };
+xdata S_DLP_ERR_INVALIDCOFUNC    { "ERR_INVALIDCOFUNC" };
+xdata S_DLP_ERR_TCPSOCKETISAUTO  { "ERR_TCPSOCKETISAUTO" };
+xdata S_DLP_ERR_DEFAULT          { "Unknown runtime error" };
+
+_dlm_nodebug
+unsigned long dlm_getrterror(char type)
+{
+	auto unsigned long error;
+	switch(type)
+   {
+   case ERR_SECONDARYWDTO:
+      error = S_DLP_ERR_SECONDARYWDTO;
+      break;
+   case ERR_LZINPUTBUFFERS:
+      error = S_DLP_ERR_LZINPUTBUFFERS;
+      break;
+   case ERR_LZOUTPUTBUFFERS:
+      error = S_DLP_ERR_LZOUTPUTBUFFERS;
+      break;
+   case ERR_BADPOINTER:
+      error = S_DLP_ERR_BADPOINTER;
+      break;
+   case ERR_BADARRAYINDEX:
+      error = S_DLP_ERR_BADARRAYINDEX;
+      break;
+   case ERR_STACKCORRUPTED:    // (not currently used)
+      break;
+   case ERR_STACKOVERFLOW:     // (not currently used)
+      break;
+   case ERR_AUXSTACKOVERFLOW:  // (not currently used)
+      break;
+   case ERR_DOMAIN:
+      error = S_DLP_ERR_DOMAIN;
+      break;
+   case ERR_RANGE:
+      error = S_DLP_ERR_RANGE;
+      break;
+   case ERR_FLOATOVERFLOW:
+      error = S_DLP_ERR_FLOATOVERFLOW;
+      break;
+   case ERR_LONGDIVBYZERO:
+      error = S_DLP_ERR_LONGDIVBYZERO;
+      break;
+   case ERR_LONGZEROMODULUS:
+      error = S_DLP_ERR_LONGZEROMODULUS;
+      break;
+   case ERR_BADPARAMETER:
+      error = S_DLP_ERR_BADPARAMETER;
+      break;
+   case ERR_INTDIVBYZERO:
+      error = S_DLP_ERR_INTDIVBYZERO;
+      break;
+   case ERR_UNEXPECTEDINTRPT:
+      error = S_DLP_ERR_UNEXPECTEDINTRPT;
+      break;
+   case ERR_CORRUPTEDCODATA:
+      error = S_DLP_ERR_CORRUPTEDCODATA;
+      break;
+   case ERR_VIRTWDOGTIMEOUT:
+      error = S_DLP_ERR_VIRTWDOGTIMEOUT;
+      break;
+   case ERR_BADXALLOC:
+      error = S_DLP_ERR_BADXALLOC;
+      break;
+   case ERR_BADSTACKALLOC:
+      error = S_DLP_ERR_BADSTACKALLOC;
+      break;
+   case ERR_BADSTACKDEALLOC:
+      error = S_DLP_ERR_BADSTACKDEALLOC;
+      break;
+   case ERR_BADXALLOCINIT:
+      error = S_DLP_ERR_BADXALLOCINIT;
+      break;
+   case ERR_NOVIRTWDOGAVAIL:
+      error = S_DLP_ERR_NOVIRTWDOGAVAIL;
+      break;
+   case ERR_INVALIDMACADDR:
+      error = S_DLP_ERR_INVALIDMACADDR;
+      break;
+   case ERR_INVALIDCOFUNC:
+      error = S_DLP_ERR_INVALIDCOFUNC;
+      break;
+   case ERR_TCPSOCKETISAUTO:
+      error = S_DLP_ERR_TCPSOCKETISAUTO;
+      break;
+   default:
+      error = S_DLP_ERR_DEFAULT;
+   }
+   return error;
+}
+
+_dlm_nodebug
+void dlm_alert_runtime_error(ldrRunTimeErrorInfo rterror)
+{
+	auto char buf[DLM_MAX_ALERT_EMAIL_SIZE];
+   sprintf(buf, "%ls%d:%ls%ls%02x:%04x%ls", S_DLP_RUNTIMEERROR_1, rterror.error,
+   		  dlm_getrterror(rterror.error), S_DLP_RUNTIMEERROR_2, rterror.xpc,
+           rterror.addr, S_DLP_RUNTIMEERROR_3);
+	dlm_alert_send("DLP run time error", buf);
+}
+
+/*** BeginHeader dlm_alert_revert_dlp */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_alert_revert_dlp                          <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			void dlm_alert_revert_dlp(void)
+
+DESCRIPTION:   This function sends an email alert when the download manager
+					reverts to an older DLP image.  This message will only be
+               sent if the download manager is configured to find and run
+               a fallback DLP.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void dlm_alert_revert_dlp(void);
+/*** EndHeader */
+
+xdata S_DLP_VERSIONREVERTED
+{
+	"A previous version of the DLP has been loaded due to execution failures "  \
+   "with the newest DLP image."
+};
+
+_dlm_nodebug
+void dlm_alert_revert_dlp(void)
+{
+	auto char buf[DLM_MAX_ALERT_EMAIL_SIZE];
+   sprintf(buf, "%ls", S_DLP_VERSIONREVERTED);
+   dlm_alert_send("DLP reverted to previous version", buf);
+}
+
+/*** BeginHeader dlm_alert_dlp_notrunnable */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_alert_dlp_notrunnable                     <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			void dlm_alert_dlp_notrunnable(void);
+
+DESCRIPTION:   This function sends an email alert when the download manager
+					does not have a DLP to run.  This may be because there is no
+               image to run, the image(s) are corrupt, or the image(s) are
+               marked as non-runnable due to execution failures.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void dlm_alert_dlp_notrunnable(void);
+/*** EndHeader */
+
+xdata S_DLP_NOTRUNNABLE
+{
+   "The DLP image is not runnable.  The download manager will wait for an " \
+   "upload of a new DLP image."
+};
+
+_dlm_nodebug
+void dlm_alert_dlp_notrunnable(void)
+{
+	auto char buf[DLM_MAX_ALERT_EMAIL_SIZE];
+   sprintf(buf, "%ls", S_DLP_NOTRUNNABLE);
+   dlm_alert_send("DLP not runnable", buf);
+}
+
+/*** BeginHeader dlm_alert_dlm_sflashinitfail */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_alert_dlm_sflashinitfail                  <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			void dlm_alert_dlm_sflashinitfail(void);
+
+DESCRIPTION:   This function sends an email alert if the serial flash
+					fails to initialize when the download manager starts.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void dlm_alert_dlm_sflashinitfail(void);
+/*** EndHeader */
+
+xdata S_DLP_SFLASHINITFAIL
+{
+	"Serial flash initialization failed"
+};
+
+_dlm_nodebug
+void dlm_alert_dlm_sflashinitfail(void)
+{
+	auto char buf[DLM_MAX_ALERT_EMAIL_SIZE];
+   sprintf(buf, "%ls", S_DLP_SFLASHINITFAIL);
+	dlm_alert_send("Serial flash init failed", buf);
+}
+
+/*** BeginHeader dlm_alert_append_restarts */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlm_alert_append_restarts                     <DOWNLOADMANAGER.LIB>
+
+SYNTAX:        void dlm_alert_append_restarts(char* buf, dlmRestarts* restarts,
+										 unsigned long tstamps[], int array_size);
+
+DESCRIPTION:	This function appends the list of restart times (either due to
+					hardware resets or watchdog timeouts),
+
+PARAMETER1:		A buffer to receive the formatted timestamp list.
+
+PARAMETER2:		A pointer to the dlmRestarts structure for the list to be
+					formatted.
+
+PARAMETER3:		Array of timestamps for the list to be formatted.
+
+PARAMETER4:		Maximum number of entries in the timestamps array.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void dlm_alert_append_restarts(char* buf, dlmRestarts* restarts,
+										 unsigned long tstamps[], int array_size);
+/*** EndHeader */
+
+_dlm_nodebug
+void dlm_alert_append_restarts(char* buf, dlmRestarts* restarts,
+                               unsigned long tstamps[], int array_size)
+{
+	int i, j, k, length;
+   char tmbuf[32];
+	struct tm time;
+
+   k = dlm_rslistfull(restarts, array_size) ? array_size : restarts->tail + 1;
+
+   for(i = restarts->head, j = 0; j < k; i = (++i) % array_size, j++)
+   {
+		mktm(&time, tstamps[i]);
+   	sprintf(tmbuf, "%02d/%02d/%04d at %02d:%02d:%02d\n", time.tm_mon,
+              time.tm_mday, 1900+time.tm_year, time.tm_hour, time.tm_min,
+              time.tm_sec);
+      length = strlen(buf);
+      if(length + strlen(tmbuf) < DLM_MAX_ALERT_EMAIL_SIZE)
+         strcat(buf, tmbuf);
+   }
+}
+
+/*** BeginHeader dlm_alert_send */
+/* _START FUNCTION DESCRIPTION ********************************************
+void dlm_alert_send                           <DOWNLOADMANAGER.LIB>
+
+SYNTAX:			void dlm_alert_send(char* subject, char* body);
+
+DESCRIPTION:	This function sends an email alert given in subject and body
+					to the email address specified by DLM_ALERT_EMAIL_ADDRESS_TO.
+
+PARAMETER1:		A string to send as the subject for the email alert.
+
+PARAMETER2:		A string to send as the body of the email alert.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void dlm_alert_send(char* subject, char* body);
+/*** EndHeader */
+
+#use "smtp.lib"
+_dlm_nodebug
+void dlm_alert_send(char* subject, char* body)
+{
+	smtp_sendmail(DLM_ALERT_EMAIL_ADDRESS_TO, DLM_ALERT_EMAIL_ADDRESS_FROM,
+                 subject, body);
+
+	while(smtp_mailtick() == SMTP_PENDING)
+		continue;
+
+#ifdef DLM_VERBOSE
+   printf("---------------------------------------------------------------\n");
+	if(smtp_status() == SMTP_SUCCESS)
+		printf("DLM >> Alert sent\n");
+	else
+		printf("DLM >> Error sending alert\n");
+   printf("SUBJECT: %s\n", subject);
+   printf("BODY: %s\n", body);
+   printf("---------------------------------------------------------------\n");
+#endif
+
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

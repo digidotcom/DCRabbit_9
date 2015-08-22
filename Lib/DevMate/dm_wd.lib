@@ -1,0 +1,1050 @@
+/* START LIBRARY DESCRIPTION *********************************************
+DM_WD.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains target-side routines for communication with a
+   DeviceMate processor.  This API implements watchdog functionality.
+   This allows the DeviceMate to reset the target if the target does
+   not "hit" all watchdogs within a specified time limit.
+
+PORTING NOTE:
+   For non-Rabbit target processors with an ANSI C compiler, there are
+   equivalent .c and .h files in the LIB\Target subdirectory.
+
+CONFIGURATION MACROS:
+	The following macros may be defined before inclusion of this library.
+	The library TC_WD.LIB also contains some configuration macros which
+	are common to both target and DeviceMate processors.
+
+	DEVMATE_WD_NUMRXBUF
+	   Defaults to 2.  Specifies the number of target communications
+	   receive buffers.  The default is appropriate for most situations.
+
+	DEVMATE_WD_NUMTXBUF
+	   Defaults to 1.  Specifies the number of target communications
+	   transmit buffers.  This may be increased to 2 if there are
+	   many watchdogs which must be hit at a high rate (faster than
+	   once per second).
+
+	DEVMATE_WD_PENDING
+	   Defaults to 12.  Specifies the maximum number of active watchdogs.
+
+	DEVMATE_WD_RETRANSMIT
+	   Defaults to 500.  Specifies number of milliseconds between
+	   retransmission of the same request, in the case of a timeout
+	   waiting for response.
+
+	DEVMATE_WD_HITTIME
+	   Defaults to 200.  Specifies minimum number of milliseconds between
+	   successive hit requests for a particular watchdog.  This should
+	   be set to about 1/5 of the shortest watchdog timeout, which gives
+	   5 chances for the "hit" request to be received by the DeviceMate
+	   before the watchdog expires.
+
+	DEVMATE_TXSPEED
+	   Defaults to 50.  Specifies the minimum number of milliseconds
+	   between any two successive watchdog requests.
+	   
+
+GLOBAL VARIABLES:
+
+   DevMateWdTargetControl _devmate_wdctrl;
+   DevMateWdPending _devmate_wd_pending[DEVMATE_WD_PENDING];
+      These structures contain all necessary state information.
+
+API FUNCTIONS:
+   See individual function description for details.
+   
+   int devmate_wd_init(uint16 block_ms);
+		Initialize watchdogs application handler on DeviceMate.
+		
+	int devmate_wd_add(char* name, uint32 updatewith, uint16 block_ms);
+		Add a watchdog.
+		
+	int devmate_wd_hit(char* name);
+		Hit a watchdog.
+		
+	int devmate_wd_rmv(char* name, uint16 block_ms);
+		Remove a watchdog.  Send to the pound.
+
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader */
+
+#ifndef TC_WD_H
+	#use tc_wd.lib
+#endif
+
+#ifdef __DC__
+	#ifndef __DEVMATE_APP_LIB
+		#use "dm_app.lib"
+	#endif
+#endif
+
+/*
+ *		DeviceMate configurable variables
+ */
+
+#ifndef DEVMATE_WD_NUMTXBUF
+	#define DEVMATE_WD_NUMTXBUF 		2
+#endif
+
+#ifndef DEVMATE_WD_NUMRXBUF
+	#define DEVMATE_WD_NUMRXBUF 		2
+#endif
+
+#ifndef DEVMATE_WD_PENDING
+	#define DEVMATE_WD_PENDING 		12
+#endif
+
+#ifndef DEVMATE_WD_RETRANSMIT
+	#define DEVMATE_WD_RETRANSMIT		500
+#endif
+
+#ifndef DEVMATE_WD_HITTIME
+	#define DEVMATE_WD_HITTIME			200
+#endif
+
+#ifndef DEVMATE_TXSPEED
+	#define DEVMATE_TXSPEED				50
+#endif
+
+
+/*
+ *		The DevMateWdPending structure holds packets that are waiting to
+ *		be sent or have some additional processing after they are sent.
+ *		In the case of the INIT, ADD, RMV packets, devmate_wd_tick moves
+ *		the structure from the sent queue into the waiting queue after the
+ *		the data is sent to the DeviceMate.  The pending structure
+ *		sits in the waiting queue until either there is a response from
+ *		the DeviceMate or the higher level function removes them due
+ *		to timeout.  Like the previous packets the HIT packet moves to the
+ *		waiting queue when it is sent to the DeviceMate, but the HIT
+ *		packet is not expecting a response.  Instead it stays in the
+ *		waiting queue until the timeout in the structure expires.  This
+ *		allows the user to issue hit requests as often as they want to
+ *		without every request being sent over the connection.
+ *
+ *		The user should have one of these structures for each concurrent
+ *		watchdog.  They can specify exactly how many of these structures
+ *		are used by the watchdog subsystem by overridding the
+ *		DEVMATE_WD_PENDING macro, which defaults to 12.
+ *
+ *		The pending structures are organized into a circularly linked list
+ *		with the list point pointing to the last time.  There are a series
+ *		of routines that modify the list in the next section.
+ *
+ */
+
+typedef struct _DevMateWdPending
+{
+	struct _DevMateWdPending *next;
+	
+	uint8 state;
+	uint8 operation;
+	uint16 timeout;
+
+	// Packet contents...
+	uint32 updatewith;
+	uint16 sequence;
+	char name[DEVMATE_WD_MAXNAME];
+} DevMateWdPending;
+
+
+/*
+ *		The DevMateWdTargetControl structure is a holding structure
+ *		for general target information, including the locks, pending
+ *		queues, and transmit buffers.
+ *
+ */
+
+typedef struct
+{
+#ifdef TC_LOCKING
+	TC_LOCKTYPE lock;
+	TC_LOCKTYPE ticklock;
+#endif
+
+	uint16 initialized;
+
+	uint16 sequence;
+
+	DevMateWdPending *free;
+	DevMateWdPending *sending;
+	DevMateWdPending *waiting;
+
+	faraddr_t rxbuffer;
+	faraddr_t txbuffer;
+	faraddr_t rxbuffers;
+	faraddr_t txbuffers;
+
+	faraddr_t rxprocessing;
+
+	uint16 nexttransmit;
+	
+} DevMateWdTargetControl;
+
+extern DevMateWdPending _devmate_wd_pending[DEVMATE_WD_PENDING];
+extern DevMateWdTargetControl _devmate_wdctrl;
+
+/*** EndHeader */
+
+/*** BeginHeader _dmwd_initpending, _dmwd_getpending, _dmwd_putpending, _dmwd_rmvpending */
+
+void _dmwd_initpending(void);
+DevMateWdPending* _dmwd_getpending(DevMateWdPending **list);
+void _dmwd_putpending(DevMateWdPending **list, DevMateWdPending *pending);
+DevMateWdPending* _dmwd_findpending(DevMateWdPending *list, uint16 sequence);
+DevMateWdPending* _dmwd_findpendingname(DevMateWdPending *list, char* name);
+int _dmwd_rmvpending(DevMateWdPending **list, DevMateWdPending* pending);
+int _dmwd_timeoutpending(DevMateWdPending **from, DevMateWdPending **to);
+
+/*** EndHeader */
+
+DevMateWdPending _devmate_wd_pending[DEVMATE_WD_PENDING];
+DevMateWdTargetControl _devmate_wdctrl;
+
+/*
+ *		Routines to track the pending requests.  The pending requests
+ *		are stored in a circular linked list with the list pointer
+ *		pointing to the last entry and the last->next pointer pointing
+ *		at the first entry
+ */
+
+/*
+ *		_dmwd_initpending
+ *		Initialize the circular link list with all item in the
+ *		free list.
+ */
+
+wd_nodebug
+void _dmwd_initpending(void)
+{
+	auto int x;
+
+#ifdef TC_LOCKING
+	TC_ENTER_CRITICAL();
+#endif
+
+	for(x=0;x<DEVMATE_WD_PENDING-1;x++)
+		_devmate_wd_pending[x].next=&_devmate_wd_pending[x+1];
+
+	_devmate_wd_pending[x].next=&_devmate_wd_pending[0];
+
+	_devmate_wdctrl.free=&_devmate_wd_pending[x];
+	_devmate_wdctrl.sending=NULL;
+	_devmate_wdctrl.waiting=NULL;
+	_devmate_wdctrl.nexttransmit = (uint16)MS_TIMER;
+
+#ifdef TC_LOCKING
+	TC_EXIT_CRITICAL();
+#endif
+}
+
+/*
+ *		_dmwd_getpending
+ *		Remove an entry from the front of the list.
+ */
+
+
+wd_nodebug
+DevMateWdPending* _dmwd_getpending(DevMateWdPending **list)
+{
+	DevMateWdPending *rval;
+
+#ifdef TC_LOCKING
+	TC_ENTER_CRITICAL();
+#endif
+
+	/*
+	 *		Get an entry from the front of the list.
+	 */
+	
+	if(*list==NULL)
+		rval=NULL;
+	else {
+		rval=(*list)->next;
+
+		if(*list==(*list)->next)
+			*list=NULL;
+		else
+			(*list)->next=rval->next;
+	}
+
+#ifdef TC_LOCKING
+	TC_EXIT_CRITICAL();
+#endif
+
+	return rval;
+}
+
+/*
+ *		_dmwd_putpending
+ *		Add an entry to the end of the list.
+ */
+
+
+wd_nodebug
+void _dmwd_putpending(DevMateWdPending **list, DevMateWdPending *pending)
+{
+	/*
+	 *		Add an entry to the end of the list.
+	 */
+	 
+#ifdef TC_LOCKING
+	TC_ENTER_CRITICAL();
+#endif
+
+	if(*list==NULL)
+		pending->next=pending;
+	else {
+		pending->next=(*list)->next;
+		(*list)->next=pending;
+	}
+	
+	*list=pending;
+
+#ifdef TC_LOCKING
+	TC_EXIT_CRITICAL();
+#endif
+}
+
+/*
+ *		_dmwd_findpending
+ *		Find an entry with a matching sequence number in the list.
+ */
+
+
+wd_nodebug
+DevMateWdPending* _dmwd_findpending(DevMateWdPending *list, uint16 sequence)
+{
+	auto DevMateWdPending *next;
+
+#ifdef TC_LOCKING
+	TC_ENTER_CRITICAL();
+#endif
+
+	/*
+	 *		If the list is empty return NULL.
+	 */
+
+	if(list==NULL)
+		return NULL;
+
+	if(list->sequence==sequence) {
+#ifdef TC_LOCKING
+		TC_EXIT_CRITICAL();
+#endif
+		return list;
+	}
+
+	/*
+	 *		Scan through the list until the sequence number matches.
+	 */
+
+	next=list->next;
+
+	do {
+		if(next->sequence==sequence) {
+#ifdef TC_LOCKING
+			TC_EXIT_CRITICAL();
+#endif
+			return next;
+		}			
+		next=next->next;
+	} while(next!=list);
+
+#ifdef TC_LOCKING
+	TC_EXIT_CRITICAL();
+#endif
+
+	return NULL;
+}
+
+/*
+ *		_dmwd_findpendingname
+ *		Find an entry with a matching name in the list.
+ */
+
+
+wd_nodebug
+DevMateWdPending* _dmwd_findpendingname(DevMateWdPending *list, char* name)
+{
+	auto DevMateWdPending *next;
+
+#ifdef TC_LOCKING
+	TC_ENTER_CRITICAL();
+#endif
+
+	/*
+	 *		If the list is empty return NULL.
+	 */
+
+	if(list==NULL) {
+#ifdef TC_LOCKING
+		TC_EXIT_CRITICAL();
+#endif
+		return NULL;
+	}
+
+	if(strncmp(list->name,name,sizeof(list->name))==0) {
+#ifdef TC_LOCKING
+		TC_EXIT_CRITICAL();
+#endif
+		return list;
+	}		
+
+	/*
+	 *		Scan through the list until the sequence number matches.
+	 */
+
+	next=list->next;
+
+	do {
+		if(strncmp(next->name,name,sizeof(next->name))==0) {
+#ifdef TC_LOCKING
+			TC_EXIT_CRITICAL();
+#endif
+			return next;
+		}
+		next=next->next;
+	} while(next!=list);
+
+#ifdef TC_LOCKING
+	TC_EXIT_CRITICAL();
+#endif
+	return NULL;
+}
+
+/*
+ *		_dmwd_findpending
+ *		Remove the specified item from the list.
+ */
+
+
+wd_nodebug
+int _dmwd_rmvpending(DevMateWdPending **list, DevMateWdPending* pending)
+{
+	auto DevMateWdPending *next;
+
+	if(*list==NULL)
+		return -1;
+
+#ifdef TC_LOCKING
+	TC_ENTER_CRITICAL();
+#endif
+
+	next=*list;
+
+	/*
+	 *		Only Item?
+	 */
+
+	if(next->next==next) {
+		/*
+		 *		Remove it from the list if it matches.
+		 */
+
+		if(pending==next) {
+			*list=NULL;
+#ifdef TC_LOCKING
+			TC_EXIT_CRITICAL();
+#endif
+			return 0;
+		}
+	
+	} else {
+		/*
+		 *		Scan through the list until we find a match.
+		 */
+
+		do {
+			/*
+			 *		If we have found a match remove it from
+			 *		the list and update the head pointer if
+			 *		necessary.
+			 */
+			 
+			if(next->next==pending) {
+				/*
+				 *		We are removing the last entry update
+				 *		the list pointer.
+				 *
+				 */
+				 
+				if(next->next==*list)
+					*list=next;
+
+				/*
+				 *		Unlink the item from the list.
+				 */
+
+				next->next=next->next->next;
+#ifdef TC_LOCKING
+				TC_EXIT_CRITICAL();
+#endif
+				return 0;
+			}
+			
+			/*
+			 *		No match yet, move to the next entry.
+			 */
+			 
+			next=next->next;
+			
+		} while(*list!=next);
+	}
+
+#ifdef TC_LOCKING
+	TC_EXIT_CRITICAL();
+#endif
+	return -1;
+}
+
+/*
+ *		_dmwd_findpending
+ *		If any of the entries are timed out move them
+ *		to the "to" list.
+ */
+
+
+wd_nodebug
+int _dmwd_timeoutpending(DevMateWdPending **from, DevMateWdPending **to)
+{
+	DevMateWdPending *pending, *tmpqueue;
+
+#ifdef TC_LOCKING
+	TC_ENTER_CRITICAL();
+#endif
+
+	tmpqueue=NULL;
+	while(pending=_dmwd_getpending(from)) {
+		if(pending->operation==DEVMATE_WD_HIT && !_dmwd_chktimeout(pending->timeout))
+			_dmwd_putpending(to,pending);
+		else
+			_dmwd_putpending(&tmpqueue,pending);
+	}
+
+	*from=tmpqueue;
+
+#ifdef TC_LOCKING
+	TC_EXIT_CRITICAL();
+#endif
+	return 0;
+}
+
+/*** BeginHeader devmate_wd_init, devmate_wd_add, devmate_wd_hit */
+int devmate_wd_init(uint16 block_ms);
+int devmate_wd_add(char* name, uint32 updatewith, uint16 block_ms);
+int devmate_wd_hit(char* name);
+int _devmate_sendrequest(uint8 operation, char* name, uint32 updatewith, uint16 timeout);
+#ifdef __DC__
+root
+#endif
+int devmate_wd_callback(uint16 flags, uint8 type, uint8 subtype, uint16 length,
+	faraddr_t buffer, long userdata);
+/*** EndHeader */
+
+wd_nodebug
+int _devmate_sendrequest(uint8 operation, char* name, uint32 updatewith, uint16 timeout)
+{
+	auto int rval;
+	auto uint16 retransmit_timeout;
+	auto DevMateWdPending* pending;
+
+	/*
+	 *		Allocate a pending entry to handle retransmition.
+	 */
+
+	do {
+		pending=_dmwd_getpending(&_devmate_wdctrl.free);
+	} while(pending==NULL && _dmwd_chktimeout(timeout));
+
+	if(pending==NULL)
+		return DEVMATE_WD_TIMEOUT;
+
+	/*
+	 *		Make pending entry match the init, add, or rmv request
+	 */
+
+	pending->state=DEVMATE_WD_SENDING;
+	pending->operation=operation;
+	strncpy(pending->name,name,sizeof(pending->name));
+	pending->updatewith=updatewith;
+	pending->sequence=_devmate_wdctrl.sequence++;
+	pending->timeout=0;
+
+	/*
+	 *		Place the entry on the queue to be printed.
+	 */
+
+	_dmwd_putpending(&_devmate_wdctrl.sending,pending);
+
+	rval=DEVMATE_WD_TIMEOUT;
+
+	/*
+	 *		While there is time send (and resend) the
+	 *		packet to the other side waiting for a response.
+	 */
+
+	do {
+		if(pending->state==DEVMATE_WD_WAITING) {
+			pending->state=DEVMATE_WD_SENDING;
+			_dmwd_rmvpending(&_devmate_wdctrl.waiting,pending);
+			_dmwd_putpending(&_devmate_wdctrl.sending,pending);
+		}
+			
+		retransmit_timeout = (uint16)MS_TIMER + DEVMATE_WD_RETRANSMIT;
+		
+		do {
+			devmate_tick();
+		} while(pending->state<=DEVMATE_WD_WAITING &&
+			_dmwd_chktimeout(timeout) &&
+			_dmwd_chktimeout(retransmit_timeout));
+
+	} while(pending->state<=DEVMATE_WD_WAITING && _dmwd_chktimeout(timeout));
+
+	/*
+	 *		Capture the response
+	 */
+
+	if(pending->state>DEVMATE_WD_WAITING)
+		rval=pending->state;
+
+	/*
+	 *		Remove the pending entry and place it on the free queue.
+	 */
+
+	if(pending->state==DEVMATE_WD_SENDING) {
+		_dmwd_rmvpending(&_devmate_wdctrl.sending,pending);
+		_dmwd_putpending(&_devmate_wdctrl.free,pending);
+	} else if(pending->state>=DEVMATE_WD_WAITING) {
+		_dmwd_rmvpending(&_devmate_wdctrl.waiting,pending);
+		_dmwd_putpending(&_devmate_wdctrl.free,pending);
+	}
+
+	return rval;
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_wd_init               <dm_wd.lib>
+
+SYNTAX:        int devmate_wd_init(uint16 block_ms);
+
+KEYWORDS:		DeviceMate, watchdog
+
+DESCRIPTION: 	This function send an initialization message to the
+               DeviceMate.  It tries to contact the DeviceMate
+               until block_ms time has passed.
+
+PARAMETER1:    number of milliseconds to wait bfore giving up
+
+RETURN VALUE:  DEVMATE_WD_TIMEOUT - no response within block_ms
+               DEVMATE_WD_ACK     - DeviceMate watchdogs initialized
+               DEVMATE_WD_NAK     - DeviceMate watchdogs not initialized
+               
+SEE ALSO:      devmate_wd_add, devmate_wd_rmv, devmate_wd_hit
+
+END DESCRIPTION **********************************************************/
+
+wd_nodebug
+int devmate_wd_init(uint16 block_ms)
+{
+	auto int rval;
+
+#ifdef TC_LOCKING
+	TC_LOCK(devmate_wdctrl.lock);
+#endif
+
+	rval=_devmate_sendrequest(DEVMATE_WD_INIT, "", 0, (uint16)MS_TIMER+block_ms);
+
+#ifdef TC_UNLOCK
+	TC_LOCK(devmate_wdctrl.lock);
+#endif
+
+	return rval;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_wd_add                <dm_wd.lib>
+
+SYNTAX:        int devmate_wd_add(char* name, uint32 updatewith,
+                  uint16 block_ms);
+
+KEYWORDS:		DeviceMate, watchdog
+
+DESCRIPTION: 	Add a watchdog to the DeviceMate.
+
+PARAMETER1:    name of the watchdog
+PARAMETER2:    interval to update the watchdog when hit
+PARAMETER3:    number of milliseconds to wait before giving up
+
+RETURN VALUE:  DEVMATE_WD_TIMEOUT - no response within block_ms
+               DEVMATE_WD_ACK     - watchdog added
+               DEVMATE_WD_NAK     - watchdog not added
+               
+SEE ALSO:      devmate_wd_init, devmate_wd_rmv, devmate_wd_hit
+
+END DESCRIPTION **********************************************************/
+
+wd_nodebug
+int devmate_wd_add(char* name, uint32 updatewith, uint16 block_ms)
+{
+	auto int rval;
+
+#ifdef TC_LOCKING
+	TC_LOCK(devmate_wdctrl.lock);
+#endif
+
+	rval=_devmate_sendrequest(DEVMATE_WD_ADD, name, updatewith, (uint16)MS_TIMER+block_ms);
+
+#ifdef TC_UNLOCK
+	TC_LOCK(devmate_wdctrl.lock);
+#endif
+
+	return rval;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_wd_hit                <dm_wd.lib>
+
+SYNTAX:        int devmate_wd_hit(char* name);
+
+KEYWORDS:		DeviceMate, watchdog
+
+DESCRIPTION: 	Remove a watchdog from the DeviceMate
+
+PARAMETER1:    name of the watchdog
+
+RETURN VALUE:  0  - hit request queued
+					-1 - error queueing hit request
+               
+SEE ALSO:      devmate_wd_init, devmate_wd_add, devmate_wd_rmv
+
+END DESCRIPTION **********************************************************/
+
+wd_nodebug
+int devmate_wd_hit(char* name)
+{
+	auto int rval;
+	auto DevMateWdPending* pending;
+
+#ifdef TC_LOCKING
+	TC_LOCK(devmate_wdctrl.lock);
+#endif
+
+	devmate_tick();
+
+	/*
+	 *		Don't queue the packet if we are have already
+	 *		sent one recently.
+	 */
+
+	if(_dmwd_findpendingname(_devmate_wdctrl.sending,name) ||
+		_dmwd_findpendingname(_devmate_wdctrl.waiting,name)) {
+		rval=0;
+	} else {
+		pending=_dmwd_getpending(&_devmate_wdctrl.free);
+
+		if(pending!=NULL) {
+			pending->state=DEVMATE_WD_SENDING;
+			pending->operation=DEVMATE_WD_HIT;
+			strncpy(pending->name,name,sizeof(pending->name));
+			pending->updatewith=0;
+			pending->sequence=0;
+			pending->timeout = (uint16)MS_TIMER + DEVMATE_WD_HITTIME;
+
+			_dmwd_putpending(&_devmate_wdctrl.sending,pending);
+			rval=0;
+		} else {
+			rval=-1;
+		}
+	}
+
+#ifdef TC_LOCKING
+	TC_UNLOCK(devmate_wdctrl.lock);
+#endif
+
+	return rval;
+}
+
+/*
+ *		devmate_wd_callback
+ *		callback function.  Queues up the transmitted and received buffers
+ *		for processing in devmate_wd_tick
+ *
+ */
+
+wd_nodebug
+#ifdef __DC__
+root
+#endif
+int devmate_wd_callback(uint16 flags, uint8 type, uint8 subtype, uint16 length,
+								faraddr_t buffer, long userdata)
+{
+#ifdef __DC__
+#asm
+		ld		hl,(sp+@SP+flags)
+
+		bit	7,h								; flags&TC_SYSBUF?
+		jr		nz,__DM_spwd_done	
+
+		bit	0,l								; !(flags&TC_RECEIVE)?
+		jr		nz,__DM_spwd_rx
+
+__DM_spwd_tx:
+c		_tc_queue_buffer(&_devmate_wdctrl.txbuffers,buffer); /* return tx buffer */
+		jr		__DM_spwd_done
+
+__DM_spwd_rx:
+c		_tc_queue_buffer(&_devmate_wdctrl.rxprocessing,buffer); /* place rx buffer on queue */
+
+__DM_spwd_done:
+#endasm
+#else
+	if (flags & TC_RECEIVE)
+		_tc_queue_buffer(&_devmate_wdctrl.rxprocessing,buffer);
+	else if (flags & TC_TXDONE)
+		_tc_queue_buffer(&_devmate_wdctrl.txbuffers,buffer);
+	return 0;
+#endif
+}
+
+/*** BeginHeader _devmate_wd_init */
+void _devmate_wd_init(void);
+#funcchain __devmate_init _devmate_wd_init
+/*** EndHeader */
+
+/*
+ *		_devmate_wd_init
+ *		Initialize the local watchdog subsystem.
+ *
+ */
+
+wd_nodebug
+void _devmate_wd_init(void)
+{
+	auto faraddr_t buffer;
+
+#ifdef __DC__
+	#GLOBAL_INIT {
+		memset(&_devmate_wdctrl,0,sizeof(_devmate_wdctrl));
+		memset(&_devmate_wd_pending,0,sizeof(_devmate_wd_pending));
+	}
+#endif
+
+	if(_devmate_wdctrl.initialized==0) {
+		_devmate_wdctrl.txbuffer=xalloc((DEVMATE_WD_PKTSIZE+sizeof(_TCHeader))*DEVMATE_WD_NUMTXBUF);
+		_devmate_wdctrl.rxbuffer=xalloc((DEVMATE_WD_PKTSIZE+sizeof(_TCHeader))*DEVMATE_WD_NUMRXBUF);
+		_devmate_wdctrl.initialized=1;
+	}
+
+#ifdef TC_LOCKING
+	devmate_wdctrl.lock=TC_CREATELOCK();
+	devmate_wdctrl.ticklock=TC_CREATELOCK();
+#endif
+
+	/*
+	 *		Allocate the receive and transmit queues
+	 */
+	
+	_tc_create_queue(&_devmate_wdctrl.txbuffers,_devmate_wdctrl.txbuffer,
+		DEVMATE_WD_PKTSIZE+sizeof(_TCHeader),DEVMATE_WD_NUMTXBUF);
+	_tc_create_queue(&_devmate_wdctrl.rxbuffers,_devmate_wdctrl.rxbuffer,
+		DEVMATE_WD_PKTSIZE+sizeof(_TCHeader),DEVMATE_WD_NUMRXBUF);
+
+	/*
+	 *		Register the callback.
+	 */
+
+	if(devmate_registercallback(TC_TYPE_WD,devmate_wd_callback)!=TC_SUCCESS)
+		exit(-1);
+
+	/*
+	 *		Add receive buffers to the system.
+	 */
+
+	while(buffer=_tc_get_buffer(&_devmate_wdctrl.rxbuffers)) {
+		if(devmate_recvbuf(TC_TYPE_WD,DEVMATE_WD_PKTSIZE,buffer,0)!=TC_SUCCESS)
+			exit(-1);
+	}
+
+	/*
+	 *		Initialize the pending queues
+	 */
+
+	_dmwd_initpending();
+}
+
+/*** BeginHeader _devmate_wd_tick */
+void _devmate_wd_tick(void);
+#funcchain __devmate_tick _devmate_wd_tick
+
+/*** EndHeader */
+
+/*
+ *		_devmate_wd_tick
+ *		Process incoming and outgoing pending packets.
+ *
+ */
+
+wd_nodebug
+void _devmate_wd_tick(void)
+{
+	auto _TCHeader header;
+	auto TCDevMateWd wd;
+	auto faraddr_t buffer;
+	auto DevMateWdPending* sending;
+	auto DevMateWdPending* timeout;
+	auto int len;
+#ifdef TC_BIG_ENDIAN
+	static const uint8 wd_swaps[] =
+		{ 0,3,1,2, 4,5 };
+#endif
+
+#ifdef TC_LOCKING
+	TC_LOCK(devmate_wdctrl.ticklock);
+#endif
+
+	/*
+	 *		While there are items in the sending queue send them.
+	 */
+	
+	while(_devmate_wdctrl.sending && !_dmwd_chktimeout(_devmate_wdctrl.nexttransmit)) {
+		buffer=_tc_get_buffer(&_devmate_wdctrl.txbuffers);
+		if(buffer) {
+			_devmate_wdctrl.nexttransmit = (uint16)MS_TIMER + DEVMATE_TXSPEED;
+		
+			sending=_dmwd_getpending(&_devmate_wdctrl.sending);
+			if(sending) {
+
+				/*
+				 *		We have something to send and we have a buffer.
+				 *		Queue the buffer and continue processing the
+				 *		sending queue.
+				 *
+				 */
+				strncpy(wd.name,sending->name,sizeof(wd.name));
+				for (len = 0; len < sizeof(wd.name); len++)
+					if (!wd.name[len])
+						break;
+				wd.sequence=sending->sequence;
+				wd.updatewith=sending->updatewith;
+#ifdef TC_BIG_ENDIAN
+				_tc_reorder((uint8 *)&wd, sizeof(wd_swaps), wd_swaps);
+#endif
+				root2xmem(buffer+sizeof(_TCHeader),&wd,sizeof(wd));
+
+				devmate_send(TC_TYPE_WD, sending->operation,
+					DEVMATE_WD_PKTHDRSIZE + len, buffer, 0);
+
+				sending->state=DEVMATE_WD_WAITING;
+				_dmwd_putpending(&_devmate_wdctrl.waiting,sending);
+
+#ifdef DEVMATE_WD_DEBUG
+				printf("devmate_wd_tick sent \"%s\",%02x\n",wd.name,(int)sending->operation);
+#endif
+			} else {
+
+				/*
+				 *		Shouldn't get here.  If the buffer has been snatched
+				 *		from us return the transmit buffer back to the free
+				 *		queue.  And halt this pass through the sending queue.
+				 *
+				 */
+				 
+				_tc_queue_buffer(&_devmate_wdctrl.txbuffers,buffer);
+				break;
+			}
+		} else {
+			/*
+			 *		We were not able to allocate a transmit buffer.  Defer
+			 *		processing until the next tick call.
+			 *
+			 */
+			 
+			break;
+		}
+	}
+
+	/*
+	 *		While there are incoming buffers process them.
+	 */
+
+	while(buffer=_tc_get_buffer(&_devmate_wdctrl.rxprocessing)) {
+		xmem2root(&header,buffer,sizeof(header));
+		xmem2root(&wd,buffer+sizeof(_TCHeader),sizeof(wd));
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&wd, sizeof(wd_swaps), wd_swaps);
+#endif
+		if (header.length < sizeof(wd.name))
+			wd.name[header.length] = 0;
+
+#ifdef DEVMATE_WD_DEBUG
+		printf("devmate_wd_init received \"%s\",%02x\n",wd.name,(int)header.subtype);
+#endif
+
+      if((header.subtype&0x7f)!=DEVMATE_WD_HIT) {
+         sending=_dmwd_findpending(_devmate_wdctrl.waiting,wd.sequence);
+         if(sending)
+            sending->state=(header.subtype&TC_ACK)?DEVMATE_WD_ACKED:DEVMATE_WD_NAKED;
+      }
+
+		devmate_recvbuf(TC_TYPE_WD,DEVMATE_WD_PKTSIZE,buffer,0);
+	}
+
+	/*
+	 *		Timeout any old buffers
+	 */
+
+	_dmwd_timeoutpending(&_devmate_wdctrl.waiting,&_devmate_wdctrl.free);
+			
+#ifdef TC_LOCKING
+	TC_UNLOCK(devmate_wdctrl.ticklock);
+#endif
+}
+
+/*** BeginHeader devmate_wd_rmv */
+int devmate_wd_rmv(char* name, uint16 block_ms);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_wd_rmv                <dm_wd.lib>
+
+SYNTAX:        int devmate_wd_rmv(char* name, uint16 block_ms);
+
+KEYWORDS:		DeviceMate, watchdog
+
+DESCRIPTION: 	Remove a watchdog from the DeviceMate
+
+PARAMETER1:    name of the watchdog
+PARAMETER2:    number of milliseconds to wait bfore giving up
+
+RETURN VALUE:  DEVMATE_WD_TIMEOUT - not response within block_ms
+               DEVMATE_WD_ACK     - watchdog removed
+               DEVMATE_WD_NAK     - watchdog not removed
+               
+SEE ALSO:      devmate_wd_init, devmate_wd_add, devmate_wd_hit
+
+END DESCRIPTION **********************************************************/
+
+wd_nodebug
+int devmate_wd_rmv(char* name, uint16 block_ms)
+{
+	auto int rval;
+
+#ifdef TC_LOCKING
+	TC_LOCK(devmate_wdctrl.lock);
+#endif
+
+	rval=_devmate_sendrequest(DEVMATE_WD_REMOVE, name, 0, (uint16)MS_TIMER+block_ms);
+
+#ifdef TC_UNLOCK
+	TC_LOCK(devmate_wdctrl.lock);
+#endif
+
+	return rval;
+}

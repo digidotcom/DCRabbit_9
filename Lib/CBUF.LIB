@@ -1,0 +1,817 @@
+/* START LIBRARY DESCRIPTION ********************************************
+CBUF.LIB
+
+OVERVIEW:     The circular buffers here are standard rotating FIFO buffers.
+				  THey are currently used by the RS232 serial library to store
+				  incoming and outgoing data, but they are general purpose.
+
+BUFFER STRUCTURE:
+              Each circular buffer has 8 bytes of overhead, and 2^n bytes
+              of data area, of which 2^n - 1 bytes are used to hold data at
+              any time; the additional data area byte provides a separator
+              for the tail index and the head. Therfore, when allocating
+              space for a buffer, you will need 2^n + 8 bytes.
+              following structure:
+                L 1st byte: low  byte of lock status: bit 0: write lock
+                                                    bit 1: read lock
+                                                    bits 2-15: unused
+                L 2nd byte: high byte of lock status
+                F 3nd byte: low  byte of front, or head index of data
+                F 4rd byte: high byte of front, or head index of data
+                B 5th byte: low  byte of back, or tail index of data
+                B 6th byte: high byte of back, or tail index of data
+                M 7th byte: low  byte of 2^n - 1 mask
+                M 8th byte: high byte of 2^n - 1 mask
+                  9th byte: start of 2^n byte data area for 2^n - 1 bytes
+									 of data
+              for port A write buffer defined as follows:
+						#define AOUTBFFSIZE 31,
+              the data of each of the 3 below are identical
+
+                LLFFBBMMthe output buffer is now filled_   head=0,  tail=30
+                LLFFBBMM_the output buffer is now filled   head=1,  tail=31
+                LLFFBBMMut buffer is now filled_the outp   head=24, tail=22
+
+              (head == tail)                           : buffer is empty
+              ((head + data length) & mask == tail - 1): buffer is full
+
+FUNCTIONS:
+					cbuf_init
+
+					cbuf_getch
+					cbuf_putch
+					cbuf_put
+					cbuf_get
+					cbuf_flush
+					cbuf_peek
+
+					cbuf_wrlock
+					cbuf_wrunlock
+					cbuf_rdlock
+					cbuf_rdunlock
+
+					cbuf_length
+					cbuf_used
+					cbuf_free
+
+END DESCRIPTION **********************************************************/
+
+
+/*** Beginheader */
+
+//xmem calls
+#define RETADDRESS_SIZE 3
+
+
+
+/*** Endheader */
+
+/*** Beginheader cbuf_getch */
+int  cbuf_getch   (char *buf);
+/*** endheader */
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_getch                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_getch(char *circularBuffer);
+
+DESCRIPTION:  returns the first character of the data, indicated by head.
+
+PARAMETER1:   circularBuffer: Circular buffer.
+
+RETURN VALUE:	-1 if the buffer is empty, the character at the head index
+					if not.
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_getch::
+	push	ix					; 12,	save frame pointer
+
+	ld		ix,(sp+2+RETADDRESS_SIZE)		; 11,	ix=cbuf
+
+	ld		hl,(ix+2)		; 9,	bc=front
+	ld		c,l				; 2
+	ld		b,h				; 2
+
+	ld		hl,(ix+6)		; 9,	de=mask, hl=back
+	ex		de,hl				; 2
+	ld		hl,(ix+4)		; 9
+
+	or		a					; 2,	clear carry
+
+	sbc	hl,bc				; 4,	front==back???
+	jr		nz,.cbgc_nempty	; 5
+	dec	hl					; 2
+	jr		.cbgc_done		; 5
+
+.cbgc_nempty:
+	bool	hl					; 2,	de=(front+1)&mask
+	add	hl,bc				; 2
+	and	hl,de				; 2
+	ex		de,hl				; 2
+
+	ld		hl,ix				; 4,	hl=&buffer[front]
+	add	hl,bc				; 2
+	ld		bc,0x0008		; 6
+	add	hl,bc				; 2
+
+	ld		a,(hl)			; 5,	a=buffer[front]
+
+	ex		de,hl				; 2,	(front++)&=mask
+	ld		(ix+2),hl		; 11
+
+	bool	hl					; 2,	return character
+	ld		l,a				; 2
+
+.cbgc_done:
+	pop	ix					; 9
+	lret						; 8
+
+#endasm
+
+/*** Beginheader cbuf_dropget */
+int  cbuf_dropget(char *buffer, int index);
+
+/*** endheader */
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_drop                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_drop(char *buffer, int index);
+
+DESCRIPTION:  Gets the nth byte in the buffer after dropping any previous
+              bytes
+
+PARAMETER1:   circularBuffer: Circular buffer.
+
+PARAMETER2:	  how many bytes to remove from the buffer, the last of these
+					is returned
+
+RETURN VALUE:	-1 if the buffer is empty, or last byte
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_dropget::
+	push	ix					; 12,	save frame pointer
+
+	ld		ix,(sp+2+RETADDRESS_SIZE)		; 11,	ix=cbuf
+
+	ld		hl,(ix+2)		; 9,	bc=front
+	ld		c,l				; 2
+	ld		b,h				; 2
+
+	ld		hl,(ix+6)		; 9,	de=mask, hl=back
+	ex		de,hl				; 2
+	ld		hl,(ix+4)		; 9
+
+   ;from cbuf_used
+	OR		A							; clear carry
+	SBC	HL,BC							; (back-front+1+mask)&mask
+	ADD	HL,DE							;
+	INC	HL								;
+	AND	HL,DE							;
+
+   push	de
+   ex		de, hl
+   ld		hl, (sp+6+RETADDRESS_SIZE)		;get index argument
+   ex		de, hl 							;de is index, hl is buf count
+   or		a
+   sbc	hl, de
+   ex		de, hl							;hl is now index
+   pop	de  								;restore de (mask)
+   jr		nc, .cbdg_nempty
+	bool	hl
+   ld		L, H
+	dec	hl					; 2			;return -1
+	jr		.cbdg_done		; 5
+
+.cbdg_nempty:
+   ;hl=(front+index)&mask
+	add	hl,bc				; 2
+	and	hl,de				; 2
+
+	ld		(ix+2),hl		; 11  update front
+	dec	hl
+   and	hl, de			; back up to get last byte
+	ex		de,hl				;
+	ld		hl,ix				; 4,	hl=&buffer[front]
+	add	hl,de				; 2
+	ld		bc,0x0008		; 6
+	add	hl,bc				; 2
+	ld		a,(hl)			; 5,	a=buffer[front]
+	bool	hl					; 2,	return character
+	ld		l,a				; 2
+
+.cbdg_done:
+	pop	ix					; 9
+	lret						; 8
+
+#endasm
+
+/*** Beginheader cbuf_putch */
+int  cbuf_putch   (char *buf, int c);
+/*** endheader */
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_putch                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_putch(char *circularBuffer, int chr);
+
+DESCRIPTION:  puts the character into the next available position. If the
+              buffer is full, chr is lost.
+
+PARAMETER1:   circularBuffer: Circular buffer.
+PARAMETER2:   chr           : Character to write is in low byte of the int
+
+RETURN VALUE:	0 if the buffer is full, 1 if the character can be placed.
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_putch::
+	push	ix					; 12, save frame pointer
+	ld		ix,(sp+2+RETADDRESS_SIZE)		; 11, ix=cbuf
+	ld		hl,(ix+4)		; 9,	bc=back
+	ld		c,l				; 2
+	ld		b,h				; 2
+
+	ld		hl,(ix+6)		; 9,	hl=front, de=mask
+	ex		de,hl				; 2
+	ld		hl,(ix+2)		; 9
+
+	dec	hl					; 2,	hl=(front-1)&mask
+	and	hl,de				; 2,	clears carry!
+
+	sbc	hl,bc				; 4,	((front-1)&mask)==back ???
+	jr		z,.cbpc_done		; 5
+	bool	hl					; 2,	de=(back+1)&mask
+	add	hl,bc				; 2
+	and	hl,de				; 2
+	ex		de,hl				; 2
+
+	ld		hl,(sp+4+RETADDRESS_SIZE)		; 9, 	a=ch
+	ld		a,l				; 2
+
+	ld		hl,ix				; 4,	hl=&buffer[back]
+	add	hl,bc				; 2
+	ld		bc,0x0008		; 6
+	add	hl,bc				; 2
+
+	ld		(hl),a			; 6,	buffer[back]=ch
+
+	ex		de,hl				; 2,	(back++)&=mask
+	ld		(ix+4),hl		; 9
+
+	ld		hl,0x0001		; 6
+.cbpc_done:
+	pop	ix					; 9,	restore frame pointer
+	lret						; 8
+
+#endasm
+
+/*** Beginheader cbuf_wrlock */
+int  cbuf_wrlock  (char *buf);
+/*** endheader */
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_wrlock                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_wrlock(char *circularBuffer);
+
+DESCRIPTION:  Locks the write buffer by setting the write buffer lock bit.
+              If the buffer had already been locked the return value is 0,
+              indicating the attempt to put a lock on the buffer failed.
+
+PARAMETER1:   circularBuffer: Circular buffer to lock.
+
+RETURN VALUE:	0 if previously locked, 1 if previously unlocked
+
+SEE ALSO:     circular buffers
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_wrlock::
+	ld		hl,(sp+RETADDRESS_SIZE)		; bts 0,(lock)
+	bit	0,(hl)
+	set	0,(hl)
+	ld		hl,0x0000
+	jr		nz,.cbwrlk_0
+	inc	hl
+
+.cbwrlk_0:
+	lret
+
+#endasm
+
+/*** Beginheader cbuf_wrunlock */
+void cbuf_wrunlock(char *buf);
+/*** endheader */
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_wrunlock                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_wrunlock(char *circularBuffer);
+
+DESCRIPTION:  Unlocks the write buffer by clearing the write buffer lock bit.
+
+PARAMETER1:   circularBuffer: Circular buffer to unlock.
+
+RETURN VALUE:	None
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_wrunlock::
+	ld		hl,(sp+RETADDRESS_SIZE)		; res 0,(lock)
+	res	0,(hl)
+	lret
+
+#endasm
+
+/*** Beginheader cbuf_rdlock */
+int  cbuf_rdlock  (char *buf);
+/*** endheader */
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_rdlock                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_rdlock(char *circularBuffer);
+
+DESCRIPTION:  Locks the read buffer by setting the read buffer lock bit.
+              If the buffer had already been locked the return value is 0,
+              indicating the attempt to put a lock on the buffer failed.
+
+PARAMETER1:   circularBuffer: Circular buffer to lock.
+
+RETURN VALUE:	0 if previously locked, 1 if previously unlocked
+
+SEE ALSO:     circular buffers
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_rdlock::
+	ld		hl,(sp+RETADDRESS_SIZE)		; bts 1,(lock)
+	bit	1,(hl)
+	set	1,(hl)
+	ld		hl,0x0000
+	jr		nz,.cbrdlk_0
+	inc	hl
+
+.cbrdlk_0:
+	lret
+
+#endasm
+
+/*** Beginheader cbuf_rdunlock */
+void cbuf_rdunlock(char *buf);
+/*** endheader */
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_rdunlock                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_rdunlock(char *circularBuffer);
+
+DESCRIPTION:  Unlocks the read buffer by clearing the read buffer lock bit.
+
+PARAMETER1:   circularBuffer: Circular buffer to unlock.
+
+RETURN VALUE:	None
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_rdunlock::
+	ld		hl,(sp+RETADDRESS_SIZE)		; res 1,(lock)
+	res	1,(hl)
+	lret
+
+#endasm
+
+/*** Beginheader cbuf_init */
+void cbuf_init    (char *buf, int sz);
+/*** endheader */
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_init                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_init(char *circularBuffer, int dataSize);
+
+DESCRIPTION:  Zeros the locks, head and tail indices, and sets the mask to
+              the dataSize (2^n - 1), 1 less than the total data area.
+
+PARAMETER1:   circularBuffer: Circular buffer initialize.
+PARAMETER2:   dataSize      : size available to data, same as mask
+
+RETURN VALUE:	None
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_init::
+	push	ix					; save ix
+	ld		ix,(sp+RETADDRESS_SIZE+2)		; ix=cbuf
+
+	bool	hl					; hl=0
+	ld		l,h
+
+	ld		(ix+0),hl		; lock=0
+	ld		(ix+2),hl		; front=0
+	ld		(ix+4),hl		; back=0
+
+	ld		hl,(sp+RETADDRESS_SIZE+4)		; mask=length - assumes length is one
+	ld		(ix+6),hl		;               less than an even power of two
+
+	pop	ix					; restore ix
+	lret
+
+#endasm
+
+/*** Beginheader cbuf_length */
+int  cbuf_length  (char *buf);
+/*** endheader */
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_length                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_length(char *circularBuffer);
+
+DESCRIPTION:  Returns mask, the data capacity.
+
+PARAMETER1:   circularBuffer: Circular buffer.
+
+RETURN VALUE:	Mask
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_length::
+	ld		hl,(sp+RETADDRESS_SIZE)		; return mask
+	ld		hl,(hl+6)
+	lret
+
+#endasm
+
+/*** Beginheader cbuf_used */
+int  cbuf_used    (char *buf);
+/*** endheader */
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_used                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_used(char *circularBuffer);
+
+DESCRIPTION:  Calculates used up data space, (back-front+mask+1)&mask.
+
+PARAMETER1:   circularBuffer: Circular buffer.
+
+RETURN VALUE:	None
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_used::
+	PUSH	IX							; save IX
+	LD		IX,(SP+RETADDRESS_SIZE+2)	; IX=cbuf
+
+	LD		HL,(IX+2)					; HL=front
+	LD		C,L							; BC=front
+	LD		B,H							;
+	LD		HL,(IX+6)					; HL=mask
+	EX		DE,HL						; DE=mask
+	LD		HL,(IX+4)					; HL=back
+	;
+	; BC=front, DE=mask, HL=back
+	OR		A							; clear carry
+	SBC	HL,BC							; (back-front+1+mask)&mask
+	ADD	HL,DE							;
+	INC	HL								;
+	AND	HL,DE							;
+										;
+	POP	IX								; restore ix
+	LRET								;
+
+#endasm
+
+/*** Beginheader cbuf_free */
+int  cbuf_free    (char *buf);
+/*** endheader */
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_free                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_free(char *circularBuffer);
+
+DESCRIPTION:  Calculates free data space, (front-back+mask)&mask.
+
+PARAMETER1:   circularBuffer: Circular buffer.
+
+RETURN VALUE:	None
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_free::
+	PUSH	IX							; save IX
+	LD		IX,(SP+RETADDRESS_SIZE+2)	; IX=cbuf
+
+	LD		HL,(IX+4)					; HL=back
+	LD		C,L							; BC=back
+	LD		B,H							;
+	LD		HL,(IX+6)					; HL=mask
+	EX		DE,HL						; DE=mask
+	LD		HL,(IX+2)					; HL=front
+	;
+	; BC=back, DE=mask, HL=front
+	OR		A							; clear carry
+	SBC		HL,BC						; (front-back+mask)&mask
+	ADD		HL,DE						;
+	AND		HL,DE						;
+										;
+	POP		IX							; restore ix
+	LRET								;
+#endasm
+
+/*** Beginheader cbuf_flush */
+int  cbuf_flush   (char *buf);
+
+//set to at least as high as any routine that uses the buffer
+#ifndef CBUF_IP
+#define CBUF_IP 1
+#endif
+
+/*** endheader */
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_flush                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_flush(char *circularBuffer);
+
+DESCRIPTION:  Sets the head and tail indices to zero.
+
+PARAMETER1:   circularBuffer: Circular buffer.
+
+RETURN VALUE:	None
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_flush::
+	ipset CBUF_IP
+	push	ix
+	ld		ix,(sp+RETADDRESS_SIZE+2)		; front, back = 0
+	bool	hl
+	rr		hl
+	ld		(ix+2),hl
+	ld		(ix+4),hl
+	inc   hl
+	pop	ix
+	ipres
+	lret
+
+#endasm
+
+/*** Beginheader cbuf_peek */
+int  cbuf_peek    (char *buf);
+/*** endheader */
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_peek                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_peek(char *circularBuffer);
+
+DESCRIPTION:  Returns the first byte of data.
+
+PARAMETER1:   circularBuffer: Circular buffer.
+
+RETURN VALUE:	-1 if the buffer is empty, 1st data character if not.
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_peek::
+	push	ix					; 12, save frame pointer
+
+	ld		ix,(sp+RETADDRESS_SIZE+2)		; 11, ix=cbuf
+
+	ld		hl,(ix+2)		; 9,	bc=front
+	ld		c,l				; 2
+	ld		b,h				; 2
+
+	ld		hl,(ix+4)		; 9,	hl=back
+
+	or		a					; 2,	clear carry
+
+	sbc	hl,bc				; 4,	front==back???
+	jr		nz,.cbpk_nempty	; 5
+	dec	hl					; 2
+	jr		.cbpk_done		; 5
+
+.cbpk_nempty:
+	ld		hl,ix				; 4,	hl=&buffer[front]
+	add	hl,bc				; 2
+  	ld		bc,0x0008		; 6
+	add	hl,bc				; 2
+	ld		a,(hl)			; 5
+	bool	hl					; 2
+	ld		l,a				; 2
+
+.cbpk_done:
+	pop	ix					; 9
+	lret						; 8
+
+#endasm
+
+/*** Beginheader cbuf_put */
+int  cbuf_put     (char *buf, char *s, int length);
+/*** endheader */
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_put                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_put(char *circularBuffer, char *chrs, int nchrs);
+
+DESCRIPTION:  puts as many of nchrs characters into the next available buffer
+              positions as possibleuntil all are written or until the buffer
+              is full.
+
+PARAMETER1:   circularBuffer: Circular buffer.
+PARAMETER2:   chrs          : array of characters to write
+PARAMETER3:   nchrs         : number of characters to write
+
+RETURN VALUE:	The number of characters successfully written.
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_put::
+	push	ix					; save frame pointer
+	push	iy					; save iy
+
+	ld		ix,(sp+RETADDRESS_SIZE+4)		; ix=cbuf
+	ld		iy,(sp+RETADDRESS_SIZE+6)		; iy=source
+
+	ld		c,(ix+4)			; bc=back
+	ld		b,(ix+5)
+
+	ld		hl,(sp+RETADDRESS_SIZE+8)		; length initially == 0 ???
+	bool	hl
+	jr		z,.cbp_done
+
+	ld		hl,(ix+6)		; de=mask
+	ex		de,hl
+
+.cbp_wrloop:
+	ld		hl,(ix+2)		; hl=front
+
+	dec	hl					; (front-1)&mask==back ???
+	sbc	hl,bc
+	and	hl,de
+	jr		z,.cbp_done
+
+	ld		hl,ix				; hl=&buffer[back]
+	add	hl,bc
+	ld		a,0x08
+	add	a,l
+	ld		l,a
+	jr		nc,.cbp_nc
+	inc	h
+
+.cbp_nc:
+	ld		a,(iy)			; a=source++
+	inc	iy
+
+	ld		(hl),a			; buffer[back]
+
+	bool	hl					; (back++)&=mask
+	add	hl,bc
+	and	hl,de
+	ld		c,l
+	ld		b,h
+
+	ld		hl,(sp+RETADDRESS_SIZE+8)		; length--
+	dec	hl
+	ld		(sp+RETADDRESS_SIZE+8),hl
+	ld		a,l
+	or		h
+	jr		nz,.cbp_wrloop
+
+.cbp_done:
+	ld		hl,(sp+RETADDRESS_SIZE+6)		; hl=buffer offset, de=buffer head
+	ex		de,hl
+	ld		hl,iy
+
+	or		a					; return bytes written this time
+	sbc	hl,de
+
+	ld		(ix+4),c			; save new back
+	ld		(ix+5),b
+
+	pop	iy					; restore iy
+	pop	ix					; restore frame pointer
+	lret
+
+#endasm
+
+/*** Beginheader cbuf_get */
+int  cbuf_get     (char *buf, char *s, int length);
+/*** endheader */
+
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+cbuf_get                   <CBUF.LIB>
+
+SYNTAX:		   int cbuf_get(char *circularBuffer, char *chrs, nchrs);
+
+DESCRIPTION:  Reads nchrs characters into chrs, or until buffer is empty.
+
+PARAMETER1:   circularBuffer: Circular buffer.
+PARAMETER2:   chrs          : Character array into wich the data is read
+PARAMETER3:   nchrs         : Number of characters to read
+
+RETURN VALUE:	The number of characters actually read into chrs.
+END DESCRIPTION **********************************************************/
+
+#asm xmem
+
+cbuf_get::
+	push	ix					; save frame pointer
+	push	iy					; save iy
+
+	ld		ix,(sp+RETADDRESS_SIZE+4)		; ix=cbuf
+	ld		iy,(sp+RETADDRESS_SIZE+6)		; iy=source
+
+	ld		c,(ix+2)			; bc=front
+	ld		b,(ix+3)
+
+	ld		hl,(sp+RETADDRESS_SIZE+8)		; length initially == 0 ???
+	bool	hl
+	jr		z,.cbg_done
+
+	ld		hl,(ix+6)		; de=mask
+	ex		de,hl
+
+.cbg_rdloop:
+	ld		hl,(ix+4)		; hl=back
+	sbc	hl,bc
+	jr		z,.cbg_done
+
+	ld		hl,ix				; hl=&buffer[front]
+	add	hl,bc
+	ld		a,0x08
+	add	a,l
+	ld		l,a
+	jr		nc,.cbg_nc
+	inc	h
+
+.cbg_nc:
+	ld		a,(hl)			; a=buffer[front++]
+	inc	bc
+   ld    h,b
+   ld    l,c
+   and   hl,de
+   ld    b,h
+   ld    c,l
+
+	ld		(iy),a			; *dest++=a
+	inc	iy
+
+	ld		hl,(sp+RETADDRESS_SIZE+8)		; max_length--
+	dec	hl
+	ld		(sp+RETADDRESS_SIZE+8),hl
+	ld		a,l
+	or		h
+	jr		nz,.cbg_rdloop
+
+.cbg_done:
+	ld		hl,(sp+RETADDRESS_SIZE+6)		; hl=buffer offset, de=buffer head
+	ex		de,hl
+	ld		hl,iy
+
+	or		a					; return bytes written this time
+	sbc	hl,de
+
+	ld		(ix+2),c			; save new front
+	ld		(ix+3),b
+
+	pop	iy					; restore iy
+	pop	ix					; restore frame pointer
+	lret
+
+#endasm

@@ -1,0 +1,1780 @@
+/*** Beginheader */
+#ifndef __ICOM_LIB
+#define __ICOM_LIB
+
+#if (_BOARD_TYPE_ < 0x0300 || _BOARD_TYPE_ > 0x03FF)
+#error "ICOM.LIB only supports OP66xx and OP67xx Intellicom Series boards."
+#endif
+/*** endheader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+ICOM.LIB
+Copyright (c) 2000, Z-World Inc.
+
+DESCRIPTION:   This library supports OP66xx and OP67xx Intellicom Series
+					boards with display, keypad, speaker, digital I/O,  RS232,
+					RS485 peripherals.
+
+					This library also supports TCP/IP Development Kits with
+					digital I/O, RS232, RS485 peripherals.
+
+END DESCRIPTION **********************************************************/
+
+
+/*************************************************************************
+	Display Functions
+--------------------------------------------------------------------------
+This section supports 4x20 Liquid Crystal and Vacuum Fluorescent Displays.
+
+Parallel port A display connections:
+
+	PA.0	Out	LCD Backlight
+	PA.1	Out	CS (Active High)
+	PA.2	Out	RS (High = Control, Low = Data) / LCD Contrast 0
+	PA.3	Out	WR (Active Low) / LCD Contrast 1
+	PA.4	Out	D4 / LCD Contrast 2
+	PA.5	Out	D5 / LCD Contrast 3
+	PA.6	Out	D6 / LCD Contrast 4
+	PA.7	Out	D7 / LCD Contrast 5
+
+Parallel port A VFD connections:
+
+	PA.0	Out	Unconnected
+	PA.1	Out	CS (Active High)
+	PA.2	Out	RS (High = Control, Low = Data)
+	PA.3	Out	WR (Active Low)
+	PA.4	Out	D4
+	PA.5	Out	D5
+	PA.6	Out	D6
+	PA.7	Out	D7
+
+User interface:
+
+SYNTAX:	      void dispContrast (char vcontrast);
+DESCRIPTION:   Sets display for high to no contrast. Not supported on
+					VFD's.
+
+SYNTAX:	      void dispCursor(unsigned wStyle);
+DESCRIPTION:   This function sets cursor type to be on, off or blink.
+
+SYNTAX:	      void dispGoto (unsigned	wX, unsigned wY);
+DESCRIPTION:   This function positions the cursor.
+
+SYNTAX:	      void dispClear (void);
+DESCRIPTION:   This function clears the display and homes cursor.
+
+SYNTAX:	      void dispPutc (char cByte);
+DESCRIPTION:   This function puts a character on the display.
+
+SYNTAX:	      void dispPrintf	(char	*pcFormat,	...);
+DESCRIPTION:   This function prints formatted string to the display.
+
+SYNTAX:	      void dispOnoff ( int onOff );
+DESCRIPTION:   Turns display on or off.
+
+SYNTAX:	      void dispBacklight ( int onOff );
+DESCRIPTION:   Sets backlight on or off.  Not supported on VFD's
+
+SYNTAX:	      void dispInit();
+DESCRIPTION:   This function initializes the display.  Specifically, it
+					reinitializes the display controller, clears the display,
+					and puts a nonblinking underline cursor in the top left
+					position.
+
+**************************************************************************/
+
+/*** BeginHeader delay10uS, amsDelay */
+void delay10uS ( unsigned wPeriod );
+void amsDelay(unsigned int ams);
+/*** EndHeader */
+
+#asm root nodebug
+;====================================================================
+; delay10uS : Delay (10 uSec Resolution @ 14.74Mhz)
+;
+; INPUT  :
+;          HL = Period (Units of 10 uSec)
+; OUTPUT :
+;          None
+; NOTES  :
+;          Assumes 2x 7.372MHz Rabbit & Zero Memory Wait State
+
+delay10uS::		ld		b,27					; 4		Set Loop Counter
+D10U0:			djnz	D10U0					; 5		Delay 10 uSec
+					dec	hl						; 2		Decrement Period
+					ld		a,l					; 2		Period Done?
+					or		a,h					; 2
+					jr		nz,delay10uS		; 5		Continue til Done
+					ret							;			Done
+#endasm
+
+/// millisecond delay
+nodebug
+void amsDelay(unsigned int ams)
+{
+	auto unsigned long t0;
+
+	for (t0=MS_TIMER; MS_TIMER<ams+t0;);
+}
+
+
+/*** Beginheader dispContrast */
+char CONTRASTShadow;
+
+void dispContrast (char vcontrast);
+/*** endheader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+dispContrast                     <ICOM.LIB>
+
+SYNTAX:	      void dispContrast (char vcontrast);
+
+DESCRIPTION:   Sets display for high to no contrast.
+
+PARAMETER1:  	Suggested values 40-128 as high to low contrast, although
+					4-252 can be used.  Contrast adjustment not supported
+					on VFD's.
+
+RETURN VALUE:	None
+
+SEE ALSO:  		dispOnoff, dispBacklight
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void dispContrast (char vcontrast)
+{
+	CONTRASTShadow = vcontrast & 0xFC;
+	WrPortI (PADR, &PADRShadow, CONTRASTShadow|(PADRShadow&0x01));
+}
+
+/*** Beginheader dispCmd4 */
+
+void dispCmd4(char wcmd);
+/*** endheader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+dispCmd4                     <ICOM.LIB>
+
+SYNTAX:	      void dispCmd4(char wcmd);
+
+DESCRIPTION:   Writes a byte command to the display.  Upper 4-bits contain
+					display command.
+
+PARAMETER1:    wcmd - Command to send to the display.
+
+RETURN VALUE:	None
+
+SEE ALSO:		dispCmd, dispData
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void dispCmd4 (char wcmd)
+{
+	//WrPortI (PADR, &PADRShadow, (wcmd&0xF1)|(PADRShadow&1));	//	Ready Nibble
+	WrPortI (PADR, &PADRShadow, (wcmd&0xF0)|(PADRShadow&1) );	//	Ready Nibble
+	WrPortI (PADR, &PADRShadow, PADRShadow|0x02 );					//	Write Nibble
+	WrPortI (PADR, &PADRShadow, PADRShadow&0xFD );
+	amsDelay (2);																//	Wait 2 mSec
+}
+
+
+/*** Beginheader dispCmd */
+
+void dispCmd(int cmd);
+/*** endheader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+dispCmd                     <ICOM.LIB>
+
+SYNTAX:	      void dispCmd(int cmd);
+
+DESCRIPTION:   This function is a low-level routine to send a command to
+					the display.  It will wait for the display to be not busy,
+					then sends the command.
+
+PARAMETER1:    Command to send to the display.
+
+RETURN VALUE:	None
+
+SEE ALSO:		dispCmd4, dispData
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void dispCmd (int cmd)
+{
+	dispCmd4 ( cmd );											//	Write Upper Nibble
+	dispCmd4 ( cmd<<4 );										//	Write Lower Nibble
+	WrPortI ( PADR,&PADRShadow,CONTRASTShadow|(PADRShadow&0x01) );		//	Restore Contrast
+	amsDelay (2);											//	Wait 2 mSec
+}
+
+
+/*** Beginheader dispCursor */
+#define	DISP_CUROFF		0x00				//	Cursor Off
+#define	DISP_CURON		0x02				//	Cursor On
+#define	DISP_CURBLINK	0x03				//	Cursor Blink
+
+void dispCursor(unsigned int wStyle);
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+dispCursor                     <ICOM.LIB>
+
+SYNTAX:	      void dispCursor(unsigned int wStyle);
+
+DESCRIPTION:   This function sets cursor type to be on, off or blink.
+
+PARAMETER1:    wStyle - on of the following cursor macros:
+	DISP_CUROFF		for cursor off
+	DISP_CURON		for cursor on
+	DISP_CURBLINK	for cursor blink
+
+RETURN VALUE:	None
+
+SEE ALSO:		dispClear, dispGoto
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void dispCursor(unsigned int wStyle)
+{
+	dispCmd ( 0x0C|wStyle );
+}
+
+
+/*** Beginheader dispGoto */
+void dispGoto (unsigned	wX, unsigned wY);
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+dispGoto                     <ICOM.LIB>
+
+SYNTAX:	      void dispGoto (unsigned	wX, unsigned wY);
+
+DESCRIPTION:   This function positions the cursor.
+
+PARAMETER1:  	Column position of 0 to 19
+
+PARAMETER2:		Row position of 0 to 3
+
+RETURN VALUE:	None
+
+SEE ALSO:		dispClear, dispCursor
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void dispGoto (unsigned wX, unsigned wY)
+{
+const static char acPos[4] = { 0x80,0xC0,0x94,0xD4 };
+
+    if ((wX < 20) && (wY < 4)) {
+       dispCmd ( acPos[wY]+wX );
+       _dispCol = wX;
+       _dispRow = wY;
+    	}
+}
+
+
+/*** Beginheader dispClear */
+void dispClear (void);
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+dispClear                     <ICOM.LIB>
+
+SYNTAX:	      void dispClear (void);
+
+DESCRIPTION:   This function clears the display and homes cursor.
+
+PARAMETER1:  	None
+
+RETURN VALUE:	None
+
+SEE ALSO:		dispGoto, dispCursor
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void dispClear (void)
+{
+	dispCmd ( 0x01 );				//	Clear Screen & Home Cursor
+	//amsDelay ( 2 );				//	Wait 1.64 mSec
+   _dispCol = 0;
+   _dispRow = 0;
+}
+
+
+/*** Beginheader dispData */
+void dispData (char cData);
+/*** endheader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+dispData                     <ICOM.LIB>
+
+SYNTAX:	      void dispData (char cData);
+
+DESCRIPTION:   This function writes a byte to data register.
+
+PARAMETER1:  	Character to display.
+
+RETURN VALUE:	None
+
+SEE ALSO:		dispCmd, dispCmd4
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void dispData (char cData)
+{
+	// Ready upper nibble
+	WrPortI ( PADR,&PADRShadow,(cData&0xF0)|0x04|(PADRShadow&0x01) );
+	WrPortI ( PADR,&PADRShadow,PADRShadow|0x02 );			//	Strobe Write
+	WrPortI ( PADR,&PADRShadow,PADRShadow&0xFD );
+	//	Ready Lower Nibble
+	WrPortI ( PADR,&PADRShadow,((cData<<4)&0xF0)|0x04|(PADRShadow&0x01) );
+	WrPortI ( PADR,&PADRShadow,PADRShadow|0x02 );			//	Strobe Write
+	WrPortI ( PADR,&PADRShadow,PADRShadow&0xFD );
+	//	Restore Contrast
+	WrPortI ( PADR,&PADRShadow,CONTRASTShadow|(PADRShadow&0x01) );
+	amsDelay ( 1 );													//	Wait 40 uSec
+}
+
+
+/*** Beginheader dispPutc */
+void dispPutc (char cByte);
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+dispPutc                     <ICOM.LIB>
+
+SYNTAX:	      void dispPutc (char cByte);
+
+DESCRIPTION:   This function puts a character on the display.
+
+PARAMETER1:  	Character to display.
+
+RETURN VALUE:	None
+
+SEE ALSO:		dispPrintf
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void dispPutc (char cByte)
+{
+    if (cByte == '\n') {
+       dispGoto ( 0, (_dispRow + 1) % 4 );
+       return;
+    } else if (cByte == '\r') {
+       return;
+    }
+    dispData ( cByte );
+    if (_dispCol == 19) {
+      dispGoto ( 0, (_dispRow + 1) % 4 );
+    	}
+    else {
+      _dispCol++;
+    	}
+}
+
+
+/*** Beginheader dispPrintf */
+
+void dispPrintf	(char	*pcFormat,	...);
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+dispPrintf                     <ICOM.LIB>
+
+SYNTAX:	      void dispPrintf	(char	*pcFormat,	...);
+
+DESCRIPTION:   This function prints formatted string to the display.
+Format is similar to printf call.
+
+PARAMETER1:  	Formatted string.
+
+RETURN VALUE:	None
+
+SEE ALSO:		dispPutc
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void dispPrintf	(char	*pcFormat,...)
+{
+	doprnt ( dispPutc,pcFormat,&pcFormat+1,NULL, NULL, NULL );
+}
+
+/*** BeginHeader dispOnoff */
+void dispOnoff ( int onOff );
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+dispOnoff                     <ICOM.LIB>
+
+SYNTAX:	      void dispOnoff ( int onOff );
+
+DESCRIPTION:   Turns display on or off.
+
+PARAMETER1:  	Set or write 1 to turn display on.
+					Clear or write 0 to turn display off.
+
+RETURN VALUE:	None
+
+SEE ALSO:		dispContrast, dispBacklight
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void dispOnoff (int onOff)
+{
+	if (onOff)
+		dispCmd (0x0C);		//on
+	else
+		dispCmd (0x08);		//off
+}
+
+
+/*** BeginHeader dispBacklight */
+void dispBacklight ( int onOff );
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+dispBacklight                     <ICOM.LIB>
+
+SYNTAX:	      void dispBacklight ( int onOff );
+
+DESCRIPTION:   Sets backlight on or off.  Not supported on VFD's
+
+PARAMETER1:  	Set or write 1 to turn backlight on.
+					Clear or write 0 to turn backlight off.
+
+RETURN VALUE:	None
+
+SEE ALSO:		dispContrast, dispOnoff
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void dispBacklight (int onOff)
+{
+	if (onOff)
+		WrPortI ( PADR, &PADRShadow, PADRShadow|0x01 );		//	Backlight On
+	else
+		WrPortI ( PADR, &PADRShadow, PADRShadow&0xFE );		//	Backlight Off
+}
+
+
+/*** Beginheader dispInit */
+unsigned int _dispCol;
+unsigned int _dispRow;
+
+void dispInit();
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+dispInit                     <ICOM.LIB>
+
+SYNTAX:	      void dispInit();
+
+DESCRIPTION:   This function initializes the display.  Specifically, it
+					reinitializes the display controller, clears the display,
+					and puts a nonblinking underline cursor in the top left
+					position.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void dispInit()
+{
+	WrPortI ( PADR,&PADRShadow,0x00 );	//	Assure Outputs are Low
+	WrPortI ( SPCR,&SPCRShadow,0x84 );	//	Port A = Outputs
+
+	dispContrast (0x00);				//	Set Contrast at GND
+	amsDelay (16);						//	Wait 15 mSec (to Stabilize)
+	dispCmd4 ( 0x30 );				//	Set 8-Bit Interface
+	amsDelay (6);						//	Wait 4.1 mSec
+	dispCmd4 (0x30);					//	Set 8-Bit Interface
+	amsDelay (2);						//	Wait 100 uSec
+	dispCmd4 (0x30);					//	Set 8-Bit Interface
+	dispCmd4 (0x20);					//	Set 4-Bit Interface
+	dispCmd (0x28);					//	Set Dual Line Display
+	dispCmd (0x06);					//	Disable Display Shift
+	dispCmd (0x0C);					//	Display On, Cursor Off
+	dispClear ();						//	Clear Display & Home Cursor
+   _dispRow = 0;
+   _dispCol = 0;
+	amsDelay (2);						//	Wait 100 uSec (to Stabilize)
+}
+
+/*************************************************************************
+	Keypad Functions
+--------------------------------------------------------------------------
+This section supports 2x6 keypad layout.  Parallel ports B, C and D
+connections:
+
+	PB.0	In		Keypad Col 0
+	PC.1	In		Keypad Col 1
+	PB.2	In		Keypad Col 2
+	PB.3	In		Keypad Col 3
+	PB.4	In		Keypad Col 4
+	PB.5	In		Keypad Col 5
+	PD.6	O.C.	Keypad Row 0
+	PD.7	O.C.	Keypad Row 1
+
+Key positions are defined as:
+
+			 Col 5  Col 4  Col 3  Col 2  Col 1  Col 0
+	Row 1  [  5 ] [  4 ] [  3 ] [  2 ] [  1 ] [  0 ]
+	Row 0  [ 13 ] [ 12 ] [ 11 ] [ 10 ] [  9 ] [  8 ]
+
+User interface:
+
+SYNTAX:	      void keyProcess ( void );
+DESCRIPTION:   Scans and processes keypad data for key assignment,
+debouncing, press and release and repeat.
+
+SYNTAX: 	void keyConfig	();
+DESCRIPTION:   Defines inidividual keys
+
+SYNTAX:	      char keyGet	(void);
+DESCRIPTION:   Get next keypress
+
+SYNTAX:	      void keyInit (void);
+DESCRIPTION:   Initialize keypad process
+
+SYNTAX:	      void keypadDef ();
+DESCRIPTION:   Configure keypad to default layout.
+
+
+**************************************************************************/
+
+/*** Beginheader dqInit, .dqInit */
+typedef struct {			//	Double Input Queue Structure
+	unsigned	wSize;		// Buffer Size
+	char *pLo;				// Low Buffer Address
+	char *pHi;				// High Buffer Address
+	char *pIn;				// In Pointer
+	char *pOut;				// Out Pointer
+	} DQueue;
+
+int dqPop ( DQueue * );								//	Remove Char from Tail
+int dqPush ( DQueue *,char );
+void dqInit ( DQueue *,void *,unsigned );
+/*** Endheader */
+
+#asm root nodebug
+;============================================================================
+; .dqPop : Pop Item from Queue (Remove from Tail)
+;
+; INPUT  :
+;          IY = Pointer to Queue Structure
+; OUTPUT :
+;          A  = Character Popped from Queue
+;          NZ = Character Popped OK
+;          Z  = Queue is EMPTY
+; NOTES  :
+;          Destroys HL,DE,Flags
+
+.dqPop::
+	ld    e,(iy+8)          ; DE = Out Pointer
+   ld    d,(iy+9)
+   ld    l,(iy+6)          ; HL = In Pointer
+   ld    h,(iy+7)
+   xor   a                 ; Check for Empty Queue
+   sbc   hl,de
+   ret   z                 ; Done if Empty
+   ld    a,(de)            ; Get Character
+   ld    l,(iy+4)          ; HL = Last Buffer Location
+   ld    h,(iy+5)
+   or    a                 ; Check for Wrap
+   sbc   hl,de
+   inc   de                ; DE = Next Out Pointer
+   jr    nz,.PoNoWrap1     ; Done if No Wrap
+   ld    e,(iy+2)          ; DE = First Buffer Location
+   ld    d,(iy+3)
+.PoNoWrap1:
+   ld    (iy+8),e          ; Update Out Pointer
+	ld    (iy+9),d
+   ld    e,a               ; Set NZ Flag
+   inc   e
+   cp    e
+   ret                     ; Return w/ Error
+
+;============================================================================
+; .dqPush : Push Item (Add to Tail)
+;
+; INPUT  :
+;          IY = Pointer to Queue Structure
+;          A  = Character to Add to Queue
+; OUTPUT :
+;          NZ = Pushing OK
+;          Z  = Queue is FULL
+; NOTES  :
+;          Destroys HL,DE,Flags
+
+.dqPush::
+	ld		e,(iy+8)				; DE = Out Pointer
+	ld		d,(iy+9)
+   ld    l,(iy+2)          ; HL = First Buffer Location
+   ld    h,(iy+3)
+   or    a                 ; Check for Wrap
+   sbc   hl,de
+   dec	de                ; DE = Prev (Out Pointer)
+   jr    nz,.PuNoWrap0		; Done if No Wrap
+   ld    e,(iy+4)          ; DE = Last Buffer Location
+   ld    d,(iy+5)
+.PuNoWrap0:
+	ld    l,(iy+6)          ; HL = Input Pointer
+   ld    h,(iy+7)
+   or    a                 ; Check for Overrun
+   sbc   hl,de
+   ret   z                 ; Done if Overrun
+   ld    (iy+8),e          ; Update Out Pointer
+   ld    (iy+9),d
+   ld    (de),a            ; Store Character
+   ret                     ; Done - No Error
+
+;============================================================================
+; .dqInit : Initialize Queue
+;
+; INPUT  :
+;          HL = Pointer to Queue Structure
+;          DE = Address of Buffer
+;          BC = Size of Buffer
+; OUTPUT :
+;          None
+
+.dqInit::
+	ld    (hl),c            ; Store Size of Buffer
+   inc   hl
+   ld    (hl),b
+   inc   hl
+   push  de                ; Protect Low Buffer Address
+   ld    (hl),e            ; Store Low Buffer Address
+   inc   hl
+   ld    (hl),d
+   inc   hl
+   ex    de,hl             ; Compute Last Byte of Buffer
+   add   hl,bc
+   dec	hl
+   ex    de,hl
+   ld    (hl),e            ; Store High Buffer Address
+   inc   hl
+   ld    (hl),d
+   inc   hl
+   pop   de                ; Restore Low Buffer Address
+   ld    (hl),e            ; Initialize In Pointer
+   inc   hl
+   ld    (hl),d
+   inc   hl
+   ld    (hl),e            ; Initialize Out Pointer
+   inc   hl
+   ld    (hl),d
+   inc   hl
+   ret                     ; Done
+
+;============================================================================
+; dqPop  : Pop Item from Queue
+;
+; C CALL :
+;          int dqPop ( Queue * );
+; RETURN :
+;          0 - 255 : Character Read
+;          -1      : Buffer Empty
+
+dqPop::
+	pop   hl                ; Return Address
+   pop   iy                ; IY = Queue Pointer
+   push  hl                ; Restore Stack
+   push  hl
+   call  .dqPop				; Push Character
+   ld    h,0               ; HL = Character Read
+   ld    l,a
+   ret   nz                ; Done if No Error
+   ld    hl,-1             ; HL = Queue is Empty
+   ret                     ; Done
+
+;============================================================================
+; dqPush : Push Item (Add to Head)
+;
+; C CALL :
+;          int dqPush ( Queue *,char );
+; RETURN :
+;          0  - No Error
+;          -2 - Buffer Full
+
+dqPush::
+	pop   hl                ; Return Address
+   pop   iy                ; IY = Queue Pointer
+   pop   de                ; E  = Character
+   push  de                ; Restore Stack
+   push  hl
+   push  hl
+   ld    a,e               ; A = Character
+   call  .dqPush				; Push Character
+   ld    hl,0              ; HL = No Error
+   ret   nz                ; Done if No Error
+   ld    hl,-2             ; HL = Queue is Full
+   ret                     ; Done
+
+;============================================================================
+; dqInit :  Initialize Queue
+;
+; C CALL :
+;          void dqInit ( Queue *,void *,unsigned );
+; RETURN :
+;          None
+
+dqInit::
+	call  _param3           ; Get Parameters from C
+   jp    .dqInit				; Initialize Queue
+
+
+;============================================================================
+; .dqQueue : Queue Item (Add to Head)
+;
+; INPUT  :
+;          IY = Pointer to Queue Structure
+;          A  = Character to Add to Queue
+; OUTPUT :
+;          NZ = Queueing OK
+;          Z  = Queue is FULL
+; NOTES  :
+;          Destroys HL,DE,Flags
+
+.dqQueue::
+	ld		e,(iy+6)				; DE = In Pointer
+	ld		d,(iy+7)
+   push  de                ; Protect In Pointer
+   ld    l,(iy+4)          ; HL = Last Buffer Location
+   ld    h,(iy+5)
+   or    a                 ; Check for Wrap
+   sbc   hl,de
+   inc   de                ; DE = Next In Pointer
+   jr    nz,.QuNoWrap0		; Done if No Wrap
+   ld    e,(iy+2)          ; DE = First Buffer Location
+   ld    d,(iy+3)
+.QuNoWrap0:
+	ld    l,(iy+8)          ; HL = Output Pointer
+   ld    h,(iy+9)
+   or    a                 ; Check for Overrun
+   sbc   hl,de
+   pop   hl                ; Restore Current In Pointer
+   ret   z                 ; Done if Overrun
+   ld    (iy+6),e          ; Update In Pointer
+   ld    (iy+7),d
+   ld    (hl),a            ; Store Character
+   ret                     ; Done - No Error
+
+;============================================================================
+; .dqQueueS : Queue Item w/ Minimum of Register Damage
+;
+; INPUT  :
+;          IY = Pointer to Queue Structure
+;          A  = Character to Add to Queue
+; OUTPUT :
+;          NZ = Queueing OK
+;          Z  = Queue is FULL
+; NOTES  :
+;          Destroys Flags
+
+.dqQueueS::
+	push  hl                ; Protect HL
+   push  de                ; Protect DE
+   call  .dqQueue				; Queue Item
+   pop   de                ; Restore DE
+   pop   hl                ; Restore HL
+   ret                     ; Done
+
+#endasm
+
+
+/*** BeginHeader keyProcess, asKey, aacKey, acKeyQ, sKeyQ */
+typedef struct Key {		//	Key Decode/Repeat Configuration
+								//	User Defined Key Configuration
+	char cRaw;					//	Raw Key Code Index
+	char cPress;				//	Key Press Code (0 = Unused)
+	char cRelease;				//	Key Release Code (0 = Unused)
+	char cCntHold;				//	Hold Ticks (0 = No Repeat)
+	char cSpdLo;				//	Low Speed Repeat Ticks
+	char cCntLo;				//	Low Speed Hold Ticks (0 = Slow Only)
+	char cSpdHi;				//	High Speed Repeat Ticks
+								//	State Info for Key Repeating
+	char cSpeed;				//	Repeat Speed
+	char cRepeat;				//	Repeat Down Counter
+	char cCount;				//	Hold Down Counter
+	char cState;				//	Key Decode State
+										//	0 = Button is Up
+										//	1 = Button is Down & Holding
+										//	2 = Button in Low Speed Repeat
+										//	3 = Button in High Speed Repeat
+}	Key;
+
+extern Key asKey[64];			//	Key Processing Structure
+extern char aacKey[3][8];		//	Raw Key Map FIFO
+extern char acKeyQ[16];			//	Key Queue Buffer
+extern DQueue sKeyQ;				//	Key Queue Structure
+
+void keyProcess ( void );		//	Scan & Process Keypad Data
+/*** EndHeader */
+
+Key asKey[64];				//	Key Processing Structure
+char aacKey[3][8];		//	Raw Key Map FIFO
+char acKeyQ[16];			//	Key Queue Buffer
+DQueue sKeyQ;				//	Key Queue Structure
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+keyProcess                     <ICOM.LIB>
+
+SYNTAX:	      void keyProcess ( void );
+
+DESCRIPTION:  Scans and processes keypad data for key assignment,
+debouncing, press and release and repeat.
+Note:  This function is able to process an 8x8 matrix keypad.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		keyConfig, keyGet, keypadDef
+
+END DESCRIPTION **********************************************************/
+
+#asm root nodebug
+keyProcess::
+	ld		hl,aacKey+15			; aacKey[1..2] = aacKey[0..1]
+	ld		de,aacKey+23
+	ld		bc,16
+	lddr
+	ld		hl,aacKey				; aacKey[0] = New Key Data
+	push	hl
+	call	keyScan					; Hardware Dependent Function
+	pop	hl
+	ld		ix,asKey					; IX = asKey (Processing) Array
+	ld		iy,aacKey				; IY = aacKey (Raw Data) Arrays
+	ld		h,8						;  H = Row Counter
+.kP0:
+	ld		a,(iy+0)					;  A =  aacKey[0][wRow]
+	or		a,(iy+8)					;  A =  aacKey[0][wRow] |  aacKey[1][wRow]
+	cpl								;  A = ~aacKey[0][wRow] & ~aacKey[1][wRow]
+	and	a,(iy+16)				;  A = ~aacKey[0][wRow] & ~aacKey[1][wRow] & aacKey[2][wRow]
+	ld		d,a						;  D = Falling Edge Detectors
+	ld		a,(iy+16)				;  A = aacKey[2][wRow]
+	cpl								;  A = ~aacKey[2][wRow]
+	and	a,(iy+8)					;  A = aacKey[1][wRow] & ~aacKey[2][wRow]
+	and	a,(iy+0)					;  A = aacKey[0][wRow] &  aacKey[1][wRow] & ~aacKey[2][wRow]
+	ld		e,a						;  E = Rising Edge Detectors
+	push	iy							; Protect aacKey Pointer
+	ld		iy,sKeyQ					; IY = Processed Key Queue
+	ld		l,8						;  L = Col Counter
+.kP1:
+	rr		d							; C = Press Detected
+	jr		nc,.kP2					; Skip if No Press Detected
+	ld		a,(ix+Key+cPress)		; Code Set for Press?
+	or		a,a
+	jr		z,.kP3
+	call	.dqQueueS				; Queue Key Press
+.kP3:
+	ld		a,(ix+Key+cCntHold)	; Set Initial Hold Count
+	ld		(ix+Key+cCount),a
+	ld		a,1						; Button is Downing & Holding
+	ld		(ix+Key+cState),a
+.kP2:
+	rr		e							; C = Release Detected
+	jr		nc,.kP4
+	ld		a,(ix+Key+cRelease)	; Code Set for Release?
+	or		a,a
+	jr		z,.kP5
+	call	.dqQueueS				; Queue Key Release
+.kP5:
+	xor	a							; Button is Up
+	ld		(ix+Key+cState),a
+.kP4:
+	ld		a,(ix+Key+cState)		; A = Current Key State
+	dec	a							; cState == 1?
+	jr		nz,.kP6
+	or		a,(ix+Key+cCount)		; If Hold Count Zero, Done
+	jr		z,.kP8
+	dec	(ix+Key+cCount)		; If Count Not Reaching Zero, Done
+	jr		nz,.kP8
+	ld		a,(ix+Key+cPress)		; Queue New Keypress
+	call	.dqQueueS
+	ld		a,(ix+Key+cSpdLo)		; Setup Low Speed Repeat
+	ld		(ix+Key+cSpeed),a
+	ld		(ix+Key+cRepeat),a
+	ld		a,(ix+Key+cCntLo)		; Setup Low Speed Period
+	ld		(ix+Key+cCount),a
+	ld		a,2						; Button in Low Speed Repeat
+	ld		(ix+Key+cState),a
+	jr		.kP8						; Done
+.kP6:
+	dec	a							; cState == 2?
+	jr		nz,.kP7
+	or		a,(ix+Key+cCount)		; If Hold Count Zero, Done
+	jr		z,.kP9
+	dec	(ix+Key+cCount)		; If Count Not Reaching Zero, Done
+	jr		nz,.kP9
+	ld		a,(ix+Key+cSpdHi)		; Set High Speed Repeat
+	ld		(ix+Key+cSpeed),a
+	ld		a,3						; Button in High Speed Repeat
+	ld		(ix+Key+cState),a
+	jr		.kP9						; Finish Processing
+.kP7:
+	dec	a							; cState == 3?
+	jr		nz,.kP8
+.kP9:
+	dec	(ix+Key+cRepeat)		; If Repeat Count not Reaching Zero, Done
+	jr		nz,.kP8
+	ld		a,(ix+Key+cPress)		; Queue New Keypress
+	call	.dqQueueS
+	ld		a,(ix+Key+cSpeed)		; Reset Repeat Count
+	ld		(ix+Key+cRepeat),a
+.kP8:
+	ld		bc,11						; Bump Process Array Pointer
+	add	ix,bc
+	dec	l							; Decrement Column Counter
+	jp		nz,.kP1					; Continue til Columns Done
+	pop	iy							; Restore aacKey Pointer
+	inc	iy							; Bump aacKey Pointer
+	dec	h							; Decrement Row Counter
+	jp		nz,.kP0					; Continue til All Rows Done
+	ret								; Done
+#endasm
+
+
+/*** Beginheader keyConfig */
+void keyConfig	( 	char	cRaw,
+						char	cPress,
+						char	cRelease,
+						char	cCntHold,
+						char	cSpdLo,
+						char	cCntLo,
+						char	cSpdHi );
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+keyConfig                     <ICOM.LIB>
+
+SYNTAX: 	void keyConfig	( 	char	cRaw,
+						char	cPress,
+						char	cRelease,
+						char	cCntHold,
+						char	cSpdLo,
+						char	cCntLo,
+						char	cSpdHi );
+
+DESCRIPTION:   Assigns each key with key press and release codes,
+hold and repeat ticks for auto repeat and debouncing.
+
+PARAMETER1:		cRaw - Raw Key Code Index.
+2x6 keypad matrix with raw key code index assignments (in brackets):
+
+			 Col 5  Col 4  Col 3  Col 2  Col 1  Col 0
+	Row 1  [  5 ] [  4 ] [  3 ] [  2 ] [  1 ] [  0 ]
+	Row 0  [ 13 ] [ 12 ] [ 11 ] [ 10 ] [  9 ] [  8 ]
+
+PARAMETER2:		cPress - Key Press Code
+An 8-bit value returned when a key is pressed.  0 = Unused.
+See keypadDef() for default press codes.
+
+PARAMETER3:		cRelease - Key Release Code
+An 8-bit value to be returned when a key is released.  0 = Unused.
+
+PARAMETER4:		cCntHold - Hold Ticks
+How long to hold before repeating.  0 = No Repeat.
+
+PARAMETER5:		cSpdLo - Low Speed Repeat Ticks
+How many times to repeat.  0 = None.
+
+PARAMETER6:		cCntLo - Low Speed Hold Ticks
+How long to hold before going to high speed repeat.  0 = Slow Only.
+
+PARAMETER7:		cSpdHi - High Speed Repeat Ticks
+How many times to repeat after low speed repeat.  0 = None.
+
+RETURN VALUE:	None
+
+SEE ALSO:		keyProcess, keyGet, keypadDef
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void keyConfig	( 	char	cRaw,
+						char	cPress,
+						char	cRelease,
+						char	cCntHold,
+						char	cSpdLo,
+						char	cCntLo,
+						char	cSpdHi )
+{
+	static Key *pKey;
+
+	pKey = &asKey[cRaw];
+	pKey->cPress = cPress;
+	pKey->cRelease = cRelease;
+	if (!cPress)
+		cCntHold = cSpdLo = cCntLo = cSpdHi = 0;
+	pKey->cCntHold = cCntHold;
+	pKey->cSpdLo = cSpdLo;
+	pKey->cCntLo = cCntLo;
+	pKey->cSpdHi = cSpdHi;
+	pKey->cState = 0;
+}
+
+
+/*** Beginheader keyUnget */
+
+int keyUnget (char cKey);
+/*** endheader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+keyUnget                     <ICOM.LIB>
+
+SYNTAX:	      int keyUnget (char cKey);
+
+DESCRIPTION:   Push keypress on top of input queue
+
+PARAMETER1:    cKey
+
+RETURN VALUE:	None
+
+SEE ALSO:		keyGet
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int keyUnget (char cKey)
+{
+	return cKey && !dqPush(&sKeyQ,cKey);
+}
+
+
+/*** Beginheader keyGet */
+
+char keyGet	(void);
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+keyGet                     <ICOM.LIB>
+
+SYNTAX:	      char keyGet	(void);
+
+DESCRIPTION:   Get next keypress
+
+PARAMETER1:    None
+
+RETURN VALUE:	The next keypress or 0 if none
+
+SEE ALSO:		keyConfig, keyProcess, keypadDef
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+char keyGet	(void)
+{
+	auto int nKey;
+
+	return (nKey = dqPop(&sKeyQ)) == -1 ? 0 : nKey;
+}
+
+
+/*** Beginheader keyInit */
+
+void keyInit (void);
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+keyInit                     <ICOM.LIB>
+
+SYNTAX:	      void keyInit (void);
+
+DESCRIPTION:   Initializes keypad process
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void keyInit (void)
+{
+	WrPortI ( PCFR,&PCFRShadow,0x54 );				//	PC1 = Key In, PC0 = RS-485 XMit Enable
+	WrPortI ( PDFR,&PDFRShadow,0x30 );				//	PD7..PD6 = Key Row (Open Collector)
+
+	memset ( asKey,0x00,sizeof(asKey) );			//	Reset Key Processing
+	memset ( aacKey,0xFF,sizeof(aacKey) );			//	Idle Raw Key Map
+	dqInit ( &sKeyQ,acKeyQ,sizeof(acKeyQ) );		//	Init Key Queue
+}
+
+
+/*** BeginHeader keyScan */
+void keyScan ( char *pcKeys );
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+keyScan                     <ICOM.LIB>
+
+SYNTAX:	      void keyScan (char *pcKeys);
+
+DESCRIPTION:   Writes "1" to each row and reads the value.  Position of
+a key press is indicated by a zero value in a bit position.
+
+PARAMETER1:    Address of the value read.
+
+RETURN VALUE:	None
+
+SEE ALSO:		keyConfig, keyGet, keypadDef, keyProcess
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void keyScan (char *pcKeys)
+{
+	//	Scan Row 0
+	WrPortI ( PDDR,&PDDRShadow,(PDDRShadow&0x3F)|0x40 );
+	amsDelay ( 1 );
+	*pcKeys++ = 0xC0 | (RdPortI(PBDR)&0x3D) | (RdPortI(PCDR)&0x02);
+
+	//	Scan Row 1
+	WrPortI ( PDDR,&PDDRShadow,(PDDRShadow&0x3F)|0x80 );
+	amsDelay ( 1 );
+	*pcKeys++ = 0xC0 | (RdPortI(PBDR)&0x3D) | (RdPortI(PCDR)&0x02);
+
+	// Release Row Scan
+	WrPortI ( PDDR,&PDDRShadow,PDDRShadow&0x3F );
+
+	//	Clear Six Unused Rows
+	*pcKeys++ = 0xFF;
+	*pcKeys++ = 0xFF;
+	*pcKeys++ = 0xFF;
+	*pcKeys++ = 0xFF;
+	*pcKeys++ = 0xFF;
+	*pcKeys++ = 0xFF;
+}
+
+/*** BeginHeader keypadDef */
+void keypadDef ();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+keypadDef                     <ICOM.LIB>
+
+SYNTAX:	      void keypadDef ();
+
+DESCRIPTION:   Configure keypad to default layout:
+
+	[  1  ] [  2  ] [  3  ] [  4  ] [  5  ] [  .  ]
+	[  6  ] [  7  ] [  8  ] [  9  ] [  0  ] [Enter]
+
+Characters are returned upon key press with no repeat.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		keyConfig, keyGet, keyProcess
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void keypadDef()
+{
+	keyConfig (  5,'1',0, 0, 0,  0, 0 );
+	keyConfig (  4,'2',0, 0, 0,  0, 0 );
+	keyConfig (  3,'3',0, 0, 0,  0, 0 );
+	keyConfig (  2,'4',0, 0, 0,  0, 0 );
+	keyConfig (  1,'5',0, 0, 0,  0, 0 );
+	keyConfig (  0,'.',0, 0, 0,  0, 0 );
+
+	keyConfig ( 13,'6',0, 0, 0,  0, 0 );
+	keyConfig ( 12,'7',0, 0, 0,  0, 0 );
+	keyConfig ( 11,'8',0, 0, 0,  0, 0 );
+	keyConfig ( 10,'9',0, 0, 0,  0, 0 );
+	keyConfig (  9,'0',0, 0, 0,  0, 0 );
+	keyConfig (  8,'E',0, 0, 0,  0, 0 );
+}
+
+
+/*************************************************************************
+	Serial Communication Functions
+--------------------------------------------------------------------------
+	This section supports RS232 and RS485 serial communications.
+	These functions are to be used with the serial port B library functions
+	because serBopen utilizes parallel port D, PD4 (ATXB) and PD5 (ARXB).
+	This chip is half duplex requiring pin 3 (Data Enable) to be high for
+	pins 6 and 7 to act as output and low for those pins to act as input.
+
+                               -------------------------
+                               |                       |
+                               |                    D 4|------- (PD4)
+                 (485+) -------|6 A                 R 1|------- (PD5)
+                               |                       |
+                               |                       |
+                 (485-) -------|7 B                    |
+                               |                   DE 3|------- (PC0)
+                               |                   RE 2|O----|
+                               -------------------------     |
+         	                                                 |
+                                                             \/
+
+SUPPORT LIBRARIES:	RS232.LIB
+
+User Interface:
+
+SYNTAX:	      int serMode();
+DESCRIPTION:   User interface to setup up serial communication lines for
+					this board.  Call this function after serXOpen()
+
+SYNTAX:	      void serB485Tx();
+DESCRIPTION:   Sets (high) pin 3 (DE) to disable Rx and enable Tx
+
+SYNTAX:	      void serB485Rx();
+DESCRIPTION:   Resets (low) pin 3 (DE) to enable Rx and disable Tx
+
+*************************************************************************/
+
+/*** Beginheader serMode */
+int serMode(int mode);
+
+//defaults for flow control RTS/CTS
+#define SERB_RTS_PORT PCDR
+#define SERB_RTS_SHADOW PCDRShadow
+#define SERB_RTS_BIT 2			//PC2
+#define SERB_CTS_PORT PCDR
+#define SERB_CTS_BIT 3			//PC3
+
+/*** endheader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+serMode                   <ICOM.LIB>
+
+SYNTAX:	      int serMode();
+
+DESCRIPTION:   User interface to setup up serial communication lines for
+					this board.  Call this function after serXOpen()
+
+PARAMETER1:    mode - defined serial port configuration if devices
+					are installed.
+
+		   					Serial port setup
+   								(if stuffed)
+
+	mode			B						C					Alt B
+	---------------------------------------------------
+	 0		     ---				RS232, 3-wire			RS485
+ 	 1		RS232, 3-wire		RS232, 3-wire			 ---
+ 	 2		RS232, 5-wire		RTS, CTS					 ---
+
+RETURN VALUE:	0 if correct mode; 1 if not.
+
+SEE ALSO:		serB485Tx, serB485Rx, serBopen, serCopen
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int serMode(int mode)
+{
+	auto int nomode;
+
+	nomode = 0;
+	switch (mode)
+		{
+		case 0:
+			// rs232-3w TxC, RxC all set with serCopen
+			// setup rs485 on ARxB, ATxB, first open with serBopen
+			BitWrPortI(PCFR, &PCFRShadow, 0, 4);				// disable TxB
+			BitWrPortI(PDFR, &PDFRShadow, 1, 4);				// enable ATxB
+			BitWrPortI(PDDDR, &PDDDRShadow, 1, 4);				// make it output
+			WrPortI(SBCR, &SBCRShadow, 0x11);					//	enable ARxB, priority 1
+			break;
+		case 1:
+			// rs232-3w TxB, RxB all set with serBopen
+			// rs232-3w TxC, RxC all set with serCopen
+			break;
+		case 2:
+			// rs232-5w TxB, RxB all set with serBopen
+			//	setup TxC, RxC for RTS, CTS
+			BitWrPortI(PCFR, &PCFRShadow, 0, 2);				// PC2 normal output, PC3 normal input
+			break;
+		default:
+			// unsupported mode
+			nomode = 1;
+			break;
+		}
+	return nomode;
+}
+
+
+/*** Beginheader serB485Tx */
+void serB485Tx();
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+serB485Tx                     <ICOM.LIB>
+
+SYNTAX:	      void serB485Tx();
+
+DESCRIPTION:   Sets (high) pin 3 (DE) to disable Rx and enable Tx
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		serMode, serB485Rx
+
+END DESCRIPTION **********************************************************/
+
+#asm root nodebug
+serB485Tx::
+	ld		a,(PCDRShadow)
+	or		01h
+	ld		(PCDRShadow),a
+;	ioi	ld	(PCDR),a
+	IOWRITE_A(PCDR)
+	ret
+#endasm
+
+
+/*** Beginheader serB485Rx */
+void serB485Rx();
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+serB485Rx                     <ICOM.LIB>
+
+SYNTAX:	      void serB485Rx();
+
+DESCRIPTION:   Resets (low) pin 3 (DE) to enable Rx and disable Tx
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		serMode, serB485Tx
+
+END DESCRIPTION **********************************************************/
+
+#asm root nodebug
+serB485Rx::
+	ld		a,(PCDRShadow)
+	and	0feh
+	ld		(PCDRShadow),a
+;	ioi	ld	(PCDR),a
+	IOWRITE_A(PCDR)
+	ret
+#endasm
+
+/*************************************************************************
+	Digital I/O Functions
+--------------------------------------------------------------------------
+	This section supports digital input and output
+
+User interface:
+
+SYNTAX:	void digOut(int channel, int value);
+DESCRIPTION:	Sets the state of a digital output.
+
+SYNTAX:	int digIn(int channel);
+DESCRIPTION:	Reads the state of a digital input.
+
+*************************************************************************/
+
+/*** BeginHeader	digOut, digIn */
+void digOut(int, int);
+int  digIn(int);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+digOut								<ICOM.LIB>
+
+SYNTAX:	void digOut(int channel, int value);
+
+PARAMETER1:		channel is the output channel number, 0, 1, 2, or 3.
+
+PARAMETER2:		value is the output value (0 or 1).
+
+DESCRIPTION:	Sets the state of a digital output.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		digIn
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+void digOut(int channel, int value)
+{
+	if ((channel < 0) || (channel > 3) || (value < 0) || (value > 1)) {
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel < 2) {
+		// make sure the desired bit on port D is set up as output!
+		BitWrPortI(PDDCR, &PDDCRShadow, 0x00, channel);
+		BitWrPortI(PDFR, &PDFRShadow, 0x00, channel);
+		BitWrPortI(PDDDR, &PDDDRShadow, 0xFF, channel);
+
+		BitWrPortI(PDDR, &PDDRShadow, value, channel);
+
+	} else
+		// port B pins 6-7 are always outputs...
+		BitWrPortI(PBDR, &PBDRShadow, value, channel+4);
+}
+
+/* START FUNCTION DESCRIPTION **************************************************
+digIn								<ICOM.LIB>
+
+SYNTAX:	int digIn(int channel);
+
+PARAMETER1:		channel is the input channel number, 0, 1, 2, or 3.
+
+DESCRIPTION:	Reads the state of a digital input.
+
+RETURN VALUE:	The state of the input (0 or 1).
+
+SEE ALSO:		digOut
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int digIn(int channel)
+{
+	if ((channel < 0) || (channel > 3)) {
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel < 2) {
+		// make sure the desired bit on port D is set up as input!
+		BitWrPortI(PDDCR, &PDDCRShadow, 0x00, channel+2);
+		BitWrPortI(PDFR, &PDFRShadow, 0x00, channel+2);
+		BitWrPortI(PDDDR, &PDDDRShadow, 0x00, channel+2);
+
+		return (BitRdPortI(PDDR, channel+2));
+
+	} else {
+		// make sure the desired bit on port E is set up as input!
+		BitWrPortI(PEFR, &PEFRShadow, 0x00, channel);
+		BitWrPortI(PEDDR, &PEDDRShadow, 0x00, channel);
+
+		return (BitRdPortI(PEDR, channel));
+	}
+}
+
+/*************************************************************************
+	Speaker Functions
+--------------------------------------------------------------------------
+This section supports speaker output.
+
+This library supports 35 ohm speakers typically where buzzers were
+used.  The speakers are controlled by adjusting the frequency and
+amplitude of the circuitry.
+
+Timer B1 is used to generate square waveforms for various frequencies.
+
+Volume is controlled adjusting the amplitude voltage of the circuitry.
+This done by parallel port E bits 4 and 5.  Basically there are 4 levels.
+
+	PE.5	PE.4
+	-----------
+	0		0		off
+	0		1
+	1		0
+	1		1		loudest
+
+User interface:
+
+SYNTAX:	      void spkrOut (unsigned int wFreq, unsigned int wAmp );
+DESCRIPTION:   Sets speaker by adjusting frequency and amplitude values.
+
+*************************************************************************/
+
+/*** Beginheader spkrISR */
+unsigned			wBeepMatch;			//	Beeper Match Shadow
+unsigned			wBeepFreq;			//	Beeper Match Step (Pre Comped)
+unsigned			wBeepAmp;			//	Beeper Amplitude Vector
+
+void spkrISR();
+/*** endheader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+spkrISR                    <ICOM.LIB>
+
+SYNTAX:	      void spkrISR();
+
+DESCRIPTION:   Interrupt service routine for speaker
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		spkrAdjRaw
+
+END DESCRIPTION **********************************************************/
+
+#asm root nodebug
+spkrISR::
+	push	af									; Protect Registers
+	push	hl
+	push	de
+;	ioi	ld	a,(TBCSR)					; Clear Interrupt Service Flag
+	IOREAD_A(TBCSR)
+	ld		hl,(wBeepMatch)				; HL = Last Compare
+	ld		de,(wBeepFreq)					; DE = Step Size
+	add	hl,de								; HL = Next Compare
+	ld		de,0xC0FF						; DE = Used Bit Mask
+	and	hl,de
+	ld		(wBeepMatch),hl				; Update Shadow
+	ld		a,l								; Update Match Register
+;	ioi	ld	(TBL1R),a
+	IOWRITE_A(TBL1R)
+	ld		a,h
+;	ioi	ld	(TBM1R),a
+	IOWRITE_A(TBM1R)
+	ld		hl,(wBeepAmp)					; H = Next Spkr, L = Curr Spkr
+	ld		a,h								; Toggle Speaker Outputs
+	ld		h,l
+	ld		l,a
+	ld		(wBeepAmp),hl					; Update Vector
+;	ioi	ld	a,(PEDR)						; A[3..0] = Save PE[3..0]
+	IOREAD_A(PEDR)
+	and	a,0x0F
+	or		a,l								; A[5..4] = Speaker Out
+;	ioi	ld	(PEDR),a						; Ready Next Speaker Output
+	IOWRITE_A(PEDR)
+	pop	de									; Restore Registers
+	pop	hl
+	pop	af
+	ipres										; Restore Interrupts
+	ret										; Done
+#endasm
+
+
+/*** Beginheader spkrAdjRaw */
+
+void spkrAdjRaw ( unsigned int wFreq, unsigned int wAmp );
+/*** endheader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+spkrAdjRaw                    <ICOM.LIB>
+
+SYNTAX:	      void spkrAdjRaw ( unsigned int wFreq, unsigned int wAmp );
+
+DESCRIPTION:   Sets raw (unconverted) speaker frequency and amplitude values.
+
+PARAMETER1:		wFreq - converted frequency value to 10-bit number.  Computed
+wFreq = (460800/frequency)*offset where offset is 1.25 and frequency is
+a value from 575 to 3000.
+PARAMETER2:		wAmp - coverted voltage amplitude values to parallel port E,
+bits 5 and 4.  Use values 0x00, 0x10, 0x20, 0x30.
+
+RETURN VALUE:	None
+
+SEE ALSO:		spkrISR
+
+END DESCRIPTION **********************************************************/
+
+#asm nodebug
+spkrAdjRaw::
+	call	_param2							; HL = wFreq, DE = wAmp
+	ld		(wBeepAmp),de					; Save Amplitude Vector
+;	ioi	ld	a,(PEDR)						; A[3..0] = Save PE[3..0]
+	IOREAD_A(PEDR)
+	and	a,0x0F
+	or		a,e								; A[5..4] = Speaker Out
+;	ioi	ld	(PEDR),a						; Seed Speaker Output
+	IOWRITE_A(PEDR)
+	ld		a,h								; A = MSB(wFreq)
+	rrca										; A[7..6] = wFreq[9..8]
+	rrca
+	or		a,0x3F							; A[5..0] = 0x3F (Ripple Carry)
+	ld		h,a								; HL = Pre Computer Step
+	ld		(wBeepFreq),hl					; Save Match Step
+	ld		hl,0								; Zero Match Shadow
+	ld		(wBeepMatch),hl
+	xor	a									; Seed Match Register
+;	ioi	ld	(TBL1R),a
+	IOWRITE_A(TBL1R)
+;	ioi	ld	(TBM1R),a
+	IOWRITE_A(TBM1R)
+	ld		bc,spkrISR						; BC = Beeper ISRs
+	ld    a, _OP_JP
+	ld		(INTVEC_BASE + TIMERB_OFS),a		; JUMP
+	ld		(INTVEC_BASE + TIMERB_OFS + 1),bc		; spkrISR
+;	ld		a,0x0A							; PClk/16 / Interrupt 2
+	ld		a,0x09							; PClk/16 / Interrupt 1
+;	ioi	ld	(TBCR),a
+	IOWRITE_A(TBCR)
+	ld		a,0x03							; Timer B On / Int on Match 1
+;	ioi	ld	(TBCSR),a
+	IOWRITE_A(TBCSR)
+	ret										; Done
+#endasm
+
+
+/*** Beginheader spkrOut */
+
+void spkrOut (unsigned int wFreq, unsigned int wAmp );
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+spkrOut                    <ICOM.LIB>
+
+SYNTAX:	      void spkrOut (unsigned int wFreq, unsigned int wAmp );
+
+DESCRIPTION:   Outputs speaker frequency and volume with various
+frequency and amplitude values.
+
+PARAMETER1:		wFreq - suggested frequency values from 575 to 3000 Hz.
+For example, enter 1000 for 1k Hz.
+
+PARAMETER2:		wAmp - (volume) voltage amplitude values 0, 1, 2, 3. 0=off
+and 3=loudest.
+
+RETURN VALUE:	None
+
+SEE ALSO:
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void spkrOut (unsigned int wFreq, unsigned int wAmp)
+{
+const	static unsigned	int awAmp[] = { 0x0000,0x0010,0x0020,0x0030 };
+
+	if ((wAmp > 0) && (wFreq >= 575)) {			//	wFreq != 0 : Setup Timer B
+		spkrAdjRaw ( (unsigned)((460800l/wFreq)*1.25), awAmp[wAmp&3] );
+		}
+	else {												//	wFreq == 0 : Timer B Off
+		WrPortI ( TBCSR,NULL,0x00 );
+		}
+}
+
+
+/*************************************************************************
+	Board Initialization
+--------------------------------------------------------------------------
+	This section supports board initialization.
+
+User Interface:
+
+SYNTAX:			void brdInit (void);
+DESCRIPTION:	Call this function at the beginning of application code.
+
+*************************************************************************/
+
+/*** BeginHeader brdInit */
+void brdInit ( void );
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+brdInit                     <ICOM.LIB>
+
+SYNTAX:			void brdInit (void);
+
+DESCRIPTION:	Call this function at the beginning of application code.
+	Initializes the following system ports:
+
+	PA.0	Out	LCD Backlight
+	PA.1	Out	Display CS (Active High)
+	PA.2	Out	Display RS (High = Control, Low = Data) / LCD Contrast 0
+	PA.3	Out	Display WR (Active Low) / LCD Contrast 1
+	PA.4	Out	Display D4 / LCD Contrast 2
+	PA.5	Out	Display D5 / LCD Contrast 3
+	PA.6	Out	Display D6 / LCD Contrast 4
+	PA.7	Out	Display D7 / LCD Contrast 5
+
+	PB.0	In		Keypad Col 0
+	PB.2	In		Keypad Col 2
+	PB.3	In		Keypad Col 3
+	PB.4	In		Keypad Col 4
+	PB.5	In		Keypad Col 5
+	PB.6	Out	HC Output O2
+	PB.7	Out	HC Output O3
+
+	PC.0	Out	RS485 Transmitter Enable
+	PC.1	In		Keypad Col 1
+	PC.2	Out	RTS/TXC RS-232
+	PC.3	In		CTS/RXC RS-232
+	PC.4	Out	TXB RS-232 (if stuffed)
+	PC.5	In		RXB RS-232 (if stuffed)
+	PC.6	Out	Program port (TXA)
+	PC.7	In		Program port (RXA)
+
+	PD.0	Out	HC Output O0
+	PD.1	Out	HC Output O1
+	PD.2	In		Protected Input I0
+	PD.3	In		Protected Input I1
+	PD.4	Out	Default TXB RS-485
+	PD.5	In		Default RXB RS-485
+	PD.6	O.C.	Keypad Row 0
+	PD.7	O.C.	Keypad Row 1
+
+	PE.0	In		Ethernet Interrupt
+	PE.1	Out	Ethernet Reset
+	PE.2	In		Protected Input I2
+	PE.3	In		Protected Input I3
+	PE.4	Out	Speaker O
+	PE.5	Out	Speaker 1
+	PE.6	Out	Ethernet Write strobe
+	PE.7	Out	Ethernet Read strobe
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		keyInit, dispInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void brdInit (void)
+{
+	WrPortI ( PBDR,&PBDRShadow,0x00 );				//	PB7..PB6 = OUT3..OUT2
+	WrPortI ( PDDR,&PDDRShadow,0x00 );				//	PD5..PD4 = RS-485 Rx/Tx (Alt Port B)
+	WrPortI ( PDDCR,&PDDCRShadow,0xC0 );			// PD3..PD2 = IN1..IN0
+	WrPortI ( PDDDR,&PDDDRShadow,0xD3 );			//	PD1..PD0 = OUT1..OUT0
+	WrPortI ( PDCR,&PDCRShadow,0x00 );
+	WrPortI ( PEDR,&PEDRShadow,0x02 );				//	PE5..PE4 = Speaker (Update on Timer B2)
+	WrPortI ( PEDDR,&PEDDRShadow,0xF2 );			//	PE3..PE2 = IN3..IN2
+
+#if (_BOARD_TYPE_ == OP6700)
+	WrPortI ( IB7CR,NULL,0xD0 );						//	PE7 = Ethernet /RD Strobe
+	WrPortI ( IB6CR,NULL,0xE8 );						//	PE6 = Ethernet /WR Strobe
+	WrPortI ( PEFR,&PEFRShadow,0xC0 );
+	WrPortI ( PECR,&PECRShadow,0x00 );				//	PE1 = Ethernet Reset (Active High)
+																//	PE0 = Ethernet Interrupt
+#endif
+
+	//serCopen(_232BAUD);								//don't need
+	//serMode(0);											//establish RS232 and RS485
+	keyInit();												//	Init Key Processing
+	dispInit();												//	Init display
+
+	// "prime the pump" for timer B (necessary for clean first sound)
+	WrPortI(TBL1R, NULL, 0x00);
+	WrPortI(TBCSR, &TBCSRShadow, 0x01);
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */
+

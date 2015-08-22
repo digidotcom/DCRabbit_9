@@ -1,0 +1,332 @@
+/*** BeginHeader */
+#ifndef __DKUCOSENTRY_LIB
+#define __DKUCOSENTRY_LIB
+/*** EndHeader */
+
+/*** BeginHeader dkSetExitHook, dkUcosExit, dkSetSingleStepHook, dkSingleStepExit,
+					  dkProlog, dkEpilog, dkSetPrologHook, dkSetEpilogHook,
+					  dkDetectContextSwitch, dkHandleRST18, dkCheckCurrentTask,
+					  dkHandleRST28, dkOSRunning, dkContextSwitch, dkLastTCB, dkDbgTCB
+*/
+root void dkSetExitHook(void);
+root void dkUcosExit(void);
+root void dkSetSingleStepHook(void);
+root void dkSingleStepExit(void);
+root void dkProlog(void);
+root void dkEpilog(void);
+root void dkSetPrologHook(void);
+root void dkSetEpilogHook(void);
+root void dkDetectContextSwitch(void);
+root void dkHandleRST18(void);
+root void dkCheckCurrentTask(void);
+root void dkHandleRST28(void);
+extern char dkOSRunning;
+extern char dkContextSwitch;
+extern OS_TCB* dkLastTCB;
+extern OS_TCB* dkDbgTCB;
+/*** EndHeader */
+
+char dkOSRunning;
+char dkContextSwitch;
+OS_TCB* dkLastTCB;
+OS_TCB* dkDbgTCB;
+
+#asm
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+dkSetExitHook::
+	ld		hl,dkUcosExit
+	ld		(dkExitHook),hl
+	ret
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+dkUcosExit::
+	ld		a,(dkStatusFlags)
+	bit	DKF_STAT_CONTEXTSWITCH,a
+	jr		z,__dk_uedone
+	ld		hl,(OSTCBCur)
+	ld		(dkLastTCB),hl
+__dk_uedone:
+	ret
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+dkSetSingleStepHook::
+	ld		hl,dkSingleStepExit
+	ld		(dkSingleStepHook),hl
+	ret
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+dkSingleStepExit::
+	ld		hl,(OSTCBCur)
+	bool	hl
+	jr		z,__dk_csse_done		;exit if os is not yet running
+	ld		hl,(OSTCBCur)			;set current TCB as tcb being debugged
+	ld		(dkDbgTCB),hl
+
+__dk_csse_done:
+	ret
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; dkProlog
+; this routine is called on each entry to the debug kernel
+dkProlog::
+	push	ip
+	ipset	1
+
+	push	af
+	push	hl
+
+	ld		a,(dkPrologCount)
+	or		a
+	jr		nz, __dk_prolog_exit
+
+	ld		hl,(OSRunning)			; disable MCOS scheduling if MCOS active
+	ld		a,l
+	or		l
+	jr		z,__dk_prolog_exit
+
+	ld		a,l
+	ld		(dkOSRunning),a
+	xor	a
+	ld		(OSRunning),a
+
+__dk_prolog_exit:
+	ld		a,(dkPrologCount)
+	inc	a
+	ld		(dkPrologCount),a
+	pop	hl
+	pop	af
+
+	pop	ip
+	ret
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; dkEpilog
+; this routine is called on each exit from the debug kernel
+dkEpilog::
+	push	ip
+	ipset	1
+
+	push	af
+
+	ld		a,(dkPrologCount)
+	dec	a
+	ld		(dkPrologCount),a
+
+	or		a
+	jr		nz,__dk_epilog_exit
+
+	ld		a,(dkOSRunning)			;restore MCOS active status
+	ld		(OSRunning),a
+	xor	a
+	ld		(dkOSRunning),a
+
+__dk_epilog_exit:
+	pop	af
+	pop	ip
+	ret
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+dkSetPrologHook::
+	ld		hl,dkProlog
+	ld		(dkPrologHook),hl
+	xor	a
+	ld		(OSRunning),a
+	ld		(dkOSRunning),a
+	ld		(dkPrologCount),a
+	bool	hl
+	ld		l,h
+	ld		(OSTCBCur),hl
+	ld		(dkLastTCB),hl
+	ld		(dkDbgTCB),hl
+	ret
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+dkSetEpilogHook::
+	ld		hl,dkEpilog
+	ld		(dkEpilogHook),hl
+	ret
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+dkDetectContextSwitch::
+	ld		hl,(OSTCBCur)
+	ld		a,l
+	or		h
+	jr		z,__dk_dcsdone
+
+	ld		hl,(dkLastTCB)
+	ld		a,l
+	or		h
+	jr		nz,__dk_dcsosstarted
+	ld		(dkLastTCB),hl		; if os just started, init OSDbgTCB
+
+__dk_dcsosstarted:
+
+	ld		hl,(OSTCBCur)
+	ld		de,(dkLastTCB)
+	xor	a											; clear carry
+	sbc	hl,de
+	jr		z,__dk_dcsdone
+
+
+	ld		a,(dkStepFlags)
+	bit	DKF_STEP_OVER,a
+	jr		nz,__dk_dcsdone
+	add	sp,2
+	ld		a,TC_DEBUG_SINGLESTEP
+	ld		(dkRequest),a
+	ld		hl,dkStatusFlags
+	set	DKF_STAT_CONTEXTSWITCH,(hl)
+	ljp	dkSingleStep				; bypass dkCore and treat this as a
+	                              ; source level step. Context switch occurred while
+	                              ; single stepping in disassembled code.
+__dk_dcsdone:
+	ret
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Disassembled code single step handler.  After an instruction
+; executes in RAM, execution ends up here.
+dkHandleRST18::
+	push	ip
+	ipset	1
+	call 	dkProlog
+	pop	ip
+	call	dkCheckCurrentTask
+	call	dkSaveContext				; save context of user program
+#if __SEPARATE_INST_DATA__
+	add	sp,5
+#else
+	add	sp,2							; adjust stack pointer to remove return address
+#endif
+	call 	dkSavepc
+	call	dkDetectContextSwitch
+
+	; if next instruction to execute is an rst 20 or 28, jump straight
+	; to the asm single step handler, and skip the instruction
+	ld		hl,(dkRegisters+__dkregisters+_pc)
+	ld		a,(hl)
+	cp		DK_RST20
+	jr		nz,__dk_notrst20
+	ljp	dkAsmSingleStep
+__dk_notrst20:
+	cp		DK_RST28
+	jr		nz,__dk_notrst28
+	ljp	dkAsmSingleStep
+__dk_notrst28:
+	ljp	dkCore
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; If debug kernel should be entered, this function returns to
+; caller.  Otherwise, the stack is adjusted to make up for the
+; call to this function and dkEpilog is jumped to to reenable
+; ucos scheduling.
+dkCheckCurrentTask::
+	push	af
+	push	hl
+	push	de
+	ld		hl,(OSTCBCur)
+	bool	hl
+	jr		z,__dkcct_done		; if OSTCBCur = 0, os not yet running
+	ld		hl,(dkDbgTCB)
+	bool	hl
+	jr		nz,__dk_cctosstarted
+	ld		hl,(OSTCBCur)
+	ld		(dkDbgTCB),hl		; if os just started, init OSDbgTCB
+
+__dk_cctosstarted:
+	ld		a,(dkStepFlags)
+	bit	DKF_STEP_INTO,a
+	jr		nz,__dkcct_done		; if stepping into, must enter dk
+
+	ld		a,(dkRequest)			; if stopping, stop regardless of running task
+	cp		TC_DEBUG_STOPPROGRAM
+	jr		z,__dkcct_done
+
+
+__dk_cctnotstop:
+	ld		hl,(OSTCBCur)
+	ex		de,hl
+	xor	a						; clear carry
+	ld		hl,(dkDbgTCB)		; TCB of task currently being debugged
+	sbc	hl,de
+	jr		z,__dkcct_done		; (z set at last sbc) enter dk if this task is being debugged
+
+									; once this is actually implemented, should check to see if
+									; STOPPROGRAM is the current command. If so, even if the
+									; current task is not the one we are interested in, the debug
+									; kernel should be entered so that the program can be stopped.
+
+#if (DK_ENABLE_TRACING == 1)
+__dk_tracesendcont:
+	ld		a,(dkSendFlags)					; get send flags into a
+	bit	DKF_SEND_TRACE,a				   ; check if watches should be sent
+	jr		z,__dkcct_notrace
+   ld    hl,dkDebugTraceMsg
+   lcall dkSendTrace
+	ld		hl,dkTraceFlags
+   bit	DKF_TRACE_FENTRY,(hl)
+   res	DKF_TRACE_FENTRY,(hl)
+   res	DKF_TRACE_FEXIT,(hl)
+   jr		nz,__dk_tracesendcont    ; now repeat Entry trace with Execute or MACRO
+   res	DKF_TRACE_RST,(hl)
+__dkcct_notrace:
+#endif
+	pop	de
+	pop	hl
+	pop	af
+	add	sp,2
+	jp		dkEpilog
+
+__dkcct_done:
+	pop	de
+	pop	hl
+	pop	af
+	ret
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Source level single step.  An rst 28 is
+; placed before every series of instructions making up a single
+; c statement.
+dkHandleRST28::
+	push	ip
+	ipset	1
+	call 	dkProlog
+	pop	ip
+#if (DK_ENABLE_TRACING == 1)
+	lcall	dkSetTraceRST28
+#endif
+;	call	dkCheckCurrentTask
+	call 	dkSaveContext
+	call	dkSavepcrst2028
+	call	dkCheckCurrentTask
+	ld		hl,dkStatusFlags
+	res	DKF_STAT_CONTEXTSWITCH,(hl)			; clear context switch flag
+#if __SEPARATE_INST_DATA__
+	add	sp,5
+#else
+	add	sp,2
+#endif
+#if (DK_ENABLE_ASMSINGLESTEP == 1)
+	call dkSetReturnAddress
+#endif
+	ljp	dkCore
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#endasm
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

@@ -1,0 +1,52 @@
+<html>
+<head><title>Examine Log Messages</title></head>
+<META NAME="Author" CONTENT="Z-world, Inc/bjw">
+<body BgColor=#F0FFF0>
+
+<H2> Welcome to the Log Message Examination Page </h2>
+
+<p> To use, enter a facility number from 0 to 31, choose to delete or not,
+and then hit [Get One Entry].
+If there is a message in the facility, it will be retrieved and displayed.
+If a string, the text appears.
+If a bunch of integers, they are displayed separated by commas.
+Otherwise, the data are displayed in hex bytes.
+</p>
+
+<hr>
+
+<FORM ACTION="/log_submit.cgi" METHOD="POST">
+<TABLE BORDER=0 CELLSPACING=2 CELLPADDING=5>
+
+<TR>
+	<TH ALIGH=RIGHT>Facility Number (0 .. 31) : &nbsp;</th>
+	<TD><INPUT TYPE="TEXT" NAME="facility_number" SIZE=3 maxlength=3 value="0"></TD>
+	<TH ALIGH=RIGHT>Delete after reading ?</th>
+	<TD><INPUT TYPE="CHECKBOX" NAME="delete_it" checked value=yes></TD>
+<TR>
+
+</TABLE>
+<center>
+<INPUT TYPE="SUBMIT" VALUE="Get One Entry (POST)"> &nbsp; &nbsp;
+<input type=RESET value="Clear Form">
+</center>
+</FORM>
+	<hr>
+
+<FORM ACTION="/log_submit.cgi" METHOD="GET">
+Facility Number :
+<INPUT TYPE="TEXT" NAME="facility_number" SIZE=3 maxlength=3 value="4">  &nbsp; &nbsp;
+Delete after reading ?
+<INPUT TYPE="CHECKBOX" NAME="delete_it" checked value=yes> &nbsp; &nbsp;
+<INPUT TYPE="SUBMIT" VALUE="Get One Entry (GET)">
+</form>
+<hr>
+
+Note: currently you can only <i>GET</i> from the end of a log.
+
+<p><hr> <FORM ACTION="/which_submit.cgi" METHOD="post">
+</form>
+
+<P><small> file: <i> Samples\TargetProc\Pages\Form.html</i></small>
+</body>
+</html>

@@ -1,0 +1,234 @@
+/* START LIBRARY DESCRIPTION *********************************************
+TC_FS.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+	Support routines and structures for DeviceMate file system 
+	target communcations.
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#ifndef __TC_FS_LIB
+#define __TC_FS_LIB
+/*** EndHeader */
+
+/*** BeginHeader */
+
+#ifndef TC_XTC_H
+	#use "tc_xtc.lib"
+#endif
+
+/* ID type */
+typedef int16 FNumber;
+
+/*
+ * Packet definitions for accessing the filesystem
+ * over the TC link.
+ */
+
+/* header of each packet */
+typedef struct {
+   uint8		start_byte;    // the value of 0xFF
+   uint8		packet_type;   // what would be the subtype
+   uint16	length;        // the length of the packet
+} _TC_FSHeader;
+#define TC_FS_STARTBYTE		0xff
+
+/* sync packet, to initilize the filesystem */
+#define TC_FS_SYNC	  	   0x00
+typedef struct {
+	uint16	flags;						// initial options to the devmate
+#define TC_FS_FORMAT 		0x0001 	// erase the FS completely!
+} _TC_FSSync;
+typedef struct {
+	// send some usefull information back?
+	uint16	reserve;
+} _TC_FSSyncACK;
+
+/* initiate a transaction */
+#define TC_FS_TRANSACTION_OPEN		0x01
+typedef struct {
+	uint16	transaction_token;		// unique token for this transaction
+	FNumber	id;							// ID of the file to open
+	uint16	flags;						// various flags...
+#define TC_FS_FLAGS_NEWID	 0x0001	// create a new ID
+#define TC_FS_FLAGS_REPLACE 0x0002	// replace an existing file
+	uint16	name_length;				// length of the file name (real-text)
+	uint8		name[TC_FS_MAXNAME];		// the actual file name (real-text) [must be the last field]
+} _TC_FSTransactionOpen;
+typedef struct {
+	uint16	transaction_token;		// the token passed in to OPEN
+} _TC_FSTransactionOpenACK;
+typedef _TC_FSTransactionOpenACK _TC_FSTransactionOpenNAK;
+
+/* finish a transaction */
+#define TC_FS_TRANSACTION_CLOSE		0x02
+typedef struct {
+	uint16	transaction_token;		// unique token for this transaction,
+												// as returned from TransactionOpen
+} _TC_FSTransactionClose;
+typedef struct {
+	uint16	transaction_token;		// the token that was closed
+	FNumber	id;							// ID of the file created
+} _TC_FSTransactionCloseACK;
+typedef struct {
+	uint16	transaction_token;		// the token that was closed
+} _TC_FSTransactionCloseNAK;
+
+/* in a transaction, append data to a file */
+#define TC_FS_TRANSACTION_APPEND		0x03
+typedef struct {
+	uint16	transaction_token;		// unique token for this transaction,
+												// as returned from TransactionOpen
+	uint16	length;						// length of data to append
+	uint8		data[TC_FS_MAXDATA];		// the actual data to append [must be the last field]
+} _TC_FSTransactionAppend;
+typedef struct {
+	uint16	transaction_token;		// the token that was ACKed
+} _TC_FSTransactionAppendACK;
+typedef _TC_FSTransactionAppendACK _TC_FSTransactionAppendNAK;
+
+/* rename an ID's real-text name */
+#define TC_FS_RENAME						0x04
+typedef struct {
+	FNumber	id;							// ID of the file to rename
+	uint16	name_length;				// length of the filename (real-text)
+	uint8		name[TC_FS_MAXNAME];		// the filename (real-text) [must be the last field]
+} _TC_FSRename;
+typedef struct {
+	FNumber	id;							// ID of the file being ACKed
+} _TC_FSRenameACK;
+typedef _TC_FSRenameACK _TC_FSRenameNAK;
+
+/* lookup an ID by its real-text name */
+#define TC_FS_IDLOOKUP					0x05
+typedef struct {
+	uint16	transaction_token;		// token to differentiate a transaction
+	uint16	name_length;				// length of the filename (real-text)
+	uint8		name[TC_FS_MAXNAME];		// the filename to look up (real-text) [must be the last field]
+} _TC_FSIDLookup;
+typedef struct {
+	uint16	transaction_token;		// the token as given to the devmate
+	FNumber	id;							// ID of the requested filename
+} _TC_FSIDLookupACK;
+typedef struct {
+	uint16	transaction_token;		// the token as given to the devmate
+} _TC_FSIDLookupNAK;
+
+/* remove a file */
+#define TC_FS_DELETE						0x06
+typedef struct {
+	FNumber	id;							// ID of the file to delete
+} _TC_FSDelete;
+typedef struct {
+	FNumber	id;							// IF of the file that was deleted
+} _TC_FSDeleteACK;
+typedef _TC_FSDeleteACK _TC_FSDeleteNAK;
+
+/*
+ * storage for the body of the packets
+ */
+
+/* the packets that go from the target to the devmate */
+typedef union {
+	_TC_FSSync						Sync;
+	_TC_FSTransactionOpen		TransactionOpen;
+	_TC_FSTransactionClose		TransactionClose;
+	_TC_FSTransactionAppend		TransactionAppend;
+	_TC_FSRename					Rename;
+	_TC_FSIDLookup					IDLookup;
+	_TC_FSDelete					Delete;
+} _TC_FSTargetToDevMate;
+
+/* the packets that go from the devmate to the target */
+typedef union {
+	_TC_FSSyncACK					SyncACK;
+	_TC_FSTransactionOpenACK	TransactionOpenACK;
+	_TC_FSTransactionOpenNAK	TransactionOpenNAK;
+	_TC_FSTransactionCloseACK	TransactionCloseACK;
+	_TC_FSTransactionCloseNAK	TransactionCloseNAK;
+	_TC_FSTransactionAppendACK	TransactionAppendACK;
+	_TC_FSTransactionAppendNAK	TransactionAppendNAK;
+	_TC_FSRenameACK				RenameACK;
+	_TC_FSRenameNAK				RenameNAK;
+	_TC_FSIDLookupACK				IDLookupACK;
+	_TC_FSIDLookupNAK				IDLookupNAK;
+	_TC_FSDeleteACK				DeleteACK;
+	_TC_FSDeleteNAK				DeleteNAK;
+} _TC_FSDevMateToTarget;
+
+/* all packets */
+typedef union {
+	/* target to devmate */
+	_TC_FSSync						Sync;
+	_TC_FSTransactionOpen		TransactionOpen;
+	_TC_FSTransactionClose		TransactionClose;
+	_TC_FSTransactionAppend		TransactionAppend;
+	_TC_FSRename					Rename;
+	_TC_FSIDLookup					IDLookup;
+	_TC_FSDelete					Delete;
+
+	/* devmate to target */
+	_TC_FSSyncACK					SyncACK;
+	_TC_FSTransactionOpenACK	TransactionOpenACK;
+	_TC_FSTransactionOpenNAK	TransactionOpenNAK;
+	_TC_FSTransactionCloseACK	TransactionCloseACK;
+	_TC_FSTransactionCloseNAK	TransactionCloseNAK;
+	_TC_FSTransactionAppendACK	TransactionAppendACK;
+	_TC_FSTransactionAppendNAK	TransactionAppendNAK;
+	_TC_FSRenameACK				RenameACK;
+	_TC_FSRenameNAK				RenameNAK;
+	_TC_FSIDLookupACK				IDLookupACK;
+	_TC_FSIDLookupNAK				IDLookupNAK;
+	_TC_FSDeleteACK				DeleteACK;
+	_TC_FSDeleteNAK				DeleteNAK;
+} _TC_FSPacketBody;
+
+typedef struct {
+	XTCApp			app;
+	XTCChan			chans[1];
+
+	uint8				state;		// the main state machine
+#define TC_FS_INIT				0
+#define TC_FS_WAITREADY			1
+#define TC_FS_WAITESTAB			2
+#define TC_FS_GETPACKET			3
+#define TC_FS_PACKETRECEIVE	4
+#define TC_FS_HAVEPACKET		5
+#define TC_FS_PROCESSPACKET	6
+#define TC_FS_SENDPACKET		7
+#define TC_FS_RESET				8		// should be the last state-number
+
+	uint8 			rxstate;		// receiving a packet FSM
+#define TC_FS_RXINIT				0
+#define TC_FS_RXHEADER			1
+#define TC_FS_RXBODY				2
+
+	uint8				txstate;		// transmition FSM
+#define TC_FS_TXINIT				0
+#define TC_FS_TXHEADER			1
+#define TC_FS_TXBODY				2
+
+	uint8				pstate;		// states in the processing step
+#define TC_FS_PROCESSINIT		0
+
+	_TC_FSHeader	header;  	// received header
+
+	uint16			offset;
+	uint16			length;		// buffer offsets to transmit and received data
+
+	uint8				isnotreadyyet;	// flag indicating if the driver is _NOT_ ready to accept commands yet
+} _TC_FSStateType;
+
+/*
+ * Transaction stuff
+ */
+#define TC_FS_TOKEN_BAD			0x0000		// a bad token - error
+
+/*** EndHeader */
+
+/*** BeginHeader */
+#endif /*__TC_FS_LIB*/
+/*** EndHeader */

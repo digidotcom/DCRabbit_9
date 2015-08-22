@@ -1,0 +1,3028 @@
+/*
+ *    realtek.lib
+ *    Copyright (C) Z-World, Inc. All rights reserved.
+ *
+ *		Packet driver functions for the RealTek RTL8019AS.
+ *
+ * 	SW_EMULATE_PULLUP -- In current designs the EEPROM Data In line is
+ *   			connected to a line on the Rabbit MPU.  However, you can lift
+ *     		pine 77 and wire it to pullup resister to free this I/O line.
+ *    		Setting SW_EMULATE_PULLUP will reconfigure the RealTek CONFIG
+ *    		registers to compenstate for this.
+ */
+
+/*** BeginHeader _RealTekController */
+#ifndef __REALTEK_LIB
+#define __REALTEK_LIB
+
+#ifdef RT_FULLDUPLEX
+#warns "Full duplex operation not recommended. See Technical Note 237"
+#endif
+
+#use "ne2000.lib"
+
+// global defines
+
+#if PLD_ETH_COMPILING == 1
+	#define rtk_internal_call(xlabel) 	asm db 0xcd $ dw logical_addr(xlabel)
+   #define rtk_internal_func				xmem __call__ nodebug nouseix
+   #define rtk_external_func				xmem nodebug nouseix
+#else
+	#define rtk_internal_call(xlabel)	asm call xlabel
+   #define rtk_internal_func 				xmem _pktdrv_debug nouseix
+   #define rtk_external_func      		xmem _pktdrv_debug nouseix
+#endif
+
+
+// Using an ethernet packet driver.  Define to number of NICs of this type.
+// This define overridden for 2-chip boards (none of which are currently released for realtek chip).
+#ifndef USING_REALTEK
+	#define USING_REALTEK	1
+#endif
+
+/* ***************************************************************************/
+// a struct describing the current RealTek configuration.  A pointer to this
+// is kept in the IFTEntry.state field (see NET.LIB)
+typedef struct {
+
+	/* NOTE.  This first part must be common to all ne2000 variants */
+   /****************************************************************/
+	NetControllerDevice * ncd;
+#if PLD_ETH_COMPILING || USE_ETH_PRELOADED_DRIVER
+   void * pld_rscblock;
+#endif
+   word	iface;			// Interface number
+
+	// IO base addresses
+	int	WR1;
+	int	RD1;
+
+	// hardware reset line
+	char	reset_port;				// the parport that the reset line is on
+#if PLD_ETH_COMPILING || USE_ETH_PRELOADED_DRIVER
+	int 	reset_port_index;		// index into pld shadow registers
+#else
+	char	*reset_port_shadow;	// pointer to the shadow register
+#endif
+	char	reset_mask;				// mask to set the reset line high
+
+   char	hwa[6];					// Current MAC address (shadow)
+
+	/* End of part which must be common to all ne2000 variants      */
+   /****************************************************************/
+
+	int	flags;
+#define RT_FLAGS_HAVE9346		0x0001	// we actually have a 9346 serial eprom
+#define RT_FLAGS_NOEEDI			0x0002	// we do not have a DI line to listen to
+#define RT_FLAGS_TWOIF			0x0004	// If set, this is the second RealTek (EG2000 boards only)
+#define RT_FLAGS_FULLDUPLEX	0x0008	// set to try and turn on full duplex mode
+#define RT_FLAGS_USEINT			0x0010	// set to use interrupts
+#define RT_FLAGS_BLUECHEESE_MUX_FIX	0x0020	// nasty kludge to get the BlueCheese MUX in the right position
+#define RT_FLAGS_NOHARDWARERESET		0x0040	// do not do a hardware reset - no access to the rstdrv line?
+#define RT_FLAGS_INVERTEED0	0x0080
+	int	(*io_init)();	// func-pointer to the code that sets up the IO strobes
+
+
+
+	// initial config values
+	char	full_duplex;
+	char	half_duplex;
+
+	// used if (!RT_FLAGS_HAS9346) -- emulated 9346 configuration
+	char	ee_parport;		// parallel port eesk_bit and eedi_bit are on
+	char	eesk_mask;		// bit the serial clock is on
+	char	eedi_mask;		// bit the DataIn is on
+	char	eedo_bit_reg;	// bit-register that the DataOut is on
+#if PLD_ETH_COMPILING || USE_ETH_PRELOADED_DRIVER
+	int 	eedo_shadow_index; // index into pld shadow registers
+#else
+   char* eedo_shadow;	// shadow of eedo
+#endif
+
+	word pd_overruns;
+	word pd_trashed;
+	word pd_toobig;
+	word pd_nobufs;
+	word pd_received;
+	char	pd_header[18];	// temporary storage for DMA and Ethernet headers
+
+} _RealTekConfig;
+
+#if PLD_ETH_COMPILING == 0
+_RealTekConfig _realtek_conf[USING_REALTEK];	// Run-time instances of state structure
+#endif
+
+#if PLD_ETH_COMPILING == 1
+void _RealTekController(void);
+#else
+extern const NetControllerDevice _RealTekController;
+#endif
+
+// These macros are used by net.lib to properly initialize all instances.  Each macro is a C initializer
+// (with trailing comma if not null).  First element points to NetControllerDevice, second is a void
+// pointer which points to the specific state structure for the instance, third field is instance number.
+#define REALTEK_TABLE1  { &_RealTekController, (void *)_realtek_conf, 0 },
+#if USING_REALTEK > 1
+	#define REALTEK_TABLE2  { &_RealTekController, (void *)(_realtek_conf+1), 1 },
+#else
+	#define REALTEK_TABLE2
+#endif
+
+// Page 3 registers (RealTek)
+#define PD_9346CR		0x01
+#define PD_CONFIG0	0x03
+#define PD_CONFIG1	0x04
+#define PD_CONFIG2	0x05
+#define PD_CONFIG3	0x06
+#define PD_HLTCLK		0x09
+
+// values to write to RealTek registers
+#define PD_PAGE_STOP	0x60
+
+/*** EndHeader */
+
+// Pointer to this is stored in IFTEntry.ncd field - basically, pointers to specific driver functions.
+#if PLD_ETH_COMPILING || USE_ETH_PRELOADED_DRIVER
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+#asm xmem
+_RealTekController::
+	dw		sizeof(_RealTekConfig)
+   dw		NCD_POLL
+   db		6
+   dw		USING_REALTEK
+   dw		0x0000
+   dw		0x0000
+	dw		0x0000
+	dw		0x0000
+   dw		0x0000
+#endasm
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+#else
+
+const NetControllerDevice _RealTekController =
+{
+	sizeof(_RealTekConfig)		// sizeof_state
+  ,NCD_POLL							// flags
+  ,6									// sizeof_hwa
+  ,USING_REALTEK					// instances
+  ,rtk_receive						// receive()
+  ,ne2k_sendpacket				// sendpacket()
+  ,rtk_ioctl						// ioctl()
+#ifdef PKTDRV_VERBOSE
+  ,rtk_prt_nicreg					// prtregs()
+#else
+  ,NULL
+#endif
+  ,rtk_ifctl						// ifctl()
+};
+#endif
+
+/************************************************************
+ * Board specific I/O init functions follow...
+ ***/
+
+/*** BeginHeader pd_setup_RCM3000CORE */
+rtk_internal_func int pd_setup_RCM3000CORE(_RealTekConfig *rt);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func int pd_setup_RCM3000CORE(_RealTekConfig *rt)
+{
+#asm nodebug
+	ld		ix,(sp+@SP+rt)
+
+	; we don't have access to EEDO
+	; 9346 emulation
+	ld		a,PDDR
+	ld		(ix+[rt]+ee_parport),a
+	ld		a,0x02
+	ld		(ix+[rt]+eesk_mask),a
+	ld		a,0x01
+	ld		(ix+[rt]+eedi_mask),a		; overloaded as eedo mask
+	ld		a,GOCR
+	ld		(ix+[rt]+eedo_bit_reg),a
+	ld		hl,GOCRShadow
+	ld		(ix+[rt]+eedo_shadow),hl
+
+   ld		a,(hl)							; /BUFEN to output low.
+   or		a,0x02
+   and	a,0xfe
+   ld		(hl),a
+   ioi	ld (GOCR),a
+
+	; setup the I/O strobes
+	ld		a,(PEFRShadow)					; clear the 0x4000-0x6000 ioe range
+	or		a,0x04							; io strobe function register
+	ld		(PEFRShadow),a
+	ioi	ld	(PEFR),a
+
+	ld		a,(PEDDRShadow)				; Set PE2 to output
+	or		a,0x04
+	ld		(PEDDRShadow),a
+	ioi	ld	(PEDDR),a
+
+	ld		a,0xb8							; use the 0x4000-0x6000 ioe range
+	ld		(IB2CRShadow),a
+	ioi	ld	(IB2CR),a
+
+	; set up the RSTDRV line (PD0)
+	ld		a,(PDDDRShadow)
+	or		a,0x01
+	ld		(PDDDRShadow),a
+	ioi	ld	(PDDDR),a
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader pd_setup_TCPIPDEVKIT */
+rtk_internal_func int pd_setup_TCPIPDEVKIT(_RealTekConfig *rt);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func int pd_setup_TCPIPDEVKIT(_RealTekConfig *rt)
+{
+#asm nodebug
+	ld		ix,(sp+@SP+rt)
+
+	;; set up external I/O strobes on port E
+	ld		a,(PEFRShadow)
+	or		a,0xc0
+	ioi	ld (PEFR),a						; enable strobes
+	ld		(PEFRShadow), a
+	ld		a,0x90							; set read strobes
+	ioi	ld (IB7CR),a
+	ld		(IB7CRShadow), a
+	ld		a,0xa8							; set write strobes
+	ioi	ld (IB6CR),a
+	ld		(IB6CRShadow), a
+	ld		a,(PEDDRShadow)
+	or		a,0xc2
+	ioi	ld (PEDDR),a
+	ld		(PEDDRShadow), a
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader pd_setup_BLUECHEESE */
+rtk_internal_func int pd_setup_BLUECHEESE(_RealTekConfig *rt);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func int pd_setup_BLUECHEESE(_RealTekConfig *rt)
+{
+#asm nodebug
+	ld		ix,(sp+@SP+rt)
+
+	; 9346 emulation
+	ld		a,PDDR
+	ld		(ix+[rt]+ee_parport),a
+	ld		a,0x02
+	ld		(ix+[rt]+eesk_mask),a
+	ld		a,0x04
+	ld		(ix+[rt]+eedi_mask),a
+	ld		a,PDB0R
+	ld		(ix+[rt]+eedo_bit_reg),a
+
+	;; set up external I/O strobes on port E
+	ld		a,0xCC
+	ioi	ld (PEFR),a						; enable strobes
+	ld		(PEFRShadow), a
+	ld		a,0x90							; set read strobes
+	ioi	ld (IB2CR),a
+	ld		(IB2CRShadow), a
+	ioi	ld (IB7CR),a
+	ld		(IB7CRShadow), a
+	ld		a,0xB8							; set write strobes
+	ioi	ld (IB3CR),a
+	ld		(IB3CRShadow), a
+	ioi	ld (IB6CR),a
+	ld		(IB6CRShadow), a
+	ld		a,0xCF							; set strobes as output bits
+	ioi	ld (PEDDR),a
+	ld		(PEDDRShadow), a
+
+	;; set up Blue Cheese MUX
+	ld		a, 0x00
+	ioi	ld (PEB0R),a					; MUX=OFF normal operation
+
+	;
+	; setup port D for EEPROM emulation
+	;
+	ld		a,(PDDDRShadow)					; PD0 EEDO, PD1 EESK, PD2 EEDI
+	and	a,0xf8
+	or		a,0x01
+	ld		(PDDDRShadow),a
+	ioi	ld (PDDDR),a
+
+	ld		a,(PDDRShadow)
+	and	a,0xf8
+	ld		(PDDRShadow),a
+	ioi	ld (PDDR),a
+
+//// THIS CODE SHOULD GO ELSEWHERE
+	;; set user LED off
+	ld		a, (GOCRShadow)
+	and	a, 0xFC
+	or		a, 0x03
+	ioi	ld (GOCR), a
+	ld		(GOCRShadow), a
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader pd_setup_ETHCOREMOD */
+rtk_internal_func int pd_setup_ETHCOREMOD(_RealTekConfig *rt);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func int pd_setup_ETHCOREMOD(_RealTekConfig *rt)
+{
+#asm nodebug
+	ld		ix,(sp+@SP+rt)
+
+	; 9346 emulation
+	ld		a,PDDR
+	ld		(ix+[rt]+ee_parport),a
+	ld		a,0x20
+	ld		(ix+[rt]+eesk_mask),a
+	ld		a,0x40
+	ld		(ix+[rt]+eedi_mask),a
+	ld		a,PDB7R
+	ld		(ix+[rt]+eedo_bit_reg),a
+
+	;; set up external I/O strobes on port E
+	ld		a,(PEFRShadow)					; function register _MUST_ be set first!
+	or		a,0x44
+	ioi	ld (PEFR),a						; enable strobes
+	ld		(PEFRShadow), a
+	ld		a,(PEDDRShadow)
+	or		a,0x44							; set strobes as output bits
+	ioi	ld (PEDDR),a
+	ld		(PEDDRShadow), a
+	ld		a,0x90							; set read strobes
+	ioi	ld (IB2CR),a
+	ld		(IB2CRShadow), a
+	ld		a,0xa8							; set write strobes
+	ioi	ld (IB6CR),a
+	ld		(IB6CRShadow), a
+
+	;
+	; setup port D for EEPROM emulation & the reset line
+	;
+	ld		a,(PDDDRShadow)
+	and	a,0x9F							; PD5 & PD6 are inputs
+	or		0x90								; PD4 & PD7 are outputs
+	ld		(PDDDRShadow),a
+	ioi	ld (PDDDR),a
+	ld		a,(PDDCRShadow)				; no open drains, no special functions
+	and	a,0x0f
+	ld		(PDDCRShadow),a
+	ioi	ld (PDDCR),a
+	ld		a,(PDFRShadow)
+	and	a,0x0f
+	ld		(PDFRShadow),a
+	ioi	ld (PDFR),a
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader pd_setup_EMICRO */
+rtk_internal_func int pd_setup_EMICRO(_RealTekConfig *rt);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func int pd_setup_EMICRO(_RealTekConfig *rt)
+{
+#asm nodebug
+	ld		ix,(sp+@SP+rt)
+
+	; 9346 emulation
+	ld		a,PDDR
+	ld		(ix+[rt]+ee_parport),a
+	ld		a,0x08
+	ld		(ix+[rt]+eesk_mask),a
+	ld		a,0x04
+	ld		(ix+[rt]+eedi_mask),a
+	ld		a,PDB4R
+	ld		(ix+[rt]+eedo_bit_reg),a
+
+	;; set up external I/O strobes on port E
+	ld		a,(PEFRShadow)					; function register _MUST_ be set first!
+	and	a,0xfe
+	ioi	ld (PEFR),a						; enable strobes
+	ld		(PEFRShadow), a
+	ld		a,0xa8							; use the 0x0000-0x2000 ioe range
+	ioi	ld (IB0CR),a
+	ld		(IB0CRShadow), a
+
+	;
+	; setup port D for EEPROM emulation & the reset line
+	;
+	ld		a,(PDDDRShadow)
+	and	a,0xF3							; PD2 & PD3 are inputs
+	or		0xF0								; PD4-7 are outputs
+	ld		(PDDDRShadow),a
+	ioi	ld (PDDDR),a
+	ld		a,(PDDCRShadow)				; no open drains, no special functions
+	and	a,0xe3
+	ld		(PDDCRShadow),a
+	ioi	ld (PDDCR),a
+	ld		a,(PDFRShadow)
+	and	a,0xe3
+	ld		(PDFRShadow),a
+	ioi	ld (PDFR),a
+
+	;
+	; check that we are actually reset
+	;
+	ld		a,(PDDRShadow)
+	and	a,0xe3
+	or		a,0xe0
+	ld		(PDDRShadow),a
+	ioi ld (PDDR),a
+
+	ld		hl,(ix+[rt]+RD1)
+_pd_resetloop:									; wait for NIC to reset and establish link...
+	ioe	ld a, (hl)
+	cp		0x7E
+	jr		z, _pd_resetloop
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader pd_setup_MICROCORE */
+rtk_internal_func int pd_setup_MICROCORE(_RealTekConfig *rt);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func int pd_setup_MICROCORE(_RealTekConfig *rt)
+{
+#asm nodebug
+	ld		ix,(sp+@SP+rt)
+
+	; 9346 emulation
+	ld		a,PDDR
+	ld		(ix+[rt]+ee_parport),a
+	ld		a,0x01
+	ld		(ix+[rt]+eesk_mask),a
+	ld		a,0x02
+	ld		(ix+[rt]+eedi_mask),a
+	ld		a,PEB3R
+	ld		(ix+[rt]+eedo_bit_reg),a
+
+	;; set up external I/O strobes on port E
+	ld		a,(PEFRShadow)					; function register _MUST_ be set first!
+	and	a,0xF7
+	or		a,0x44
+	ioi	ld (PEFR),a						; enable strobes
+	ld		(PEFRShadow), a
+	ld		a,(PEDDRShadow)
+	or		a,0x4C							; set strobes as output bits
+	ioi	ld (PEDDR),a
+	ld		(PEDDRShadow), a
+	ld		a,0x90							; set read strobes
+	ioi	ld (IB2CR),a
+	ld		(IB2CRShadow), a
+	ld		a,0xa8							; set write strobes
+	ioi	ld (IB6CR),a
+	ld		(IB6CRShadow), a
+
+	;
+	; Setup port C as the reset line
+	;
+
+	ld		a,(PCFRShadow)
+	and	0xEF
+	ld		(PCFRShadow),a
+	ioi ld (PCFR),a
+
+	;
+	; setup port D for EEPROM emulation
+	;
+
+	ld		a,(PDDDRShadow)
+	and	0xfc
+	ld		(PDDDRShadow),a
+	ioi	ld (PDDDR),a
+
+	ld		a,(PDDCRShadow)				; no open drains, no special functions
+	and	a,0xfc
+	ld		(PDDCRShadow),a
+	ioi	ld (PDDCR),a
+	ld		a,(PDFRShadow)
+	and	a,0xfc
+	ld		(PDFRShadow),a
+	ioi	ld (PDFR),a
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader pd_setup_MINISTAR */
+rtk_internal_func int pd_setup_MINISTAR(_RealTekConfig *rt);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func int pd_setup_MINISTAR(_RealTekConfig *rt)
+{
+#asm nodebug
+	ld		ix,(sp+@SP+rt)
+
+	; 9346 emulation
+	ld		a,PBDR
+	ld		(ix+[rt]+ee_parport),a
+	ld		a,0x10
+	ld		(ix+[rt]+eesk_mask),a
+	ld		a,0x20
+	ld		(ix+[rt]+eedi_mask),a			; NOTE:  eedo_mask not eedi_mask!
+	ld		a,PDDR
+	ld		(ix+[rt]+eedo_bit_reg),a
+   ld		hl,PDDRShadow
+	ld		(ix+[rt]+eedo_shadow),hl
+
+	;; set up external I/O strobes on port E
+	ld		a,(PEFRShadow)					; function register _MUST_ be set first!
+	or		a,0x04
+	ioi	ld (PEFR),a						; enable strobes
+	ld		(PEFRShadow), a
+	ld		a,(PEDDRShadow)
+	or		a,0x04							; set strobes as output bits
+	ioi	ld (PEDDR),a
+	ld		(PEDDRShadow), a
+	ld		a,0xb8							; use the 0x4000-0x6000 ioe range
+	ioi	ld (IB2CR),a
+	ld		(IB2CRShadow), a
+
+	;
+	; setup port D for the reset line and for EED0
+	;
+	ld		a,(PDDDRShadow)
+	or		0x60
+	ld		(PDDDRShadow),a
+	ioi	ld (PDDDR),a
+	ld		a,(PDDCRShadow)				; no open drains, no special functions
+	and	a,0x9F
+	ld		(PDDCRShadow),a
+	ioi	ld (PDDCR),a
+	ld		a,(PDFRShadow)
+	and	a,0x9F
+	ld		(PDFRShadow),a
+	ioi	ld (PDFR),a
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader pd_setup_RCM3700CORE */
+rtk_internal_func int pd_setup_RCM3700CORE(_RealTekConfig *rt);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func int pd_setup_RCM3700CORE(_RealTekConfig *rt)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = rt->pld_rscblock;
+#endif
+
+#asm nodebug
+	ld		ix,(sp+@SP+rt)
+
+	; 9346 emulation
+	ld		a,PDDR
+	ld		(ix+[rt]+ee_parport),a
+	ld		a,0x02
+	ld		(ix+[rt]+eesk_mask),a
+	ld		a,0x04
+	ld		(ix+[rt]+eedi_mask),a
+	ld		a,PDB3R
+	ld		(ix+[rt]+eedo_bit_reg),a
+
+#if PLD_ETH_COMPILING == 1
+   ; setup ix to point at the base of the shadow register array
+   ld    hl,(sp+@sp+res_block)
+   ld    de,[res_block]+shadows
+   add   hl,de
+   ld    hl,(hl)
+   ld    ix,hl
+#endif
+
+	; setup the I/O strobes
+#if PLD_ETH_COMPILING == 1
+   ld    hl,(ix+PLD_ETH_PEFRSHADOW_OFS)
+   ld    a,(hl)                     ; clear the 0x4000-0x6000 ioe range
+#else
+	ld		a,(PEFRShadow)					; clear the 0x4000-0x6000 ioe range
+#endif
+	or		a,0x04							; io strobe function register
+#if PLD_ETH_COMPILING == 1
+	ld		(hl),a
+#else
+	ld		(PEFRShadow),a
+#endif
+	ioi	ld	(PEFR),a
+
+#if PLD_ETH_COMPILING == 1
+   ld    hl,(ix+PLD_ETH_PEDDRSHADOW_OFS)
+   ld    a,(hl)                     ; Set PE2 to output
+#else
+	ld		a,(PEDDRShadow)				; Set PE2 to output
+#endif
+	or		a,0x04
+#if PLD_ETH_COMPILING == 1
+	ld		(hl),a
+#else
+	ld		(PEDDRShadow),a
+#endif
+	ioi	ld	(PEDDR),a
+
+	ld		a,0xb9							; use the 0x4000-0x6000 ioe range, always use data bus
+#if PLD_ETH_COMPILING == 1
+   ld    hl,(ix+PLD_ETH_IB2CRSHADOW_OFS)
+   ld    (hl),a                  	; Note: this setting assumes a R3000A processor
+#else
+	ld		(IB2CRShadow),a				; Note: this setting assumes a R3000A processor
+#endif
+	ioi	ld	(IB2CR),a
+
+	; set up the RSTDRV line (PD0) and EEDO (PD3)
+#if PLD_ETH_COMPILING == 1
+   ld    hl,(ix+PLD_ETH_PDDDRSHADOW_OFS)
+   ld    a,(hl)
+#else
+	ld		a,(PDDDRShadow)
+#endif
+	or		a,0x09
+#if PLD_ETH_COMPILING == 1
+	ld		(hl),a
+#else
+	ld		(PDDDRShadow),a
+#endif
+	ioi	ld	(PDDDR),a
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader pd_setup_RCM3800_RT */
+rtk_internal_func int pd_setup_RCM3800_RT(_RealTekConfig *rt);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func int pd_setup_RCM3800_RT(_RealTekConfig *rt)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = rt->pld_rscblock;
+#endif
+#asm nodebug
+	ld		ix,(sp+@SP+rt)
+
+	; we don't have access to EEDO
+	; 9346 emulation
+	ld		a,PDDR
+	ld		(ix+[rt]+ee_parport),a
+	ld		a,0x04
+	ld		(ix+[rt]+eesk_mask),a
+	ld		a,0x01
+	ld		(ix+[rt]+eedi_mask),a		; overloaded as eedo mask
+	ld		a,GOCR
+	ld		(ix+[rt]+eedo_bit_reg),a
+#if PLD_ETH_COMPILING == 1
+	ld		hl,PLD_ETH_GOCRSHADOW_OFS
+   ld		(ix+[rt]+eedo_shadow_index),hl
+#else
+	ld		hl,GOCRShadow
+	ld		(ix+[rt]+eedo_shadow),hl
+#endif
+
+   ld		a,(hl)							; /BUFEN to output low.
+   or		a,0x02
+   and	a,0xfe
+   ld		(hl),a
+   ioi	ld (GOCR),a
+
+#if PLD_ETH_COMPILING == 1
+   ; setup ix to point at the base of the shadow register array
+   ld    hl,(sp+@sp+res_block)
+   ld    de,[res_block]+shadows
+   add   hl,de
+   ld    hl,(hl)
+   ld    ix,hl
+#endif
+
+	; setup the I/O strobes
+#if PLD_ETH_COMPILING == 1
+   ld    hl,(ix+PLD_ETH_PEFRSHADOW_OFS)
+   ld    a,(hl)                     ; clear the 0x4000-0x6000 ioe range
+#else
+	ld		a,(PEFRShadow)					; clear the 0x4000-0x6000 ioe range
+#endif
+	or		a,0x04							; io strobe function register
+#if PLD_ETH_COMPILING == 1
+	ld		(hl),a
+#else
+	ld		(PEFRShadow),a
+#endif
+	ioi	ld	(PEFR),a
+
+#if PLD_ETH_COMPILING == 1
+	ld		hl,(ix+PLD_ETH_PEDDRSHADOW_OFS)
+   ld		a,(hl)
+#else
+	ld		a,(PEDDRShadow)				; Set PE2 to output
+#endif
+	or		a,0x04
+#if PLD_ETH_COMPILING == 1
+	ld		(hl),a
+#else
+	ld		(PEDDRShadow),a
+#endif
+	ioi	ld	(PEDDR),a
+
+	; Set the external wait states based on freq_divider
+	; Use 3 wait states for < 35 MHz, 7 wait states for > 35 MHz (somewhat
+	; conservative) (35 MHz / 614400 is approximately 57)
+	ld		a,(freq_divider)
+	cp		57
+	jr		nc,.IB2CR_7ws
+	ld		a,0xb9							; use the 0x4000-0x6000 ioe range, 3ws
+	jr		.load_IB2CR
+.IB2CR_7ws:
+	ld		a,0x79							; use the 0x4000-0x6000 ioe range, 7ws
+.load_IB2CR:
+#if PLD_ETH_COMPILING == 1
+	ld		hl,(ix+PLD_ETH_IB2CRSHADOW_OFS)
+   ld		(hl),a
+#else
+	ld		(IB2CRShadow),a
+#endif
+	ioi	ld	(IB2CR),a
+
+	; set up the RSTDRV line (PD0)
+#if PLD_ETH_COMPILING == 1
+	ld		hl,(ix+PLD_ETH_PDDDRSHADOW_OFS)
+   ld		a,(hl)
+#else
+	ld		a,(PDDDRShadow)
+#endif
+	or		a,0x01
+#if PLD_ETH_COMPILING == 1
+	ld		(hl),a
+#else
+	ld		(PDDDRShadow),a
+#endif
+	ioi	ld	(PDDDR),a
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader rtk_drvinit */
+#if PLD_ETH_COMPILING == 1
+int rtk_drvinit(pld_eth_rscblk_t* rscblk);
+#endif
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg pld_eth_xcode		resume
+#endif
+
+rtk_external_func int rtk_drvinit(pld_eth_rscblk_t* rscblk)
+{
+#asm
+	; if version field is 0, first time called
+   ld		ix,(sp+@sp+rscblk)
+   ld		hl,(ix+[pld_eth_rscblk_t]+version)
+   bool	hl
+   jr		nz,.rtk_di2nd
+.rtk_di1st:
+	; fill in version field
+	ld		hl,PLD_ETH_RTK_VER
+   ld		(ix+[pld_eth_rscblk_t]+version),hl
+   ; fill in root memory request
+   ld		de,[pld_eth_rscblk_t]+res
+   add	ix,de
+   ld		a,PLD_RES_TYPE_MEM
+   ld		(ix+[pld_generic_resource]+resrc_id),a
+	bool	hl
+   ld		hl,sizeof(_RealTekConfig) * 2
+   ld    (ix+[pld_generic_resource]+ressize),hl
+	ld		l,h
+   ld    (ix+[pld_generic_resource]+ressize+2),hl
+   ;fill in pointer to NetControllerDevice request
+   ld		de,sizeof(pld_generic_resource)
+   add	ix,de
+   ld		a,PLD_RES_TYPE_ETHCONTROLLER_PTR
+   ld		(ix+[pld_generic_resource]+resrc_id),a
+   jr		.rtk_didone
+
+.rtk_di2nd:
+   ld		b,PLD_MAX_GENERIC_RES							; loop counter, ix=rscblk
+   ld		de,[pld_eth_rscblk_t]+res                ; de = res array offset
+.rtk_dinextres:
+   add	ix,de                                     ; ix = cur offset in res array
+   ld		a,(ix+[pld_generic_resource]+resrc_id)    ; a = resource id
+   cp		PLD_RES_TYPE_ETHCONTROLLER_PTR            ; check for pointer to NetControllerDevice
+   jr		z,.rtk_dihaveptr                          ; jump if correct id
+   ld		de,sizeof(pld_generic_resource)           ; de = size of res entry
+   djnz  .rtk_dinextres                            ; if not done, check next entry
+	jr		.rtk_didone                               ; done - we've looked at all entries
+
+.rtk_dihaveptr:
+   ld		hl,(ix+[pld_generic_resource]+address)
+   ex		de,hl                           		; de = destination address
+   ld		hl,logical_addr(_RealTekController) ; hl = e000 _RealTekController addr
+   ld		bc,sizeof(NetControllerDevice)      ; bc = number of bytes to copy
+	#if PLD_ETH_COMPILING == 1
+.__loop:
+   ldi
+   jp v,.__loop
+   #else
+   ldir
+	#endif
+
+.rtk_didone:
+#endasm
+	return 0;
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader emu9346_noeedi */
+rtk_internal_func int emu9346_noeedi(_RealTekConfig *rt, int wport, int eeskport,
+   int eeskmask, int eedoport, char* eedoshadow, int eedomask, int eedoinvert);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func void emu9346_clk()
+{
+#asm
+      ;
+      ; subroutine to catch the rising then falling
+      ; edge of EESK.
+      ;
+ioi	ld		a,(hl)
+		and	e
+		jr		z,emu9346_clk
+.emu9346_clk_1:
+ioi	ld		a,(hl)
+		and	e
+		jr		nz,.emu9346_clk_1
+#endasm
+}
+
+rtk_internal_func
+int emu9346_noeedi(_RealTekConfig *rt, int wport, int eeskport, int eeskmask,
+	int eedoport, char* eedoshadow, int eedomask, int eedoinvert)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = rt->pld_rscblock;
+#endif
+
+#asm nodebug
+		push	ix
+      ld		ix,(sp+@SP+wport+2)
+
+      ;
+      ; verify that there is a valid connection to
+      ; the 9346 emulation pins by manually toggling
+      ; the EESK pin on the RealTek and reading it
+      ; back using the the eeskport/eeskmask. First
+      ; high then low.
+      ;
+
+ioe	ld		(ix+0),0xc0|0x02				; RealTek Page 3
+ioe	ld		(ix+PD_9346CR),0x80
+ioe	ld		(ix+PD_9346CR),0x84			; EESK high
+
+		ld		hl,2								; wait between 1 and 2ms
+#if PLD_ETH_COMPILING == 1
+		push	ix
+		PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 4)
+      pop	ix
+#else
+      call	tickwait
+#endif
+
+      ld		hl,(sp+@SP+eeskmask+2)		; e=eeskmask, hl=eeskport
+      ex		de,hl
+      ld		hl,(sp+@SP+eeskport+2)
+
+ioi	ld		a,(hl)
+		and	e
+      jr		nz,.emu9346_0
+.emu9346_error:
+		ld		hl,-1
+		jp		.emu9346_done
+.emu9346_0:
+ioe	ld		(ix+PD_9346CR),0x80			; EESK low
+
+		ld		hl,2								; wait between 1 and 2ms
+#if PLD_ETH_COMPILING == 1
+		push	ix
+		PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 4)
+      pop	ix
+#else
+      call	tickwait
+#endif
+
+      ld		hl,(sp+@SP+eeskmask+2)		; e=eeskmask, hl=eeskport
+      ex		de,hl
+      ld		hl,(sp+@SP+eeskport+2)
+
+ioi	ld		a,(hl)
+		and	e
+      jr		nz,.emu9346_error
+
+      ;
+      ; cause the RealTek to reload its configuration
+      ; from the 9346. The CONFIG3 register data
+      ; starts 51 clocks and continues for the next
+      ; eight clocks. The full duplex bit is at 52
+      ; and the LED0 and LED1 bits are 53 and 54.
+      ;
+
+.emu9346_1:
+		ld		hl,(sp+@SP+eeskmask+2)		; e=eeskmask, hl=eeskport
+      ex		de,hl
+		ld		hl,(sp+@SP+eeskport+2)
+
+#ifdef RT_FULLDUPLEX
+		ld		b,52								; b=clock count before EEDO <- 1
+#else
+		ld		b,53
+#endif
+
+		;
+      ; load the eedo mask, port, and shadow.
+      ; set eedo <- 0
+      ;
+
+      exx
+
+      ld		hl,(sp+@SP+eedoinvert+2)   ; b=eedomask, a'=eedoinvert, de=eedoport,
+      ld		a',l								; hl=eedoshadow
+      ld		hl,(sp+@SP+eedomask+2)
+      ld		b,l
+      ld		hl,(sp+@SP+eedoport+2)
+      ex		de,hl
+      ld		hl,(sp+@SP+eedoshadow+2)
+
+      ;
+      ; choose between inverted and non inverted eedo
+      ;
+
+      ld		a,b								; eedo b=bit clear, c=bit set
+      or		a,(hl)
+      ld		c,a								; c=eedoshadow | eedomask
+      ld		a,b
+      cpl
+      and	a,(hl)
+      ld		b,a								; b=eedoshadow & ~eedomask
+
+      ex		af,af'
+
+      and	a,RT_FLAGS_INVERTEED0		; exchange values if eedo is inverted
+      jr		z,.emu9346_2
+      ld		a,b
+      ld		b,c
+      ld		c,a
+
+.emu9346_2:
+		ld		a,b   							; EEDO = 0
+ioi	ld		(de),a
+
+		exx
+
+      ;
+      ; start the RealTek loading the 9346 config
+      ; note the timing on this is critical so
+      ; interrupts are off for the clocking
+      ;
+
+ioe	ld		(ix+0),0xc0|0x02
+		ipset	3
+ioe	ld		(ix+PD_9346CR),0x40
+
+.emu9346_3:
+		rtk_internal_call(emu9346_clk)	; wait for 52-53 clocks for the write
+      djnz	.emu9346_3						; time to set EEDO to 1
+
+      exx
+      ld		a,c								; EEDO = 1
+ioi	ld		(de),a
+		exx
+
+#ifdef RT_FULLDUPLEX
+		rtk_internal_call(emu9346_clk)	; FDUP = 1 if RT_FULLDUPLEX, 0 otherwise
+#endif
+		rtk_internal_call(emu9346_clk)
+		rtk_internal_call(emu9346_clk)
+
+      exx
+      ld		a,b								; EEDO = 0
+ioi	ld		(de),a
+		exx
+
+      ipres
+
+      ld		hl,4								; give RealTek a chance to read rest
+#if PLD_ETH_COMPILING == 1
+		PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 2)
+#else
+      call	tickwait
+#endif
+
+		bool	hl
+      ld		l,h
+
+.emu9346_done:
+      pop	ix
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader emu_9346 */
+rtk_internal_func void emu_9346(_RealTekConfig *rt);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+// assumes d is the EESK mask - not C callable.
+rtk_internal_func void clock_9346()
+{
+#asm
+_pd_h2l:
+ioi	ld		a,(hl)
+		and	d
+		jr		z,_pd_h2l
+_pd_l2h:
+ioi	ld		a,(hl)
+		and	d
+		jr		nz,_pd_l2h
+#endasm
+}
+
+rtk_internal_func void emu_9346(_RealTekConfig *rt)
+{
+	// duplex_value must change to auto if/when realtek driver is used as a
+   // preloaded driver.
+	static char duplex_value;
+	if(rt->flags & RT_FLAGS_FULLDUPLEX) {
+		duplex_value = rt->full_duplex;
+	} else {
+		duplex_value = rt->half_duplex;
+	}
+#asm nodebug
+;
+; code to emulate the 93C46
+;
+		ld		ix,(sp+@SP+rt)
+
+		ld		c,2
+		bool	hl								; h = 0
+		ld		l,(ix+[rt]+ee_parport)
+		ld		d,(ix+[rt]+eesk_mask)
+		ld		e,(ix+[rt]+eedi_mask)
+
+		;
+		; start bit
+		;
+_pd_emu_1:
+		rtk_internal_call(clock_9346)
+ioi	ld		a,(hl)
+		and	e
+		jr		z,_pd_emu_1
+
+		;
+		; read 10 - read command
+		;
+
+_pd_emu_2:
+		rtk_internal_call(clock_9346)
+ioi	ld		a,(hl)
+		and	e
+		jr		z,_pd_emu_1
+
+_pd_emu_3:
+		rtk_internal_call(clock_9346)
+ioi	ld		a,(hl)
+		and	e
+		jr		nz,_pd_emu_1
+
+		;
+		; six clocks for address
+		;
+
+		ld		b,6
+_pd_emu_4:
+		rtk_internal_call(clock_9346)
+		djnz	_pd_emu_4
+
+		;
+		; send 0
+		;
+		exx			; save the old hl address (EESK)
+		bool	hl
+		ld		l,(ix+[rt]+eedo_bit_reg)
+
+      xor	a
+ioi	ld		(hl),a
+
+		;
+		; send word (16 bits)
+		;
+		ld		a,(duplex_value)
+		ld		b,16
+
+_pd_emu_5:
+		exx				; restore the EESK address in hl and d
+      ex		af,af'	; save the duplex_value
+		rtk_internal_call(clock_9346)
+      ex		af,af'	; restore the duplex_value
+		exx				; ...and save it for later again
+ioi	ld		(hl),a
+		rlca
+		djnz	_pd_emu_5
+
+		exx				; bring back 'c'
+		dec	c
+		jp		p,_pd_emu_1
+
+		exx
+
+      xor	a			; set the bit to zero after that
+ioi	ld		(hl),a
+
+#endasm
+
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader rtk_ifctl */
+rtk_external_func int rtk_ifctl(_RealTekConfig * nic, int up, int change);
+/*** EndHeader */
+
+rtk_external_func int rtk_ifctl(_RealTekConfig * nic, int up, int change)
+{
+	// Just a stub for the default ethernet interface control.
+	return ifctl_ethernet(nic->iface, up, change);
+}
+
+/*** BeginHeader 	rtk_receive */
+rtk_external_func int rtk_receive(_RealTekConfig * nic);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+/*  Define 1 to print RealTek registers after init. */
+#define SW_VERBOSE	0
+
+/* **************************************************************************/
+
+rtk_external_func int rtk_receive(_RealTekConfig * nic)
+{
+
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = nic->pld_rscblock;
+#endif
+
+#asm nodebug
+/* **************************************************************************/
+;
+; rtk_receive(_RealTekConfig * nic)
+;
+; Return:
+;   hl == 0  ; success
+;   hl == 1  ; failure/nobuf
+;
+		push	ix
+		push	iy
+
+		ld		hl, (sp+@SP+nic+4)
+
+		rtk_internal_call(ne2k_load_io_pointers)
+
+ioe	ld		(ix),0x20							; page 0
+
+		ld		hl, iy
+		ld		l, PD_INTSTATUS				; overran buffer???
+pdrp_poll:
+ioe	bit	4,(hl)
+		jp		nz,pdrp_overflow				; jump to bail func
+
+pdrp_getfront:
+ioe	ld		(ix),0x62							; page 1 + abort dma
+
+ioe	ld		a,(iy+PD_CURRENT)				; b=current (front of ring)
+		ld		b,a
+
+ioe	ld		(ix),0x22							; page 0 + abort dma
+
+ioe	ld		a,(iy+PD_BOUNDARY)			; al=boundary (back of ring)
+
+      cp		a,b								; any packets to process???
+      jp		z,pdrp_done						; ( CURRENT == BOUNDARY ? )
+
+      ;
+      ; remove a packet from the ring
+      ;
+pdrp_getpacket:
+									; start dma on next packet
+ioe	ld		(ix),0x1a						; this is auto-send; could be bad/too automatic?
+
+		ld		b,18								; remove dma and ethernet headers
+		ld		hl,(sp+@sp+nic+4)
+      ld		de,[_RealTekConfig]+pd_header
+      add	hl,de
+      ex		de,hl
+
+		ld		hl, iy
+		ld		l, PD_IOPORT
+pdrp_loop1:
+ioe	ld		a,(hl)							; load from io port
+		ld		(de),a							; store into PDHeader - temp analysis storage
+		inc	de
+      djnz	pdrp_loop1
+
+      ;
+      ; check the receive status
+      ;
+		ld		hl,(sp+@sp+nic+4)
+      ld		de,[_RealTekConfig]+pd_header
+      add	hl,de
+      ld		a,(hl)							; check that bit 0 is set (therefor a good pkt)
+
+		and	0xdf
+		cp		0x01
+		jr		z,pdrp_getbuf
+
+ioe	ld		a,(iy+PD_BOUNDARY)		; --assume at this point that everything may be
+												; --corrupted, and possibly drop everything on
+												; --the floor
+
+		cp		a,0x46							; verify header isn't corrupted
+		jr		c,pdrp_trashed
+		cp		a,PD_PAGE_STOP + 1
+		jr		c,pdrp_nottrashed
+pdrp_trashed:									; --drop everything on the floor
+ioe	ld		(ix+PD_BOUNDARY),0x46		; if it is reset both to 0x46
+
+pdrp_nottrashed:
+ioe	ld		(ix),0x62
+ioe	ld		(ix+PD_CURRENT),a
+ioe	ld		(ix),0x22
+
+		ld		ix,(sp+@sp+nic+4)
+		ld		hl,(ix+[nic]+pd_trashed)
+		inc	hl
+		ld		(ix+[nic]+pd_trashed),hl
+		jp		pdrp_done
+
+pdrp_getbuf:
+		ld		hl,(sp+@sp+nic+4)
+      ld		de,[_RealTekConfig]+pd_header
+      add	hl,de
+		ld		hl,(hl+2)						; load pkt length
+      ld		b,h
+      ld		c,l
+
+		ld		hl,0+ETH_BUFSIZE
+		or	   a
+		sbc	hl, bc
+		jp		c, pdrp_tosspkt				; packet is too large for any buffer
+
+      push	ix
+      push	iy
+
+      ld		de,1								; Indicate MUST obtain all xmem buffers (else error)
+#if PLD_ETH_COMPILING == 1
+		PLD_IMPORT_CALL(res_block, PLD_ETH_PB_RESERVE, 8)
+#else
+		lcall	_pb_reserve						; allocate a buffer (ll_prefix) to get pkt in
+#endif
+
+		jr		c,pdrp_nobuf					; save the pkt for another time if no buffers
+
+		ld		hl,(sp+@sp+nic+8)
+      ld		de,[_RealTekConfig]+pd_header+4
+      add	hl,de
+
+		ld		bc,14
+#if PLD_ETH_COMPILING == 1
+		PLD_IMPORT_CALL(res_block, PLD_ETH_PB_ROOT2BUF, 8)
+#else
+		lcall	_pb_root2buf					; Copy BC bytes from (HL) to xmem buffers
+#endif
+
+		ld		hl,(sp+@sp+nic+8)
+      ld		de,[_RealTekConfig]+pd_header
+      add	hl,de
+		ld		hl,(hl+2)						; copy rest of bytes to buffer
+
+		ld		bc,-14
+		add	hl,bc
+		ld		b,h
+		ld		c,L
+		ld		hl,(sp+0)						; Get I/O source address (pushed before _pb_reserve call)
+		ld		l, PD_IOPORT					; Modify pointer to point to data reg.
+#if PLD_ETH_COMPILING == 1
+		PLD_IMPORT_CALL(res_block, PLD_ETH_PB_IOE2BUF, 8)
+#else
+      lcall _pb_ioe2buf						; Copy BC bytes from ioe(HL) to xmem buffers
+#endif
+
+		ld		hl,(sp+@sp+nic+8)
+      ld		de,[_RealTekConfig]+pd_header
+      add	hl,de
+		ld		hl,(hl+2)						; Length of packet
+      ld		b,h
+      ld		c,l
+
+		ld		hl,(sp+@SP+8+nic)
+      push	hl
+      ld		hl,(hl+[nic]+iface-1)		; Load interface number into H (not L, hence the -1)
+      ld		l,LL_READY					 	; Interface number in H, flags in L
+
+		ld		e,14								; Length of link-layer (ethernet) header
+
+#if PLD_ETH_COMPILING == 1
+		PLD_IMPORT_CALL(res_block, PLD_ETH_PB_FINISH, 10)
+#else
+      lcall	_pb_finish						; finish up the pkt (set interface number)
+#endif
+
+		pop	ix									; Get nic pointer again
+		ld		hl,(ix+[nic]+pd_received)
+		inc	hl
+		ld		(ix+[nic]+pd_received),hl
+
+      bool	hl
+      ld		l,h
+      add	sp,4								; Pop I/O addresses
+		jp		pdrp_return
+
+pdrp_nobuf:
+		; If get here, and Cy flag not set, then one or more xmem buffers was not obtained.
+      ; This is fairly useless, so we just wait until next time.
+		pop	iy
+      pop	ix
+		; abort remote dma
+ioe	ld		(ix),0x22
+		ld		ix,(sp+@sp+nic+4)
+		ld		hl,(ix+[nic]+pd_nobufs)
+		inc	hl
+		ld		(ix+[nic]+pd_nobufs),hl
+
+		jp		pdrp_done						; keep the buffer; just terminate
+
+pdrp_tosspkt:
+ioe	ld		(ix),0x22						; abort remote dma
+		ld		hl,(sp+@sp+nic+4)
+      ld		de,[_RealTekConfig]+pd_header
+      add	hl,de
+      inc	hl
+      ld		a,(hl)							; remove packet from the ring
+
+ioe	ld		(ix+PD_BOUNDARY),a
+		ld		ix,(sp+@sp+nic+4)
+		ld		hl,(ix+[nic]+pd_toobig)
+		inc	hl
+		ld		(ix+[nic]+pd_toobig),hl
+
+pdrp_done:
+		ld		hl,0x0001
+		jp		pdrp_return
+
+pdrp_overflow:
+;
+; clear overflow
+;
+
+ioe	ld		(ix),0x21						; stop the RealTek
+
+		xor	a									; set the remote DMA counts to 0
+ioe	ld		(ix+PD_RMTBCNT0),a
+ioe	ld		(ix+PD_RMTBCNT1),a
+
+		ld		hl,2								; wait for transmits to complete
+#if PLD_ETH_COMPILING == 1
+		push	ix
+		PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 6)
+      pop	ix
+#else
+      call	tickwait
+#endif
+
+
+ioe	ld		(ix+PD_TXCFG),0x02			; place controller in loopback mode
+
+ioe	ld		(ix),0x22
+
+		; kill all pending packets
+
+		ld		a,0x46							; reset rx packet first pointer
+ioe	ld		(ix+PD_BOUNDARY),a
+
+ioe	ld		(ix),0x62
+ioe	ld		(ix+PD_CURRENT),a				; reset rx packet last pointer
+ioe	ld		(ix),0x22
+
+ioe	ld		(ix+PD_INTSTATUS),0x10		; clear overflow bit
+
+ioe	ld		(ix+PD_TXCFG),0x00			; take out of loopback
+
+		ld		ix,(sp+@sp+nic+4)
+		ld		hl,(ix+[nic]+pd_overruns)
+		inc	hl
+		ld		(ix+[nic]+pd_overruns),hl
+
+		ld		hl,0x0001
+
+pdrp_return:
+		pop	iy
+		pop	ix
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+/*** BeginHeader 	rtk_ioctl */
+rtk_external_func int rtk_ioctl(_RealTekConfig * nic, int cmd, ...);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_external_func
+int rtk_ioctl(_RealTekConfig * nic, int cmd, ...)
+{
+	auto char * stack;
+	auto int retval;
+   stack = (char *)(&cmd + 1);
+#asm
+	; switch (cmd) {
+	ld		hl,(sp+@sp+cmd)      ; load command
+	ex		de,hl
+   ld		hl,PD_HASFEATURE     ; check for PD_HASFEATURE
+   xor	a
+   sbc   hl,de
+   jp		z,.rtk_ioctl_hasfeature
+   ld		hl,PD_INITIALIZE
+   xor	a
+   sbc	hl,de
+   jp		z,.rtk_ioctl_initialize
+   ld		hl,PD_HAVELINK
+   xor	a
+   sbc	hl,de
+   jp		z,.rtk_ioctl_havelink
+   ld		hl,PD_POWER
+   xor	a
+   sbc	hl,de
+   jp		z,.rtk_ioctl_power
+	ld		hl,PD_SETHWA
+   xor	a
+   sbc	hl,de
+   jp		z,.rtk_ioctl_sethwa
+   ld		hl,PD_GETHWA
+   xor	a
+   sbc	hl,de
+   jp		z,.rtk_ioctl_gethwa
+#ifdef USE_MULTICAST
+	ld		hl,PD_ADDMULTICAST
+   xor	a
+   sbc	hl,de
+   jp		z,.rtk_ioctl_addmulticast
+   ld		hl,PD_REMOVEMULTICAST
+   xor	a
+   sbc	hl,de
+   jp		z,.rtk_ioctl_removemulticast
+#endif
+	ld		hl,PD_DUMPREGS
+   xor	a
+   sbc	hl,de
+   jp		z,.rtk_ioctl_readreg
+   jp    .rtk_ioctl_return
+
+.rtk_ioctl_hasfeature:
+   ;case PD_HASFEATURE:
+	;	cmd = *(int *)stack;
+   ;  #ifdef USE_MULTICAST
+   ;  return cmd >= PD_HASFEATURE && cmd <= PD_REMOVEMULTICAST;
+   ;  #else
+   ;  return cmd >= PD_HASFEATURE && cmd <= PD_GETHWA;
+   ;  #endif
+
+      ld    hl,(sp+@sp+stack)    ; point at first parameter
+      ld    hl,(hl)              ; derefernce first parameter
+      ld    b,h
+      ld    c,l                  ; save in bc for later
+   #ifdef USE_MULTICAST
+      ld    de,PD_REMOVEMULTICAST
+   #else
+      ld    de,PD_GETHWA
+   #endif
+		xor	a
+      sbc   hl,de
+      jr		z,.rtk_featuresupported
+      jr    nc,.rtk_featurenotsupported
+      ld    h,b
+      ld    l,c
+      ld    de,PD_HASFEATURE
+      xor   a
+      sbc   hl,de
+      jr    nc,.rtk_featuresupported
+      jr		z,.rtk_featuresupported
+   .rtk_featurenotsupported:
+      ld    hl,0x0000
+      jr		.rtk_hasfeaturedone
+   .rtk_featuresupported:
+   	ld		hl,0x0001
+   .rtk_hasfeaturedone:
+      ld    (sp+@sp+retval),hl
+		jp		.rtk_ioctl_return
+
+.rtk_ioctl_initialize:
+   ;case PD_INITIALIZE:
+   ;	return rtk_resetinterface(nic, *(word *)stack, *(int *)(stack+sizeof(word)));
+      ld    hl,(sp+@sp+stack)
+      ld    hl,(hl+sizeof(word))
+      push  hl
+      ld    hl,(sp+@sp+stack+2)
+      ld    hl,(hl)
+      push  hl
+      ld    hl,(sp+@sp+nic+4)
+      push  hl
+      rtk_internal_call(rtk_resetinterface)
+      add   sp,6
+      ld    (sp+@sp+retval),hl
+      jp    .rtk_ioctl_return
+
+.rtk_ioctl_havelink:
+   ;case PD_HAVELINK:
+   ;	return rtk_havelink(nic);
+      ld    hl,(sp+@sp+nic)
+      push  hl
+      rtk_internal_call(rtk_havelink)
+      add   sp,2
+      ld    (sp+@sp+retval),hl
+      jp    .rtk_ioctl_return
+
+.rtk_ioctl_power:
+   ;case PD_POWER:
+   ;	if (*(int *)stack)
+   ;   	return rtk_powerup(nic);
+   ;	else
+   ;		return rtk_powerdown(nic);
+      ld    hl,(sp+@sp+stack)
+      ld    hl,(hl)
+      bool  hl
+      ld    hl,(sp+@sp+nic)
+      push  hl
+      jr    z,.rtk_ioctl_powerdown
+      rtk_internal_call(rtk_powerup)
+      jr    .rtk_ioctl_powerdone
+	.rtk_ioctl_powerdown:
+      rtk_internal_call(rtk_powerdown)
+	.rtk_ioctl_powerdone:
+      add   sp,2
+      ld    (sp+@sp+retval),hl
+      jp    .rtk_ioctl_return
+
+.rtk_ioctl_sethwa:
+   ;case PD_SETHWA:
+
+   	;ne2k_sethwaddr((_NE2kConfig *)nic, *(char **)stack);
+      ld    hl,(sp+@sp+stack)
+      ld    hl,(hl)
+      push  hl
+      ld    hl,(sp+@sp+nic+2)
+      push  hl
+      rtk_internal_call(ne2k_sethwaddr)
+      add   sp,4
+      bool  hl
+      ld    l,h
+      ld    (sp+@sp+retval),hl
+      jp    .rtk_ioctl_return
+
+.rtk_ioctl_gethwa:
+   ;case PD_GETHWA:
+  		;**(char ***)stack = nic->hwa;
+     	;return sizeof(nic->hwa);
+      ld    hl,(sp+@sp+nic)
+      ld    de,[nic]+hwa
+      add   hl,de
+      ex    de,hl
+      ld    hl,(sp+@sp+stack)
+      ld    hl,(hl)
+      ld    (hl),e
+      inc   hl
+      ld    (hl),d
+      ld    hl,sizeof(nic->hwa)
+      ld    (sp+@sp+retval),hl
+      jp    .rtk_ioctl_return
+
+#ifdef USE_MULTICAST
+.rtk_ioctl_addmulticast:
+   ;case PD_ADDMULTICAST:
+   ;	return ne2k_addmulticast((_NE2kConfig *)nic, *(char **)stack, *(int **)(stack + sizeof(char *)));
+      ld    hl,(sp+@sp+stack)
+      ld    de,sizeof(char*)
+      add   hl,de
+      ld    hl,(hl)
+      push  hl
+      ld    hl,(sp+@sp+stack+2)
+      ld    hl,(hl)
+      push  hl
+      ld    hl,(sp+@sp+nic+4)
+      push  hl
+      rtk_internal_call(ne2k_addmulticast)
+      add   sp,6
+      ld    (sp+@sp+retval),hl
+      jp    .rtk_ioctl_return
+.rtk_ioctl_removemulticast:
+   ;case PD_REMOVEMULTICAST:
+   ;	return ne2k_removemulticast((_NE2kConfig *)nic, *(char **)stack);
+      ld    hl,(sp+@sp+stack)
+      ld    hl,(hl)
+      push  hl
+      ld    hl,(sp+@sp+nic+2)
+      push  hl
+      rtk_internal_call(ne2k_removemulticast)
+      add   sp,4
+      ld    (sp+@sp+retval),hl
+      jp    .rtk_ioctl_return
+#endif
+.rtk_ioctl_readreg:
+	;case PD_DUMPREGS
+   	;return rtk_prt_readreg(nic, (char*)stack);
+      	ld		hl,(sp+@sp+stack)
+         ld		hl,(hl)
+         push	hl
+         ld		hl,(sp+@sp+nic+2)
+         push	hl
+         rtk_internal_call(rtk_prt_readreg)
+         add	sp,4
+         ld		(sp+@sp+retval),hl
+         jp		.rtk_ioctl_return
+.rtk_ioctl_return:
+	ld		hl,(sp+@sp+retval)
+#endasm
+	return retval;
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+
+/*** BeginHeader 	rtk_prt_readreg */
+rtk_internal_func int rtk_prt_readreg(_RealTekConfig * nic, char * buf);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func
+int rtk_prt_readreg(_RealTekConfig * nic, char * buf)
+{
+#ifdef PKTDRV_VERBOSE
+#asm nodebug xmemok
+		push	ix
+		push	iy
+
+		ld		hl, (sp+@SP+nic+4)
+		rtk_internal_call(ne2k_load_io_pointers)
+
+ioe	ld		a,(iy)
+		push	af
+
+		ld		hl,(sp+@sp+buf+6)
+      ex		de,hl
+
+ioe	ld		(ix),0x20
+ioe	ld (ix+PD_RMTBCNT0),0x00			; clear remote byte count register
+ioe	ld (ix+PD_RMTBCNT1),0x00			; clear remote byte count register
+
+		ld		b,16
+		ld		hl, iy
+_pd_loop1:
+ioe	ld		a,(hl)
+		ld		(de),a
+		inc	hl
+		inc	de
+		djnz	_pd_loop1
+
+ioe	ld		(ix),0x60
+		ld		b,16
+		ld		hl,iy
+_pd_loop2:
+ioe	ld		a,(hl)
+		ld		(de),a
+		inc	hl
+		inc	de
+		djnz	_pd_loop2
+
+ioe	ld		(ix),0xa0
+		ld		b,16
+		ld		hl,iy
+_pd_loop3:
+ioe	ld		a,(hl)
+		ld		(de),a
+		inc	hl
+		inc	de
+		djnz	_pd_loop3
+
+ioe	ld		(ix),0xe0
+		ld		b,16
+		ld		hl,iy
+_pd_loop4:
+ioe	ld		a,(hl)
+		ld		(de),a
+		inc	hl
+		inc	de
+		djnz	_pd_loop4
+
+		pop	af
+      ld		hl,(sp+@sp+buf+4)
+		ld		(hl),a
+
+; switch back to page 0
+ioe	ld		(ix),0x20
+		pop	iy
+		pop	ix
+#endasm
+	return 0;
+#endif
+}
+
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+
+/*** BeginHeader 	rtk_prt_nicreg */
+rtk_external_func void rtk_prt_nicreg(_RealTekConfig * nic);
+/*** EndHeader */
+
+#ifdef PKTDRV_VERBOSE
+rtk_external_func void rtk_prt_nicreg(_RealTekConfig * nic)
+{
+	auto int x;
+	static char regbuf[64];
+
+	LOCK_GLOBAL(TCPGlobalLock);
+	rtk_prt_readreg(nic, regbuf);
+	UNLOCK_GLOBAL(TCPGlobalLock);
+
+	printf("\nregs i/f #%d:\n", nic->iface);
+	printf("CR=%02x\n",regbuf[0]);
+	printf("CLDA0=%02x\tPAR0=%02x\t\tPSTART=%02x\t9346CR=%02x\n",
+		regbuf[1],regbuf[17],regbuf[33],regbuf[49]);
+	printf("CLDA1=%02x\tPAR1=%02x\t\tPSTOP=%02x\tBPAGE=%02x\n",
+		regbuf[2],regbuf[18],regbuf[34],regbuf[50]);
+	printf("BNRY=%02x\t\tPAR2=%02x\t\t\t\tCONFIG0=%02x\n",
+		regbuf[3],regbuf[19],regbuf[51]);
+	printf("TSR=%02x\t\tPAR3=%02x\t\tTPSR=%02x\t\tCONFIG1=%02x\n",
+		regbuf[4],regbuf[20],regbuf[36],regbuf[52]);
+	printf("NCR=%02x\t\tPAR4=%02x\t\t\t\tCONFIG2=%02x\n",
+		regbuf[5],regbuf[21],regbuf[53]);
+	printf("FIFO=%02x\t\tPAR5=%02x\t\t\t\tCONFIG3=%02x\n",
+		regbuf[6],regbuf[22],regbuf[54]);
+	printf("ISR=%02x\t\tCURR=%02x\t\t\t\tTEST1=%02x\n",
+		regbuf[7],regbuf[23],regbuf[55]);
+	printf("CRDA0=%02x\tMAR0=%02x\t\t\t\tCSNSAV=%02x\n",
+		regbuf[8],regbuf[24],regbuf[56]);
+	printf("CRDA1=%02x\tMAR1=%02x\n",
+		regbuf[9],regbuf[25]);
+	printf("8019ID0=%02x\tMAR2=%02x\t\t\t\tTEST2=%02x\n",
+		regbuf[10],regbuf[26],regbuf[58]);
+	printf("8019ID1=%02x\tMAR3=%02x\t\t\t\tINTR=%02x\n",
+		regbuf[11],regbuf[27],regbuf[59]);
+	printf("RSR=%02x\t\tMAR4=%02x\t\tRCR=%02x\n",
+		regbuf[12],regbuf[28],regbuf[44]);
+	printf("CNTR0=%02x\tMAR5=%02x\t\tTCR=%02x\n",
+		regbuf[13],regbuf[29],regbuf[45]);
+	printf("CNTR1=%02x\tMAR6=%02x\t\tDCR=%02x\n",
+		regbuf[14],regbuf[30],regbuf[46]);
+	printf("CNTR2=%02x\tMAR7=%02x\t\tIMR=%02x\n\n",
+		regbuf[16],regbuf[31],regbuf[47]);
+
+}
+#endif
+
+
+/*** BeginHeader 	rtk_resetinterface */
+rtk_internal_func int rtk_resetinterface(_RealTekConfig * rt, word instance, int iface);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING || USE_ETH_PRELOADED_DRIVER
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+#asm xmem
+_rt_config::
+	dw		logical_addr(_RealTekController)	// ncd
+   dw		0x0000                           // pld resource block
+	dw		0x0000                           // iface (this gets overwritten)
+	dw		RT_WRIO                          // WR1
+	dw		RT_RDIO                          // RD1
+	db		RT_RESPORT                       // reset_port
+	dw		RT_RESSHAD                       // reset_port_shadow or reset_port_index
+	db		RT_RESMASK                       // reset_mask
+	db		0,0,0,0,0,0                      // hwa (gets overwritten)
+	dw		RT_INIT_FLAGS                    // flags
+	dw  	logical_addr(RT_INIT_FUNC)			// io_init()
+	db		RT_FDX                           // full_duplex
+	db		RT_HDX                           // half_duplex
+   dw		0,0,0,0                          // last 16 bytes worth of
+   dw		0,0,0,0                          // _RealTekConfig structure members
+#if USING_REALTEK > 1
+	dw		logical_addr(_RealTekController)	// ncd
+   dw		0x0000                        	// pld resource block
+	dw		0x0000                           // iface
+	dw		RT_WRIO2                         // WR1
+	dw		RT_RDIO2                         // RD1
+	db		RT_RESPORT2                      // reset_port
+	dw		RT_RESSHAD2                      // reset_port_shadow or reset_port_index
+	db		RT_RESMASK2                      // reset_mask
+	db		0,0,0,0,0,0                      // hwa
+	dw		RT_INIT_FLAGS2                   // flags
+	dw		logical_addr(RT_INIT_FUNC2)      // io_init()
+	db		RT_FDX2                          // full_duplex
+	db		RT_HDX2                          // half_duplex
+   dw		0,0,0,0                          // last 16 bytes worth of
+   dw		0,0,0,0                          // _RealTekConfig structure members
+#endif
+
+#endasm
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+#else
+const _RealTekConfig _rt_config[USING_REALTEK] =
+{
+	{
+	   &_RealTekController        // ncd
+	  ,0                          // iface (this gets overwritten)
+	  ,RT_WRIO                    // WR1
+	  ,RT_RDIO                    // RD1
+	  ,RT_RESPORT                 // reset_port
+	  ,&RT_RESSHAD                // reset_port_shadow
+	  ,RT_RESMASK                 // reset_mask
+	  ,{ 0, }                     // hwa (gets overwritten)
+	  ,RT_INIT_FLAGS              // flags
+	  ,RT_INIT_FUNC               // io_init()
+	  ,RT_FDX                     // full_duplex
+	  ,RT_HDX                     // half_duplex
+	}
+#if USING_REALTEK > 1
+  ,{
+	   &_RealTekController        // ncd
+	  ,0                          // iface
+	  ,RT_WRIO2                   // WR1
+	  ,RT_RDIO2                   // RD1
+	  ,RT_RESPORT2                // reset_port
+	  ,&RT_RESSHAD2               // reset_port_shadow
+	  ,RT_RESMASK2                // reset_mask
+	  ,{ 0, }                     // hwa
+	  ,RT_INIT_FLAGS2             // flags
+	  ,RT_INIT_FUNC2              // io_init()
+	  ,RT_FDX2                    // full_duplex
+	  ,RT_HDX2                    // half_duplex
+	}
+#endif
+};
+#endif
+
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func
+void rtk_init(_RealTekConfig * nic, char *EthAddress)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = nic->pld_rscblock;
+#endif
+#asm nodebug
+;
+;		Initializes RealTek chip
+;
+	push	ix
+	ld		hl,(sp+@SP+nic+2)	; "+2" since we pushed IX.
+   rtk_internal_call(ne2k_load_io_pointers)
+   ; Load page 0
+	ioe ld (ix), 0x20
+   ;RBCRx registers must be cleared when stopping remote DMA;
+ 	ioe	ld (ix+PD_RMTBCNT0),0x00			; clear remote byte count register
+	ioe	ld (ix+PD_RMTBCNT1),0x00			; clear remote byte count register
+	ioe	ld (ix),0x60			; stop nic, change to register page 1
+
+	ld		hl,ix						; set ethernet address
+	inc	hl
+	ex		de,hl
+	ld		hl, (sp+@SP+EthAddress+2)
+
+	ld		bc,6
+
+	ioe	ldi						; copy eth address to NIC registers
+	ioe	ldi
+	ioe	ldi
+	ioe	ldi
+	ioe	ldi
+	ioe	ldi
+
+	inc	de
+	xor	a
+	ld		b,8
+pdri_loop3:
+	ioe	ld (de),a
+	inc	de
+	djnz	pdri_loop3
+
+	;
+	; initialize the interface
+	;
+
+	ioe	ld (ix),0x21				; stop nic, abort remote dma
+
+	ld		hl,2							; wait 1.6ms for tx/rx to complete
+#if PLD_ETH_COMPILING == 1
+	push	ix
+	PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 4)
+   pop	ix
+#else
+   call	tickwait
+#endif
+
+	ioe	ld (ix+PD_DATACFG),0x58	; normal operation, initialize remote
+											;    dma, fifo threshhold 8 bytes
+
+	xor	a								; remote dma byte count = 0000h
+	ioe	ld (ix+PD_RMTBCNT0),a
+	ioe	ld (ix+PD_RMTBCNT1),a
+	ioe	ld (ix+PD_RMTSADR0),a	; remote dma start address = 4000h
+	ioe	ld (ix+PD_RMTSADR1),0x40
+
+	ioe	ld (ix+PD_RXCFG),0x20	; monitor mode
+
+	ioe	ld (ix+PD_TXCFG),0x02	; place NIC in loopback
+
+	ld		a,0x46						; tx buffer < 4600h <= rx buffer
+	ioe	ld (ix+PD_PAGESTART),a
+	ioe	ld (ix+PD_BOUNDARY),a
+
+	ioe	ld (ix+PD_PAGESTOP),PD_PAGE_STOP ; rx buffer < 8000h
+
+	ioe	ld (ix+PD_TXPAGE),0x40	; 4000h < tx buffer
+
+	ioe	ld (ix),0x61				; stop nic, change to register page 1
+
+	ioe	ld (ix+PD_CURRENT),0x46	; next place to rx a packet
+
+	ioe	ld (ix),0x22				; start nic, abort remote dma
+
+	ioe	ld (ix+PD_TXCFG),0x00	; change from loopback mode to normal op
+
+#ifdef USE_MULTICAST
+	ioe	ld (ix+PD_RXCFG),0x0c	; accept broadcast and multicast packets
+#else
+	ioe	ld (ix+PD_RXCFG),0x04	; accept broadcast packets
+#endif
+
+	ioe	ld (ix+PD_INTSTATUS),0xff ; clear all interrupt flags
+
+	pop	ix
+#endasm
+
+}
+
+/* **************************************************************************/
+
+/*
+ * Reset the device with the hardware line
+ */
+rtk_internal_func int rtk_hardwarereset(_RealTekConfig *rt)
+{
+
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = rt->pld_rscblock;
+#endif
+
+#asm nodebug
+
+#if PLD_ETH_COMPILING == 1
+		; setup iy to point at the base of the shadow register array
+      ld    hl,(sp+@sp+res_block)
+      ld    de,[res_block]+shadows
+      add   hl,de
+      ld    hl,(hl)
+      ld    iy,hl
+#endif
+
+	; set the reset line high
+	; WrPortI(rt->reset_port,rt->reset_port_shadow,(*(rt->reset_port_shadow)) | rt->reset_mask);
+   ld		ix,(sp+@sp+rt)
+#if PLD_ETH_COMPILING == 1
+   ld		hl,(ix+[_RealTekConfig]+reset_port_index)
+   ex		de,hl
+   ld		hl,iy
+   add	hl,de
+   ld		hl,(hl)
+#else
+   ld		hl,(ix+[_RealTekConfig]+reset_port_shadow)
+#endif
+   ld		a,(hl)
+   or		(ix+[_RealTekConfig]+reset_mask)
+   ld		(hl),a
+	ld		hl,(ix+[_RealTekConfig]+reset_port)
+   ld		h,0
+	ioi	ld (hl),a
+
+	ld		hl,1536							; wait for NIC to reset and establish link...
+#if PLD_ETH_COMPILING == 1
+	PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 0)
+#else
+   call	tickwait
+#endif
+
+
+	; set the reset line low
+	; WrPortI(rt->reset_port,rt->reset_port_shadow,(*(rt->reset_port_shadow)) & (~rt->reset_mask));
+   ld		ix,(sp+@sp+rt)
+#if PLD_ETH_COMPILING == 1
+   ld		hl,(ix+[_RealTekConfig]+reset_port_index)
+   ex		de,hl
+   ld		hl,iy
+   add	hl,de
+   ld		hl,(hl)
+#else
+   ld		hl,(ix+[_RealTekConfig]+reset_port_shadow)
+#endif
+   ld		e,(hl)
+   ld		a,(ix+[_RealTekConfig]+reset_mask)
+   cpl
+   and	e
+   ld		(hl),a
+	ld		hl,(ix+[_RealTekConfig]+reset_port)
+   ld		h,0
+	ioi	ld (hl),a
+
+	ld		hl,100
+#if PLD_ETH_COMPILING == 1
+		PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 0)
+#else
+      call	tickwait
+#endif
+
+#endasm
+
+	// return success
+	return 0;
+}
+
+
+/*
+ * Either emulate a 9346, or emulate a pullup resistor
+ */
+
+rtk_internal_func int rtk_loadconfig(_RealTekConfig *rt)
+{
+	auto int saveix;
+
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = rt->pld_rscblock;
+#endif
+
+#asm
+	ld		(sp+@SP+saveix),ix			; save ix
+
+	; if(!(rt->flags & RT_FLAGS_HAVE9346)) {
+	ld		ix,(sp+@sp+rt)
+   ld    hl,(ix+[_RealTekConfig]+flags)
+   ld		de,RT_FLAGS_HAVE9346
+   and	hl,de
+   jp		nz,.rtk_lc_noemulate
+
+#ifdef RT_CUSTOM9346
+		; RT_CUSTOM9346(rt->WR1, rt->ee_parport, rt->eesk_mask, rt->eedo_bit_reg,
+	   ;       rt->eedo_shadow, rt->eedi_mask, rt->flags & RT_FLAGS_INVERTEED0);
+
+      ld    hl,(ix+[_RealTekConfig]+flags)
+      ld    de,RT_FLAGS_INVERTEED0
+      and   hl,de
+      push  hl
+      bool  hl
+      ld    l,(ix+[_RealTekConfig]+eedi_mask)
+      push  hl
+#if PLD_ETH_COMPILING == 1
+		; setup iy to point at the base of the shadow register array
+      ld    hl,(sp+@sp+res_block)
+      ld    de,[res_block]+shadows
+      add   hl,de
+      ld    hl,(hl)
+      ld    iy,hl
+
+		ld		hl,(ix+[_RealTekConfig]+eedo_shadow_index)
+	   ex		de,hl
+   	ld		hl,iy
+	   add	hl,de
+#else
+      ld		hl,(ix+[_RealTekConfig]+eedo_shadow)
+#endif
+      push  hl
+      bool  hl
+      ld    l,(ix+[_RealTekConfig]+eedo_bit_reg)
+      push  hl
+      ld    l,(ix+[_RealTekConfig]+eesk_mask)
+      push  hl
+      ld    l,(ix+[_RealTekConfig]+ee_parport)
+      push  hl
+      ld    hl,(ix+[_RealTekConfig]+WR1)
+      push  hl
+		push	ix
+      rtk_internal_call(RT_CUSTOM9346)
+      add   sp,16
+#else
+
+		;   if (!(rt->flags & RT_FLAGS_TWOIF)) {
+      ld		hl,(ix+[_RealTekConfig]+flags)
+  	   ld		de,RT_FLAGS_TWOIF
+      and	hl,de
+  	   jp		nz,.rtk_lc_twoif
+
+         ;
+         ; emulate the 9346 for first RealTek
+         ;
+         ld    ix,(sp+@sp+rt)
+         ipset 1
+
+         ld    a,0xc0
+         ld    hl,(ix+[rt]+WR1)
+         ioe   ld (hl),a
+
+         ld    a,0x40
+         ld    ix,hl
+         ioe   ld (ix+PD_9346CR),a
+
+			; if(rt->flags & RT_FLAGS_BLUECHEESE_MUX_FIX) {
+			// arrg - must fixup the MUX when starting a BlueCheese
+			ld		ix,(sp+@sp+rt)
+			ld		hl,(ix+[_RealTekConfig]+flags)
+   	   ld		de,RT_FLAGS_BLUECHEESE_MUX_FIX
+      	and	hl,de
+	      jp		z,.rtk_lc_nobcmuxfix
+
+				ld		a,0x01					; MUX=ON
+				ioi 	ld (PEB0R),a
+				push	ix
+   	   	rtk_internal_call(emu_9346)
+				pop	ix
+				xor	a							; MUX=OFF
+				ioi 	ld (PEB0R),a
+	   	   jr		.rtk_lc_bcdone
+
+.rtk_lc_nobcmuxfix:
+			; } else {
+			;	emu_9346(rt);
+				push	ix
+		      rtk_internal_call(emu_9346)
+		      pop	ix
+			; }
+.rtk_lc_bcdone:
+		ipres
+
+		ld		hl,5
+#if PLD_ETH_COMPILING == 1
+		push	ix
+		PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 2)
+      pop	ix
+#else
+      call	tickwait
+#endif
+
+.rtk_lc_twoif:
+		; }
+		; if(rt->flags & RT_FLAGS_TWOIF) {
+			/* startup the 2nd interface */
+      ld		hl,(ix+[_RealTekConfig]+flags)
+      ld		de,RT_FLAGS_TWOIF
+      and	hl,de
+		jr		z,.rtk_lc_oneif
+
+			ld		ix,(sp+@SP+rt)
+			ld		hl,(ix+[rt]+WR1)
+			ld		ix,hl			; ix has WR2
+			ipset	1
+			ld		a,0xc0
+			ioe ld (ix),a
+			ld		a,0x40
+			ioe ld (ix+PD_9346CR),a
+         ld		hl,(sp+@sp+rt)
+         push	hl
+         rtk_internal_call(emu_9346)
+         add	sp,2
+			ipres
+
+			ld		hl,5
+#if PLD_ETH_COMPILING == 1
+         push  ix
+         PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 2)
+         pop   ix
+#else
+         call  tickwait
+#endif
+.rtk_lc_oneif:
+
+		;}
+#endif
+		; tickwait(2);	// Let some dust settle before adjusting CONFIG3.
+#if PLD_ETH_COMPILING == 1
+		push	ix
+		PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 2)
+      pop	ix
+#else
+      call	tickwait
+#endif
+
+		; WrPortE(rt->WR1+0, NULL, 	0xC0 | 0x20);		/* Access page 3 */
+      ld		a,0xc0|0x20
+      ld		hl,(ix+[_RealTekConfig]+WR1)
+      ioe	ld (hl),a
+
+      ; WrPortE(rt->WR1+PD_9346CR,  NULL, 0xC0);  		/* Allow writing to CONFIG1-3 */
+      ld		a,0xc0
+      ld		hl,(ix+[_RealTekConfig]+WR1)
+      ld		de,PD_9346CR
+      add	hl,de
+      ioe	ld (hl),a
+
+		; if(rt->flags & RT_FLAGS_FULLDUPLEX) {
+		;	 WrPortE(rt->WR1+PD_CONFIG3, NULL, 0x70);
+		; } else {
+		;	 WrPortE(rt->WR1+PD_CONFIG3, NULL, 0x30);
+		; }
+      ld		hl,(ix+[_RealTekConfig]+flags)
+      ld		de,RT_FLAGS_FULLDUPLEX
+      and	hl,de
+
+      ld    a,0x70
+      jr    nz,.rtk_lc_notfd
+      ld    a,0x30
+.rtk_lc_notfd:
+      ld    hl,(ix+[_RealTekConfig]+WR1)
+      ld    de,PD_CONFIG3
+      add   hl,de
+      ioe	ld (hl),a
+
+		; WrPortE(rt->WR1+PD_CONFIG2, NULL, 0x00);	   /* Select 10bT (override) */
+		xor	a
+      ld    hl,(ix+[_RealTekConfig]+WR1)
+      ld    de,PD_CONFIG2
+      add   hl,de
+      ioe	ld (hl),a
+
+		; WrPortE(rt->WR1+PD_9346CR,  NULL, 0x00);  		/* Prevent writing to CONFIG1-3 */
+      ld    hl,(ix+[_RealTekConfig]+WR1)
+      ld    de,PD_9346CR
+      add   hl,de
+      ioe	ld (hl),a
+#endasm
+//	;}
+
+#asm
+.rtk_lc_noemulate:
+
+		ld		ix,(sp+@SP+saveix)			; restore ix
+#endasm
+
+	// return success
+	return 0;
+}
+
+rtk_internal_func int rtk_readEPROMaddress(_RealTekConfig *rt)
+{
+		auto int saveix;
+
+#asm nodebug
+		ld		(sp+@SP+saveix),ix			; save ix
+
+		;
+		; read contents of the 93C46 into EthAddress
+		; and copy the physical address into the NICs
+		; addresses.  This shouldn't be necessary, but
+		; the 93C46 wasn't being properly loaded on
+		; bootup
+		;
+
+		ld		ix,(sp+@sp+rt)
+		ld		hl,(ix+[rt]+WR1)
+		ld		iy,hl								; iy has WR1
+
+		ld		a,0x12							; 12 bytes from address 0
+ioe	ld		(iy+PD_RMTBCNT0),a
+		xor	a
+ioe	ld		(iy+PD_RMTBCNT1),a			; setup dma address/len
+ioe	ld		(iy+PD_RMTSADR0),a
+ioe	ld		(iy+PD_RMTSADR1),a
+
+		ld		a,0x0a							; start dma read
+ioe	ld		(iy),a
+
+		ld		hl,ix
+      ld		de,[rt]+hwa
+      add	hl,de
+      ex		de,hl
+		ld		hl,(ix+[rt]+RD1)
+		ld		l,PD_IOPORT
+		ld		b,6								; copy six bytes hardware -> EthAddress
+pdri_loop1:
+ioe	ld		a,(hl)							; read out duplicate
+ioe	ld		a,(hl)
+		ld		(de),a							; write to EthAddress
+		inc	de
+		djnz	pdri_loop1
+
+		ld		ix,(sp+@SP+saveix)			; restore ix
+#endasm
+	return 0;
+}
+
+/**
+ *    rtk_resetinterface()
+ * 	Main resetting function for packet driver.  Gets the RealTek in shape,
+ * 	complete with a MAC address (physical).
+ *
+ *		Returns 0 on success, non-zero on error.
+ */
+
+rtk_internal_func
+//debug
+int rtk_resetinterface(_RealTekConfig * rt, word instance, int ifc)
+{
+	auto int	i, j;
+	auto int saveix;
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = rt->pld_rscblock;
+#endif
+
+#asm
+   // if (instance >= USING_REALTEK)
+   // 	return -6;	// No such instance
+	xor	a
+   ld		hl,(sp+@sp+instance)
+   ld		de,USING_REALTEK
+   sbc   hl,de
+   jr		c,.rtk_instanceok
+	ld		hl,-6
+   jp 	.doreturn
+.rtk_instanceok:
+
+	ld		(sp+@SP+saveix),ix
+#if PLD_ETH_COMPILING == 1
+   ld		hl,sizeof(_RealTekConfig)
+
+	ex		de,hl                           ; de = sizeof(_RealTekConfig)
+   ld		hl,(sp+@sp+instance+2)          ; hl = instance
+   ld		b,h
+   ld		c,l                             ; bc = instance
+   mul                                   ; bc = instance * sizeof(_RealTekConfig)
+   ld		hl,logical_addr(_rt_config)     ; hl = _rt_config
+   ex		de,hl									  ; de = _rt_config
+   ld		h,b
+   ld		l,c                             ; hl = instance * sizeof(_RealTekConfig)
+   add	hl,de                           ; hl = _RealTekConfig instance
+
+   ex		de,hl
+   ld		hl,(sp+@sp+rt)
+   ex		de,hl
+   ld		bc,sizeof(_RealTekConfig)
+.___loop:
+   ldi
+   jp v,.___loop
+#else
+   ;memcpy(rt, _rt_config + instance, sizeof(*rt));
+   ld		hl,sizeof(_RealTekConfig)
+   push	hl
+
+	ex		de,hl                           ; de = sizeof(_RealTekConfig)
+   ld		hl,(sp+@sp+instance+2)          ; hl = instance
+   ld		b,h
+   ld		c,l                             ; bc = instance
+   mul                                   ; bc = instance * sizeof(_RealTekConfig)
+   ld		hl,_rt_config	                 ; hl = _rt_config
+   ex		de,hl									  ; de = _rt_config
+   ld		h,b
+   ld		l,c                             ; hl = instance * sizeof(_RealTekConfig)
+   add	hl,de                           ; hl = _RealTekConfig instance
+   push	hl
+
+	ld		hl,(sp+@sp+rt+4)
+   push	hl
+   call	memcpy
+   add	sp,6
+#endif
+
+#if PLD_ETH_COMPILING == 1
+c	rt->pld_rscblock = res_block;
+#endif
+
+;  rt->iface = ifc;
+   ld		hl,(sp+@sp+rt)
+   ld		de,[_RealTekConfig]+iface
+   add	hl,de
+   ld		ix,hl
+   ld		hl,(sp+@sp+ifc)
+   ld		(ix),hl
+
+#endasm
+
+
+#ifdef RT_FULLDUPLEX
+	rt->flags |= RT_FLAGS_FULLDUPLEX;
+#endif
+
+	/*
+	 * Setup the peripheral IO interface, and fill in the reset of the _RealTekConfig struct
+	 */
+#asm
+	;if (rt->io_init)
+	;	rt->io_init(rt);
+	ld		hl,(sp+@sp+rt)
+   ld		de,[_RealTekConfig]+io_init
+   add	hl,de
+   ld		hl,(hl)
+
+   ld		a,h
+   or		l
+   jr		z,.io_init_notset
+	ex		de,hl
+   ld		hl,(sp+@sp+rt)
+   push	hl
+   ld		hl,.io_init_ret
+   push	hl
+   ex		de,hl
+   jp		(hl)
+.io_init_ret:
+	add	sp,2
+.io_init_notset:
+
+	/*
+	 * Hardware reset!
+	 */
+
+	 ; if(!(rt->flags & RT_FLAGS_NOHARDWARERESET))
+	 ; 	if(rtk_hardwarereset(rt)) {
+
+	ld		hl,(sp+@sp+rt)
+   ld		hl,(hl+[_RealTekConfig]+flags)
+   ld		de,RT_FLAGS_NOHARDWARERESET
+   and	hl,de
+   jr		nz,.rtk_ri_hwresetdone
+
+   ld		hl,(sp+@sp+rt)
+   push	hl
+   rtk_internal_call(rtk_hardwarereset)
+
+   add	sp,2
+   bool	hl
+   jr		z,.rtk_ri_hwresetdone
+   ld 	ix,(sp+@SP+saveix)
+   ld 	hl,-1
+   jp 	.doreturn
+
+.rtk_ri_hwresetdone:
+
+	/*
+	 * Read from the 9346 (or emulate, or emulate a pullup for 0xFF to be read in)
+	 */
+	; if(rtk_loadconfig(rt)) {
+	ld		hl,(sp+@sp+rt)
+   push	hl
+   rtk_internal_call(rtk_loadconfig)
+   add	sp,2
+   bool	hl
+   jr		z,.rtk_ri_lcdone
+   ld 	ix,(sp+@SP+saveix)
+   ld 	hl,-4
+   jp 	.doreturn
+
+.rtk_ri_lcdone:
+
+#endasm
+
+	/*
+	 * Setup the NIC address
+	 */
+	j = 0;
+#asm
+
+	// get_macAddr(rt->hwa);
+	// for (i=0; i<6; i++) {
+	//		j |= rt->hwa[i];
+	// }
+	ld		hl,(sp+@sp+rt)
+   ld		de,[_RealTekConfig]+hwa
+   add	hl,de
+
+#if PLD_ETH_COMPILING == 1
+	push	hl
+   PLD_IMPORT_CALL(res_block, PLD_ETH_GETMACADDR, 2)
+   add	sp,2
+#else
+   ld		ix,SysIDBlock
+   ld		de,[SysIDBlock]+macAddr
+   add	ix,de
+   ex		de,hl
+   ld		hl,ix
+   ld		bc,sizeof(SysIDBlock.macAddr)
+   ldir
+#endif
+	ld		hl,(sp+@sp+rt)
+   ld		de,[_RealTekConfig]+hwa
+   add	hl,de
+
+	xor	a
+   ld		b,6
+.rt_check_mac:
+	or		(hl)
+   inc	hl
+   djnz  .rt_check_mac
+
+   ld		(sp+@sp+j),hl
+
+   // if (rt->flags & RT_FLAGS_TWOIF) {
+	//   rt->hwa[5]++;     // 2nd port has MAC address +1 from first one;
+	//                     // make sure carry bit propagated upward!
+	//   if (!rt->hwa[5]) {
+	//      rt->hwa[4]++;
+	//      if (!rt->hwa[4])
+	//         rt->hwa[3]++;
+	//   }
+   // }
+
+	ld		hl,(sp+@sp+rt)
+   ld		de,[_RealTekConfig]+flags
+   add	hl,de
+   ld		hl,(hl)
+
+	ld		de,RT_FLAGS_TWOIF
+   and	hl,de
+   bool	hl
+   jr		z,.rt_not_twoif
+
+	ld		hl,(sp+@sp+rt)
+   ld		de,[_RealTekConfig]+hwa
+   add	hl,de
+
+	ld		ix,hl
+   bool	hl
+	inc	(ix+5)
+   ld		l,(ix+5)
+   bool	hl
+   jr		nz,.rt_carry_done
+   inc	(ix+4)
+   ld		l,(ix+4)
+   bool	hl
+   jr		nz,.rt_carry_done
+   inc	(ix+3)
+.rt_carry_done:
+.rt_not_twoif:
+
+	// is ID block's MAC address is zero, and was one in an eprom, in theory?
+	// if (!j && (rt->flags & RT_FLAGS_HAVE9346)) {
+	ld		hl,(sp+@sp+rt)
+   ld		de,[_RealTekConfig]+flags
+   add	hl,de
+   ld		hl,(hl)
+
+	ld		de,RT_FLAGS_HAVE9346
+   and	hl,de
+   jr		z,.rtk_noeprom
+   ld		hl,(sp+@sp+j)
+   bool	hl
+   jr		nz,.rtk_noeprom
+
+	//	// try the address from the eprom
+	//	if(rtk_readEPROMaddress(rt)) {
+	//		// error - force an exception!
+	//		j = 0;
+	//	} else {
+	//		j = 1;
+	//	}
+   ld		hl,(sp+@sp+rt)
+   push	hl
+   rtk_internal_call(rtk_readEPROMaddress)
+   add	sp,2
+   ld		hl,0x0001
+   ld		(sp+@sp+j),hl
+.rtk_noeprom:
+
+	// // is the MAC address still invalid?
+	// if (!j) {
+	//	exception(ERR_INVALIDMACADDR);
+	//	return -5;
+	// }
+	ld		hl,(sp+@sp+j)
+	bool	hl
+   jr		nz,.rtk_noexecption
+
+   ld		hl,-ERR_INVALIDMACADDR
+   push	hl
+#if PLD_ETH_COMPILING == 1
+	PLD_IMPORT_CALL(res_block, PLD_ETH_EXCEPTION, 2)
+#else
+   call	exception
+#endif
+   ld		sp,2
+   ld		ix,(sp+@sp+saveix)
+   ld		hl,-5
+   jp		.doreturn
+
+.rtk_noexecption:
+
+	/*
+	 * Write out the NIC address to the device
+	 */
+
+	;rtk_init(rt, rt->hwa);
+	ld		hl,(sp+@sp+rt)
+   ld		de,[_RealTekConfig]+hwa
+   add	hl,de
+
+	push	hl
+   ld		hl,(sp+@sp+rt+2)
+   push	hl
+	rtk_internal_call(rtk_init)
+   add	sp,4
+
+	// return success!
+  	ld		ix,(sp+@SP+saveix)
+	bool	hl
+   ld		l,h
+.doreturn:
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader rtk_powerdown */
+rtk_internal_func int rtk_powerdown(_RealTekConfig * nic);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func int rtk_powerdown(_RealTekConfig * nic)
+{
+#asm nodebug
+	push	ix
+	push	iy
+
+	ld		hl, (sp+@SP+nic+4)
+	rtk_internal_call(ne2k_load_io_pointers)
+
+   ; Load page 0 to clear PD_RMTBCNTx registers
+	ioe ld (ix), 0x20
+	ioe ld (ix+PD_RMTBCNT0),0x00			; clear remote byte count register
+	ioe ld (ix+PD_RMTBCNT1),0x00			; clear remote byte count register
+
+	; set the powerdown mode
+	ioe ld (ix),0xE0						; access page 3
+
+	ioe ld (ix+PD_9346CR),0xC0			; allow writing to CONFIG3
+
+	ioe ld a,(iy+PD_CONFIG3)		; get the current CONFIG3 value
+	set	1,a							; set the powerdown bit
+	ioe ld (ix+PD_CONFIG3),a		; ...and write out the new CONFIG3
+
+	ioe ld (ix+PD_HLTCLK),0x48			; HALT the clock!
+
+	; Switch back to page 0
+	ioe ld (ix),0x20
+
+	pop	iy
+	pop	ix
+#endasm
+	return 0;	// return success
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader rtk_powerup */
+rtk_internal_func int rtk_powerup(_RealTekConfig * nic);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func int rtk_powerup(_RealTekConfig * nic)
+{
+	auto int saveix;
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = nic->pld_rscblock;
+#endif
+
+#asm nodebug
+	ld		(sp+@SP+saveix),ix
+
+	push	ix
+	push	iy
+
+	ld		hl, (sp+@SP+nic+4)
+	rtk_internal_call(ne2k_load_io_pointers)
+
+   ; Load page 0 to clear PD_RMTBCNTx registers
+	ioe ld (ix), 0x20
+	ioe ld (ix+PD_RMTBCNT0),0x00			; clear remote byte count register
+	ioe ld (ix+PD_RMTBCNT1),0x00			; clear remote byte count register
+
+	ioe ld (ix),0xE0						; access page 3
+
+	ioe ld (ix+PD_HLTCLK),0x52			; START the clock again!
+
+	ld		hl,10
+#if PLD_ETH_COMPILING == 1
+   push  ix
+   push	iy
+   PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 8)
+   pop	iy
+   pop   ix
+#else
+	call	tickwait						; wait for the clock to startup again
+#endif
+
+
+
+	ioe ld a,(iy+PD_CONFIG3)		; get the current CONFIG3 value
+	res	1,a							; unset the powerdown bit
+	ioe ld (ix+PD_CONFIG3),a		; ...and startup the chip again
+
+	ioe ld (ix+PD_9346CR),0x00			; disable access to CONFIG1-3
+
+	ioe ld (ix),0x20						; access page 0
+
+	pop	iy
+	pop	ix
+
+	/*
+	 * Hardware reset -- The rest of the program has
+    * been found to be necessary when Realtek recovers
+    * from low power mode.
+    */
+/*	if(!(nic->flags & RT_FLAGS_NOHARDWARERESET))
+		if(rtk_hardwarereset(nic)) {
+#asm
+		ld	ix,(sp+@SP+saveix) ; restore ix
+#endasm
+			return -1;
+		}
+*/
+	ld		hl,(sp+@sp+nic)
+	ld		hl,(hl+[_RealTekConfig]+flags)
+	ld		de,RT_FLAGS_NOHARDWARERESET
+	and	hl,de
+	jr		nz,.rtk_ri_hwresetfinished
+
+	ld		hl,(sp+@sp+nic)
+	push	hl
+	rtk_internal_call(rtk_hardwarereset)
+
+	add	sp,2
+	bool	hl
+	jr		z,.rtk_ri_hwresetfinished
+	ld	ix,(sp+@SP+saveix) ; restore ix
+
+	;return -1;
+   ld		hl,-1
+   jp		.rtk_ri_exit
+
+.rtk_ri_hwresetfinished:
+	ld	ix,(sp+@SP+saveix) ; restore ix
+
+	/*
+	 * Read from the 9346 (or emulate, or emulate a pullup for 0xFF to be read in)
+	 */
+/*	if(rtk_loadconfig(nic)) {
+#asm
+		ld	ix,(sp+@SP+saveix) ; restore ix
+#endasm
+		return -4;
+	}
+*/
+   ld		hl,(sp+@sp+nic)
+   push	hl
+   rtk_internal_call(rtk_loadconfig)
+
+   add	sp,2
+   bool	hl
+   jr		z,.rtk_ri_loadconfigfinished
+	ld	ix,(sp+@SP+saveix) ; restore ix
+
+   ;return -4
+   ld		hl,-4
+   jp		.rtk_ri_exit
+
+.rtk_ri_loadconfigfinished:
+	ld	ix,(sp+@SP+saveix) ; restore ix
+
+	/*
+	 * Write out the NIC address to the device
+	 */
+   ;rtk_init(nic, nic->hwa);
+	ld		hl,(sp+@sp+nic)
+   ld		de,[_RealTekConfig]+hwa
+   add	hl,de
+	push	hl
+   ld		hl,(sp+@sp+nic+2)
+   push	hl
+	rtk_internal_call(rtk_init)
+   add	sp,4
+	ld	ix,(sp+@SP+saveix) ; restore ix
+
+	;return success
+   bool	hl
+   ld		h,L
+.rtk_ri_exit:
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader rtk_havelink */
+rtk_internal_func int rtk_havelink(_RealTekConfig * nic);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+rtk_internal_func int rtk_havelink(_RealTekConfig * nic)
+{
+	auto int retval;
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = nic->pld_rscblock;
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_LOCKGLOBAL, 0)
+	#endasm
+#else
+	LOCK_GLOBAL(TCPGlobalLock);
+#endif
+
+#asm nodebug
+	push	ix
+	push	iy
+
+	ld		hl, (sp+@SP+nic+4)
+	rtk_internal_call(ne2k_load_io_pointers)
+
+   ; Load page 0 to clear PD_RMTBCNTx registers
+	ioe ld (ix), 0x20
+	ioe ld (ix+PD_RMTBCNT0),0x00			; clear remote byte count register
+	ioe ld (ix+PD_RMTBCNT1),0x00			; clear remote byte count register
+
+	ioe ld (ix),0xE0						; access page 3
+
+	ioe ld a,(iy+PD_CONFIG0)
+	bit	2,a
+	jr		z,_pd_link_good
+
+	ioe ld a,(iy+PD_CONFIG3)
+	bit	6,a
+	jr		nz,_pd_link_good
+
+	; the link is down
+	bool	hl
+	ld		l,h
+	ld		(sp+@SP+4+retval),hl
+	jr		_pd_link_done
+
+_pd_link_good:
+	ld		hl,0x0001
+	ld		(sp+@SP+4+retval),hl
+	;jr	_pd_link_done
+
+_pd_link_done:
+	ioe ld (ix),0x20						; move back to page 0
+
+	pop	iy
+	pop	ix
+#endasm
+
+#if PLD_ETH_COMPILING == 1
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_UNLOCKGLOBAL, 0)
+	#endasm
+#else
+	UNLOCK_GLOBAL(TCPGlobalLock);
+#endif
+	return retval;
+}
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	defaultxcode		resume
+#endif
+
+/*** BeginHeader */
+#endif /*__REALTEK_LIB*/
+/*** EndHeader */

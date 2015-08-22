@@ -1,0 +1,1461 @@
+/*** BeginHeader */
+#ifndef __IDBLOCK_LIB
+#define __IDBLOCK_LIB
+/*** EndHeader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+IDBLOCK.LIB
+	Copyright (c) 2004, ZWorld.
+
+DESCRIPTION:
+	Functions to access the ID block in Z-World product flash devices.
+
+VERSION:		5.0 (tableVersion = 5)
+
+END DESCRIPTION **********************************************************/
+
+/* START STRUCTURE DESCRIPTION *******************************************
+SysIDBlock						<IDBLOCK.LIB>
+
+DESCRIPTION:	This structure contains a copy of the ID block read off
+the flash device, if present.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+
+typedef	struct _SysIDBlockType2 {
+	uint8    flashMBC;     // Memory Bank Configurations
+	uint8    flash2MBC;
+	uint8    ramMBC;
+	uint32   devSpecLoc;		// Count of additional memory devices immediately
+									//  preceding this block
+	uint32 	macrosLoc;		// Start of the macro table for additional board
+									//  configuration options.
+	uint32	driversLoc;		// offset to preloaded drivers start from ID block
+									//  start (positive is below ID block)
+	uint32	ioDescLoc;		// offset to I/O descriptions start from ID block
+									//  start (positive is below ID block)
+	uint32	ioPermLoc;		// offset to User mode I/O permissions start from ID
+									//  block start (positive is below ID block)
+	uint32	persBlockLoc;	// offset to persistent storage block area start from
+									//  ID block start (positive is below ID block)
+	uint16	userBlockSiz2;	// size of v. 5 "new style" mirrored User block image
+	uint16	idBlockCRC2;	// CRC of SysIDBlockType2 type with idBlockCRC2
+									//  member reset to zero and base CRC value of
+									//  SysIDBlock.idBlockCRC
+} SysIDBlockType2;
+
+typedef struct _SysIDBlockType {
+	uint16	tableVersion;		// version number for this table layout
+	uint16	productID;			// Z-World part #
+	uint16	vendorID;			// 1 = Z-World
+	uint8		timestamp[7];		//	YY/M/D H:M:S
+	uint32	flashID;				// Z-World part # dev on cs0 oe0 (normally primary flash)
+	uint16	flashType;			// Write method
+	uint16	flashSize;			// in 1000h pages
+	uint16	sectorSize;			// size of flash sector in bytes
+	uint16	numSectors;			// number of sectors
+	uint16	flashSpeed;			// in nanoseconds
+	uint32	flash2ID;				// Z-World part #, 2nd flash
+	uint16	flash2Type;			// Write method, 2nd flash
+	uint16	flash2Size;			// in 1000h pages, 2nd flash
+	uint16	sector2Size;		// size of 2nd flash's sectors in bytes
+	uint16	num2Sectors;		// number of sectors
+	uint16	flash2Speed;		// in nanoseconds, 2nd flash
+	uint32	ramID;				// Z-World part #
+	uint16	ramSize;			// in 1000h pages
+	uint16	ramSpeed;			// in nanoseconds
+	uint16	cpuID;				// CPU type identification
+	uint32	crystalFreq;		// in Hertz
+	uint8		macAddr[6];			// Media Access Control (MAC) address
+	uint8		serialNumber[24];	// device serial number
+	uint8		productName[30];	// null-terminated string
+	// Begin new version 5 System ID block member structure.
+	// Note:  Versions of Dynamic C released prior to those which fully support
+	//        the version 5 ID+User blocks will simply ignore the new version 5
+	//        ID block members.  When loading a version 4 or prior ID block,
+	//        versions of Dynamic C that know about the new version 5 ID block
+	//        members will zero-fill the new members upon recognizing the older
+	//        version ID block.
+	SysIDBlockType2 idBlock2;	// idblock
+	// End new version 5 System ID block member structure.
+	uint8		reserved[1];	// allow future expansion (EG: see addition of v. 5's
+									//  idblock2 member structure, above)
+	uint32	idBlockSize;	// size of versions 1,2,3,4 ID block
+	uint16	userBlockSize;	// when nonzero, size of User block for ID block
+									//  versions 1,2,3,4
+	uint16	userBlockLoc;	// when nonzero, offset to User block start from
+									//  ID block versions 1,2,3,4 start (below ID block)
+	uint16	idBlockCRC;		// CRC of SysIDBlock with idBlockCRC member reset to
+									//  zero and base CRC value of zero, and excluding
+									//  idBlock2 and reserved members
+	uint8		marker[6];		// valid if [0x55,0xAA,0x55,0xAA,0x55,0xAA,0x55,0xAA]
+} SysIDBlockType;
+
+typedef struct _MemDevSpec {
+	uint32	ID;				// Z-World part #, 0 = SRAM, other = flash id
+	uint16	type;			   // Write method
+	uint16	devSize;		   // in 1000h pages
+	uint16	sectorSize;		// size of flash sector in bytes
+	uint16	numSectors;		// number of sectors
+	uint16	devSpeed;		// in nanoseconds
+   uint8    MBC ;          // Memmory bank configuration (Chip selects, waits, etc)
+} MemDevSpec;
+
+
+SysIDBlockType	SysIDBlock;
+
+
+/*** EndHeader */
+
+/******************************************************************************/
+
+/*** BeginHeader _overwrite_block_flag */
+
+extern int _overwrite_block_flag;
+
+/*** EndHeader */
+
+int _overwrite_block_flag;
+
+/******************************************************************************/
+
+/*** BeginHeader	_readIDBlock */
+
+root int _readIDBlock(int);
+
+/*** EndHeader */
+
+/* START_FUNCTION DESCRIPTION ********************************************
+_readIDBlock                  <IDBLOCK.LIB>
+
+SYNTAX:  int _readIDBlock(int flash_bitmap)
+
+PARAMETER1:  Bitmap of memory quadrants mapped to the primary flash.
+             Examples:  0x01 = quadrant 0 only
+                        0x03 = quadrants 0 and 1
+                        0x0C = quadrants 2 and 3
+
+DESCRIPTION:  Attempts to read the system ID block from the highest flash
+quadrant and save it in the system ID block structure.  It performs a CRC
+check on the block to verify that the block is valid.  If an error occurs,
+SysIDBlock.tableVersion is set to zero.
+
+Starting with Dynamic C version 8, this function supports combined System
+ID/User blocks sizes of sizeof(SysIDBlock) and from 4 KB to 64 KB,
+inclusive, in 4 KB steps. Prior versions of Dynamic C only supported
+mirrored combined System ID/User blocks sizes of sizeof(SysIDBlock), 8 KB,
+16 KB and 24 KB or unmirrored combined System ID/User blocks sizes of
+sizeof(SysIDBlock) and from 4 KB to 32 KB, inclusive, in 4 KB steps.
+
+Starting with Dynamic C version 9.50, this function supports version 5
+unique ID plus mirrored User blocks. The version 5 uID+mUser blocks
+standard configuration is as follows:
+  1) A 16 KB reserved area containing the unique ID block, located at the
+     top of the /CS0 flash. The remainder of the 16 KB area may be used
+     for persistent data storage, such as preloaded drivers or I/O
+     configuration and/or I/O permissions information.
+  2) An 8 KB reserved area containing the User block "A" image, located at
+     the beginning of the flash sector(s) immediately below the lowest
+     addressed flash sector which contains any part of the 16 KB reserved
+     ID block plus persistent data storage area.
+  3) An 8 KB reserved area containing the User block "B" image, located at
+     the beginning of the flash sector(s) immediately below the lowest
+     addressed flash sector which contains any part of the 8 KB reserved
+     User block "A" image area.
+
+RETURN VALUE:   0 if successful
+               -1 if error reading from flash
+               -2 if ID block missing
+               -3 if v. 1,2,3,4 ID block invalid (failed CRC check)
+               -4 if v. 5 ID block invalid (failed CRC2 check)
+END DESCRIPTION *********************************************************/
+
+#use math.lib			// needed for getcrc() function
+
+#asm root nodebug
+_readIDBlock::
+	_SYS_MAP_FLASH
+	ld		a, xpc
+	push	af						; save current xpc
+
+	;; determine top memory quadrant mapped to flash
+.flashInQ3:
+	bit	3, L
+	jr		z, .flashInQ2
+
+	ld		a, 0xF0				; XPC to access top of flash
+	jr		.copystart
+
+.flashInQ2:
+	bit	2, L
+	jr		z, .flashInQ1
+
+	ld		a, 0xB0				; XPC to access top of flash
+	jr		.copystart
+
+.flashInQ1:
+	bit	1, L
+	jr		z, .flashInQ0
+
+	ld		a, 0x70				; XPC to access top of flash
+	jr		.copystart
+
+.flashInQ0:
+	ld		a, 0x30				; XPC to access top of flash
+	bit	0, L
+	jp		z, .noflashquad	; if no quadrant bits set, error
+
+	;; copy top 16 bytes of block to struct in RAM
+.copystart:
+	ld		b, 17					; check 17 locations for the ID block
+									;  (top-0K, top-4K, top-8K, ..., top-64K)
+.copyheader:
+	push	bc						; save locations count
+	ld		xpc, a
+	ld		hl, 0xFFFF			; A:HL points to tail of ID block in flash (0xXFFFF)
+	ld		de, SysIDBlock+@LENGTH-1	; DE points to tail of SysIDBlock
+	ld		bc, _SysIDBlockType+@LENGTH-idBlockSize
+	lddr							; copy top 16 bytes of block to RAM
+
+	;; check for 55 AA 55 AA 55 AA marker at end of ID block
+	ld		hl, SysIDBlock+marker
+	ld		b, 6
+	push	af						; save XPC value for later
+	ld		a, 0x55
+.loop1:
+	cp		(hl)
+	jr		nz, .badmarker
+
+	inc	hl
+	cpl
+	djnz	.loop1
+
+	jr		.copyblock
+
+.badmarker:
+	pop	af						; get previous XPC value
+	dec	a						; try location 0x1000 bytes lower
+	pop	bc
+	djnz	.copyheader
+
+	jp		.noIDblock
+
+	;; copy remainder of ID block to RAM
+.copyblock:
+	pop	af						; clean XPC value off of stack
+	pop	bc						; clean old BC loop value off of stack
+	ld		de, (SysIDBlock+idBlockSize) ; save actual SysIDBlock.idBlockSize in DE
+	bool 	hl
+	ld		L, h              ; clear HL and Carry flag for following subtraction
+	sbc	hl, de				; -HL is address bits 15:00 of ID block start
+	ld		de, SysIDBlock		; DE now points to SysIDBlock struct in RAM
+	ld		bc, _SysIDBlockType+idBlockSize	; BC has offset to idBlockSize member
+	ldir							; fill remainder of SysIDBlock struct in RAM
+
+	;; perform CRC checks on block
+.checkCRC:
+	ld		hl, (SysIDBlock+idBlockCRC) ; get CRC value
+	push	hl						; save it for comparison later
+	ld		hl, SysIDBlock+idBlockCRC
+	xor	a
+	ld		(hl), a
+	inc	hl
+	ld		(hl), a				; clear out CRC value
+	; first, do CRC on SysIDBlock part before the idBlock2 and reserved fields
+	bool	hl
+	ld		L, h
+	push	hl						; set accum (base CRC) parameter for getcrc()
+	ld		hl, _SysIDBlockType+idBlock2
+	push	hl						; set count (length) parameter for getcrc()
+	ld		hl, SysIDBlock
+	push	hl						; set *dataarray (address) parameter for getcrc()
+	call	getcrc
+	add	sp, 6					; clean up stack residue
+	; then continue CRC on last 16 bytes of SysIDBlock
+	push	hl						; set accum (continued CRC) parameter for getcrc()
+	ld		hl, sizeof(SysIDBlockType)-(_SysIDBlockType+idBlockSize)
+	push	hl						; set count (length) parameter for getcrc()
+	ld		hl, SysIDBlock+idBlockSize
+	push	hl						; set *dataarray (address) parameter for getcrc()
+	call	getcrc
+	add	sp, 6					; clean up stack residue
+	; hl now contains CRC value for versions 1,2,3,4 ID block
+	pop	de						; get original ID block CRC value
+	xor	a						; clear carry
+	sbc	hl, de
+	jp		nz, .badCRC
+
+	;; versions 1,2,3,4 ID block CRC matches, so restore CRC value to SysIDBlock
+	ld		hl, SysIDBlock+idBlockCRC
+	ld		(hl), e
+	inc	hl
+	ld		(hl), d				; restore CRC value in SysIDBlock table
+
+	;; if this is a version 5 (or greater) ID block, then check the CRC2 value
+	ld		hl, (SysIDBlock+tableVersion)				; get ID block version
+	ld		de, 5
+	or		a
+	sbc	hl, de
+	jr		c, .v1234IDBlock
+
+	ld		hl, (SysIDBlock+idBlock2+idBlockCRC2) ; get CRC2 value
+	push	hl						; save it for comparison later
+	ld		hl, SysIDBlock+idBlock2+idBlockCRC2
+	xor	a
+	ld		(hl), a
+	inc	hl
+	ld		(hl), a				; clear out CRC2 value
+	; now do CRC2 on SysIDBlock middle part after the 'reserved' field
+	ld		hl, (SysIDBlock+idBlockCRC) ; get original versions 1,2,3,4 ID block CRC value
+	push	hl						; set accum (base CRC2) parameter for getcrc()
+	ld		hl, sizeof(SysIDBlockType2)
+	push	hl						; set count (length) parameter for getcrc()
+	ld		hl, SysIDBlock+idBlock2
+	push	hl						; set *dataarray (address) parameter for getcrc()
+	call	getcrc
+	add	sp, 6					; clean up stack residue
+	; hl now contains CRC2 value for version 5 ID block
+	pop	de						; get original ID block CRC2 value
+	xor	a						; clear carry
+	sbc	hl, de
+	jp		nz, .badCRC2
+
+	;; version 5 ID block CRC2 matches, so restore CRC2 value to SysIDBlock
+	ld		hl, SysIDBlock+idBlock2+idBlockCRC2
+	ld		(hl), e
+	inc	hl
+	ld		(hl), d				; restore CRC2 value in SysIDBlock table
+	jr		.okdone
+
+.v1234IDBlock:
+	ld		hl, SysIDBlock+idBlock2
+	ld		b, _SysIDBlockType+idBlockSize-idBlock2
+	xor	a
+.clearV5Members:
+	ld		(hl), a
+	inc	hl
+	djnz	.clearV5Members
+
+.okdone:
+	bool	hl
+	ld		l, h					; return value = 0
+.done:
+	; enable/disable ID+User blocks protection, depending on return value
+	ld		(_overwrite_block_flag), hl
+	pop	af
+	ld		xpc, a				; restore XPC
+   _SYS_UNMAP_FLASH
+	ret
+
+.noflashquad:
+	ld		de, -1
+	jr		.errorexit
+
+.noIDblock:
+	ld		de, -2
+	jr		.errorexit
+
+.badCRC:
+	ld		de, -3
+	jr		.errorexit
+
+.badCRC2:
+	ld		de, -4
+.errorexit:
+; on entry, DE contains error result code
+	bool	hl
+	ld		L, h
+	ld		(SysIDBlock+tableVersion), hl	; reset ID block version to zero on error
+	ex		de, hl				; get error result code into HL
+	jr		.done
+#endasm
+
+
+/******************************************************************************/
+
+/*********************************************************
+  Internal function to get user block info.
+*********************************************************/
+
+/*** BeginHeader GetUserBlockInfo */
+struct userBlockInfo{
+	unsigned long addrA;         // start of block A
+	unsigned long addrB;         // start of block B
+	unsigned long blockSize;     // set to 0 if no good block found
+	unsigned long topAddr;       // = flash size
+	int  blockAvalid;            //  0 if block B only valid
+};
+
+extern const char validMarker[];
+
+void GetUserBlockInfo(struct userBlockInfo *uBI);
+
+/*** EndHeader */
+
+#ifndef V2_USE_USERBLOCKADDR
+#define V2_USE_USERBLOCKADDR 0
+#endif
+
+const char validMarker[]={"\x55\xAA\x55\xAA\x55\xAA"};
+
+nodebug
+void GetUserBlockInfo(struct userBlockInfo *uBI)
+{
+	auto char validTest[6];
+	auto int sectorNumber;
+
+	// initially zero all struct members
+	memset(uBI, 0, sizeof(struct userBlockInfo));
+
+// NB:  In order to accommodate odd flash types such as the nonuniform
+//      sector size nonerasable-boot-sector Atmel AT49F002(N)T, whose
+//      topmost (boot) sector is unusable, the following conditional
+//      code makes use of the sectorToLong function.  The flash
+//      information table entry for such a flash type simply has the
+//      number of sectors item reduced by the number of unusable
+//      sectors.  This allows the flash information table to retain its
+//      powers-of-two flash size items, thus avoiding nasty side-effects
+//      such as errant calculations of flash masks and memory sizes.
+#ifdef _FAST_RAM_
+	// Load-to-flash, run-in-RAM has flash mapped only into the MB3CR
+	//  quadrant.  The ID block is located just below 1024K.
+	uBI->topAddr = ((sectorToLong(_FlashInfo.numSectors)- 1ul) & 0x0003FFFFul)
+	               + 0x000C0000ul + 1ul;
+#else
+ #ifndef COMPILE_PRIMARY_PROG
+ #ifndef COMPILE_SECONDARY_PROG
+	// Run-in-flash has the primary flash mapped into the MB0CR quadrant,
+	//  possibly also into the MB1CR quadrant.  The ID Block is located
+	//  at the top of the primary flash.
+	uBI->topAddr = sectorToLong(_FlashInfo.numSectors);
+ #endif
+ #endif
+ #ifdef COMPILE_PRIMARY_PROG
+  #ifdef ROUTE_A18_TO_FLASH_A17
+	// The single 256K split-flash DLM maps the DLP's half of flash into
+	//  the MB1CR quadrant.  The ID Block is located just below 512K.
+	uBI->topAddr = sectorToLong(_FlashInfo.numSectors) + 0x00040000ul;
+  #else
+	// Both the 2*256K flash DLM and the single 512K split-flash DLM have
+	//  ID Block access at the top of the primary or the only flash,
+	//  respectively.
+	uBI->topAddr = sectorToLong(_FlashInfo.numSectors);
+  #endif
+ #else
+ #ifdef COMPILE_SECONDARY_PROG
+  #ifdef ROUTE_A18_TO_FLASH_A17
+	// The single 256K split-flash DLP maps its half of flash (twice)
+	//  into the MB0CR quadrant.  The ID Block is located just below
+	//  256K.
+	uBI->topAddr = sectorToLong(_FlashInfo.numSectors);
+  #else
+   #if _FLASH_SIZE_ == 0x80
+	// The single 512K split-flash DLP maps its half of flash into the
+	//  MB0CR quadrant.  The ID Block is located just below 256K.
+	uBI->topAddr = sectorToLong(_FlashInfo.numSectors) - 0x00040000ul;
+   #else
+	// The 2*256K flash DLP maps the primary flash into the MB1CR
+	//  quadrant.  The ID Block is located just below 512K.
+	uBI->topAddr = sectorToLong(_FlashInfo.numSectors) + 0x00040000ul;
+   #endif
+  #endif
+ #endif
+ #endif
+	// ensure the top address is within Rabbit CPU's 1MB address range
+	//  (sectorToLong may return a "wrapped" physical address)
+	uBI->topAddr &= 0x000FFFFFul;
+#endif
+
+	uBI->blockSize = GetIDBlockSize() * 4096ul;
+
+	if (uBI->blockSize) {
+		switch (SysIDBlock.tableVersion) {
+		default:	// cases 5 and up (and negative cases)
+			if (SysIDBlock.userBlockSize) {
+				// "old style" mirrored combined ID/User block images, located
+				//  immediately below the top of flash, possibly with a storage area
+				//  gap between the ID and User blocks within an image
+				uBI->addrA = uBI->topAddr -
+				             (SysIDBlock.idBlockSize + SysIDBlock.userBlockLoc);
+				uBI->addrB = uBI->addrA -
+				             (SysIDBlock.idBlockSize + SysIDBlock.userBlockLoc);
+				// we have to trust the original User block size in the ID Block!
+				uBI->blockSize = SysIDBlock.userBlockSize;
+				//*** block A valid? ***
+				xmem2root(validTest, uBI->topAddr - 6ul, 6u);
+				if (!memcmp(validMarker, validTest, 6u)) {
+					uBI->blockAvalid = 1;
+				} else {
+					//*** block B valid? ***
+					xmem2root(validTest, uBI->addrA - 6ul, 6u);
+					if (memcmp(validMarker, validTest, 6u)) {
+						uBI->blockSize = 0ul;	// no valid block
+					}
+				}
+			} else if (SysIDBlock.idBlock2.userBlockSiz2) {
+				// "New style" unique ID block plus mirrored User block images,
+				//  located immediately below the top of flash, possibly with a
+				//  persistent storage area between the ID block and the top-most
+				//  User block image.  None of the ID block and the User block
+				//  images are permitted to share a flash sector.
+				// NB:  Each "new style" User block image is followed by a six byte
+				//      validity marker which is generally included within the
+				//      flash sector (and typically also 4 KB) boundary.
+#ifdef _FAST_RAM_
+				uBI->topAddr -= 0x000C0000ul;
+#endif
+				sectorNumber = longToSector(uBI->topAddr -
+				                            SysIDBlock.idBlock2.persBlockLoc);
+				uBI->addrA = sectorToLong(sectorNumber);
+				sectorNumber = longToSector(uBI->addrA - 6ul -
+				                            SysIDBlock.idBlock2.userBlockSiz2);
+				uBI->addrA = sectorToLong(sectorNumber);
+				sectorNumber = longToSector(uBI->addrA - 6ul -
+				                            SysIDBlock.idBlock2.userBlockSiz2);
+				uBI->addrB = sectorToLong(sectorNumber);
+				// we have to trust the secondary User block size in the ID Block!
+				uBI->blockSize = SysIDBlock.idBlock2.userBlockSiz2;
+
+#ifdef _FAST_RAM_
+				uBI->topAddr += 0x000C0000ul;
+            uBI->addrA   += 0x000C0000ul;
+            uBI->addrB   += 0x000C0000ul;
+#endif
+
+				//*** block A valid? ***
+				xmem2root(validTest, uBI->addrA + uBI->blockSize, 6u);
+				if (!memcmp(validMarker, validTest, 6u)) {
+					uBI->blockAvalid = 1;
+				} else {
+					//*** block B valid? ***
+					xmem2root(validTest, uBI->addrB + uBI->blockSize, 6u);
+					if (memcmp(validMarker, validTest, 6u)) {
+						uBI->blockSize = 0ul;	// no valid block
+					}
+				}
+			} else {
+				uBI->blockSize = 0ul;	// no User block allocated?
+			}
+			break;
+		case 4:
+		case 3:
+			// mirrored combined ID/User block images, located immediately below
+			//  the top of flash
+			uBI->addrA = uBI->topAddr - uBI->blockSize;
+			uBI->addrB = uBI->addrA - uBI->blockSize;
+			// subtract size of ID Block from combined ID/User Block
+			uBI->blockSize -= SysIDBlock.idBlockSize;
+			//*** block A valid? ***
+			xmem2root(validTest, uBI->topAddr - 6ul, 6u);
+			if (!memcmp(validMarker, validTest, 6u)) {
+				uBI->blockAvalid = 1;
+			} else {
+				//*** block B valid? ***
+				xmem2root(validTest, uBI->addrA - 6ul, 6u);
+				if (memcmp(validMarker, validTest, 6u)) {
+					uBI->blockSize = 0ul;	// no valid block
+				}
+			}
+			break;
+		case 2:
+#if (((_BOARD_TYPE_ & 0xFF00) == (BL2000 & 0xFF00)) \
+     || ((_BOARD_TYPE_ & 0xFF00) == (BL2100 & 0xFF00)) \
+     || V2_USE_USERBLOCKADDR)
+			// single User Block as located by the BIOS
+			uBI->addrA = UserBlockAddr;
+#else
+			// single combined ID/User Blocks immediately below top
+			uBI->addrA = uBI->topAddr - uBI->blockSize;
+#endif
+			// subtract size of ID Block from combined ID/User Block
+			uBI->blockSize -= SysIDBlock.idBlockSize;
+			uBI->blockAvalid = 1;
+			break;
+		case 1:	// real ID Block
+		case 0:	// no ID Block
+			// single simulated 8K User Block starting at top minus 16K
+			uBI->addrA = uBI->topAddr - 0x4000ul;
+			uBI->blockAvalid = 1;
+			break;
+		}
+	}
+}
+
+/*** BeginHeader writeUserBlock */
+int writeUserBlock(unsigned, void *, unsigned);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+writeUserBlock							<IDBLOCK.LIB>
+
+SYNTAX: int writeUserBlock(unsigned addr, void *source, unsigned numbytes)
+
+PARAMETER1:		Address offset in user block to write to.
+PARAMETER2:		Pointer to source to copy data from.
+PARAMETER3:		Number of bytes to copy.
+
+DESCRIPTION:
+Z-World boards are released with System ID Blocks located on the
+primary flash(See the Designer's Handbook) Version 2 and later of
+this ID block has a pointer to a User ID Block which can be used for
+storing calibration constants, passwords, and other non-volatile data.
+This block is protected from normal write to the flash device and can
+only be accessed through this function. This function writes a number
+of bytes from root memory to the user block.
+
+NOTE:  portions of the user block may be used by the
+BIOS for your board to store values such as calibration constants!  See
+the manual for your particular board for more information before
+overwriting any part of the user block.
+
+Backwards Compatibility:
+
+If the version of the System ID block doesn't support the User ID block,
+or no System ID block is present, then the 8K bytes starting 16K bytes
+from the top of the primary flash are designated User ID block area.
+However, to prevent errors arisng from incompatible large sector
+configuartions, this will only work if the flash type is small sector.
+Z-World manufactured boards with large sector flash will have valid
+System and User ID blocks, so this should not be problem on Z-World
+boards.
+
+If users create boards with large sector flash, they must install
+System ID blocks version 3 or greater to use this function, or modify
+this function.
+
+RETURN VALUE:	 0 if successful
+					-1 invalid address or range
+               -2 No valid user block found (block version 3 or later)
+ 				   -3 flash writing error
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int writeUserBlock(unsigned addr, void *source, unsigned numbytes)
+{
+	return writeUserBlockArray(addr, &source, &numbytes, 1);
+}
+
+/*** BeginHeader writeUserBlockArray */
+int writeUserBlockArray(unsigned addr, void* sources[], unsigned numbytes[],
+                        int numsources);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+writeUserBlockArray	<IDBLOCK.LIB>
+
+SYNTAX: int writeUserBlockArray(unsigned addr, void* sources[],
+                                unsigned numbytes[], int numsources)
+
+PARAMETER1:		Address offset in user block to write to.
+PARAMETER2:		Array of pointers to sources to copy data from.
+PARAMETER3:		Array of number of bytes to copy for each source.
+PARAMETER4:		Number of data sources.
+
+DESCRIPTION:
+Z-World boards are released with System ID Blocks located on the
+primary flash(See the Designer's Handbook) Version 2 and later of
+this ID block has a pointer to a User ID Block which can be used for
+storing calibration constants, passwords, and other non-volatile data.
+This block is protected from normal write to the flash device and can
+only be accessed through this function. This function writes a set of
+scattered data from root memory to the user block.
+
+NOTE:  portions of the user block may be used by the
+BIOS for your board to store values such as calibration constants!  See
+The manual for your particular board for more information before
+overwriting any part of the user block.
+
+Backwards Compatibility:
+
+If the version of the System ID block doesn't support the User ID block,
+or no System ID block is present, then the 8K bytes starting 16K bytes
+from the top of the primary flash are designated User ID block area.
+However, to prevent errors arisng from incompatible large sector
+configuartions, this will only work if the flash type is small sector.
+Z-World manufactured boards with large sector flash will have valid
+System and User ID blocks, so this should not be problem on Z-World
+boards.
+
+If users create boards with large sector flash, they must install
+System ID blocks version 3 or greater to use this function, or modify
+this function.
+
+RETURN VALUE:	 0 if successful
+					-1 invalid address or range
+               -2 No valid user block found (block version 3 or later)
+ 				   -3 flash writing error
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int writeUserBlockArray(unsigned addr, void* sources[], unsigned numbytes[],
+                        int numsources)
+{
+	#ifdef _RAM_
+	#warnt "Cannot access user block while running in RAM."
+	#endif
+
+	auto unsigned long physaddr;
+	auto int i, totalbytes;
+
+	static void *Source;
+   static int Result;
+	static unsigned Size;
+	static long Mask, Offset;
+	static struct userBlockInfo uBI;
+
+#GLOBAL_INIT {
+	//***  Initialize ID/User Blocks image copy if not present
+	if (SysIDBlock.tableVersion >= 3) {
+		GetUserBlockInfo(&uBI);
+		if (uBI.blockSize) {
+			// compare starting at top of combined ID/User Block images,
+			//  and work down . . .
+			if (SysIDBlock.tableVersion >= 5) {
+				if (SysIDBlock.userBlockSize) {
+					Offset = SysIDBlock.idBlockSize + SysIDBlock.userBlockLoc -
+					          sizeof(long);
+				}
+				else if (SysIDBlock.idBlock2.userBlockSiz2) {
+					Offset = SysIDBlock.idBlock2.userBlockSiz2 + 6ul - sizeof(long);
+				} else {
+					Offset = 0L;
+				}
+				switch ((int) Offset & 3) {
+				case 3:
+					Mask = 0x00FFFFFFL;
+					break;
+				case 2:
+					Mask = 0x0000FFFFL;
+					break;
+				case 1:
+					Mask = 0x000000FFL;
+					break;
+				case 0:
+				default:
+					Mask = 0xFFFFFFFFL;
+					break;
+				}
+			} else {
+				Offset = uBI.blockSize + SysIDBlock.idBlockSize - sizeof(long);
+				// the last byte of the ID Block images is not expected to
+				//  match, so ignore it for purposes of comparison below
+				Mask = 0x00FFFFFFL;
+			}
+			Result = (xgetlong(uBI.addrA + Offset) & Mask) !=
+			         (xgetlong(uBI.addrB + Offset) & Mask);
+
+			while (!Result && (Offset > 0L)) {
+				// all other bytes in the ID/User Blocks images must match
+            Offset -= sizeof(long);
+				Result = xgetlong(uBI.addrA+Offset) != xgetlong(uBI.addrB+Offset);
+			}
+			if (Result) {
+				// found a mismatch, repair the image copy!
+				if (_FlashInfo.writeMode >= 0x10) {
+					// Large and/or nonuniform sector flash ID/User Blocks
+					//  destination image must be explicitly erased prior to
+					//  copying.
+					// (Don't bother pre-erasing byte-write mode uniform
+					//  small sector flash ID/User Blocks destination image,
+					//  each flash write involves a sector erase.  Similarly,
+					//  don't bother erasing sector-write mode flash sectors,
+					//  they have an automatic internal sector erase cycle.)
+					EraseIUBlksImg(&uBI, !uBI.blockAvalid);
+				}
+				if (SysIDBlock.tableVersion >= 5) {
+					// copy the valid image to the invalid image
+					//  (reuse Offset as the length to write)
+					if (SysIDBlock.userBlockSize) {
+						Offset = SysIDBlock.idBlockSize + SysIDBlock.userBlockLoc;
+					}
+					else if (SysIDBlock.idBlock2.userBlockSiz2) {
+						Offset = SysIDBlock.idBlock2.userBlockSiz2 + 6ul;
+					}
+					CopyIUBlksImg(&uBI, !uBI.blockAvalid, 0ul, Offset);
+				} else {
+					// copy the bulk of the valid image to the invalid image
+					//  (reuse Offset as the length to write)
+					Offset = uBI.blockSize + SysIDBlock.idBlockSize - 1ul;
+					CopyIUBlksImg(&uBI, !uBI.blockAvalid, 0ul, Offset);
+					// mark the repaired/copied image as invalid
+					//*** allow overwrite of ID/User Block
+					_overwrite_block_flag = 1;
+					Size = 1;
+					Source = "";
+					// in parameters below, treat 'Source', 'Size' as single
+					//  element arrays!
+					WriteFlashArray(IDUSERBLOCKS_FLASHNUM,
+					                uBI.blockAvalid ? uBI.addrA-1ul:uBI.topAddr-1ul,
+					                &Source, &Size, 1);
+				}
+			}
+		}
+	}
+}	// end #GLOBAL_INIT
+
+	if (numsources < 0) {
+		return -1;
+	}
+
+	// get User Block info (valid for all ID Block versions)
+	GetUserBlockInfo(&uBI);
+
+	// Calculate the total number of bytes to write
+	totalbytes = 0;
+	for (i = 0; i < numsources; i++) {
+		totalbytes += numbytes[i];
+	}
+
+	// check User Block address & size
+	Result = CheckUserBlockRange(&uBI, addr, totalbytes, 0);
+	if (Result) return Result;
+
+	if (SysIDBlock.tableVersion >= 3) {
+		//*** set physical address for write to currently invalid User Block
+		physaddr = uBI.blockAvalid ? uBI.addrB + addr : uBI.addrA + addr;
+		// check if huge and/or nonuniform sector type flash
+		if (_FlashInfo.writeMode >= 0x10) {
+			// Large and/or nonuniform sector flash ID/User Blocks
+			//  destination image must be explicitly erased prior to
+			//  copying.
+			// (Don't bother pre-erasing byte-write mode uniform small
+			//  sector flash ID/User Blocks destination image, each flash
+			//  write involves a sector erase.  Similarly, don't bother
+			//  erasing sector-write mode flash sectors, they have an
+			//  automatic internal sector erase cycle.)
+			EraseIUBlksImg(&uBI, !uBI.blockAvalid);
+		}
+
+	} else {	// version 2 or 1 or 0 ID Block
+		//*** set physical address for write to (possibly simulated) User Block
+		physaddr = uBI.addrA + addr;
+	}
+
+	//*** allow overwrite of ID/User Block
+	_overwrite_block_flag = 1;
+
+	//*** write to the (possibly invalid or simulated) User Block
+	i = WriteFlashArray(IDUSERBLOCKS_FLASHNUM, physaddr, sources, numbytes,
+	                    numsources);
+
+	// If the addresses given are wrong, report it
+	if (i == -2) {
+		return -1;
+	} else if (i) {
+		return -3;
+	}
+
+	if (SysIDBlock.tableVersion >= 3) {
+		if (_FlashInfo.writeMode >= 0x10) {
+			// huge and/or nonuniform sector flash
+			//*** replicate portion(s) of previously invalid ID/User Blocks
+			if (addr > 0) {
+				// back-fill first portion of nonwritten User Block
+				if (CopyIUBlksImg(&uBI, !uBI.blockAvalid, 0ul, (unsigned long)addr))
+				{
+					return -3;
+				}
+			}
+			// always back-fill second portion of nonwritten ID/User Blocks
+			//  (this also validates the previously invalid image)
+			physaddr = (unsigned long) addr + totalbytes;
+			// reuse Offset as the length to write
+			if (SysIDBlock.tableVersion >= 5) {
+				if (SysIDBlock.userBlockSize) {
+					Offset = SysIDBlock.idBlockSize + SysIDBlock.userBlockLoc -
+					         physaddr;
+				}
+				else if (SysIDBlock.idBlock2.userBlockSiz2) {
+					Offset = SysIDBlock.idBlock2.userBlockSiz2 + 6ul - physaddr;
+				} else {
+					return -2;	// no User block info?
+				}
+			} else {
+				Offset = uBI.blockSize + SysIDBlock.idBlockSize - physaddr;
+			}
+			if (CopyIUBlksImg(&uBI, !uBI.blockAvalid, physaddr, Offset)) {
+				return -3;
+			}
+
+			//*** erase previously valid ID/User Blocks image
+			EraseIUBlksImg(&uBI, uBI.blockAvalid);
+
+			if (SysIDBlock.tableVersion < 5) {
+				//*** clear validation marker of previously valid block ***
+				physaddr = uBI.blockAvalid ? uBI.topAddr - 1ul : uBI.addrA - 1ul;
+				_overwrite_block_flag = 1;
+				Size = 1;
+				Source = "";
+				// in parameters below, treat Source, Size as single element arrays!
+				if (WriteFlashArray(IDUSERBLOCKS_FLASHNUM,physaddr,&Source,&Size,1))
+				{
+					return -3;
+				}
+			}
+
+			//*** copy remainder of ID/User Blocks image here
+			// reuse Offset as the length to write
+			if (SysIDBlock.tableVersion >= 5) {
+				if (SysIDBlock.userBlockSize) {
+					Offset = SysIDBlock.idBlockSize + SysIDBlock.userBlockLoc;
+				}
+				else if (SysIDBlock.idBlock2.userBlockSiz2) {
+					Offset = SysIDBlock.idBlock2.userBlockSiz2 + 6ul;
+				} else {
+					return -2;	// no User block info?
+				}
+			} else {
+				Offset = uBI.blockSize + SysIDBlock.idBlockSize - 1ul;
+			}
+			if (CopyIUBlksImg(&uBI, uBI.blockAvalid, 0ul, Offset)) {
+				return -3;
+			}
+
+		} else {
+			// small (<= 4K) uniform sector byte-mode or sector-mode flash
+			//*** set validation marker of previously invalid block ***
+			if ((SysIDBlock.tableVersion >= 5) && !SysIDBlock.userBlockSize &&
+             SysIDBlock.idBlock2.userBlockSiz2)
+         {
+				physaddr = uBI.blockAvalid ? uBI.addrB : uBI.addrA;
+				physaddr += SysIDBlock.idBlock2.userBlockSiz2 + 6ul - 1ul;
+			} else {
+				physaddr = uBI.blockAvalid ? uBI.addrA - 1ul : uBI.topAddr - 1ul;
+			}
+			_overwrite_block_flag = 1;
+			//set Size to 1 for User Block validation and following invalidation
+			Size = 1;
+			Source = &validMarker[5];
+			// in parameters below, treat Source, Size as single element arrays!
+			if (WriteFlashArray(IDUSERBLOCKS_FLASHNUM,physaddr,&Source,&Size,1)) {
+				return -3;
+			}
+
+			//*** clear validation marker of previously valid block ***
+			if (SysIDBlock.tableVersion >= 5) {
+				if (SysIDBlock.userBlockSize) {
+					physaddr = uBI.blockAvalid ? uBI.topAddr - 1ul : uBI.addrA - 1ul;
+				}
+				else if (SysIDBlock.idBlock2.userBlockSiz2) {
+					physaddr = uBI.blockAvalid ? uBI.addrA : uBI.addrB;
+					physaddr += SysIDBlock.idBlock2.userBlockSiz2 + 6ul - 1ul;
+				} else {
+					return -2;	// no User block info?
+				}
+				Source = "\xFF";
+			} else {
+				physaddr = uBI.blockAvalid ? uBI.topAddr - 1ul : uBI.addrA - 1ul;
+				Source = "";
+			}
+			_overwrite_block_flag = 1;
+			// Note:  Size is still set to one from previous assignment
+			// in parameters below, treat Source, Size as single element arrays!
+			if (WriteFlashArray(IDUSERBLOCKS_FLASHNUM,physaddr,&Source,&Size,1)) {
+				return -3;
+			}
+
+			//*** copy to previously valid block ***
+			physaddr = uBI.blockAvalid ? uBI.addrA + addr : uBI.addrB + addr;
+			_overwrite_block_flag = 1;
+			if (WriteFlashArray(IDUSERBLOCKS_FLASHNUM, physaddr, sources, numbytes,
+			                    numsources))
+			{
+				return -3;
+			}
+
+			//*** revalidate previously valid block ***
+			if (SysIDBlock.tableVersion >= 5) {
+				if (SysIDBlock.userBlockSize) {
+					physaddr = uBI.blockAvalid ? uBI.topAddr - 1ul : uBI.addrA - 1ul;
+				}
+				else if (SysIDBlock.idBlock2.userBlockSiz2) {
+					physaddr = uBI.blockAvalid ? uBI.addrA : uBI.addrB;
+					physaddr += SysIDBlock.idBlock2.userBlockSiz2 + 6ul - 1ul;
+				} else {
+					return -2;	// no User block info?
+				}
+				_overwrite_block_flag = 1;
+				Source = &validMarker[5];
+				// in parameters below, treat Source, Size as single element arrays!
+				if (WriteFlashArray(IDUSERBLOCKS_FLASHNUM,physaddr,&Source,&Size,1))
+				{
+					return -3;
+				}
+			}
+		}
+	}
+	return 0;
+}
+
+/******************************************************************************/
+
+/*** BeginHeader readUserBlock */
+int readUserBlock(void *, unsigned, unsigned);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+readUserBlock								<IDBLOCK.LIB>
+
+SYNTAX: int readUserBlock(void *dest, unsigned addr, unsigned numbytes)
+
+PARAMETER1:		Pointer to destination to copy data to.
+PARAMETER2:		Address offset in user block to read from.
+PARAMETER3:		Number of bytes to copy.
+
+DESCRIPTION:	Reads a number of bytes from the user block on the
+primary flash to a buffer in root memory.  NOTE:  portions of the user
+block may be used by the BIOS for your board to store values such as
+calibration constants!  See the manual for your particular board for
+more information before overwriting any part of the user block.
+
+See writeUserBlock for more details.
+
+RETURN VALUE:	 0 if successful
+					-1 invalid address or range
+               -2 No valid ID block found (block version 3 or later)
+END DESCRIPTION **********************************************************/
+
+
+nodebug
+int readUserBlock(void *dest, unsigned addr, unsigned numbytes)
+{
+#ifdef _RAM_
+#warnt "Cannot access user block while running in RAM."
+#endif
+
+	auto int result;
+	auto unsigned long physaddr;
+	auto struct userBlockInfo uBI;
+
+	// get User Block info (valid for all ID Block versions)
+	GetUserBlockInfo(&uBI);
+
+	// check User Block address & size
+	result = CheckUserBlockRange(&uBI, addr, numbytes, 1);
+	if (result) return result;
+
+	//*** set physical address for read from (currently valid or only
+	//***  or simulated) User Block
+	physaddr = uBI.blockAvalid ? uBI.addrA + addr: uBI.addrB + addr;
+	xmem2root(dest, physaddr, numbytes);
+	return 0;
+}
+
+/*** BeginHeader readUserBlockArray */
+int readUserBlockArray(void *dests[], unsigned numbytes[], int numdests,
+                       unsigned addr);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+readUserBlockArray			<IDBLOCK.LIB>
+
+SYNTAX: int readUserBlockArray(void *dests[], unsigned numbytes[],
+                               int numdests, unsigned addr)
+
+PARAMETER1:		Pointer to array of destinations to copy data to.
+PARAMETER2:		Array of numbers of bytes to be written to each
+					destination.
+PARAMETER3:		Number of destinations.
+PARAMETER4:		Address offset in user block to read from.
+
+DESCRIPTION:	Reads a number of bytes from the user block on the
+primary flash to a set of buffers in root memory.  This function is
+usually used as the inverse function of writeUserBlockArray.
+NOTE:  portions of the user block may be used by the BIOS for your
+board to store values such as calibration constants!  See the manual
+for your particular board for more information before overwriting any
+part of the user block.
+
+See writeUserBlockArray for more details.
+
+RETURN VALUE:	 0 if successful
+					-1 invalid address or range
+               -2 No valid ID block found (block version 3 or later)
+END DESCRIPTION **********************************************************/
+
+nodebug
+int readUserBlockArray(void *dests[], unsigned numbytes[], int numdests,
+                       unsigned addr)
+{
+	auto int i;
+	auto unsigned offset;
+	auto int retval;
+
+	if (numdests < 0) {
+		return -1;
+	}
+	offset = 0;
+	for (i = 0; i < numdests; i++) {
+		retval = readUserBlock(dests[i], addr + offset, numbytes[i]);
+		if (retval) {
+			return retval;
+		}
+		offset += numbytes[i];
+	}
+	return 0;
+}
+
+/*** BeginHeader CopyIUBlksImg */
+int CopyIUBlksImg(struct userBlockInfo *uBI, int toImgA, unsigned long Offset,
+                  unsigned long Size);
+/*** EndHeader */
+
+nodebug
+int CopyIUBlksImg(struct userBlockInfo *uBI, int toImgA, unsigned long Offset,
+                  unsigned long Size)
+{
+	auto void *Source;
+   auto int result;
+   auto unsigned writeSize;
+   auto unsigned long destAddr, srcAddr, totalBlockSize;
+
+	static char dBuf[0x80], sBuf[0x80];	// DON'T change size of these buffers!
+
+	if (SysIDBlock.tableVersion < 3) {
+		return -2;
+	}
+
+	if (!uBI->blockSize) {
+		return -2;
+	}
+
+	if (SysIDBlock.tableVersion >= 5) {
+		if (SysIDBlock.userBlockSize) {
+			totalBlockSize = SysIDBlock.idBlockSize + SysIDBlock.userBlockLoc;
+		}
+		else if (SysIDBlock.idBlock2.userBlockSiz2) {
+			totalBlockSize = SysIDBlock.idBlock2.userBlockSiz2 + 6ul;
+		} else {
+			totalBlockSize = 0L;
+		}
+	} else {
+		totalBlockSize = uBI->blockSize + SysIDBlock.idBlockSize;
+	}
+
+	if (Offset >= totalBlockSize) {
+		return -1;
+	}
+
+	if ((Offset + Size) > totalBlockSize) {
+		return -1;
+	}
+
+	if (toImgA) {
+		destAddr = uBI->addrA + Offset;
+      srcAddr = uBI->addrB + Offset;
+	}
+	else {
+		destAddr = uBI->addrB + Offset;
+      srcAddr = uBI->addrA + Offset;
+	}
+
+	// set up pointer to source buffer
+   Source = sBuf;
+	// initialize result to allow while loop entry
+	result = 0;
+	// set up initial flash write size for either partial or full buffer
+	//  (do NOT change the following 0x7Ful mask!)
+	writeSize = sizeof(dBuf) - (unsigned) (srcAddr & 0x7Ful);
+	if (Size < (unsigned long) writeSize) {
+		writeSize = (unsigned) Size;
+	}
+	while (!result && (Size > 0ul)) {
+		xmem2root(dBuf, destAddr, writeSize);
+		xmem2root(sBuf, srcAddr, writeSize);
+		if (memcmp(dBuf, sBuf, writeSize)) {
+			_overwrite_block_flag = 1;	// allow ID/User Blocks overwrite
+			// in params below, treat Source, writeSize as single element arrays!
+			result = WriteFlashArray(IDUSERBLOCKS_FLASHNUM, destAddr, &Source,
+			                         &writeSize, 1);
+		}
+		destAddr += writeSize;
+		srcAddr += writeSize;
+      Size -= writeSize;
+		if (Size > (unsigned long) sizeof(dBuf)) {
+			writeSize = sizeof(dBuf);
+		} else {
+			writeSize = (unsigned) Size;
+		}
+	}
+	return result;
+}
+
+/*** BeginHeader EraseIUBlksImg */
+int EraseIUBlksImg(struct userBlockInfo *uBI, int isImgA);
+/*** EndHeader */
+
+nodebug
+int EraseIUBlksImg(struct userBlockInfo *uBI, int isImgA)
+{
+   auto int imgEndSect, imgStartSect, result;
+
+	if (SysIDBlock.tableVersion < 3) {
+		return -1;
+	}
+
+	if (!uBI->blockSize) {
+		return -2;
+	}
+
+	if ((SysIDBlock.tableVersion >= 5) && !SysIDBlock.userBlockSize &&
+	    SysIDBlock.idBlock2.userBlockSiz2)
+	{
+		if (isImgA) {
+			imgEndSect = longToSector(uBI->addrA +
+			                          SysIDBlock.idBlock2.userBlockSiz2 + 6ul);
+			imgStartSect = longToSector(uBI->addrA);
+		} else {
+			imgEndSect = longToSector(uBI->addrB +
+			                          SysIDBlock.idBlock2.userBlockSiz2 + 6ul);
+			imgStartSect = longToSector(uBI->addrB);
+		}
+	} else {
+		if (isImgA) {
+			imgEndSect = longToSector(uBI->topAddr - 1L);
+			imgStartSect = longToSector(uBI->addrA);
+		} else {
+			imgEndSect = longToSector(uBI->addrA - 1L);
+			imgStartSect = longToSector(uBI->addrB);
+		}
+	}
+
+	while (imgEndSect >= imgStartSect) {
+		_overwrite_block_flag = 1;
+#asm nodebug
+		; Erase from the image's ID Block sector on down to immediately
+		;  invalidate the image, in case it is not already invalid!
+		ld		hl, (sp+@SP+imgEndSect)
+		lcall	sectorToXmem
+#if _RK_FIXED_VECTORS
+		ld		hl, _EraseFlashSect
+		lcall	_CallRAMFunction
+#else
+		call	_EraseFlashSect
+#endif
+		ld		(sp+@SP+result), hl
+#endasm
+		if (result) {
+			break;
+		}
+      imgEndSect--;
+	}
+	return result;
+}
+
+/*** BeginHeader CheckUserBlockRange */
+int CheckUserBlockRange(struct userBlockInfo *uBI, unsigned addr,
+                        unsigned numbytes, int readOnly);
+/*** EndHeader */
+
+nodebug
+int CheckUserBlockRange(struct userBlockInfo *uBI, unsigned addr,
+                        unsigned numbytes, int readOnly)
+{
+	// ensure that User block exists
+	if (!uBI->blockSize) {
+		return -2;	// no User block found
+	}
+
+	if (readOnly) {
+		//*** check for out of range read (readUserBlock is allowed to
+		//***  inspect anything up to top of ID block)
+		if (((unsigned long) addr >= (uBI->topAddr - uBI->addrA)) ||
+		    (((unsigned long) addr + numbytes) > (uBI->topAddr - uBI->addrA)))
+		{
+			return -1;	// invalid address
+		}
+	} else {
+		//*** check for out of range write
+		if (((unsigned long) addr >= uBI->blockSize) ||
+		    (((unsigned long) addr + numbytes) > uBI->blockSize))
+		{
+			return -1;	// invalid address
+		}
+	}
+
+	if (SysIDBlock.tableVersion < 2) {
+		// version 1 or 0 ID Block
+		if (_FlashInfo.writeMode >= 0x10) {
+			//*** This means that this is a larger sector flash,
+			//*** but large sector flash boards should have good
+			//*** ID and User Blocks if they are Z-World products.
+			//*** User made boards need to create one too.
+			return -2;	// no User Block found
+		}
+		//*** Make sure it doesn't collide with the progam or xdata
+		if ((uBI->addrA + addr) <= (unsigned long) (0x000FFFFFL &
+		                           (((long) prog_param.XCE.aaa.a.base) << 12ul) +
+		                           (long) prog_param.XCE.aaa.a.addr))
+		{
+			return -1;	// invalid address
+		}
+	}
+	return 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_GetSysMacroValue			<IDBLOCK.LIB>
+
+SYNTAX: int _GetSysMacroValue(char *name, long* value)
+
+PARAMETER1:		Name of system id block macro (acts as lookup key).
+PARAMETER2:		Pointer to macro value to return to caller.
+
+DESCRIPTION:   Finds the system table macro named by the first parameter (as
+defined by the compiler) and retrieves the value of the macro as defined in
+the system macro table.  The system macro table contains board specific
+configuration parameters that are define by the compiler and can be retrieved
+at runtime through this interface.  The flash driver must be initialized and
+the system ID block must be read before this function will return accurate
+results.
+
+See writeUserBlockArray for more details.
+
+RETURN VALUE:	 0 if successful
+					-1 Macro name not found
+               -2 No valid ID block found (block version 3 or later)
+               -3 First parameter is a bad macro name
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader  _GetSysMacroValue *******************************************/
+int _GetSysMacroValue(char *name, uint32* value);
+/*** EndHeader    ********************************************/
+
+nodebug
+int _GetSysMacroValue(char *name, uint32* value) {
+#ifdef _RAM_
+#warns "Cannot access system ID block macro table while running in RAM."
+#endif
+	auto char mname[10];
+   auto uint8 buf[14];
+   auto long mactableloc, mactableend;
+   auto uint16 len, mnamesz;
+
+
+   if(SysIDBlock.idBlock2.macrosLoc == 0) {
+   	return -1;
+   }
+
+   len = strlen(name);
+   if(len < 6 || len > 13) {
+   	return -3;
+   }
+   strncpy(mname, name+4, sizeof(mname));
+   // ensure null termination
+	mname[sizeof(mname)-1]= '\0';
+   // Note mnamesz includes null character in size (mnamesz is not string length!)
+	mnamesz = strlen(mname);
+   // now remove trailing underscore
+   mname[mnamesz-1] = '\0';
+
+   // Calculate location of macro table
+	mactableloc = IDBlockAddr - SysIDBlock.idBlock2.macrosLoc;
+   // Get the length of the macro table
+   len = xgetint(mactableloc);
+   // End of macro table is used to terminate loop below
+   mactableend = mactableloc + len;
+   mactableloc += 2;
+   // If idblock address is not defined, or version is incorrect, or
+	// the length is more than 256 bytes then table is not correct.
+   if(IDBlockAddr == 0 || (char)xgetint(mactableloc) != 0 || len > 256) {
+   	return -2;
+   }
+   mactableloc++;
+
+   while(mactableloc < mactableend) {
+	   if(xmemcmp(mactableloc, mname, mnamesz) == 0) {
+	      mactableloc += mnamesz;
+	      *value = xgetlong(mactableloc);
+	      return 0;
+	   }
+	   mactableloc = xmemchr(mactableloc, '\0', len) + 5;
+      // if xmemchr returns 0 then not found and exit
+      if(mactableloc == 5) return -2;
+   }
+   return -1;
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+_GetSysMacroIndex			<IDBLOCK.LIB>
+
+SYNTAX: int _GetSysMacroIndex(int n, char* buf, uint32* value)
+
+PARAMETER1:		The nth
+PARAMETER2:    Character array to contain and return macro name (copied from
+					system macro table).	MUST BE AT LEAST SYS_MACRO_LENGTH bytes
+               or function will overflow buffer and can crash system!!!!
+PARAMETER3:		Pointer to macro value to return to caller.
+
+DESCRIPTION:	Skips to the nth macro entry and retrieves the macro name (as
+defined by the compiler), and the value of the macro as defined in the system
+macro table.  The system macro table contains board specific configuration
+parameters that are define by the compiler and can be retrieved at runtime
+through this interface.  The flash driver must be initialized and the system
+ID block must be read before this function will return accurate results.
+
+RETURN VALUE:	 0 if successful
+					-1 invalid address or range (use to find end of table)
+               -2 ID block or macro table invalid
+
+SEE ALSO:      _GetSysMacroValue
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader  _GetSysMacroIndex *******************************************/
+#define SYS_MACRO_LENGTH 14
+int _GetSysMacroIndex(int, char* buf, uint32*);
+/*** EndHeader    ********************************************/
+
+nodebug
+int _GetSysMacroIndex(int n, char* buf, uint32* value) {
+#ifdef _RAM_
+#warns "Cannot access system ID block macro table while running in RAM."
+#endif
+   auto long mactableloc, mactableend;
+   auto uint16 len;
+   auto int i;
+
+   // Calculate location of macro table
+	mactableloc = IDBlockAddr - SysIDBlock.idBlock2.macrosLoc;
+   // Get the length of the macro table
+   len = xgetint(mactableloc);
+   // End of macro table is used to terminate loop below
+   mactableend = mactableloc + len;
+   mactableloc += 2;
+
+   if(IDBlockAddr == 0 || (char)xgetint(mactableloc) != 0 || len > 256) {
+   	return -2;
+   }
+   mactableloc++;
+
+	// Each entry is at least 6 bytes long, table is at most 256 bytes
+	if(n > (len/6)) {
+   	return -1;
+   }
+
+   i = 0;
+	while(i < n) {
+	   mactableloc = xmemchr(mactableloc, '\0', len) + 5;
+      // if xmemchr returns 0 then not found and exit
+      if(mactableloc == 5) return -2;
+      if(mactableloc >= mactableend) return -1;
+      i++;
+   }
+	len = xstrlen(mactableloc)+1;
+   strcpy(buf, "_DC_");
+   xmem2root(buf+4, mactableloc, len);
+   strcat(buf, "_");
+   mactableloc += len;
+   *value = xgetlong(mactableloc);
+   return 0;
+}
+
+
+/*** BeginHeader  ********************************************/
+#endif
+/*** EndHeader ***********************************************/

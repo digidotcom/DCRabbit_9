@@ -1,0 +1,148 @@
+/*
+ * RAM low-level FS driver
+ */
+/*** BeginHeader fs_block_init */
+
+/* size of the block */
+#ifndef FS_BLOCK_SIZE
+	#define FS_BLOCK_SIZE 4096
+#endif
+
+#ifndef FS_PHYSICAL_OFFSET
+	#define FS_PHYSICAL_OFFSET	0
+#endif
+
+#define FS_TEMPBUF_SIZE	512
+#define FS_BUFS_PER_BLOCK	(((int)FS_BLOCK_SIZE)/FS_TEMPBUF_SIZE)
+
+#define FS_SECTOR_SIZE FS_TEMPBUF_SIZE
+
+int fs_block_init(long baseaddress, int num_blocks);
+int fs_block_read(int block_num, int offset, char *buf, int len);
+int fs_block_write(int block_num, char *buf, int len);
+int fs_block_move(long to, int block, int offset, int len);
+char *fs_block_pushxpc(int block_num);
+
+/*** EndHeader */
+
+
+#if(_BOARD_TYPE_ == 0x1300)
+	#error "OLD FILESYSTEM will not work with RCM 3200 Boards."
+#endif
+
+long fs_block_baseaddress;
+int fs_block_num_blocks;
+
+/*
+ * Initilize the low-level driver, starting at baseaddress,
+ * with num_blocks blocks of size FS_BLOCK_SIZE
+ */
+nodebug
+int fs_block_init(long baseaddress, int num_blocks)
+{
+	/* sanity check these values? */
+
+#GLOBAL_INIT {
+	fs_block_baseaddress = 0;
+}
+	
+#ifdef FS_DEBUG_RAM
+	printf("Initilizing RAM fs driver\n");
+#endif
+
+	if(0 == fs_block_baseaddress) {
+		fs_block_baseaddress = xalloc(num_blocks*FS_BLOCK_SIZE);
+		fs_block_num_blocks = num_blocks;
+	}
+
+	return 0;
+}
+
+/*
+ * read from block_num/offset into buf/len
+ * offset == number of bytes from beginning of the block
+ */
+nodebug
+int fs_block_read(int block_num, int offset, char *buf, int len)
+{
+	xmem2root((void *)buf,
+		(unsigned long int)(fs_block_baseaddress + (block_num * FS_BLOCK_SIZE) + offset),
+		len
+		);
+}
+
+/*
+ * erase block number block_num
+ */
+nodebug
+int fs_block_erase(int block_num)
+{
+	static const char ff = 0xff;
+	static int i;
+
+#ifdef FS_DEBUG_RAM
+	printf("RAM> Erasing block <%d>\n", block_num);
+#endif
+
+	//for(i=0; i<FS_BLOCK_SIZE; i++)
+		root2xmem(fs_block_baseaddress + (block_num*FS_BLOCK_SIZE),
+			&ff, 1);
+}
+
+nodebug
+int fs_block_move(long to, int block, int offset, int len)
+{
+	xmem2xmem(to,block*FS_BLOCK_SIZE + offset + fs_block_baseaddress, len);
+}
+
+/*
+ * Write the given block (described in buf/len),
+ * to block number block_num (always start at offset=0 in the block)
+ */
+nodebug
+int fs_block_write(int block_num, char *buf, int len)
+{
+	fs_block_erase(block_num);
+#ifdef FS_DEBUG_RAM
+	printf("RAM> Writing block <%d>, len <%d>\n", block_num, len);
+#endif
+	root2xmem(fs_block_baseaddress + (block_num*FS_BLOCK_SIZE), buf,
+		(len>FS_BLOCK_SIZE)?FS_BLOCK_SIZE:len);
+}
+
+/*
+ *	write a sector out. (buf is a physical address, probably in xmem)
+ */
+nodebug
+int fs_writesector(int sector, long buf, int len)
+{
+#ifdef FS_DEBUG_RAM
+	printf("RAM> Writing sector <%d>, len <%d>\n", sector, len);
+#endif
+	xmem2xmem(fs_block_baseaddress + (sector*FS_TEMPBUF_SIZE), buf, len);
+}
+
+/*
+ * set the XPC such that the given block is in the window, and
+ * return a pointer to the beginning of the block, as accessable
+ * through the xpc window.
+ */
+nodebug
+root char *fs_block_pushxpc(int block_num)
+{
+	auto long addr;
+	auto char newxpc;
+	auto int newoffset;
+
+	addr = fs_block_baseaddress + (((long)block_num)*FS_BLOCK_SIZE);
+	newxpc = ((char)(addr >> 12) - 0xE);
+	newoffset = ((int)(addr & 0xfff) + 0xE000);
+
+#asm
+	ld	hl,(sp+@SP+newxpc)
+   ld	a,l
+   ld	xpc,a
+#endasm
+
+	return (char *)newoffset;
+}

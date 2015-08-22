@@ -1,0 +1,34 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD W3 HTML//EN">
+<HTML>
+<HEAD>
+	<TITLE>test Micro Ether Core test</TITLE>
+</HEAD>
+
+<BODY topmargin="0" leftmargin="0" marginwidth="0" marginheight="0"
+	bgcolor="#FFFFFF" link="#009966" vlink="#FFCC00" alink="#006666">
+
+<!--img SRC="rabbit1.gif"-->
+
+<br>
+<blockquote> <big>Click on a button to toggle the LED's state.
+The images displayed here should track the DS2/DS3 LED's
+on the prototype board.
+Note, these LED's are controlled only by the
+<em>MASTER</em> micro core module.
+</big></blockquote>
+
+<TABLE BORDER="0" CELLSPACING="2" CELLPADDING="1">
+	<TR>
+		<TD> <img SRC="<!--#echo var="led2"-->"> </TD>
+		<TD> <img SRC="<!--#echo var="led3"-->"> </TD>
+	</TR>
+	<TR>
+		<TD> <A HREF="/led2tog.cgi"> <img SRC="button.gif"> </A> </TD>
+		<TD> <A HREF="/led3tog.cgi"> <img SRC="button.gif"> </A> </TD>
+	</TR>
+</TABLE>
+
+<A HREF="/showsrc.shtml">source code</A>
+
+</BODY>
+</HTML>

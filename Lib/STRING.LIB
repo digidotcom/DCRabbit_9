@@ -1,0 +1,2006 @@
+/*** BeginHeader  ********************************************/
+#ifndef __STRING_LIB
+#define __STRING_LIB
+/*** EndHeader ***********************************************/
+
+/* START LIBRARY DESCRIPTION *********************************************
+STRING.LIB
+	Copyright (c) 1994, Z-World.
+
+DESCRIPTION:
+	String operations.
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader _xtoxErr */
+
+extern int _xtoxErr;
+
+/*** EndHeader */
+
+int _xtoxErr;
+
+/*** BeginHeader  strtod */
+
+float strtod(char *s, char **tailptr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strtod                       <STRING.LIB>
+
+SYNTAX: float strtod(char *s, char **tailptr);
+
+PARAMETER1: Character string representation of a floating point number.
+
+PARAMETER2: Address of a character pointer where the address of the conversion
+stopping point will be put.
+
+KEYWORDS: convert
+
+DESCRIPTION: ANSI String to Float Conversion.  "s" is the string to convert,
+and "tailptr" is a pointer to a pointer of character.  "*tailptr" is
+assigned the stopping point of conversion in "s" (so continuation is
+possible at *tailptr).
+
+RETURN VALUE:	The floating point number represented by "s".
+END DESCRIPTION **********************************************************/
+nodebug
+float strtod(char *s, char **tailptr)
+{
+	auto float sum;
+	auto long man, frac;
+	auto int exp, sign;
+	auto char *p, d;
+
+	while(isspace(*s))s++;
+	switch (*s)
+	{
+		case '-' :
+			s++;
+			sign = -1;
+			break;
+		case '+' :
+			s++;
+		default :
+			sign = 1;
+			break;
+	}
+	sum = strtol(s, &p, 10);
+	if (*p == '.')
+	{
+		p++;
+		if (! isdigit(*p) && tolower(*p) != 'e')
+			goto __DC_done;
+		if (strlen(p) > 9)
+		{
+			d = p[9];
+			p[9] = 0;
+			frac = strtol(p, &s, 10);
+			p[9] = d;
+		}
+		else
+		{
+			frac = strtol(p, &s, 10);
+		}
+		sum += frac * _pow10(p - s);
+		p = s;
+	}
+__DC_done:
+	if (tolower(*p) == 'e')
+	{
+		exp = (int)strtol(++p, &p, 10);
+		sum *= _pow10(exp);
+	}
+	if (tailptr)
+		*tailptr = p;
+	return (sign * sum);
+}
+
+/*** BeginHeader strtol, _mult328 */
+
+root long strtol(char *sptr, char **tailptr, int base);
+root void _mult328();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strtol                       <STRING.LIB>
+
+SYNTAX: long strtol(char *sptr, char **tailptr, int base);
+
+KEYWORDS: string
+
+DESCRIPTION: ANSI String to Long Conversion.  "sptr" is the string to
+convert, "*tailptr" is assigned the last position of the conversion, and
+"base" indicates the radix of conversion.  The next conversion may
+resume at the location specified by "*tailptr".
+
+RETURN VALUE:	The long integer represented by "sptr".
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+
+strtol::
+	   call     _param3           ; Get Parameters
+	   push     de                ; Protect tailptr
+	   push     bc                ; Protect base
+	   push     hl                ; IY = sptr
+	   pop      iy
+.lp1:                        ; Clean Whitespace
+	   ld       h,0               ; HL = *sptr
+	   ld       l,(iy)
+	   call     isspace           ; Is *sptr Whitespace
+	   jr       z,.st1
+	   inc      iy                ; Bump sptr
+	   jr       .lp1          ; Continue
+.st1:
+	   pop      bc                ; Check Base for Valid Range
+	   ld       a,b               ; Must be 36 or less
+	   or       a
+	   jp       nz,.fail           ; Failure if MSB is Non-Zero
+	   ld       a,c
+	   cp       37
+	   jp       nc,.fail           ; Failure if 37 or Greater
+	   ld       d,'+'             ; Set Size Default as Positive
+	   ld       a,(iy)            ; Get Sign Character, if Any
+	   cp       '+'               ; If '+', bump sptr
+	   jr       z,.st6
+	   cp       '-'               ; If not '-', Ignore Sign
+	   jr       nz,.st7
+	   ld       d,'-'             ; Set Size as Negative
+.st6:
+	   inc      iy
+.st7:
+	   ld       a,c               ; Test Base
+	   or       a                 ; Number Determines format if base == 0
+	   jp       nz,.st2
+	   ld       a,(iy)            ; Check first Digit of Number
+	   cp       '0'               ; If not '0', base = 10
+	   jr       z,.st3
+	   ld       c,10              ; Conversion base 10
+	   jp       .st2
+.st3:
+	   inc      iy                ; If next char is 'x', base = 16
+	   ld       a,(iy)
+	   cp       'X'
+	   jr       z,.st4
+	   cp       'x'
+	   jr       nz,.st5
+.st4:
+	   inc      iy                ; Bump sptr past '0x'
+	   ld       c,16              ; Conversion base 16
+	   jp       .st2
+.st5:
+	   ld       c,8               ; Conversion is Octal
+.st2:                             ; Start Conversion, C = base
+	   push     de                ; Protect Sign
+	   push     bc                ; Protect base
+	   ld       de,0              ; Sum = 0
+	   exx
+	   ld       de,0
+	   exx
+.st10:                       ; Convert Each Character to Digit
+	   push     de                ; Protect Sum
+	   exx
+	   push     de
+	   exx
+	   ld       h,0               ; HL = *sptr
+	   ld       l,(iy)
+	   push     hl                ; Protect *sptr
+	   call     isdigit
+	   pop      hl                ; Restore *sptr
+	   jr       z,.st11
+	   ld       a,l               ; Convert '0'-'9' to 0-9
+	   sub      '0'
+	   jp       .st13
+.st11:
+	   push     hl                ; Protect *sptr
+	   call     isupper
+	   pop      hl                ; Restore *sptr
+	   jr       z,.st12
+	   ld       a,l               ; Convert 'A'-'Z' to 10-36
+	   sub      'A' - 10
+	   jp       .st13
+.st12:
+	   push     hl                ; Protect *sptr
+	   call     islower
+	   pop      hl                ; Restore *sptr
+	   jp       z,.done            ; Done with Conversion
+	   ld       a,l
+	   sub      'a' - 10
+.st13:
+	   exx
+	   pop      de                ; Restore Sum
+	   exx
+	   pop      de
+	   pop      bc                ; Restore base
+	   cp       c
+	   jp       nc,.done2          ; Character beyond base, Conversion is Done
+	   push     bc                ; Protect base
+	   ex       af,af'            ; Protect Digit
+	   ld       a,c               ; Multiply Sum by Base
+	   call     _mult328
+	   jp       c,.overflw         ; Failure due to Overflow
+	   exx                        ; Test Sign Bit on Product for Overflow
+	   bit      7,h
+	   exx
+	   jp       nz,.overflw
+	   ex       af,af'            ; Restore Digit
+	   ld       d,0               ; DE = Digit
+	   ld       e,a
+	   add      hl,de             ; HL = Sum * base + digit
+	   exx
+	   ld       de,0              ; Propagate Carry Bit
+	   adc      hl,de
+	   ex       de,hl             ; DE = Sum * base + digit
+	   exx
+	   ex       de,hl
+
+	   inc      iy                ; Bump sptr
+	   jp       .st10              ; Continue
+
+.fail:                            ; Conversion Failure
+	   pop      hl                ; Clean tailptr from Stack
+	   ld       a,h               ; Quit if tailptr == NULL
+	   or       l
+	   jr       z,.fail2
+	   push     iy                ; *tailptr = sptr
+	   pop      de
+	   ld       (hl),e
+	   inc      hl
+	   ld       (hl),d
+.fail2:
+	   ld       bc,0              ; Return 0
+	   ld       de,0
+	   ret
+.overflw:
+	   inc      iy                ; Bump sptr
+      pop      de
+      pop      hl
+      ld       l,'+'             ; adjust2 negation unneccessary for max neg int
+      push     hl
+      push     de
+      ld       a,h               ; max neg or max pos
+      cp       '-'
+      jr       nz,.ovf_pos
+      ld       bc,08000h         ; Return LONG_MAX/LONG_MIN
+      ld       de,00000h
+      jr       .adjust
+.ovf_pos:
+	   ld       bc,07FFFh         ; Return LONG_MAX/LONG_MIN
+	   ld       de,0FFFFh
+	   jr       .adjust
+.done2:
+	   exx                        ; BC DE = 'DE DE
+	   push     de
+	   exx
+	   pop      bc
+	   jr       .adjust2           ; Only Sign on Stack
+.done:
+	   pop      bc                ; BC DE = Result
+	   pop      de
+.adjust:
+	   pop      hl                ; Clean base from Stack
+.adjust2:
+	   pop      hl                ; Clean Sign from Stack
+	   ld       a,h               ; Adjust for Sign
+	   cp       '-'
+	   jr       nz,.tail
+	   ld       hl,0              ; BCDE = -BCDE
+	   xor      a
+	   sbc      hl,de
+	   ld       e,l
+	   ld       d,h
+	   ld       hl,0
+	   sbc      hl,bc
+	   ld       c,l
+	   ld       b,h
+.tail:
+	   exx
+	   pop      hl                ; HL = tailptr
+	   ld       a,h               ; Quit if tailptr == NULL
+	   or       l
+	   jr       z,.tail2
+	   push     iy                ; DE = sptr
+	   pop      de
+	   ld       (hl),e            ; *tailptr = sptr
+	   inc      hl
+	   ld       (hl),d
+.tail2:
+	   exx
+	   ret                        ; Done
+
+; .MULT328 : Multiply 32 bit x 8 bit Number
+;
+; INPUT  :
+;          DE' DE = 32 Bit Multiplicand
+;          A      = 8 Bit Multiplicand
+; OUTPUT :
+;          HL' HL = Product
+;          Carry Set if Overflow
+
+_mult328::
+	   ld       hl,0              ; Clear Product
+	   exx
+	   ld       hl,0
+	   exx
+.loop328:
+	   or       a                 ; If zero, Done and Return Carry Clear
+	   ret      z
+	   srl      a                 ; If Carry, Add Multiplicand to Product
+	   jr       nc,.shift328
+	   add      hl,de             ; Add Multiplicand to Product
+	   exx
+	   adc      hl,de
+	   exx
+	   ret      c                 ; Return if Overflow
+.shift328:
+	   sla      e                 ; Shift Multiplicand
+	   rl       d
+	   exx
+	   rl       e
+	   rl       d
+	   exx
+	   ret      c                 ; Return if Overflow
+	   jp       .loop328           ; Continue
+
+#endasm
+
+/*** BeginHeader atof */
+
+float atof(char *sptr);
+
+/*** EndHeader   atof */
+
+/* START FUNCTION DESCRIPTION ********************************************
+atof                         <STRING.LIB>
+
+SYNTAX: float atof(char *sptr);
+
+KEYWORDS: convert
+
+DESCRIPTION: ANSI String to Float Conversion (UNIX Compatible). If the
+conversion is invalid, _xtoxErr is set to 1. Otherwise _xtoxErr is set
+to 0.  This function is not task reentrant.
+
+RETURN VALUE: The converted floating value.
+END DESCRIPTION **********************************************************/
+nodebug float atof(char *sptr)
+{
+	auto char *p;
+	auto float res;
+	res = (strtod(sptr, &p));
+	if (*p && (*p != '\n') && (*p != '\r')) {
+		_xtoxErr = 1;
+	} else {
+		_xtoxErr = 0;
+	}
+	return res;
+}
+
+/*** BeginHeader __dcErrBadAtoF */
+
+extern char *__dcErrBadAtoF;
+
+/*** EndHeader */
+
+char *__dcErrBadAtoF = "Bad number format.";
+
+/*** BeginHeader atoi */
+
+int atoi(char *sptr);
+
+/*** EndHeader   atoi */
+
+/* START FUNCTION DESCRIPTION ********************************************
+atoi                         <STRING.LIB>
+
+SYNTAX: int atoi(char *sptr);
+
+KEYWORDS: convert
+
+DESCRIPTION: ANSI String to Integer Conversion (UNIX Compatible).  This
+             function is not task reentrant.
+
+RETURN VALUE: The converted integer value.
+END DESCRIPTION **********************************************************/
+nodebug int atoi(char *sptr)
+{
+	auto int res;
+	auto char *p;
+	res = ( (int)strtol(sptr, &p, 10));
+	if (*p && (*p != '\n') && (*p != '\r')) {
+		_xtoxErr = 1;
+	} else {
+		_xtoxErr = 0;
+	}
+	return res;
+}
+
+/*** BeginHeader __dcErrBadAtoI */
+
+extern char *__dcErrBadAtoI;
+
+/*** EndHeader */
+
+char *__dcErrBadAtoI = "Bad integer format.";
+
+/*** BeginHeader atol */
+
+long atol(char *sptr);
+
+/*** EndHeader   atol */
+
+/* START FUNCTION DESCRIPTION ********************************************
+atol                         <STRING.LIB>
+
+SYNTAX: long atol(char *sptr);
+
+KEYWORDS: convert
+
+DESCRIPTION: ANSI String to Integer Conversion (UNIX Compatible).
+
+RETURN VALUE: The converted long integer value.
+END DESCRIPTION **********************************************************/
+nodebug long atol(char *sptr)
+{
+	return (strtol(sptr, (char **)NULL, 10));
+}
+
+/*** BeginHeader __dcErrBadAtoL */
+
+extern char *__dcErrBadAtoL;
+
+/*** EndHeader */
+
+char *__dcErrBadAtoL = "Bad long integer format.";
+
+/*** Beginheader memset */
+
+root void *memset(void *dst, int chr, size_t n);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+memset                       <STRING.LIB>
+
+SYNTAX: void *memset(void *dst, int chr, size_t n);
+
+DESCRIPTION: Sets the first "n" bytes of "dst" to the character "chr"
+
+RETURN VALUE: dst
+
+KEYWORDS: memory
+
+END DESCRIPTION **********************************************************/
+
+#asm nodebug root
+memset::
+   call  _param3   ; Get Parameters
+   xor a
+   cp c
+   jr nz,.memset1
+   cp b
+   jr nz,.memset1
+   ret     ; nothing to move
+.memset1:
+   ex de,hl    ; L = c, DE = buffer
+   ld a,l      ; a now holds c
+   push  de    ; hl also holds dest
+	ld		h,d
+	ld		l,e
+   ld 	(hl),a      ; seed destination w/ c
+   inc   de    ; set up ldir  de = destination = dest + 1
+   dec   bc    ;              bc = count = n - 1
+			   ;              hl = source = dest
+	ld      a,b ;   make a last check to see if there is anything to move
+	or      c       ;
+	jr 	z,.memsetx ;   if bc is indeed zero, don't do anything and return
+   ldir        ; fill block
+			   ;              hl = dest + n
+.memsetx:
+   pop   hl
+   ret
+#endasm
+
+/*** beginheader strcpy */
+
+root char *strcpy(char *dst, char *src);
+
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strcpy                       <STRING.LIB>
+
+SYNTAX: char *strcpy(char *dst, char *src);
+
+DESCRIPTION: Copies string "src" to string "dst", including the null
+             terminator.
+
+PARAMETER1: Pointer to location to receive string.
+PARAMETER2: Pointer to location to supply string.
+
+RETURN VALUE: Pointer to "dst".
+
+KEYWORDS: string, copy
+
+END DESCRIPTION **********************************************************/
+
+root nodebug useix char *strcpy(char *dst, char *src)
+{
+#asm
+	push	hl			;save dst for return value
+c	src;				// load src to hl
+	pop	de			;reload dst to de
+	push	de
+	xor	a			;clear a
+.copy:			;a = 0, dst = de, src = hl
+	cp		(hl)		;test for null terminator
+	ldi				;*dst++ = *src++
+	jr		nz,.copy	;resume loop if not null terminator
+	pop	hl			;restore dst return value
+#endasm
+}
+
+/*** Beginheader strncpy */
+root char *strncpy(char *dst, char *src, size_t n);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strncpy                      <STRING.LIB>
+
+SYNTAX: char *strncpy(char *dst, char *src, size_t n);
+
+DESCRIPTION: Copies "n" characters to dst, padding dst with null characters
+if src null terminates before "n" characters are copied, or truncating if src
+is "n" or more characters, leaving dst without a null terminator.
+
+PARAMETER1: Pointer to location to receive string.
+PARAMETER2: Pointer to location to supply string.
+PARAMETER3: Maximum number of bytes to copy.
+            if equal to zero, this function has no effect
+
+RETURN VALUE: Pointer to "dst".
+
+KEYWORDS: string, copy
+
+END DESCRIPTION **********************************************************/
+
+root nodebug useix char *strncpy(char *dst, char *src, size_t n)
+{
+#asm
+	push	hl			;save dst for return value
+c	n;					// n to hl
+	ld		b,h
+	ld		c,l
+	ld		a,b		;exit if n == 0
+	or		c
+	jr		z,.done	;jump if n = 0
+c	src;				// load src to hl
+	pop	de			;reload dst to de
+	push	de
+	xor	a			;clear a
+.copy:			;a = 0, dst = de, src = hl, n = bc
+	cp		(hl)		;test for null terminator
+.pad:
+	ldi				;*dst++ = *src++, n--
+	jp		lz,.done	;exit when bc (n) = 0
+	jr		nz,.copy	;resume loop if not null terminator
+	dec	hl			;point src back to null terminator
+	jr		.pad		;pad remainder of dst with nulls
+.done:
+	pop	hl			;restore dst return value
+#endasm
+}
+
+/*** Beginheader strcat */
+
+char *strcat(char *dst, char *src);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strcat                       <STRING.LIB>
+
+SYNTAX: char *strcat(char *dst, char *src);
+
+DESCRIPTION: Concatenate string "src" to the end of "dst".
+
+PARAMETER1: Pointer to location to receive string.
+PARAMETER2: Pointer to location to supply string.
+
+RETURN VALUE:	Pointer to "dst".
+
+KEYWORDS: string, copy
+END DESCRIPTION **********************************************************/
+
+nodebug useix char *strcat(char *dst, char *src)
+{
+	strcpy(strchr(dst, '\0'), src);
+	return dst;
+}
+
+/*** Beginheader strncat */
+
+root char *strncat(char *dst, char *src, size_t n);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strncat                      <STRING.LIB>
+
+SYNTAX: char *strncat(char *dst, char *src, size_t n);
+
+DESCRIPTION: Appends "src" to "dst", up to and including the null terminator
+or until "n" characters are transferred, followed by a null terminator.
+
+PARAMETER1: Pointer to location to receive string.
+PARAMETER2: Pointer to location to supply string.
+PARAMETER3: Maximum number of bytes to copy.
+            if equal to zero, this function has no effect
+
+RETURN VALUE: Pointer to "dst".
+
+KEYWORDS: string, copy
+
+END DESCRIPTION **********************************************************/
+
+root nodebug useix char *strncat(char *dst, char *src, size_t n)
+{
+#asm
+	push	hl			;save dst for return value
+c	n;					// n to hl
+	ld		b,h		;n-1 to bc
+	ld		c,l
+	ld		a,b
+	or		c
+	jr		z,.done	;jump if n = 0
+	push	bc
+c	strchr(dst, '\0');	// load end of dst into hl
+	pop	bc
+	ex		de,hl		; end of dst to de
+c	src;				// load src to hl
+	xor	a			;clear a
+.copy:			;a = 0, dst = de, src = hl, n-1 = bc
+	cp		(hl)		;test for null terminator
+	ldi				;*dst++ = *src++, n--
+	jp		lz,.done	;exit when bc (n) = 0
+	jr		nz,.copy	;resume loop if not null terminator
+	dec	de
+.done:
+	ld		(de),a	;ensure null termination of dst
+	pop	hl			;restore dst return value
+#endasm
+}
+
+/*** Beginheader strcmp */
+int strcmp(char *str1, char *str2);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strcmp                       <STRING.LIB>
+
+SYNTAX: int strcmp(char *str1, char *str2)
+
+DESCRIPTION:    Performs unsigned character by character comparison of two
+                null terminated strings.
+
+PARAMETER1:     Pointer to string 1.
+PARAMETER2:     Pointer to string 2.
+
+RETURN VALUE:	< 0 if str1 is less than str2
+                   char in str1 is less than corresponding char in str2
+                   str1 is shorter than but otherwise identical to str2
+               = 0 if str1 is equal to str2
+                   str1 is identical to str2
+               > 0 if str1 is greater than str2
+                   char in str2 is greater than corresponding char in str2
+                   str2 is shorter than but otherwise identical to str1
+
+KEYWORDS: string, compare
+END DESCRIPTION **********************************************************/
+
+nodebug useix int strcmp(char *str1, char *str2)
+{
+#asm xmemok
+	push	hl			;preserve str1 already in hl
+c	str2;				// load str2 to hl
+	pop	de			;get back str1
+.loop:
+	ld		a,(de)
+	cp		(hl)		;*str1 - *str2
+	jr		c,.done	;jump if str1 < str2
+	jr		nz,.done	;jump if str2 > str1
+	or		a			;see if at end of str1
+	jr		z,.done	;jump if at end of str1
+	inc	de
+	inc	hl
+	jr		.loop
+.done:
+	ld		h,0
+	ld		l,a		;load a sign extended into hl
+	jr		nc,.over
+	dec	h
+.over:
+#endasm
+}
+
+/*** Beginheader strcmpi */
+int strcmpi(char *str1, char *str2);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strcmpi                       <STRING.LIB>
+
+SYNTAX: int strcmpi(char *str1, char *str2)
+
+DESCRIPTION:    Performs case-insensitive unsigned character by character
+                comparison of two null terminated strings.
+
+PARAMETER1:     Pointer to string 1.
+PARAMETER2:     Pointer to string 2.
+
+RETURN VALUE:	< 0 if str1 is less than str2
+                   char in str1 is less than corresponding char in str2
+                   str1 is shorter than but otherwise identical to str2
+               = 0 if str1 is equal to str2
+                   str1 is identical to str2
+               > 0 if str1 is greater than str2
+                   char in str2 is greater than corresponding char in str2
+                   str2 is shorter than but otherwise identical to str1
+
+KEYWORDS: string, compare
+END DESCRIPTION **********************************************************/
+
+nodebug useix int strcmpi(char *str1, char *str2)
+{
+#asm xmemok
+	push	hl			;preserve str1 already in hl
+c	str2;				// load str2 to hl
+	ld		iy,hl
+	pop	de			;get back str1
+.loop:
+	ld		h,0
+	ld		a,(de)
+	ld		l,a
+	push	de
+	push	iy
+	call	toupper	;uppercase the str1 letter
+	pop	iy
+	pop	de
+	ld		a,l
+	ld		h,0
+	ld		l,(iy)
+	push	de
+	push	iy
+	push	af
+	call	toupper	;uppercase the str2 letter
+	pop	af
+	pop	iy
+	pop	de
+	cp		l			;*str1 - *str2
+	jr		c,.done	;jump if str1 < str2
+	jr		nz,.done	;jump if str1 > str2
+	or		a			;see if at end of str1
+	jr		z,.done	;jump if at end of str1
+	inc	de
+	inc	iy
+	jr		.loop
+.done:
+	ld		h,0
+	ld		l,a		;load a sign extended into hl
+	jr		nc,.over
+	dec	h
+.over:
+#endasm
+}
+
+/*** Beginheader strncmp */
+root int strncmp(char *str1, char *str2, unsigned n);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strncmp                      <STRING.LIB>
+
+SYNTAX: int strncmp(char *str1, char *str2, unsigned n)
+
+DESCRIPTION:    Performs unsigned character by character comparison of two
+                strings of length "n"
+
+PARAMETER1:     Pointer to string 1.
+PARAMETER2:     Pointer to string 2.
+PARAMETER3:     Maximum number of bytes to compare
+                if zero, both strings are considered equal
+
+RETURN VALUE:	< 0 if str1 is less than str2
+                   char in str1 is less than corresponding char in str2
+               = 0 if str1 is equal to str2
+                   str1 is identical to str2
+               > 0 if str1 is greater than str2
+                   char in str2 is greater than corresponding char in str2
+
+KEYWORDS: string, compare
+END DESCRIPTION **********************************************************/
+
+root nodebug useix int strncmp(char *str1, char *str2, unsigned n)
+{
+#asm
+	push	hl			;save str1 already in hl
+c	n;					// load n to hl
+	ld		b,h		;load n to bc
+	ld		c,l
+c	str2;				// load str2 to hl
+	pop	de			;restore str1
+.loop:
+	ld		a,b		;check for n = 0
+	or		c
+	jr		z,.done	;jump if n = 0
+	ld		a,(de)
+	cp		(hl)		;*str1 - *str2
+	jr		c,.done	;jump if str1 < str2
+	jr		nz,.done	;jump if str2 > str1
+	or		a			;see if at end of str1
+	jr		z,.done	;jump if at end of str1
+	dec	bc			;n--
+	inc	de			;str1++
+	inc	hl			;str2++
+	jr		.loop
+.done:
+	ld		h,0
+	ld		l,a		;load a sign extended into hl
+	jr		nc,.nosignextend
+	dec	h
+.nosignextend:
+#endasm
+}
+
+/*** Beginheader strncmpi */
+int strncmpi(char *str1, char *str2, unsigned n);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strncmpi                     <STRING.LIB>
+
+SYNTAX: int strncmpi(char *str1, char *str2, unsigned n)
+
+DESCRIPTION:    Performs case-insensitive unsigned character by character
+                comparison of two strings of length "n"
+
+PARAMETER1:     Pointer to string 1.
+PARAMETER2:     Pointer to string 2.
+PARAMETER3:     Maximum number of bytes to compare
+                if zero, both strings are considered equal
+
+RETURN VALUE:	< 0 if str1 is less than str2
+                   char in str1 is less than corresponding char in str2
+               = 0 if str1 is equal to str2
+                   str1 is identical to str2
+               > 0 if str1 is greater than str2
+                   char in str2 is greater than corresponding char in str2
+
+KEYWORDS: string, compare
+END DESCRIPTION **********************************************************/
+
+nodebug useix int strncmpi(char *str1, char *str2, unsigned n)
+{
+#asm xmemok
+	push	hl			;save str1 already in hl
+c	n;					// load n to hl
+	ld		b,h		;load n to bc
+	ld		c,l
+c	str2;				// load str2 to hl
+	ld		iy,hl
+	pop	de			;restore str1
+.loop:
+	ld		a,b		;check for n = 0
+	or		c
+	jr		z,.done	;jump if n = 0
+	ld		h,0
+	ld		a,(de)
+	ld		l,a
+	push	de
+	push	iy
+	push	bc
+	call	toupper	;uppercase the str1 letter
+	pop	bc
+	pop	iy
+	pop	de
+	ld		a,l
+	ld		h,0
+	ld		l,(iy)
+	push	de
+	push	iy
+	push	bc
+	push	af
+	call	toupper	;uppercase the str2 letter
+	pop	af
+	pop	bc
+	pop	iy
+	pop	de
+	cp		l			;*str1 - *str2
+	jr		c,.done	;jump if str1 < str2
+	jr		nz,.done	;jump if str2 > str1
+	or		a			;see if at end of str1
+	jr		z,.done	;jump if at end of str1
+	dec	bc			;n--
+	inc	de			;str1++
+	inc	iy			;str2++
+	jr		.loop
+.done:
+	ld		h,0
+	ld		l,a		;load a sign extended into hl
+	jr		nc,.nosignextend
+	dec	h
+.nosignextend:
+#endasm
+}
+
+/*** Beginheader strchr,_strchr */
+
+root char *strchr(char *src, char ch);
+root void _strchr();
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strchr                       <STRING.LIB>
+
+SYNTAX: char *strchr(char *src, char ch);
+
+KEYWORDS: string
+
+DESCRIPTION:	Scans "src" for the first occurance of "ch".
+
+RETURN VALUE:	Returns pointer pointing to the first occurance of "ch" in
+"src".  Returns NULL if "ch" is not found.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+
+strchr::
+   call  _param2  ; Get Parameters
+_strchr::
+   ld    a,(hl)   ; Get Next Character
+   cp    e        ; Check for Match
+   ret   z        ; If Found, Done
+   or    a        ; Return NULL if End of String
+   inc   hl       ; Bump Pointer
+   jp    nz,_strchr
+   ld    hl,0
+   ret
+
+#endasm
+
+/*** Beginheader strcspn */
+
+root size_t strcspn(char *s1, char *s2);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strcspn                      <STRING.LIB>
+
+SYNTAX: size_t strcspn(char *s1, char *s2);
+
+KEYWORDS: string
+
+DESCRIPTION:	Scans "s1" for the first occurrence of any character in "s2".
+
+RETURN VALUE:	Returns the position (less one) of the first occurrence of a
+               character in "s1" that matches any character in "s2".
+
+END DESCRIPTION **********************************************************/
+
+#asm nodebug fast
+
+strcspn::
+
+   call	_param2			; Get parameters: DE = brk, HL = src
+
+   push	hl					; Save parameters
+   push	de
+
+	xor	a					; Is brk = NULL ?
+	ex		de,hl
+	cp		(hl)
+	ex		de,hl
+	jr		NZ,.strcspan
+	pop	de
+	pop	de
+	ld		hl,0
+	ret						; Return 0 if it is
+
+.strcspan:
+	ld		a,(hl)			; Get next src
+	cp		0					; At end of src?
+	jr		Z,.retpos
+
+.findchar:
+	ex		de,hl
+	cp		(hl)				; src = brk ?
+	ex		de,hl
+	jr		Z,.retpos
+	inc	de					; Point to next brk
+	ld		b,a
+	xor	a
+	ex		de,hl
+	cp		(hl)				; End of brk string?
+	ex		de,hl
+	ld		a,b
+	jr		NZ,.findchar
+
+	pop	de					; Get original brk pointer
+	push	de
+	inc	hl					; Point to next src
+	jr		.strcspan
+
+.retpos:
+	pop	de					; Cleanup the stack
+	pop	de					; Get original src
+	xor	a					; Clear carry
+	sbc	hl,de				; HL = src+n - src
+	ret						; Return HL
+
+#endasm
+
+/*** Beginheader strpbrk, _strpbrk */
+
+root char *strpbrk(char *s1, char *s2);
+root void _strpbrk();
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strpbrk                      <STRING.LIB>
+
+SYNTAX: char *strpbrk(char *s1, char *s2);
+
+KEYWORDS: string
+
+DESCRIPTION:	Scans "s1" for the first occurence of any characters
+specified in "s2".
+
+RETURN VALUE:	Pointer pointing to the first occurence of a character
+contained in "s2" in "s1".  Returns NULL if not found.
+END DESCRIPTION **********************************************************/
+
+#asm nodebug
+
+strpbrk::
+
+   call	_param2			; Get parameters: DE = brk, HL = src
+
+_strpbrk::
+
+   push	hl					; Save parameters
+   push	de
+
+	xor	a					; Is brk NULL ?
+	ex		de,hl
+	cp		(hl)
+	ex		de,hl
+	jr		NZ,.strpbrkr
+	pop	de
+	pop	de
+	ld		hl,0
+	ret						; Return NULL if it is
+
+.strpbrkr:
+	ld		a,(hl)			; Get next src
+	cp		0					; At end of src?
+	jr		NZ,.findchar
+	pop	de					; Cleanup the stack
+	pop	de
+	ld		hl,0				; Return NULL pointer
+	ret
+
+.findchar:
+	ex		de,hl
+	cp		(hl)				; src = brk ?
+	ex		de,hl
+	jr		Z,.retpos
+	inc	de					; Point to next brk
+	ld		b,a
+	xor	a
+	ex		de,hl
+	cp		(hl)				; End of brk string?
+	ex		de,hl
+	ld		a,b
+	jr		NZ,.findchar
+
+	pop	de					; Get original brk pointer
+	push	de
+	inc	hl					; Point to next src
+	jr		.strpbrkr
+
+.retpos:
+	pop	de					; Cleanup the stack
+	pop	de					;
+	ret						; Return HL
+
+#endasm
+
+/*** Beginheader memcpy,memmove */
+
+root void *memcpy(void *dst, void *src, size_t n);
+root void *memmove(void *dst, void *src, size_t n);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+memcpy                       <STRING.LIB>
+
+SYNTAX: void *memcpy(void *dst, void *src, size_t n);
+
+KEYWORDS: memory
+
+DESCRIPTION:	Copies "n" characters from memory pointed to by "src" to
+memory pointed to by "dst".  Overlap is handled correctly.
+
+RETURN VALUE:	Returns "dst".
+END DESCRIPTION **********************************************************/
+#asm nodebug root
+
+memcpy::
+memmove::
+   call  _param3     ; Get Parameters
+   ld a,b         ; Check for Zero Count
+   or c
+   jr z,.memexit      ; Quit if Zero
+   ex de,hl       ; HL = src, DE = dst
+   push  hl       ; temp
+   or a
+   sbc   hl,de       ; compare start addresses
+   pop   hl
+   jr c,.movbak    ; if source lower, move backwards
+   push  de       ; dest
+   ldir
+   pop   hl       ; return dest address
+   ret            ; Done
+.movbak:
+   push  de       ; save dest
+   add   hl,bc
+   dec   hl
+   ex de,hl
+   add   hl,bc
+   dec   hl
+   ex de,hl
+   lddr           ; move backwards
+   pop   hl       ; return dest
+.memexit:
+   ret            ; Done
+
+#endasm
+
+/*** Beginheader memchr */
+
+root void *memchr(void *src, int ch, size_t n);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+memchr                       <STRING.LIB>
+
+SYNTAX: void *memchr(void *src, int ch, size_t n);
+
+KEYWORDS:
+
+DESCRIPTION:	Searches up to "n" characters at memory pointed to by "src"
+for character "ch".
+
+RETURN VALUE:	Pointer to first occurence of "ch" if found within "n"
+characters.  Otherwise returns NULL.
+END DESCRIPTION **********************************************************/
+#asm nodebug root
+memchr::
+   call  _param3 ; Get Parameters
+   ld   a,b      ; check for n = 0
+   or   c
+   jr   z,.notfound
+.findchr:
+   ld   a,e      ; Load A with Search Character
+   cp	(hl) 	 ; Search for char
+   jr	z,.foundchr
+   inc	hl
+   dec	bc
+   ld   a,b
+   or   c
+   jr   nz,.findchr
+.notfound:
+   ld    hl,0     ; Not Found, Return NULL
+.foundchr:
+   ret
+#endasm
+
+/*** Beginheader strlen */
+
+root int strlen(char *s);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strlen                       <STRING.LIB>
+
+SYNTAX: int strlen(char *s);
+
+DESCRIPTION:	Calculate the length of "s".
+
+RETURN VALUE: Number of bytes in a string.
+
+KEYWORDS: string
+END DESCRIPTION **********************************************************/
+
+#asm nodebug root
+strlen::       ; pointer in HL
+   xor   a     ; end of string marked by zero, clear carry
+	push	de
+   ld		e,l    ; Save starting point in DE
+   ld		d,h
+.findend:
+   cp		(hl)   ; Search for char
+   jr		z,.foundend
+   inc	hl
+   jr		.findend
+.foundend:
+   or		a
+   sbc	hl,de
+   pop	de
+   ret
+#endasm
+
+/*** Beginheader strspn, strtok */
+root char *strtok(char *src, char *brk);
+root size_t strspn(char *src, char *brk);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strspn                       <STRING.LIB>
+
+SYNTAX: size_t strspn(char *src, char *brk);
+
+KEYWORDS: string
+
+DESCRIPTION:	Scans a string for the first segment in "src" containing
+               only characters specified in "brk".
+
+RETURN VALUE:	Returns the length of the segment.
+END DESCRIPTION **********************************************************/
+
+#asm nodebug
+
+strspn::
+
+   call	_param2			; Get parameters: DE = brk, HL = src
+
+Qstrspn::
+
+   push	hl					; Save parameters
+   push	de
+
+	xor	a					; Is brk = NULL ?
+	ex		de,hl
+	cp		(hl)
+	ex		de,hl
+	jr		NZ,.strspan
+	pop	de
+	pop	de
+	ld		hl,0
+	ret						; Return 0 if it is
+
+.strspan:
+	ld		a,(hl)			; Get next src
+	cp		0					; At end of src?
+	jr		Z,.retpos
+
+.findchar:
+	ex		de,hl
+	cp		(hl)				; src = brk ?
+	ex		de,hl
+	jr		Z,.getnext
+	inc	de					; Point to next brk
+	ld		b,a
+	xor	a
+	ex		de,hl
+	cp		(hl)				; End of brk string?
+	ex		de,hl
+	ld		a,b
+	jr		NZ,.findchar
+	jr		.retpos
+
+.getnext:
+	pop	de					; Get original brk pointer
+	push	de
+	inc	hl					; Point to next src
+	jr		.strspan
+
+.retpos:
+	pop	de					; Cleanup the stack
+	pop	de					; Get original src
+	xor	a					; Clear carry
+	sbc	hl,de				; HL = src+n - src
+	ret						; Return HL
+
+#endasm
+
+int prior;
+
+/* START FUNCTION DESCRIPTION ********************************************
+strtok                       <STRING.LIB>
+
+SYNTAX: char *strtok(char *src, char *brk);
+
+KEYWORDS: string
+
+DESCRIPTION:	Scans "src" for tokens separated by delimitor characters
+specified in "brk".
+
+First call with non-NULL for "src".  Subsequent calls with NULL for "src"
+continues to search tokens in the string. If a token is found (i.e.,
+delimitors found), replace the first delimitor in "src" with a null
+terminator so that "src" points to a proper null-terminated token.  This
+function is not task reentrant.
+
+RETURN VALUE:	Pointer to a token.  If no delimitor (therefore no token)
+is found, returns NULL.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+strtok::
+   call  _param2  ; Get Parameters
+   ld a,h         ; If s1 == NULL, continue search
+   or l
+   jr nz,.st2
+   ld hl,(prior)  ; Load Prior Pointer to Resume Search
+.st2:
+   push  hl    ; Protect s1
+   push  de    ; Protect s2
+   call  Qstrspn  ; Search for non Break Character
+   pop   de    ; Protect s2
+   pop   bc    ; Restore s1
+   add   hl,bc ; s1 = s1 + strcspn(s1,s2)
+   ld a,(hl)   ; If '\0', no non-Break Found
+   or a
+   jr nz,.st1
+   ld hl,0     ; Return NULL
+   ret
+.st1:
+   push  hl    ; Save Pointer to Start of Token
+   push  de    ; Protect s2
+   call  _strpbrk ; Find End of Token
+   pop   de    ; Restore s2
+   ld a,h      ; Don't Store '\0' if NULL Returned
+   or l
+   jr z,.st3
+   ld (hl),0   ; Force '\0' at End of Token
+   inc   hl    ; Bump Pointer as Start of Next Search
+.st3:
+   ld (prior),hl  ; Store Position to Resume Search
+   pop   hl       ; Restore Pointer to Start of Token
+   ret
+#endasm
+
+
+/*** Beginheader strstr ***/
+root char *strstr(char *s1, char *s2);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strstr                       <STRING.LIB>
+
+SYNTAX: char *strstr(char *s1, char *s2);
+
+KEYWORDS: string
+
+DESCRIPTION:	Finds a substring specified by "s2" in string "s1".
+
+RETURN VALUE:	Pointer pointing to the first occurence of substring "s2"
+in "s1".  Returns NULL if "s2" is not found in "s1".
+END DESCRIPTION **********************************************************/
+
+#asm nodebug fast
+strstr::
+   call  _param2     ; Get Parameters
+   ex de,hl    ; HL = s2, DE = s1
+   push  hl    ; Protect s2
+   call  strlen   ; BC = strlen(s2)
+   ld a,h      ; If strlen(s2) == 0, return NULL
+   or l
+   jr nz,.st1
+   pop   bc    ; Clean Stack
+   ret         ; Done
+.st1:
+   ld b,h
+   ld c,l
+   pop   hl    ; Restore s2
+   ex de,hl    ; HL = s1, DE = s2
+.st2:
+   ld a,(de)      ; A = *s2
+   push  de    ; Protect s2
+   ld e,a
+   call  _strchr  ; HL = Possible Match
+   pop   de    ; Restore s2
+   ld a,h      ; If HL == 0, not found
+   or l
+   ret   z
+   push  bc    ; Protect Registers
+   push  de
+   push  hl
+   call  strncmp  ; Compare Strings
+   ld a,h      ; If HL == 0, found
+   or l
+   pop   hl    ; Restore Registers
+   pop   de
+   pop   bc
+   inc   hl    ; Bump Pointer s1
+   jr nz,.st2      ; Finish, if Found
+   dec   hl    ; Adjust Pointer
+   ret
+#endasm
+
+/*** Beginheader strrchr  */
+char *strrchr(char *s, int c);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+strrchr                      <STRING.LIB>
+
+SYNTAX: char *strrchr(char *s, int c);
+
+DESCRIPTION:	Similar to strchr, except this function searches backward
+from the end of "s" to the beginning.
+
+RETURN VALUE:	Pointer to last occurence of "c" in "s".  If "c" is not
+found in "s", return NULL.
+
+KEYWORDS: string
+END DESCRIPTION **********************************************************/
+
+nodebug useix char *strrchr(char *str, int c)
+{
+#asm xmemok
+	push	hl			;save beginning addr of string
+c	strchr(str, '\0');	// find end of string
+	pop		de
+	push	hl
+	or		a			;compute length of string
+	sbc		hl,de
+	push	hl
+c	c;					// load character to find
+	ld		a,l			;to a and c
+	ld		c,a
+	pop		de			;length of string
+	pop		hl			;end of string
+.loop:
+	cp		(hl)
+	jr		z,.found
+	ld		a,d
+	or		e
+	jr		z,.notfound
+	dec		hl			;address
+	dec		de			;length
+	ld		a,c
+	jr		.loop
+.notfound:
+	ld		hl,0
+.found:
+#endasm
+}
+
+/*** Beginheader memcmp */
+root int memcmp(void *s1, void *s2, size_t n);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+memcmp                       <STRING.LIB>
+
+SYNTAX: int memcmp(void *s1, void *s2, size_t n)
+
+DESCRIPTION:    Performs unsigned character by character comparison of two
+                memory blocks of length "n"
+
+PARAMETER1:     Pointer to block 1.
+PARAMETER2:     Pointer to block 2.
+PARAMETER3:     Maximum number of bytes to compare
+                if zero, both blocks are considered equal
+
+RETURN VALUE:	< 0 if str1 is less than str2
+                   char in str1 is less than corresponding char in str2
+               = 0 if str1 is equal to str2
+                   str1 is identical to str2
+               > 0 if str1 is greater than str2
+                   char in str2 is greater than corresponding char in str2
+
+KEYWORDS: compare
+END DESCRIPTION **********************************************************/
+
+root nodebug useix int memcmp(void *s1, void *s2, size_t n)
+{
+#asm
+	push	hl			;save s1 already in hl
+c	n;					// load n to hl
+	ld		b,h		;load n to bc
+	ld		c,l
+c	s2;				// load s2 to hl
+	pop	de			;restore s1
+.loop:
+	ld		a,b		;check for n = 0
+	or		c
+	jr		z,.done	;jump if n = 0
+	ld		a,(de)
+	sub	(hl)		;*s1 - *s2
+	jr		c,.done	;jump if s1 < s2
+	jr		nz,.done	;jump if s2 > s1
+	dec	bc			;n--
+	inc	de			;s1++
+	inc	hl			;s2++
+	jr		.loop
+.done:
+	ld		h,0
+	ld		l,a		;load a sign extended into hl
+	jr		nc,.nosignextend
+	dec	h
+.nosignextend:
+#endasm
+}
+
+/*** Beginheader toupper */
+
+root int toupper(int c);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+toupper                      <STRING.LIB>
+
+SYNTAX: int toupper(int c);
+
+KEYWORDS: convert
+
+DESCRIPTION:	Convert alphabetic character "c" to it's upper case equivalent.
+
+RETURN VALUE:	Upper case alphabetic character.
+END DESCRIPTION **********************************************************/
+
+#asm nodebug fast
+
+toupper::
+   push  hl         ; Protect c
+   call  islower    ; Convert only if islower(c)
+   ld  a,l
+   or  a            ; true if lower
+   jr  z,.toup1
+   pop hl
+   ld  a,l
+   sub 20h
+   ld  l,a
+   ret
+.toup1:
+   pop   hl          ; Done
+   ret
+
+#endasm
+
+/*** Beginheader tolower */
+
+root int tolower(int c);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+tolower                      <STRING.LIB>
+
+SYNTAX: int tolower(int c);
+
+KEYWORDS: convert
+
+DESCRIPTION:	Convert alphabetic character "c" to it's lower case equivalent.
+
+RETURN VALUE:	Lower case alphabetic character.
+END DESCRIPTION **********************************************************/
+
+#asm nodebug fast
+
+tolower::
+   push  hl       ; Protect c
+   call  isupper     ; Convert only if isupper(c)
+   pop   hl
+   ret   z        ; Return Unconverted
+   ld de,20h         ; Convert to Lower Case
+   add   hl,de
+   ret            ; Done
+
+#endasm
+
+/*** Beginheader islower,isupper,isdigit,isxdigit,ispunct,isspace,isprint */
+
+root int islower(int c);
+root int isupper(int c);
+root int isdigit(int c);
+root int isxdigit(int c);
+root int ispunct(int c);
+root int isspace(int c);
+root int isprint(int c);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+islower                      <STRING.LIB>
+
+SYNTAX: int islower(int c);
+
+KEYWORDS:
+
+DESCRIPTION:	Tests if "c" is a lower case character.
+               ( a - z )
+
+RETURN VALUE:   zero if not, non-zero if it is.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+isupper                      <STRING.LIB>
+
+SYNTAX: int isupper(int c);
+
+KEYWORDS:
+
+DESCRIPTION:	Tests if "c" is an upper case character.
+               ( A - Z )
+
+RETURN VALUE:   zero if not, non-zero if it is.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+isdigit                      <STRING.LIB>
+
+SYNTAX: int isdigit(int c);
+
+KEYWORDS:
+
+DESCRIPTION:   Tests if "c" is a decimal digit.
+               ( 0 - 9 )
+
+RETURN VALUE:   zero if not, non-zero if it is.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+isxdigit                     <STRING.LIB>
+
+SYNTAX: int isxdigit(int c);
+
+KEYWORDS:
+
+DESCRIPTION:   Tests if "c" is a hexidecimal digit.
+               ( 0 - 9, A - F, a - f)
+
+RETURN VALUE:   zero if not, non-zero if it is.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+ispunct                      <STRING.LIB>
+
+SYNTAX: int ispunct(int c);
+
+KEYWORDS:
+
+DESCRIPTION:   Tests if "c" is a punctuation character.
+
+               !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~ space
+
+               ( 33 <= c <= 47, 58 <= c <= 64, 91 <= c <= 96,
+                123 <= c <= 126, and c == 32 )
+
+RETURN VALUE:  zero if not, non-zero if it is.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+isspace                      <STRING.LIB>
+
+SYNTAX: int isspace(int c);
+
+KEYWORDS:
+
+DESCRIPTION:   Tests if "c" is a white space character.
+
+               tab, return, newline, vertical tab, form feed, and space
+
+               ( 9 <= c <= 13 and c == 32 )
+
+RETURN VALUE:  zero if not, non-zero if it is.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+isprint                      <STRING.LIB>
+
+SYNTAX: int isprint(int c);
+
+KEYWORDS:
+
+DESCRIPTION:   Tests if "c" is a printing character.
+               ( 32 <= c <= 126 )
+
+RETURN VALUE:	zero if not, non-zero if it is.
+END DESCRIPTION **********************************************************/
+
+#asm nodebug fast
+
+islower::
+   ld e,01h     ; Character Mask
+   jp _ctype
+
+isupper::
+   ld e,02h     ; Character Mask
+   jp _ctype
+
+isdigit::
+   ld e,04h     ; Character Mask
+   jp _ctype
+
+isxdigit::
+   ld e,08h    ; Character Mask
+   jp _ctype
+
+ispunct::
+   ld e,10h     ; Character Mask
+   jp _ctype
+
+isprint::
+   ld e,40h     ; Character Mask
+   jp _ctype
+
+isspace::
+   ld e,80h     ; Character Mask
+   jp _ctype
+
+#endasm
+
+/*** Beginheader isalpha,isalnum,isgraph,iscntrl */
+
+root int isalpha(int c);
+root int isalnum(int c);
+root int isgraph(int c);
+root int iscntrl(int c);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+isalpha                      <STRING.LIB>
+
+SYNTAX: int isalpha(int c);
+
+KEYWORDS:
+
+DESCRIPTION:    Tests if "c" is an alphabetic character.
+                (A to Z, or a to z)
+
+RETURN VALUE:   zero if not, non-zero if it is.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+isalnum                      <STRING.LIB>
+
+SYNTAX: int isalnum(int c);
+
+KEYWORDS:
+
+DESCRIPTION:	Tests if "c" is an alphabetic or numeric character.
+               (A to Z, a to z and 0 to 9)
+
+RETURN VALUE:	zero if not, non-zero if it is.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+isgraph                      <STRING.LIB>
+
+SYNTAX: int isgraph(int c);
+
+KEYWORDS:
+
+DESCRIPTION:	Tests if "c" is any printing character other than a space.
+               ( 33 <= c <= 126 )
+
+RETURN VALUE:	zero if not, non-zero if it is.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+iscntrl                      <STRING.LIB>
+
+SYNTAX: int iscntrl(int c);
+
+KEYWORDS:
+
+DESCRIPTION:  Tests if "c" is a control character.
+              ( 0 <= c <= 31 or c == 127 )
+
+RETURN VALUE:	zero if not, non-zero if it is.
+END DESCRIPTION **********************************************************/
+
+#asm nodebug fast
+
+isalpha::
+   ld e,01h+02h     ; Character Mask
+   jp _ctype
+
+isalnum::
+   ld e,7           ;01h|02h|04h  ; Character Mask
+   jp _ctype
+
+isgraph::
+   ld e,017h        ; 01h|02h|10h|04h  ; Character Mask
+   jp _ctype
+
+iscntrl::
+   ld e,20h         ; Character Mask
+   jp _ctype
+
+#endasm
+
+/*** Beginheader _ctype */
+root void _ctype();
+/*** Endheader */
+
+// Ctype Table
+const char _ctype_table[] = {
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x0a0,  // 20h | 80h
+0x0a0,  // 20h | 80h
+0x0a0,  // 20h | 80h
+0x0a0,  // 20h | 80h
+0x0a0,  // 20h | 80h
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x20,
+0x0c0,  // 40h | 80h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x4c,   // 40h | 04h | 08h
+0x4c,   // 40h | 04h | 08h
+0x4c,   // 40h | 04h | 08h
+0x4c,   // 40h | 04h | 08h
+0x4c,   // 40h | 04h | 08h
+0x4c,   // 40h | 04h | 08h
+0x4c,   // 40h | 04h | 08h
+0x4c,   // 40h | 04h | 08h
+0x4c,   // 40h | 04h | 08h
+0x4c,   // 40h | 04h | 08h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x4a,   // 40h | 02h | 08h
+0x4a,   // 40h | 02h | 08h
+0x4a,   // 40h | 02h | 08h
+0x4a,   // 40h | 02h | 08h
+0x4a,   // 40h | 02h | 08h
+0x4a,   // 40h | 02h | 08h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x42,   // 40h | 02h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x49,   // 40h | 01h | 08h
+0x49,   // 40h | 01h | 08h
+0x49,   // 40h | 01h | 08h
+0x49,   // 40h | 01h | 08h
+0x49,   // 40h | 01h | 08h
+0x49,   // 40h | 01h | 08h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x41,   // 40h | 01h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x50,   // 40h | 10h
+0x20,
+0x0};     // All Non ASCII Chars
+
+
+#asm nodebug fast
+
+; _ctype : Machine Callable Version of ctype Table Lookup
+;
+; INPUT  :
+;          HL = Character Value
+;          DE = Byte Mask
+; OUTPUT :
+;          HL = Non-Zero if Mask is True
+;          Z flag set Accordingly ( Required for other Library Routines )
+
+_ctype::
+   ld   a,h             ; test for nonzero H
+   or   a
+   jr   z,.ct0
+   xor  a               ; force the Zero flag
+   jr   .ct2            ; go return failure . . .
+.ct0:
+   bit  7,l             ; Test for HL = -1 or HL > 127
+   jr   z,.ct1
+   ld   l,80h           ; Force Non Ascii Characters to 0x80
+.ct1:
+   ld   bc,_ctype_table ; Index Character into Table
+   add  hl,bc
+   ld   a,(hl)          ; Read Mask Entry from Table
+   and  e               ; Mask Against Request
+.ct2:
+   ld   hl,0            ; Return 0 for Failure
+   ret  z
+   inc  hl              ; Return 1 for Success
+   ret
+
+#endasm
+
+/*** BeginHeader  ********************************************/
+#endif
+/*** EndHeader ***********************************************/

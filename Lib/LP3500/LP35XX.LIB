@@ -1,0 +1,3669 @@
+
+/*** Beginheader */
+#ifndef __LP35XX_LIB
+#define __LP35XX_LIB
+
+#if (_BOARD_TYPE_ < 0x1200 || _BOARD_TYPE_ > 0x12FF)
+#error "LP35XX.LIB only supports LP3500 series boards."
+#endif
+/*** Endheader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+LP35XX.LIB
+Copyright (c) 2002, Z-World
+
+DESCRIPTION:	Support for the LP35XX series controllers.
+
+SUPPORT LIBS:
+
+REVISION HISTORY:
+	06/22/04	pel	Bug fix #81251. powerMode() main oscillator modes fixed.
+   					Added "static" to local variables.
+   06/03/04 pel	Bug fix #81244. Added missing bitmask value in digInAlert().
+	06/03/04	pel	Bug fix #81243. Sets and clears shadow register values
+   					instead of directly in registers.  Affects xxxAlert()
+                  functions.
+	05/13/04 pel   Improved gain calculation in anaInCalib() by using two
+   					chosen points instead of assuming one point is zero.
+	02/23/04 pel	Bug fix #81160. digBankOut() sends correct values on
+   					outputs OUT8 and OUT9 .
+	04/23/03	pel	Removed useMainOsc from brdInit(). Revised powerMode()
+   					to match useMainOsc change (TT#854).
+	02/18/03	pel	Modified analog descriptions and fixed calibration
+						start addresses for differential and milli-amp inputs.
+						Library release in future 8.XX. Macro marked as RH021803LP35.
+	12/29/02 pel	Modifed sequence of configurations and converted C code
+						into assembly code in powerMode().
+	12/20/02	pel	Modified xxxAlert() functions to fix timeout operation.
+	10/28/02	pel	Added a reset cycle for the LCD in the power on function.
+						(per ek)
+	08/20/02	pel	Added runtime check for installed analog device.
+						Changed PF1 to output high in brdInit() if no analog device.
+						Added detailed description to powerMode().
+	07/18/02	pel	Initial creation.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader RH021803LP35 */
+///////
+//see revision history above
+//////
+#define RH021803LP35
+
+/*** EndHeader */
+
+/*** BeginHeader */
+
+// LCD wait state calculation:
+// #ws = tcyc/tclk - 0.5 =
+//     = 160/(1/7.3728Mhz) - .5 = 1.17, therefore 3 wait states
+
+// required for graphic operations
+#define LCDCSREGISTER	IB7CR			// I/O strobe usually port E pin
+#define LCDCSSHADOW		IB7CRShadow	// shadow register for LCDCSREGISTER
+#define LCDCSCONFIG		0xB8			// set 3 waits, I/O Rd & Wr data strobe, allow writes
+#define LCDSTROBE 		0x80			// bit mask of I/O strobe pin
+#define LCDBASEADDR		0xE000		// A15, A14, A13 = I/O Address from IBxCR
+
+// required for keypad operations
+#define KEYCSREGISTER	IB7CR			// I/O strobe usually same as LCDCSREGISTER
+#define KEYCSSHADOW		IB7CRShadow	// shadow register for KEYCSREGITER
+#define KEYCSCONFIG		0xB8			// usually same as LCDSTROBE
+#define KEYSTROBE 		0x80			// bit mask of I/O strobe pin, usually	same as LCDSTROBE
+#define KEYBASEADDR 		0xE000		// usually same as LCDBASEADDR
+
+// required for A/D conversion operations
+#define ADDIRECT  0x80			//direct mode or bit
+#define ADREADINS	0x40			//read instruction or bit
+#define ADWRITEINS 0x00			//write instruction or bit
+#define ADLEN8		0x00			//8-bit length instruction or bit
+#define ADLEN16	0x20			//16-bit length instruction or bit
+#define ADMODE0	0x00			//mode 0 read instruction req'd or bit
+#define ADMODE1	0x04			//mode 1 MS byte first instruction or bit
+#define ADMODE2	0x08			//mode 2 LS byte first instruction or bit
+#define ADMODE3	0x0C			//mode 3 MS byte only instruction or bit
+
+// ADC instruction byte OR macros
+#define ADLSBYTE	0x00			//LS byte register
+#define ADMSBYTE	0x01			//MS byte register
+#define ADPGAREG	0x02			//PGA valid register
+#define ADCNTLREG	0x03			//AD control register
+#define ADGAINMUXREG	0x04		//Gain Mux register
+#define ADDIOSTATEREG	0x05	//Digital I/O state register
+#define ADDIOCNTLREG	0x06		//Digital I/O control register
+#define ADREFOSCREG	0x07		//Ref Osc register
+#define ADSICREG	0x18			//Serial interface control register
+#define ADIDREG	0x1F			//Id register
+
+// ADC write command byte OR macros
+#define ADSINGLE 0x80			//Single ended line or bit
+#define ADDIFFNL 0x00			//Differential line or bit
+
+#define GAIN_1 0			//gaincode for gain=1
+#define GAIN_2 1			//gaincode for gain=2
+#define GAIN_4 2			//gaincode for gain=4
+#define GAIN_5 3			//gaincode for gain=5
+#define GAIN_8 4			//gaincode for gain=8
+#define GAIN_10 5			//gaincode for gain=10
+#define GAIN_16 6			//gaincode for gain=16
+#define GAIN_20 7			//gaincode for gain=20
+
+/*** EndHeader */
+
+/*** BeginHeader _msDelay */
+void _msDelay(unsigned int delay);
+/*** EndHeader */
+
+void _msDelay(unsigned int delay)
+{
+	auto unsigned long done_time;
+
+	done_time = MS_TIMER + delay;
+   while( (long) (MS_TIMER - done_time) < 0 );
+}
+
+/*** Beginheader __brdinitflag, __adcinitflag, __vccmonitorflag, __ad_readbackmode,
+__pwminitflag, __ad_oscenable, __rly_onboard, __adc_onboard*/
+
+extern int __brdinitflag;
+extern int __vccmonitorflag;
+extern int __ad_readbackmode;
+extern int __adcinitflag;
+extern int __pwminitflag;
+extern int __ad_oscenable;
+extern int __rly_onboard;
+extern int __adc_onboard;
+
+/*** endheader */
+
+// Function execution flags
+int __brdinitflag;				//Board init function flag
+int __ad_readbackmode;			//ADC read back mode
+int __vccmonitorflag;			//Vcc monitor on/off flag
+int __adcinitflag;				//ADC init flag
+int __pwminitflag;				//PWM init flag
+int __ad_oscenable;				//AD oscillator enabled
+int __rly_onboard;				//Relay installed
+int __adc_onboard;				//ADC installed
+
+/***
+//------------------------------------------------------------------------
+//	The following section is taken from ADS7870 specification
+//	It describes address and registers for operation in this library
+//------------------------------------------------------------------------
+	ADS7870		State			Controller Function/State
+	----------	----------	-------------------------------------
+	LN0			Input			AIN0
+	LN1			Input			AIN1
+	LN2			Input			AIN2
+	LN3			Input			AIN3
+	LN4			Input			AIN4
+	LN5			Input			AIN5
+	LN6			Input			AIN6
+	LN7			Input			AIN7
+	/RESET		Input			Board reset device
+	RISE/FALL	Input			Tied-up for SCLK active on rising edge
+	I/O0			Input			Pulled-down unless driven by J6 conn
+	I/O1			Input			Pulled-down unless driven by J6 conn
+	I/O2			Input			Pulled-down unless driven by J6 conn
+	I/O3			Input			Pulled-up unless driven by Vcc monitor
+	CONVERT		Input			Pulled-down, not used
+	BUSY			Output		PF1 pulled-down; 1 state converter is busy
+	CCLKCNTRL	Input			Tied-down; 0 state sets CCLK as input
+	CCLK			Input			Tied-down; external conversion clock
+	SCLK			Input			PF0; serial data transfer clock
+	SDI			Input			PC0; 3-wire mode for serial data input
+	SDO			Output		PC1; serial data output /CS driven
+	/CS			Input			PF3 pulled-up; active-low enables serial interface
+	BUFIN			Input			Tied-down; reference buffer amplifier
+
+
+============================================================
+Start Conversion Single 8-bit Instruction Byte (Direct Mode)
+same as Gain/Mux register
+============================================================
+Bits		Value and Function
+-------	----------------------------------------------
+D7			0=idle; 1=busy, write=start conversion
+D6-D4		xxx=PGA gain (see Gain/Mux register below)
+D3-D0		Input channel select (see table below)
+
+===========================================
+Gain/Mux Register
+===========================================
+Bits		Value and Function
+-------	--------------------------------------
+D7			0=idle; 1=busy, write=start conversion
+D6-D4		000=PGA gain 1, range 0-20V
+			001=PGA gain 2, range 0-10V
+			010=PGA gain 4, range 0-5V
+			011=PGA gain 5, range 0-3V
+			100=PGA gain 8, range 0-2.25V
+			101=PGA gain 10, range 0-2V
+			110=PGA gain 16, range 0-1.25V
+			111=PGA gain 20, range 0-1V
+D3-D0		Input channel select (see tableav)
+
+==============================================
+Input	   	Differential positive and
+channel		negative input lines
+----------	----------------------------------
+	 0			+AIN0 -AIN1
+	 1			+AIN2 -AIN3
+	 2			+AIN4 -AIN5
+	 3			+AIN6 -AIN7
+	 4			-AIN0 +AIN1
+	 5			-AIN2 +AIN3
+	 6			-AIN4 +AIN5
+	 7			-AIN6 +AIN7
+
+Input			Single-ended positive input lines
+channel   	(negative input is ground)
+----------	-------------------------------
+	 8			+AIN0
+	 9			+AIN1
+	10			+AIN2
+	11			+AIN3
+	12			+AIN4
+	13			+AIN5
+	14			+AIN6
+	15			+AIN7
+
+============================================================
+Read/Write Instruction Byte (Register Mode)
+============================================================
+Bit		Name						Value and Function
+-------	-------------------	--------------------------------------
+D7			Mode select				0=initiates a read or write operation
+D6			Read/Write select		0=write operation; 1=read operation
+D5			Word length				0=8-bit word; 1=16-bit word (2 bytes) that follows
+D4-D0		Register address		(see table below)
+
+==========================================
+Register
+Address	R/W	Control Registers (see tables below)
+--------	----	--------------------------------
+0			R		A/D Output Data, LS Byte
+1  		R		A/D Output Data, MS Byte
+2  		R		PGA Valid Register
+3  		R/W	A/D Control Register
+4  		R/W	Gain/Mux Register
+5  		R/W	Digital I/O State Register
+6  		R/W	Digital I/O Control Register
+7  		R/W	Ref/Oscillator Control Register
+24 		R/W	Serial Interface Control
+31 		R		ID Register
+
+
+============================================================
+Control Registers
+============================================================
+===========================================
+A/D Output Data, LS Byte
+===========================================
+Bits		Value and Function
+-------	--------------------------------------------
+D7-D4		Four least sig bits of A/D conversion result
+D3-D1		Always 0
+D0			0=valid conversion,
+			1=overrange error (see PGA	valid	register)
+
+===========================================
+A/D Output Data, MS Byte
+===========================================
+Bits		Value and Function
+-------	---------------------------------------------
+D7-D0		Eight most sig bits of A/D conversion result
+
+===========================================
+PGA Valid Register
+===========================================
+Bits		Value and Function
+-------	------------------------------------------
+D7-D6		Always 0
+D5			1=voltage at "-" PGA output exceeds min value
+D4			1=voltage at "-" PGA output exceeds max value
+D3			1=voltage at "-" PGA output exceeds allowed value
+D2			1=voltage at "+" PGA output exceeds min value
+D1			1=voltage at "+" PGA output exceeds max value
+D0			1=voltage at "+" PGA output exceeds allowed value
+
+===========================================
+A/D Control Register
+===========================================
+Bits		Value and Function
+-------	-------------------------------------------
+D7-D4		Always 0
+D3-D2		00=read instruction required for ADC result
+			01=MS byte returned first
+			10=LS byte returnd first
+			11=only MS byte returned
+D1-D0 	00=division factor CCLK=1 (DCLK=CCLK)
+			01=division factor CCLK=2 (DCLK=CCLK/2)
+			10=division factor CCLK=4 (DCLK=CCLK/4)
+			11=division factor CCLK=8 (DCLK=CCLK/8)
+
+=================================================
+Digital I/O State Register
+=================================================
+Bits		Value and Function
+-------	----------------------------------------
+D7			0=idle; 1=busy, write=start conversion
+D6-D4		Always 0
+D3			I/O3; 0 or 1, input or output state
+D2			I/O2; 0 or 1, input or output state
+D1			I/O1; 0 or 1, input or output state
+D0			I/O0; 0 or 1, input or output state
+
+=================================================
+Digital I/O Control Register
+=================================================
+Bits		Value and Function
+-------	----------------------------------------
+D7-D4		Always 0
+D3			I/O3; 0=digital input, 1=digital output
+D2			I/O2; 0=digital input, 1=digital output
+D1			I/O1; 0=digital input, 1=digital output
+D0			I/O0; 0=digital input, 1=digital output
+
+=================================================
+Ref/Osc Control Register
+=================================================
+Bits		Value and Function
+-------	----------------------------------------
+D7-D6		Always 0
+D5			0=internal Vref source clock is CCLK pin
+			1=internal oscillator is source clock
+D4			0=CCLK is an input
+			1=CCLK outputs a 2.5MHz signal
+D3			0=reference is powered down, no current draw
+			1=reference is powered
+D2			0=buffer is powered down, no current draw
+			1=buffer is powered
+D1			0=Vref is 2.5V
+			1=Vref is 2.048
+D0			0=bit R2V determines value of ref voltage
+			1=Vref is 1.15V
+
+=================================================
+Serial Interface Control Register
+=================================================
+Bits		Value and Function
+-------	----------------------------------------------
+D7			0=serial interface receives and transmits MSB first
+			1=serial interface receives and transmits LSB first
+D6			0=3 wire mode
+			1=2 wire mode
+D5			0=DIN high impedance next inactive edge or CS inactive
+			1=DIN high impedance on last active SCLK edge of last data byte
+D4-D3		Always 0
+D2			0=DIN high impedance next inactive edge or CS inactive
+			1=DIN high impedance on last active SCLK edge of last data byte
+D1			0=3 wire mode
+			1=2 wire mode
+D0			0=serial interface receives and transmits MSB first
+			1=serial interface receives and transmits LSB first
+
+=================================================
+ID Register
+=================================================
+Bits		Value and Function
+-------	----------------------------------------------
+D7-D0		0x01 identifies revision of ADS7870
+
+//------------------------------------------------------------------------
+//------------------------------------------------------------------------
+***/
+
+/*** BeginHeader  _ads7870driver */
+
+root unsigned int _ads7870driver(unsigned int instructionbyte, unsigned int cmd);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_ads7870driver					<LP35XX.LIB>
+
+SYNTAX:	unsigned int _ads7870driver(unsigned int instructionbyte,
+												unsigned int cmd);
+
+DESCRIPTION: This driver is specifically for the an ADS7870 and is designed
+to serially clock an instruction byte and serially read from or write the
+command to the designated register of the ADS7870.
+Refer to an ADS7870 specification for addressing registers.
+
+PARAMETER1:  The instruction byte will initiate a read or write operation
+at eight or sixteen bits on the designated register address.
+
+PARAMETER2:	Command data configures the registers addressed
+by the instruction byte.  Enter 0 if performing a read operation.
+
+RETURN VALUE:	0 on write operations,
+					data value on read operations.
+
+SEE ALSO:		anaInConfig, swap, _txadcbyte, _rxadcbyte, RevBitTable
+
+END DESCRIPTION **********************************************************/
+
+#asm root nodebug
+;Swap the bits within a byte
+; Input parameter: the byte value to swap - in L
+; Return value: the new byte value as an integer - in HL
+; Uses: a, hl, bc
+;
+
+_swap::
+	push	bc
+	ld		c, l						; copy the byte value
+	xor	a							; a=0
+	ld		b, a						; bc = offset into BitRev table
+	ld		hl, RevBitTable		; get address of table
+	add	hl, bc					; calculate address of bit reversed byte
+	ld		L, (hl)					; get new byte
+	ld		h, a						; make integer
+	pop	bc
+	ret
+#endasm
+
+
+#asm root nodebug
+;;;entry data byte must be in l
+_txadcbyte::
+	call	_swap
+	ld		a,l
+;	ioi	ld (SDDR),a			;load instruction byte first into transmit data reg
+	IOWRITE_A(SDDR)
+	ld		a,08ch
+;	ioi	ld (SDCR),a			;transmit byte
+	IOWRITE_A(SDCR)
+.txshiftdone:					;wait for empty shift reg
+;	ioi	ld	a,(SDSR)
+	IOREAD_A(SDSR)
+	bit	2,a
+	jp		nz,.txshiftdone
+	ret
+#endasm
+
+#asm root nodebug
+;;;exit data byte will be in l
+_rxadcbyte::
+	ld		a,04ch				;receive byte one
+;	ioi	ld (SDCR),a
+	IOWRITE_A(SDCR)
+
+.rxdatafull:
+;	ioi	ld	a,(SDSR)
+	IOREAD_A(SDSR)
+	bit	7,a
+	jr		z,.rxdatafull
+;	ioi	ld a,(SDDR)			;get byte from receive data reg
+	IOREAD_A(SDDR)
+	ld		l,a
+	call	_swap
+	ret
+#endasm
+
+unsigned int _ads7870driver(unsigned int instructionbyte, unsigned int cmd)
+{
+#asm
+	;push	ip
+	;ipset	1					;disable normal interrupts to prevent race
+
+	ld		hl,(sp+@sp+instructionbyte)
+	ld		iy,.write8			;assume mainly 8-bit write operations
+	bit	6,l					;check for write or read operation
+	jp		z,.start				;
+	ld		iy,.read8
+	bit	5,l					;check for 16-bit or 8-bit read
+	jp		z,.start
+	ld		iy,.read16
+
+.start:
+	ld		a,(PFDRShadow)		;PF3 assert /CS low
+	res	3,a
+;	ioi	ld (PFDR),a
+	IOWRITE_A(PFDR)
+	ld		(PFDRShadow),a
+
+	call	_txadcbyte			;send instruction byte to ads7870
+
+	ld		b,10					;if not unbusy on these trys,
+.waitbusy:						; bounce out
+;	ioi	ld	a,(PFDR)
+	IOREAD_A(PFDR)
+	bit	1,a
+	jp		z,.unbusy
+	djnz	.waitbusy
+	ld		hl,0ffffh
+	jp		.done
+;	jr		nz,.waitbusy
+.unbusy:
+	jp		(iy)
+
+.read8:
+	call	_rxadcbyte			;received clocked data
+	ld		h,0					;return value in hl
+	jp		.done
+.read16:
+	call	_rxadcbyte			;received clocked data
+	ld		h,l					;return value in hl
+	call	_rxadcbyte			;received clocked data
+	jp		.done
+
+.write8:
+	ld		hl,(sp+@sp+cmd)
+	call	_txadcbyte			;send command byte as designated by instruction byte
+	ld		hl,0					;return 0
+
+.done:
+	ld		a,(PFDRShadow)		;PF3 assert /CS high
+	set	3,a
+;	ioi	ld (PFDR),a
+	IOWRITE_A(PFDR)
+	ld		(PFDRShadow),a
+	;pop	ip
+#endasm
+}
+
+/*** BeginHeader anaInConfig */
+
+root unsigned int anaInConfig(unsigned int regaddress, unsigned int cmd, long baud);
+
+#define ADC_SCLKBAUD	19200  //initial baud
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInConfig					<LP35XX.LIB>
+
+SYNTAX:	unsigned int anaInConfig(unsigned int instructionbyte,
+			unsigned int cmd,	long baud)
+
+DESCRIPTION:	Use this function to configure the ADS7870 data acquistion
+device.  This function will address the ADS7870 in Register Mode only and
+will error if you try in Direct Mode.  Please refer to ADS7870 specification
+or user manual appendix for proper addressing and commands.
+
+	ADS7870		State			Controller Function/State
+	----------	----------	-------------------------------------
+	LN0			Input			AIN0
+	LN1			Input			AIN1
+	LN2			Input			AIN2
+	LN3			Input			AIN3
+	LN4			Input			AIN4
+	LN5			Input			AIN5
+	LN6			Input			AIN6
+	LN7			Input			AIN7
+	/RESET		Input			Board reset device
+	RISE/FALL	Input			Tied-up for SCLK active on rising edge
+	PIO0			Input			Pulled-down unless driven by J6 conn
+	PIO1			Input			Pulled-down unless driven by J6 conn
+	PIO2			Input			Pulled-down unless driven by J6 conn
+	PIO3			Input			Pulled-down unless driven by Vcc monitor
+	CONVERT		Input			Pulled-down, not used
+	BUSY			Output		PF1 pulled-down; 1 state converter is busy
+	CCLKCNTRL	Input			Tied-down; 0 state sets CCLK as input
+	CCLK			Input			Tied-down; external conversion clock
+	SCLK			Input			PF0; serial data transfer clock
+	SDI			Input			PC0; 3-wire mode for serial data input
+	SDO			Output		PC1; serial data output /CS driven
+	/CS			Input			PF3 pulled-up; active-low enables serial interface
+	BUFIN			Input			Tied-down; reference buffer amplifier
+
+PARAMETER1:  The instruction byte will initiate a read or write operation
+at eight or sixteen bits on the designated register address.
+
+	ie:  	checkid = anaInConfig(0x5F, 0, 9600);	//read ID and set baud rate
+
+PARAMETER2:	Command data configures the registers addressed
+by the instruction byte.  Enter 0 if performing a read operation.
+
+	ie:	i = anaInConfig(0x07, 0x3b, 0);	//write ref/osc reg and enable
+
+PARAMETER3: Serial clock transfer rate of 9600 to 57600. Baud must be
+				set on first call to this function. Enter 0 in this parameter
+				thereafter.
+
+	ie:  anaInConfig(0x00, 0x00, 9600);   //resets device and sets baud
+
+RETURN VALUE:	0 on write operations,
+					data value on read operations.
+
+SEE ALSO:		anaInDriver, anaIn, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+unsigned int anaInConfig(unsigned int instructionbyte, unsigned int cmd, long baud)
+{
+	auto int tdivisor;
+
+	#GLOBAL_INIT {__brdinitflag = FALSE;}
+	#GLOBAL_INIT {__ad_readbackmode = 0x00;}		//default Mode 0
+	#GLOBAL_INIT {__adcinitflag = FALSE;}
+
+	if (__brdinitflag == FALSE || __adc_onboard == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	///register mode only
+	if (instructionbyte&0x80)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (baud > 0)
+	{
+		tdivisor = (int)((freq_divider * 19200.0/(float)baud + 0.5) - 1L);
+		BitWrPortI (PCFR, &PCFRShadow, 1, 0);		//set PCO (and PC1) as TXD and RXD
+		WrPortI (TAT7R, &TAT7RShadow, tdivisor);	// set the SPI bit rate for serial D
+		WrPortI (SDCR, &SDCRShadow, 0x0C );			// use internal clock for serial D
+
+		//set mode once
+		if (__adcinitflag==FALSE)
+		{
+			__ad_readbackmode = 0x00;
+		}
+
+		__adcinitflag=TRUE;
+	}
+
+	//check if addressing adc control register for read back mode
+	if ((instructionbyte&0x1f) == 0x03)
+	{
+		__ad_readbackmode = cmd&0x0c;
+	}
+
+	return (_ads7870driver(instructionbyte, cmd));
+}
+
+
+/*** BeginHeader anaInDriver */
+
+root unsigned int anaInDriver(unsigned int cmd, unsigned int len);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInDriver					<LP35XX.LIB>
+
+SYNTAX:			unsigned int anaInDriver(unsigned int cmd, unsigned int len)
+
+DESCRIPTION:	Reads the voltage of an analog input channel by serial
+					clocking an 8-bit command to the ADS7870 device by its
+					Direct Mode method.  This function assumes that Mode1
+					(most significant byte first) and the A/D device oscillator
+					have been enabled.  See anaInConfig() for setup.
+
+					After the last data bit is transfered, the conversion
+					begins immediately.
+
+					An exception error will occur if Direct Mode bit D7 is
+					not set.
+
+					This function is non-reentrant
+
+PARAMETER1:		The cmd parameter contains a gain code and a channel code
+					as follows:
+
+					D7		D6 - D4		D3 - D0
+					--		---------	------------
+					1	   gain_code	channel_code
+
+	Use the following calculation and tables below to determine cmd:
+
+					cmd = (gain_code*16) + channel_code
+
+	=====================================
+	gain_code	multiplier	Voltage range
+	---------	----------	-------------
+		 0				  1		0 - 20
+		 1				  2		0 - 10
+		 2				  4		0 - 5
+		 3				  5		0 - 4
+		 4				  8		0 - 2.5
+		 5				 10		0 - 2
+		 6				 16		0 - 1.25
+		 7				 20		0 - 1
+	=====================================
+	===========================================
+
+	channel_code	Differential input lines
+	------------	----------------------------
+		 0				+AIN0 -AIN1
+		 1				+AIN2 -AIN3
+		 2				+AIN4 -AIN5
+		 3				+AIN6 -AIN7
+		 4				Reserved
+		 5				Reserved
+		 6				Reserved
+		 7				Reserved
+
+						Single-ended		milli-Amp
+						input lines			input lines
+						-------------------------------
+		 8				+AIN0					+AIN0
+		 9				+AIN1 				+AIN1
+		10				+AIN2 				+AIN2
+		11				+AIN3 				+AIN3
+		12				+AIN4 				Reserved
+		13				+AIN5 				Reserved
+		14				+AIN6 				Reserved
+		15				+AIN7					Reserved
+	==============================================
+
+PARAMETER2:    bit length = 12, for 11-bit conversions
+
+RETURN VALUE:	A value corresponding to the voltage on the analog input
+					channel, which will be:
+
+					0-2047 	for 11-bit conversions (bit 12 for sign)
+					-1       overflow
+
+SEE ALSO:		anaInConfig, anaIn, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+root unsigned int anaInDriver(unsigned int cmd, unsigned int len)
+{
+	#GLOBAL_INIT {__adcinitflag = FALSE;}
+
+	if (__adcinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	///this is a direct mode only
+	if (!(cmd&0x80))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+#asm
+	;push	ip
+	;ipset	1							;disable normal interrupts to prevent race
+
+	ld		iy,.read12
+	ld		hl,(sp+@sp+len)
+	ld		a,l
+	cp		12
+	jp		nc,.start
+	ld		iy,.read8
+.start:
+	ld		a,(PFDRShadow)				;PF3 assert /CS low
+	res	3,a
+	ld		(PFDRShadow),a
+;	ioi	ld (PFDR),a
+	IOWRITE_A(PFDR)
+
+	ld		hl,(sp+@sp+cmd)			;first clear out possible bad data
+	call	_txadcbyte					;send instruction in hl to convert channel
+	ld		a,(PFDRShadow)				;PF3 deassert /CS
+	set	3,a
+;	ioi	ld (PFDR),a
+	IOWRITE_A(PFDR)
+
+	ld		b,10							;if not unbusy on these trys, bounce out
+.waitbusy2:								;wait for conversion done
+;	ioi	ld	a,(PFDR)
+	IOREAD_A(PFDR)
+	bit	1,a
+jp		z,.unbusy2
+	djnz	.waitbusy2
+	jp		.waitover
+.unbusy2:
+;	call	_rxadcbyte					;read MS byte to clear register
+;	call	_rxadcbyte					;read LS byte to clear register
+
+	ld		a,40							;approx 10 msec
+.twait2:
+	ld		b,255							;approx 242 usec
+.twait1:
+	nop
+	djnz	.twait1
+	dec	a
+	jp		nz,.twait2
+
+	ld		a,(PFDRShadow)				;PF3 assert /CS low;
+	res	3,a
+;	ioi	ld (PFDR),a
+	IOWRITE_A(PFDR)
+
+	ld		hl,(sp+@sp+cmd)
+	call	_txadcbyte					;send instruction in hl to convert channel
+	ld		b,10							;if not unbusy on these trys, bounce out
+.waitbusy1:								;wait for conversion done
+;	ioi	ld	a,(PFDR)
+	IOREAD_A(PFDR)
+	bit	1,a
+	jp		z,.readfull16
+	djnz	.waitbusy1
+	jp		.waitover
+
+.readfull16:
+	call	_rxadcbyte					;read first byte in hl, assumes mode1 (MS byte first) and MSB
+	ld		e,l							;save upper byte
+	call	_rxadcbyte					;read LS byte
+	ld		h,e
+
+	ld		a,(PFDRShadow)				;PF3 deassert /CS
+	set	3,a
+;	ioi	ld (PFDR),a
+	IOWRITE_A(PFDR)
+	ld		(PFDRShadow),a
+
+.checkovr:								;check for valid or analog over-range
+	bit	0,l
+	jp		z,.value
+.waitover:
+	ld		hl,0ffffh					;over-range
+	jp		.done
+
+.value:
+	jp		(iy)
+
+.read8:
+	ld		l,h
+	ld		h,0
+	jp		.done
+.read12:
+	rr		hl								;convert to 12-bit data
+	rr		hl
+	rr		hl
+	rr		hl
+.done:
+	;pop	ip
+#endasm
+}
+
+/*** BeginHeader anaIn */
+
+unsigned int anaIn (unsigned int channel, int opmode, int gaincode);
+
+#define ADOVERFLOW -4096	//ADC overflow/out of range error code
+#define SE_DEVCHAN 0x08		//Single-ended and milli-Amp device channel
+#define AD_OSC_ENABLE 0x39	//internal osc, cclk=2.5Mhz, ref powered,
+									// vref= 1.15
+#define AD_OSC_DISABLE 0x00 //vref=cclk, OSCE, REFE, BUFE all disabled
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaIn							<LP35XX.LIB>
+
+SYNTAX:		unsigned int anaIn(unsigned int channel, int opmode,
+					int gaincode);
+
+DESCRIPTION:	Reads the value of an analog input channel using the
+					direct method of addressing the ADS7870 A/D converter.
+
+					This function is non-reentrant.
+
+PARAMETER1:		channel number 0 to 7, AIN0-AIN7.
+
+PARAMETER2:		mode of operation:
+
+					SINGLE  	,single-ended input line
+					DIFF		,differential input line
+					mAMP		,milli-Amp input line
+
+	==========================================================
+	channel   	SINGLE	DIFFerential 	mAMP
+	----------	----------------------------------------------
+		 0			+AIN0 	+AIN0 -AIN1 	+AIN0
+		 1			+AIN1 	 	---			+AIN1
+		 2			+AIN2 	+AIN2 -AIN3		+AIN2
+		 3			+AIN3 		---			+AIN3
+		 4			+AIN4 	+AIN4 -AIN5		 ---
+		 5			+AIN5 		---			 ---
+		 6			+AIN6 	+AIN6 -AIN7		 ---
+		 7			+AIN7 		---			 ---
+
+PARAMETER3:  gain code of 0 to 7.  See below.
+
+	=====================================
+	gain_code	Voltage range
+	---------	-------------
+		 0			0 - 20
+		 1			0 - 10
+		 2			0 - 5
+		 3			0 - 4
+		 4			0 - 2.5
+		 5			0 - 2
+		 6			0 - 1.25
+		 7			0 - 1
+	=====================================
+
+RETURN VALUE:	A value corresponding to the voltage on the analog input
+					channel, which will be:
+
+					0-2047 	for 11 bit A/D conversions (signed 12th bit)
+					ADOVERFLOW (defined macro = -4096) if overflow or out of range
+
+SEE ALSO:		anaIn, anaInConfig, anaInDriver
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+unsigned int anaIn(unsigned int channel, int opmode, int gaincode)
+{
+	auto unsigned char len, adc_cmd;
+	auto int rdata;
+
+	#GLOBAL_INIT {__adcinitflag = FALSE;}
+	#GLOBAL_INIT {__ad_readbackmode = 0x00;}
+	#GLOBAL_INIT {__ad_oscenable = FALSE;}
+
+	if	(__adcinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel < 0 || channel > MAXAIN)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if ((gaincode < 0) || (gaincode > 7)|| (opmode < 0) || (opmode > 2))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if	(__ad_readbackmode != ADMODE1)
+	{
+		//make it Mode 1, most significant byte first
+		anaInConfig(ADWRITEINS|ADLEN8|ADCNTLREG, ADMODE1, 0);
+	}
+
+	if (__ad_oscenable == FALSE)
+	{
+		__ad_oscenable = TRUE;
+		anaInConfig(ADREFOSCREG, AD_OSC_ENABLE, 0);	//enable ref/osc reg  1.15Vref
+		_msDelay(1000);						//allow time to charge up cap
+	}
+
+	//set up channels for device conversion
+	if (opmode == DIFF)
+	{
+		channel = diffchan[channel];
+	}
+	else
+	{
+		channel |= SE_DEVCHAN;			//single-ended and milli-amp positions
+	}
+
+	len = 12;	//12-bit data
+	adc_cmd = ADDIRECT|(gaincode*16+channel);
+
+	// Return the rawdata value from the given AD channel.
+	rdata = (anaInDriver(adc_cmd, len));
+
+	if (rdata == -1)				//check for overflow
+		return (ADOVERFLOW);
+	if (rdata&0x0800)  			//check bit 12 for sign and sign extend
+		rdata = rdata|0xf000;
+	if ( (rdata <= -2048) || (rdata >= 2047) )	//exclude last bit for boderline data carryover
+		return (ADOVERFLOW);
+	return rdata;
+}
+
+
+/*** BeginHeader ADC_CALIB_ADDRS, ADC_CALIB_ADDRD, ADC_CALIB_ADDRM,
+		_adcCalibS, _adcCalibM, _adcCalibD,
+		CALIB_START, CALIB_END */
+
+//reserve 1K bytes of space below top of flash
+#ifndef ZWORLD_RESERVED_SIZE
+#define ZWORLD_RESERVED_SIZE 0x0400
+#endif
+
+// Offset into flash userblock for the calibration constants start
+#define ADC_CALIB_ADDRS	(4096*GetIDBlockSize()-ZWORLD_RESERVED_SIZE) 	//single-ended
+#define ADC_CALIB_ADDRD	(ADC_CALIB_ADDRS+sizeof(_adcCalibS))	//differential
+#define ADC_CALIB_ADDRM	(ADC_CALIB_ADDRD+sizeof(_adcCalibD))	//milli-amp
+
+#define CALIB_START ADC_CALIB_ADDRS		//start of calibrations
+#define CALIB_END (ADC_CALIB_ADDRM+sizeof(_adcCalibM))  //end of calibrations
+
+#define MAXAIN 7
+#define ADCHANNELS 8	//total number of AD single-ended channels
+#define ADCHANNELD 8	//total number of AD differential channels
+#define ADCHANNELM 4	//total number of AD milli-Amp channels
+#define ADCHANNELALL ADCHANNELS+ADCHANNELD+ADCHANNELM  //total channels
+
+#define SINGLE	0
+#define DIFF	1
+#define mAMP	2
+
+//ADC calibration constant data structure
+typedef struct
+{
+	float kconst;			// kconst = (volt2-volt1)/(data2-data1)
+	int offset;				// offset = kconst*data2 - volt2
+} __adccalib;
+
+extern __adccalib _adcCalibS[ADCHANNELS][8];
+extern __adccalib _adcCalibD[ADCHANNELD][8];
+extern __adccalib _adcCalibM[ADCHANNELM];
+
+extern const char multable[8];
+extern const char diffchan[8];
+
+/*** EndHeader */
+
+// Array for the gain and offset values for each A/D channel
+__adccalib _adcCalibS[ADCHANNELS][8];
+__adccalib _adcCalibD[ADCHANNELD][8];
+__adccalib _adcCalibM[ADCHANNELM];
+
+// Gain multiplier table related to gain codes
+const char multable[8] = {1,2,4,5,8,10,16,20};
+
+// Differential channel table translates to device channels
+const char diffchan[8] = {0,4,1,5,2,6,3,7};
+
+/*** BeginHeader anaInCalib */
+
+int anaInCalib(int channel, int opmode, int gaincode,
+						int value1, float volts1,int value2, float volts2);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInCalib					<LP35XX.LIB>
+
+SYNTAX:	int anaInCalib(int channel, int opmode, int gaincode,
+						int value1, float volts1,int value2, float volts2);
+
+DESCRIPTION:	Calibrates the response of the ADC channel desired as a
+               linear function using the two conversion points provided.
+
+               Four values are calulated and placed into global table
+               _adcCalibX to be later store into simulated eeprom using
+               the function anaInEEWr().
+
+               Each channel will have the following information:
+						a linear constant,
+						a voltage offset.
+
+PARAMETER1:		channel number 0 to 7, AIN0-AIN7.
+
+PARAMETER2:		mode of operation:
+
+					SINGLE  	,single-ended input line
+					DIFF		,differential input line
+					mAMP		,milli-Amp input line
+
+	==========================================================
+	channel   	SINGLE	DIFFerential 	mAMP
+	----------	----------------------------------------------
+		 0			+AIN0 	+AIN0 -AIN1 	+AIN0
+		 1			+AIN1 	 	---			+AIN1
+		 2			+AIN2 	+AIN2 -AIN3		+AIN2
+		 3			+AIN3 		---			+AIN3
+		 4			+AIN4 	+AIN4 -AIN5		 ---
+		 5			+AIN5 		---			 ---
+		 6			+AIN6 	+AIN6 -AIN7		 ---
+		 7			+AIN7 		---			 ---
+
+PARAMETER3:  gain code of 0 to 7.  See below.
+
+	=====================================
+	gain_code	Voltage range
+	---------	-------------
+		 0			0 - 20
+		 1			0 - 10
+		 2			0 - 5
+		 3			0 - 4
+		 4			0 - 2.5
+		 5			0 - 2
+		 6			0 - 1.25
+		 7			0 - 1
+	=====================================
+
+PARAMETER4:		The first ADC value (0 - 2047).
+PARAMETER5:		The voltage corresponding to the first ADC value
+					(0 to +20v or 4 to 20 mA).
+PARAMETER6:		The second ADC value (0 - 2047).
+PARAMETER7:		The voltage corresponding to the second ADC value
+					(0 to +20v or 4 to 20 mA).
+
+RETURN VALUE:	0, if sucessful.
+					-1, if not able to make calibration constants.
+
+SEE ALSO:		anaIn, anaInVolts, anaInmAmps, anInDiff,
+					anaIncalib, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaInCalib(int channel, int opmode, int gaincode,
+						int value1, float volts1,int value2, float volts2)
+{
+	auto int os;
+	auto float kc;
+
+	#GLOBAL_INIT {__adcinitflag = FALSE;}
+
+	if	(__adcinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel < 0 || channel > MAXAIN)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if ((gaincode < 0) || (gaincode > 7) || (opmode < 0) || (opmode > 2))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if( (volts1 == volts2) || (value1 == value2) ) return -1;
+
+	os = (int)((volts2*value1 - volts1*value2)/(volts2-volts1));
+   kc = (volts2-volts1)/(value2-value1);
+
+	if (opmode == SINGLE)
+	{
+		_adcCalibS[channel][gaincode].offset = os;
+		_adcCalibS[channel][gaincode].kconst = kc;
+	}
+	else
+	{
+		if (opmode == DIFF)
+		{
+			_adcCalibD[channel][gaincode].offset = os;
+			_adcCalibD[channel][gaincode].kconst = kc;
+		}
+		else  //milli-amp operation
+		{
+			_adcCalibM[channel].offset = os;
+			_adcCalibM[channel].kconst = kc;
+		}
+	}
+	return 0;
+}
+
+
+/*** BeginHeader anaInVolts */
+
+float anaInVolts(unsigned int channel, unsigned int gaincode);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInVolts					<LP35XX.LIB>
+
+SYNTAX:			float anaInVolts(unsigned int channel, unsigned int gaincode)
+
+DESCRIPTION:	Reads the state of a single-ended analog input channel
+					and uses the previously set calibration constants to
+					convert it to volts.
+
+
+PARAMETER1:		channel of 0 to 7. See below
+
+	==============================================
+					Single-ended positive input lines
+	channel		(negative input is ground)
+	----------	-------------------------------
+		 0			+AIN0
+		 1			+AIN1
+		 2			+AIN2
+		 3			+AIN3
+		 4			+AIN4
+		 5			+AIN5
+		 6			+AIN6
+		 7			+AIN7
+	==============================================
+
+PARAMETER2:  gain code of 0 to 7.  See below.
+
+	=====================================
+	gain_code	Voltage range
+	---------	-------------
+		 0			0 - 20
+		 1			0 - 10
+		 2			0 - 5
+		 3			0 - 4
+		 4			0 - 2.5
+		 5			0 - 2
+		 6			0 - 1.25
+		 7			0 - 1
+	=====================================
+
+RETURN VALUE:	A voltage value corresponding to the voltage on the analog
+					input channel.
+					ADOVERFLOW (defined macro = -4096) if overflow or out of range
+
+SEE ALSO:		anaInCalib, anaIn, anaInmAmps,
+					brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+float anaInVolts(unsigned int channel, unsigned int gaincode)
+{
+	auto unsigned int rawdata, cgain, ugain;
+	auto float value;
+
+	#GLOBAL_INIT {__adcinitflag = FALSE;}
+
+	if	(__adcinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel < 0 || channel > MAXAIN)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	rawdata = anaIn(channel, SINGLE, gaincode);
+	if (rawdata == ADOVERFLOW)
+		return ADOVERFLOW;		//overflow
+
+	value = (float)((int)(rawdata - _adcCalibS[channel][gaincode].offset)*(_adcCalibS[channel][gaincode].kconst));
+	if (value <= 0.00)
+		return (0.000);
+	else
+		return value;
+}
+
+
+
+/*** BeginHeader anaInDiff */
+
+float anaInDiff(unsigned int channel, unsigned int gaincode);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInDiff 					<LP35XX.LIB>
+
+SYNTAX:			float anaInDiff(unsigned int channel, unsigned int gaincode)
+
+DESCRIPTION:	Reads the state of differential analog input channels and
+					uses the	previously set calibration constants to convert
+					it to	volts.
+
+
+PARAMETER1:		channel 0, 2, 4, or 6 as indicated by the differential
+					positive line input. See below.
+
+	==============================================
+	channel		Differential input lines
+	----------	-------------------------------
+		 0			+AIN0 	-AIN1
+		 2			+AIN2 	-AIN3
+		 4			+AIN4 	-AIN5
+		 6			+AIN6 	-AIN7
+	==============================================
+
+PARAMETER2:  gain code of 0 to 7.  See below.
+
+	=====================================
+	gain_code	Voltage range
+	---------	-------------
+		 0			0 - 20
+		 1			0 - 10
+		 2			0 - 5
+		 3			0 - 4
+		 4			0 - 2.5
+		 5			0 - 2
+		 6			0 - 1.25
+		 7			0 - 1
+	=====================================
+
+RETURN VALUE:	A voltage value corresponding to the voltage on the analog
+					input channel.
+					ADOVERFLOW (defined macro = -4096) if overflow or out of range
+
+SEE ALSO:		anaInCalib, anaIn, anaInmAmps,
+					brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+float anaInDiff(unsigned int channel, unsigned int gaincode)
+{
+	auto unsigned int cgain, ugain;
+	auto int rawdata;
+	auto float value;
+
+	#GLOBAL_INIT {__adcinitflag = FALSE;}
+
+	if	(__adcinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel < 0 || channel > MAXAIN)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	rawdata = anaIn(channel, DIFF, gaincode);
+	if (rawdata == ADOVERFLOW)
+		return ADOVERFLOW;		//overflow
+
+	value = (float)((int)(rawdata - _adcCalibD[channel][gaincode].offset)*(_adcCalibD[channel][gaincode].kconst));
+	return value;
+}
+
+/*** BeginHeader anaInmAmps */
+
+float anaInmAmps(unsigned int channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaInmAmps					<LP35XX.LIB>
+
+SYNTAX:			int anaInmAmps(unsigned int channel)
+
+DESCRIPTION:	Reads the state of an analog input channel and uses the
+					previously set calibration constants to convert it to current.
+
+PARAMETER1:		channel is 0 to 3, AIN0 - AIN3:
+
+	=============================================
+	channel		4 to 20 mA input lines
+	----------	-------------------------------
+		 0			+AIN0
+		 1			+AIN1
+		 2			+AIN2
+		 3			+AIN3
+	=============================================
+
+
+RETURN VALUE:	A current value corresponding	to the current on	the analog
+					input channel of range 4.00 to 20.00 milli-Amps;
+					ADOVERFLOW (defined macro = -4096) if overflow or out of range
+
+SEE ALSO:		anaInCalib, anaIn, anaInVolts
+
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+float anaInmAmps(unsigned int channel)
+{
+	auto unsigned int rawdata, cgain, ugain;
+	auto float value;
+
+	#GLOBAL_INIT {__adcinitflag = FALSE;}
+
+	if	(__adcinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel < 0 || channel > (MAXAIN-ADCHANNELM))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	rawdata = anaIn(channel, mAMP, GAIN_10);
+	if (rawdata == ADOVERFLOW)
+		return ADOVERFLOW;		//overflow
+
+
+	value = (float)((int)(rawdata - _adcCalibM[channel].offset)*(_adcCalibM[channel].kconst));
+	if (value <= 0.00)
+		return (0.000);
+	else
+		return value;
+
+}
+
+
+/*===================================================================
+	The following functions are for reading/writing the ADC
+	calibrations constants.
+===================================================================*/
+
+/*** BeginHeader anaInEERd */
+
+root int anaInEERd(unsigned int channel, unsigned int opmode, unsigned int gaincode);
+#define ALLCHAN ADCHANNELALL
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInEERd					<LP35XX.LIB>
+
+SYNTAX:			root int anaInEERd(unsigned int channel, unsigned int opmode,
+						unsigned int gaincode);
+
+DESCRIPTION:	Reads the calibration constants, gain and offset, from
+					designated positions in flash	--previously placed within
+					the top 1K reserved block of flash simulated eeprom.
+					Depending on flash size, found at the following macro
+					locations:
+
+					ADC_CALIB_ADDRS, address start of single-ended analog
+							input channels
+					ADC_CALIB_ADDRD, address start of differential analog
+							input channels
+					ADC_CALIB_ADDRM, address start of milli-amp analog
+							input channels
+
+					--and placed into global tables _adcCalibS, _adcCalibD,
+					_adcCalibM for analog inputs.
+
+               See the user manual for the size of the reserved UserBlock
+               memory area.
+
+					This function cannot be run in RAM and is non-reentrant.
+
+PARAMETER1:		channel number 0 to 7 for AIN0-AIN7.
+
+	==========================================================
+	channel   	SINGLE	DIFFerential 	mAMP
+	----------	----------------------------------------------
+		 0			+AIN0 	+AIN0 -AIN1 	+AIN0
+		 1			+AIN1 	 	---			+AIN1
+		 2			+AIN2 	+AIN2 -AIN3		+AIN2
+		 3			+AIN3 		---			+AIN3
+		 4			+AIN4 	+AIN4 -AIN5		 ---
+		 5			+AIN5 		---			 ---
+		 6			+AIN6 	+AIN6 -AIN7		 ---
+		 7			+AIN7 		---			 ---
+	ALLCHAN		   --to read all channels--
+
+PARAMETER2:		mode of operation:
+
+					SINGLE  	,single-ended input line
+					DIFF		,differential input line
+					mAMP		,milli-Amp input line
+
+PARAMETER3:  gain code of 0 to 7.  See below.  For ALLCHAN
+				 parameter, gaincode is ignored.
+
+	=====================================
+	gain_code	Voltage range
+	---------	-------------
+		 0			0 - 20
+		 1			0 - 10
+		 2			0 - 5
+		 3			0 - 4
+		 4			0 - 2.5
+		 5			0 - 2
+		 6			0 - 1.25
+		 7			0 - 1
+	=====================================
+
+RETURN VALUE:	 0, If successful.
+					-1, invalid address or range.
+
+SEE ALSO:		anaInEEWr, anaInCalib
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaInEERd(unsigned int channel, unsigned int opmode, unsigned int gaincode)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	#GLOBAL_INIT {__brdinitflag = FALSE;}
+
+	if	(__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if ((channel < 0 || channel > MAXAIN) && channel != ALLCHAN)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// Calculate the offset into the user block of where the calibration
+	// constants are stored for a given A/D channel.
+	// and read calibration constants from flash
+	switch (opmode)
+	{
+		case SINGLE:
+			if (channel == ALLCHAN)
+			{
+				memset(_adcCalibS, 0, sizeof(_adcCalibS));				//clear table
+				status=readUserBlock(&_adcCalibS, ADC_CALIB_ADDRS, sizeof(_adcCalibS));	//get whole block
+			}
+			else
+			{
+				offset = ADC_CALIB_ADDRS;
+				offset += ((char*) &_adcCalibS[channel][gaincode] - (char*)_adcCalibS);
+				status = readUserBlock(&_adcCalibS[channel][gaincode], offset, sizeof(_adcCalibS[channel][gaincode]));
+			}
+			break;
+		case DIFF:
+			if (channel == ALLCHAN)
+			{
+				memset(_adcCalibD, 0, sizeof(_adcCalibD));				//clear table
+				status=readUserBlock(&_adcCalibD, ADC_CALIB_ADDRD, sizeof(_adcCalibD));	//get whole block
+			}
+			else
+			{
+				offset = ADC_CALIB_ADDRD;
+				offset += ((char*) &_adcCalibD[channel][gaincode] - (char*)_adcCalibD);
+				status = readUserBlock(&_adcCalibD[channel][gaincode], offset, sizeof(_adcCalibD[channel][gaincode]));
+			}
+			break;
+		case mAMP:
+			if (channel == ALLCHAN)
+			{
+				memset(_adcCalibM, 0, sizeof(_adcCalibM));				//clear table
+				status=readUserBlock(&_adcCalibM, ADC_CALIB_ADDRM, sizeof(_adcCalibM));	//get whole block
+			}
+			else
+			{
+				offset = ADC_CALIB_ADDRM;
+				offset += ((char*) &_adcCalibM[channel] - (char*)_adcCalibM);
+				status = readUserBlock(&_adcCalibM[channel], offset, sizeof(_adcCalibM[channel]));
+			}
+			break;
+	}
+
+	return (status);
+}
+
+/*** BeginHeader anaInEEWr */
+root int anaInEEWr(unsigned int channel, unsigned int opmode, unsigned int gaincode);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInEEWr					<LP35XX.LIB>
+
+SYNTAX:			int anaInEEWr(unsigned int channel, unsigned int opmode,
+						unsigned int gaincode);
+
+DESCRIPTION:	Writes the calibration constants, gain and offset,
+					--previously placed into global tables _adcCalibS,
+					_adcCalibD,	and _adcCalibM for analog inputs, see
+					anaCalib()-- to designated positions within the top
+					1K reserved block of flash simulated eeprom.
+					Depending on flash size, to the following macro
+					locations:
+
+					ADC_CALIB_ADDRS, address start of single-ended analog
+							input channels
+					ADC_CALIB_ADDRD, address start of differential analog
+							input channels
+					ADC_CALIB_ADDRM, address start of milli-amp analog
+							input channels
+
+               See the user manual for the size of the reserved UserBlock
+               memory area.
+
+					This function cannot be run in RAM and is non-reentrant.
+
+PARAMETER1:		channel number 0 to 7 for AIN0-AIN7.
+
+	==========================================================
+	channel   	SINGLE	DIFFerential 	mAMP
+	----------	----------------------------------------------
+		 0			+AIN0 	+AIN0 -AIN1 	+AIN0
+		 1			+AIN1 	 	---			+AIN1
+		 2			+AIN2 	+AIN2 -AIN3		+AIN2
+		 3			+AIN3 		---			+AIN3
+		 4			+AIN4 	+AIN4 -AIN5		 ---
+		 5			+AIN5 		---			 ---
+		 6			+AIN6 	+AIN6 -AIN7		 ---
+		 7			+AIN7 		---			 ---
+	ALLCHAN		   --to write all channels--
+
+PARAMETER2:		mode of operation:
+
+					SINGLE  	,single-ended input line
+					DIFF		,differential input line
+					mAMP		,milli-Amp input line
+
+PARAMETER3:  gain code of 0 to 7.  See below.  For ALLCHAN
+				 parameter, gaincode is ignored.
+
+	=====================================
+	gain_code	Voltage range
+	---------	-------------
+		 0			0 - 20
+		 1			0 - 10
+		 2			0 - 5
+		 3			0 - 4
+		 4			0 - 2.5
+		 5			0 - 2
+		 6			0 - 1.25
+		 7			0 - 1
+	=====================================
+
+RETURN VALUE:	 0, successful write to simulated eeprom.
+					-1, invalid address or range.
+
+SEE ALSO:		anaInEERd, anaInCalib
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaInEEWr(unsigned int channel, unsigned int opmode, unsigned int gaincode)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	#GLOBAL_INIT {__brdinitflag = FALSE;}
+
+	if	(__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if ((channel < 0 || channel > MAXAIN) && channel != ALLCHAN)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// Calculate the offset into the user block of where the calibration
+	// constants are stored for a given A/D channel.
+	// and write calibration constants to flash
+	switch (opmode)
+	{
+		case SINGLE:
+			if (channel == ALLCHAN)
+			{
+				status = writeUserBlock(ADC_CALIB_ADDRS, &_adcCalibS, sizeof(_adcCalibS));  //save whole block
+			}
+			else
+			{
+				offset = ADC_CALIB_ADDRS;
+				offset += ((char*) &_adcCalibS[channel][gaincode] - (char*)_adcCalibS);
+				status = writeUserBlock(offset, &_adcCalibS[channel][gaincode], sizeof(_adcCalibS[channel][gaincode]));
+			}
+			break;
+		case DIFF:
+			if (channel == ALLCHAN)
+			{
+				status = writeUserBlock(ADC_CALIB_ADDRD, &_adcCalibD, sizeof(_adcCalibD));  //save whole block
+			}
+			else
+			{
+				offset = ADC_CALIB_ADDRD;
+				offset += ((char*) &_adcCalibD[channel][gaincode] - (char*)_adcCalibD);
+				status = writeUserBlock(offset, &_adcCalibD[channel][gaincode], sizeof(_adcCalibD[channel][gaincode]));
+			}
+			break;
+		case mAMP:
+			if (channel == ALLCHAN)
+			{
+				status = writeUserBlock(ADC_CALIB_ADDRM, &_adcCalibM, sizeof(_adcCalibM));  //save whole block
+			}
+			else
+			{
+				offset = ADC_CALIB_ADDRM;
+				offset += ((char*) &_adcCalibM[channel] - (char*)_adcCalibM);
+				status = writeUserBlock(offset, &_adcCalibM[channel], sizeof(_adcCalibM[channel]));
+			}
+			break;
+		}
+
+	return(status);
+}
+
+
+/*** BeginHeader pwmOutConfig */
+unsigned long pwmOutConfig(unsigned long frequency);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+pwmOutConfig						<LP35XX.LIB>
+
+SYNTAX:			unsigned long pwmOutConfig(unsigned long frequency);
+
+DESCRIPTION:	Configures port F bits for pulse-width modulation.
+					Sets the base frequency for the PWM pulses and enables the
+					PWM driver on all four channels. The base frequency is the
+					frequency without pulse spreading.
+					Pulse spreading will increase the frequency by a factor of 4.
+					Call this function to set frequency before using pwmOut().
+
+PARAMETER1:		frequency (in Hz).
+
+RETURN VALUE:	Actual frequency set. This will be the closest possible
+					match to the requested frequency.
+
+SEE ALSO:		pwmOut, pwm_init, pwm_set
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+unsigned long pwmOutConfig(unsigned long frequency)
+{
+	#GLOBAL_INIT {__pwminitflag   = FALSE;}
+
+	__pwminitflag = TRUE;
+
+	///// pwm_init initializes port bits so not done in brdInit
+	return (pwm_init(frequency));
+}
+
+/*** BeginHeader pwmOut */
+
+int pwmOut(unsigned int channel, float dutycycle);
+
+//pwm_set combination flag options for PWMOPTFLAG
+// PWM_SPREAD	pulse spreading; duty cycle is spread over four separate
+//					pulses to increase the pulse frequency.
+// PWM_OPENDRAIN 	sets the PWM output pin as open-drain instead of a
+//						normal push-pull logic output.
+
+#define PWMOPTFLAG 0
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+pwmOut						<LP35XX.LIB>
+
+SYNTAX:			int pwmOut(unsigned int channel, float dutycycle)
+
+DESCRIPTION:	Sets a voltage (0 to Vdd) on an analog output channel by % duty-cycle
+					of the 1024 clock count cycle.
+					Call pwmOutConfig() to configure frequency before using this
+					function.
+					This function is non-reentrant.
+
+PARAMETER1:		The PWM output channel to write (0 - 2).
+PARAMETER2:		The percent duty cycle value (percentage that is on or high)
+					of 1024 clock count cycle.
+						ie:  0.25
+
+RETURN VALUE:	0 if successful
+					-1 if an invalid channel number is used
+					-2 an invalid duty_cycle was requested
+
+SEE ALSO:		pwmOutConfig, pwm_set
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int pwmOut(unsigned int channel, float dutycycle)
+{
+
+	#GLOBAL_INIT {__pwminitflag   = FALSE;}
+
+	if (__pwminitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel < 0 || channel > 2)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	return (pwm_set(channel, (int)(dutycycle*1024), PWMOPTFLAG));		// ie:  use (0.25)*1024
+}
+
+
+/*** Beginheader serMode */
+int serMode(int mode);
+
+//defaults for RS232 handshaking RTS/CTS
+#define SERB_RTS_SHADOW PCDRShadow
+#define SERB_RTS_PORT 	PCDR  //RTS I/O control port
+#define SERB_RTS_BIT 	2		//RTS on port C, PC2
+#define SERB_CTS_PORT 	PCDR  //CTS I/O control port
+#define SERB_CTS_BIT 	3		//CTS on Port C, PC3
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+serMode						<LP35XX.LIB>
+
+SYNTAX:	      int serMode(int mode);
+
+DESCRIPTION:   User interface to setup the serial communication lines
+      			on the controller.  It will enable the ADM3312 serial
+      			port transceiver device.
+
+					This function must be called after executing the serXOpen()
+					function. Whether you are opening one or multiple serial
+					ports this function must be executed after executing the
+					last serXOpen function AND before you start using any of
+					the serial ports.
+
+PARAMETER1:    mode - defined serial port configuration.
+
+   				Serial port setup:
+
+		Mode 	Port B      	Port C    		Port E			Port F
+		----  -----------    ----------     -----------		-----------
+		0		RS232 3wire   	RS232 3wire 	RS232 3wire		RS485 3wire
+		1		RS232 5wire		CTS/RTS			RS232	3wire		RS485 3wire
+
+RETURN VALUE:	0 if valid mode; 1 if not.
+
+SEE ALSO:		ser485Tx, ser485Rx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int serMode(int mode)
+{
+	auto int status;
+
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+
+	if (__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   // Initialize the status flag to be a valid mode
+   status = 0;
+
+	switch (mode)
+	{
+		case 0:
+			// RS232 serial port B 3 wire
+			// RS232 serial port C 3 wire
+			// RS232 serial port E 3 wire
+			//	RS485 serial port F 3 wire
+			// Set bits 4 and 2 to enable serial Ports B and C, serXopen does the rest
+			WrPortI(PCFR, &PCFRShadow, (PCFRShadow|0x14));
+			BitWrPortI(PGFR, &PGFRShadow, 1, 6);	//set serial port E
+			BitWrPortI(PGFR, &PGFRShadow, 1, 2);	//set serial port F
+			break;
+
+		case 1:
+			// RS232 serial port B 5 wire
+			// RS232 serial port C CTS, RTS
+			// RS232 serial port E 3 wire
+			//	RS485 serial port F 3 wire
+			// Set bits 4 to enable serial Ports B, serXopen does the rest
+			// Clear bit 2, port C to use I/O pins PC2 and PC3 as
+			// handshaking lines.
+			WrPortI(PCFR, &PCFRShadow, (PCFRShadow & ~0x04));
+			BitWrPortI(PCDR, &PCDRShadow, 0, SERB_RTS_BIT);
+			BitWrPortI(PGFR, &PGFRShadow, 1, 6);	//set serial port E
+			BitWrPortI(PGFR, &PGFRShadow, 1, 2);	//set serial port F
+			break;
+
+		default:
+			// unsupported mode
+			status = 1;
+			break;
+	}
+	BitWrPortI(PGDR, &PGDRShadow, 0, 1);  //enable serial device
+	return (status);
+}
+
+
+/*** Beginheader ser485Tx */
+root void ser485Tx( void );
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Tx						<LP35XX.LIB>
+
+SYNTAX:	      void ser485Tx( void );
+
+DESCRIPTION:   Enables the RS485 transmitter.
+
+					Transmitted data is echoed back into the receive data
+					buffer. The echoed data may be used as an indictator for
+					disabling the transmitter by using one of the following
+					methods:
+
+               a) Byte mode...disable the transmitter after the same byte
+                  that is transmitted, is detected in the receive data
+                  buffer.
+
+               b) Block data mode...disable the transmitter after the same
+                  number of bytes transmitted are detected in the receive
+                  data buffer.
+
+               serMode() function must be executed before running this
+               function. This function is non-reentrant.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		serMode, ser485Rx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void ser485Tx( void )
+{
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+
+	if (__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+#asm
+	push	ip							;save off IP state
+	ipset	1							;set interrupt priority to level 1
+	ld		a,(PGDRShadow)			;get copy of shadow reg
+	or		0x01						;set bit 0 high
+	ld		(PGDRShadow),a			;update shadow reg
+;	ioi	ld	(PGDR),a				;set PE0 high
+	IOWRITE_A(PGDR)
+	pop	ip							;restore IP to the previous state
+	ret
+#endasm
+}
+
+/*** Beginheader ser485Rx */
+root void ser485Rx( void );
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Rx						<LP35XX.LIB>
+
+SYNTAX:	      void ser485Rx( void );
+
+DESCRIPTION:  	Disables the RS485 transmitter.
+
+					This puts you in listen mode which allows you to receive
+					data from the RS485 interface.
+
+              	serMode() function must be executed before running
+              	this function. This function is non-reentrant.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		serMode, ser485Tx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void ser485Rx( void )
+{
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+
+	if (__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+#asm
+	push	ip							;save off IP state
+	ipset	1							;set interrupt priority to level 1
+	ld		a,(PGDRShadow)			;get copy of shadow reg
+	and	0xfe						;clear bit 0
+	ld		(PGDRShadow),a			;update shadow reg
+;	ioi	ld	(PGDR),a				;set PE0 low
+	IOWRITE_A(PGDR)
+	pop	ip							;restore IP to the previous state
+	ret
+#endasm
+}
+
+/*------------------------------------------------------------------------
+	Digital I/O Functions
+	This section supports digital input and output
+-------------------------------------------------------------------------*/
+/*** BeginHeader	digOut */
+void digOut(int, int);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digOut						<LP35XX.LIB>
+
+SYNTAX:			void digOut(int channel, int value);
+
+DESCRIPTION:	Sets the state of a digital output (OUT0 - OUT9).
+
+					OUT0 to OUT7 are sinking outputs.
+					OUT8 and OUT9 are sourcing outputs.
+
+					To drive outputs, connect +K to external power source.
+
+					Note: A runtime error will occur if the channel or value
+					parameter is out of range or if brdInit() has not been
+					called first.
+
+PARAMETER1:		Digital output channel 0 to 9.
+
+PARAMETER2:		Output logic value 0 will output 0,
+					output logic value 1 will output 1.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		digIn, digBankOut, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+root void digOut(int channel, int value)
+{
+
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+
+	if(__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if ((channel < 0) || (channel > 9) || (value < 0) || (value > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+
+	if (channel >= 8)
+	{
+		BitWrPortI(PEDR, &PEDRShadow, value, channel-6);
+	}
+	else
+	{
+		BitWrPortI(PDDR, &PDDRShadow, !value, channel);
+	}
+}
+
+
+/*** BeginHeader digIn */
+int  digIn(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digIn							<LP35XX.LIB>
+
+SYNTAX:			int digIn(int channel);
+
+DESCRIPTION:	Reads the state of a digital input channel.
+
+					To drive inputs, connect +K to external power source.
+
+					Digital inputs
+					--------------
+					IN00 - IN15  (input voltage range -36V to +36V)
+
+					Note: A runtime error will occur if the channel parameter
+					is out of range or if brdInit() has not been
+					called first.
+
+PARAMETER1:		Digital input channel 0 - 15.
+
+RETURN VALUE:	The logic state of the input (0 or 1).
+
+SEE ALSO:		digOut, digBankIn, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+root int digIn(int channel)
+{
+	auto int input_state;
+
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+
+	if(__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if ((channel < 0) || (channel > 15))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel >= 8)
+	{
+		input_state = BitRdPortI(PADR, channel&0x07);
+	}
+	else if (channel >= 4)
+		{
+			input_state = BitRdPortI(PBDR, channel-2);
+		}
+	else if (channel >= 2)
+			{
+				input_state = BitRdPortI(PEDR, channel+2);
+			}
+			else
+			{
+				input_state = BitRdPortI(PEDR, channel);
+			}
+
+	return (input_state);
+}
+
+
+/*** BeginHeader	digBankOut */
+void digBankOut(int bank, int value);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digBankOut						<LP35XX.LIB>
+
+SYNTAX:			void digBankOut(int bank, int value);
+
+DESCRIPTION:	Writes the state of a block of designated digital
+					output channels.  First bank consists of OUT0-OUT7.
+					Second bank consists of OUT8-OUT9.
+
+					To drive outputs, connect +K to external power source.
+
+					Note: A runtime error will occur if the channel or value
+					parameter is out of range or if brdInit() has not been
+					called first.
+
+PARAMETER1:		0 for digital outputs OUT0 to OUT7.
+					1 for digital outputs OUT8 to OUT9.
+
+PARAMETER2:		An 8-bit output value, where each bit corresponds to
+					one channel. OUT0 and OUT8 is least significant bit 0.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		digBankIn, digOut, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void digBankOut(int bank, int value)
+{
+
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+
+	if(__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if ((bank < 0) || (bank > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (bank)
+	{
+		// set outputs 8 and 9 (PE2 and PE3)
+		value = (value<<2)&0x0c;
+		WrPortI(PEDR, &PEDRShadow, (PEDRShadow&0xf3)|value);
+	}
+	else
+	{
+		// set outputs 0-7 (PD0-PD7)
+		WrPortI(PDDR, &PDDRShadow, ~(value&0xff));
+	}
+}
+
+/*** BeginHeader digBankIn */
+int  digBankIn(int bank);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digBankIn						<LP35XX.LIB>
+
+SYNTAX:			int digBankIn(int bank);
+
+DESCRIPTION:	Reads the state of a block of designated digital
+					input channels.  First bank consists of IN0-IN7.
+					Second bank consists of IN8-IN15.
+
+					To drive inputs, connect +K to external power source.
+
+					Digital inputs
+					--------------
+					IN00 - IN15  (input voltage range -36V to +36V)
+
+					Note: A runtime error will occur if the bank parameter
+					is out of range if brdInit() has not been
+					called first.
+
+PARAMETER1:		0 for digital inputs IN0 to IN7.
+					1 for digital inputs IN8 to IN15.
+
+RETURN VALUE:	An input value in the lower byte, where each bit corresponds
+					to one channel. IN0 and IN8 is in bit 0 place.
+
+SEE ALSO:		digBankOut, digIn
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int digBankIn(int bank)
+{
+	auto int input_state;
+
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+
+	if (__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if ((bank < 0) || (bank > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (bank)
+	{
+		// read inputs 8-15 (PA0-PA7)
+		input_state = RdPortI(PADR) & 0xff;
+	}
+	else
+	{
+		// read input 0-7	(PB2-PB5, PE4-5, PE0-1)
+		input_state = ((RdPortI(PBDR) & 0x3c) << 2)|((RdPortI(PEDR) & 0x30) >> 2)|(RdPortI(PEDR) & 0x03);
+	}
+
+	return (input_state);
+}
+
+/*** BeginHeader	relayOut */
+
+int relayOut(int relay, int value);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+relayOut						<LP35XX.LIB>
+
+SYNTAX:			int relayOut(int relay, int value)
+
+DESCRIPTION:	A 10 milli-second low to high pulse sets the state of a relay.
+					On power-up	or brdInit(), the relay will go to the Normally
+					Closed (Reset) contact.
+
+					A runtime exception error will occur if parameters are out of
+					range or if the relay is not installed.
+
+					This function is non-reentrant.
+
+PARAMETER1:		0 = the one relay.
+
+PARAMETER2:		A value used to connect the relay Common contact to one of
+					the following contacts:
+
+					0 = relay Normally Closed (Reset) contact
+					1 = relay Normally Open (Set) contact
+
+RETURN VALUE:	0 if successful;
+					-1 if normal power source unavailable.
+
+SEE ALSO:
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int relayOut(int relay, int value)
+{
+
+	#GLOBAL_INIT {__rly_onboard = FALSE;}
+
+	if (__rly_onboard == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (rdPowerState())
+	{
+		return -1;				//normal power source unavailable
+	}
+
+	if ((relay < 0) || (relay > 0) || (value < 0) || (value > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (value)
+	{
+		BitWrPortI(PGDR, &PGDRShadow, 0, 4);   //set common and set contact
+		_msDelay(10);
+		BitWrPortI(PGDR, &PGDRShadow, 1, 4);   //pulse high
+		_msDelay(10);
+		BitWrPortI(PGDR, &PGDRShadow, 0, 4); 	//then low
+	}
+	else
+	{
+		BitWrPortI(PGDR, &PGDRShadow, 0, 5);   //set common and reset contact
+		_msDelay(10);
+		BitWrPortI(PGDR, &PGDRShadow, 1, 5);   //pulse high
+		_msDelay(10);
+		BitWrPortI(PGDR, &PGDRShadow, 0, 5); 	//then low
+	}
+
+	return 0;
+}
+
+/*** BeginHeader VccMonitorInit */
+
+void VccMonitorInit(int state);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+VccMonitorInit						<LP35XX.LIB>
+
+SYNTAX:			void VccMonitorInit(int state);
+
+DESCRIPTION:	PIO3 on ADS7870 device enables or disables Vcc monitoring.
+					If monitoring is enabled, analog input channel AIN7
+					is not available.
+
+PARAMETER1:		1 = enable monitor
+					0 = disable monitor
+
+RETURN VALUE:	None
+
+SEE ALSO:	VccMonitor, anaInConfig
+
+END DESCRIPTION **********************************************************/
+nodebug
+void VccMonitorInit(int state)
+{
+
+	#GLOBAL_INIT {__adcinitflag = FALSE;}
+	#GLOBAL_INIT {__vccmonitorflag = FALSE;}
+
+	if	(__adcinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (__ad_oscenable == FALSE)
+	{
+		__ad_oscenable = TRUE;
+		anaInConfig(ADREFOSCREG, AD_OSC_ENABLE, 0);	//enable ref/osc reg  1.15Vref
+		_msDelay(1000);						//allow time to charge up cap
+	}
+
+	__vccmonitorflag = TRUE;
+
+	if (state)
+	{
+		anaInConfig(ADDIOSTATEREG, 0x80, 0);		//clear PIO3 to on
+	}
+	else
+	{
+		anaInConfig(ADDIOSTATEREG, 0x88, 0);		//set PIO3 to off
+	}
+	_msDelay(1000);						//allow time to charge up cap
+
+	//make PIO3 an output
+	anaInConfig(ADDIOCNTLREG, 0x08, 0);
+
+}
+
+/*** BeginHeader VccMonitor */
+
+float VccMonitor(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+VccMonitor						<LP35XX.LIB>
+
+SYNTAX:			float VccMonitor(void);
+
+DESCRIPTION:	If monitoring is enabled, the Vcc level is read by the
+					ADS7870 device and converted to a voltage value.  Input
+					channel AIN7 will not be available.
+					This function is non-reentrant.
+
+RETURN VALUE:	Vcc voltage value.
+
+SEE ALSO:	VccMonitorInit, anaInVolts
+
+END DESCRIPTION **********************************************************/
+
+float VccMonitor(void)
+{
+	#GLOBAL_INIT {__vccmonitorflag = FALSE;}
+
+	if (__vccmonitorflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	/*==========================
+	gaincode		Voltage range
+	---------	-------------
+		 0			0 - 20
+		 1			0 - 10
+		 2			0 - 5
+		 3			0 - 4
+		 4			0 - 2.5
+		 5			0 - 2
+		 6			0 - 1.25
+		 7			0 - 1
+	==========================*/
+
+	return (anaInVolts(7, GAIN_5));  //AIN7, gain of 5
+
+}
+
+/*** BeginHeader	devPowerSet */
+
+int devPowerSet(int devices, int state);
+
+//device mask bits
+#define ALLDEVICES 	0xFF
+#define RS232DEV		0x01
+#define RS485DEV		0x02
+#define ADCDEV			0x04
+#define DISPDEV		0x08
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devPowerSet						<LP35XX.LIB>
+
+SYNTAX:			int devPowerSet(int devices, int state);
+
+DESCRIPTION:	Sets individual devices int low power or fully active states
+					in the order listed below.
+
+PARAMETER1:		This parameter is a list fo the following macro's OR'ed
+					together that will be affected by the state parameter.
+					ie:  RS232DEV|ADCDEV
+
+					RS232DEV		for RS232 device
+					RS485DEV		for RS485 device
+					ADCDEV		for ADS7870 A/D converter device
+					DISPDEV		for Display/Keypad module
+					ALLDEVICES	for all devices
+
+PARAMETER2:		0 = shuts or powers down listed devices
+					1 = activates listed devices
+
+	device		state=0
+	------		-----------------------
+	RS232DEV		Receivers and transmitters are disabled, RXE remains active
+	RS485DEV		Transmitter is disabled
+	ADCDEV		ADS7870 internal oscillater is turned off
+	DISPDEV		Display/keypad module put into high impedance
+	ALLDEVICES	The above divices are disabled as described
+
+RETURN VALUE:	Zero
+
+SEE ALSO:	powerMode, anaInConfig, brdInit
+
+END DESCRIPTION **********************************************************/
+nodebug
+int devPowerSet(int device, int state)
+{
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+	#GLOBAL_INIT {__adcinitflag   = FALSE;}
+
+	if (__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	else
+	{
+		//configure serial RS232
+		if (device&RS232DEV)
+			BitWrPortI(PGDR, &PGDRShadow, !state, 1);
+
+		//configure serial RS485
+		if (device&RS485DEV)
+			BitWrPortI(PGDR, &PGDRShadow, state, 0);
+
+		//tri-state display/keypad module
+		if (device&DISPDEV)
+		{
+			BitWrPortI(PBDR, &PBDRShadow, !state, 6);
+			if(state)
+			{
+				BitWrPortI(PEDR, &PEDRShadow, 0 , 6);
+				BitWrPortI(PEDR, &PEDRShadow, 1 , 6);
+			}
+		}
+		//configure A/D oscillator
+		if ((device&ADCDEV) && (__adc_onboard == TRUE))
+		{
+			if (__adcinitflag == FALSE)
+			{
+				exception(-ERR_BADPARAMETER);
+				exit(-ERR_BADPARAMETER);
+			}
+
+			if	(state)
+				anaInConfig(ADREFOSCREG, AD_OSC_ENABLE, 0);	//osc on
+			else
+				anaInConfig(ADREFOSCREG, AD_OSC_DISABLE, 0);	//osc off
+			_msDelay(1000);
+		}
+	}
+
+	return 0;
+}
+
+
+/*** BeginHeader _useClockDivider3000 */
+
+#define	_CLKDIV_1		0x08
+#define	_CLKDIV_2		0x0C
+#define	_CLKDIV_4		0x18
+#define	_CLKDIV_6		0x1C
+//#define	_CLKDIV_8		0x04	//periph clock=main osc, proc clock=mainosc/8
+#define	_CLKDIV_8		0x00		//periph clock=proc clock=mainosc/8
+
+root int _useClockDivider3000(int newval);
+
+extern int	_clkDiv3kCurrent;
+
+/*** EndHeader */
+
+int	_clkDiv3kCurrent;
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_useClockDivider3000						<LP35XX.LIB>
+
+SYNTAX:			int _useClockDivider3000(int newval);
+
+DESCRIPTION:	Use for this function call for this library only!
+
+Sets the expanded clock divider options for the Rabbit 3000
+processor.  This function will also affect the peripheral clock -- use
+useClockDivider() to divide the processor clock by eight but not affect the
+peripheral clock.  Target communications will be lost after changing this
+setting because of the baud rate change.  This function also enables the periodic
+interrupt in case it was disabled by a call to user32kHzOsc().
+This function is not task reentrant.
+
+PARAMETER1:		Divider setting.  The following are valid:
+							_CLKDIV_2		divide main processor clock by two
+							_CLKDIV_4		divide main processor clock by four
+							_CLKDIV_6		divide main processor clock by six
+							_CLKDIV_8		divide main processor clock by eight
+
+RETURN VALUE:	none.
+
+SEE ALSO:		useClockDivider
+
+END DESCRIPTION **********************************************************/
+nodebug
+int _useClockDivider3000(int newval)
+{
+	static char	newTAT4R, newGCSR;
+
+#GLOBAL_INIT {
+	_clkDiv3kCurrent = 1;
+}
+
+	if (newval == _clkDiv3kCurrent)	return(0);
+
+	switch (newval)
+	{
+		case 1:		newGCSR = _CLKDIV_1;		break;
+		case 2:		newGCSR = _CLKDIV_2;		break;
+		case 4:		newGCSR = _CLKDIV_4;		break;
+		case 6:		newGCSR = _CLKDIV_6;		break;
+		case 8:		newGCSR = _CLKDIV_8;		break;
+		default:		return (-1);				break;
+	}
+
+	newTAT4R = ( (TAT4RShadow+1) * _clkDiv3kCurrent / newval) - 1;
+	freq_divider = freq_divider * _clkDiv3kCurrent / newval;
+
+#asm
+/**/
+	push	ip
+	ipset	3
+
+	ld		a, (newGCSR)
+	ld		(GCSRShadow), a
+;	ioi	ld (GCSR), a		; set new oscillator newvals
+	IOWRITE_A(GCSR)
+
+	call	updateTimers
+
+	ld		a, (newGCSR)
+	or		0x01					; enable periodic interrupt
+	ld		(GCSRShadow), a
+;	ioi	ld (GCSR), a		; set new oscillator newvals
+	IOWRITE_A(GCSR)
+
+	ld		a, (newTAT4R)
+	ld		(TAT4RShadow), a
+;	ioi	ld (TAT4R), a		; update debug serial baud on port A
+	IOWRITE_A(TAT4R)
+
+	pop	ip
+/**/
+#endasm
+	_clkDiv3kCurrent = newval;
+
+	return(0);
+}
+
+
+/*** BeginHeader powerMode */
+
+int powerMode(int mode);
+
+#define MINIMUM	10		//lowest power consumption
+#define MEDIUM		3		//define power consumption
+#define MAXIMUM	1		//highest power consumption
+
+extern const char osctable[11];
+
+/*** EndHeader */
+
+const char osctable[11] = {0x00,0x01,0x02,0x04,0x06,0x08,0x00,0x04,0x05,0x06,0x07};
+
+/* START FUNCTION DESCRIPTION ********************************************
+powerMode						<LP35XX.LIB>
+
+SYNTAX:			int powerMode(int mode);
+
+DESCRIPTION:	Sets operating power of the controller.  Suspend serial
+					communication and other data transmission activity
+					prior to calling this function, which sets higher
+					priority interrupt while switching clock frequencies.
+
+					This function is non-reentrant.
+
+PARAMETER1:		Mode operation. Use the following macros.
+
+Mode	Description								Comments
+====	================================	==========================
+ 1 	Cclk=Pclk=MainOsc   = 7.3728MHz	Debug capable
+ 2		Cclk=Pclk=MainOsc/2 = 3.6864MHz	Debug capable (19200 baud)
+ 3 	Cclk=Pclk=MainOsc/4 = 1.8423MHz	Debug capable (9600 baud)
+ 4		Cclk=Pclk=MainOsc/6 = 1.2288MHz
+ 5		Cclk=Pclk=MainOsc/8 = 0.9216MHz
+
+ 6		Cclk=Pclk 			  = 32.768KHz	Periodic Int disabled; hitwd()
+ 7		Cclk=Pclk=32KHz/2   = 16.384KHz	Periodic Int disabled; hitwd()
+ 8		Cclk=Pclk=32KHz/4   =  8.192KHz	Periodic Int disabled; hitwd()
+ 9		Cclk=Pclk=32KHz/8   =  4.096KHz	Periodic Int disabled; hitwd()
+10		Cclk=Pclk=32kHz/16  =  2.048KHz	Periodic Int disabled; hitwd()
+
+
+RETURN VALUE:	0 if valid parameter,
+					-1 if invalid parameter,
+
+SEE ALSO: 	setPowerSource, devPowerSet, rdPowerState, VccMonitor, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int powerMode(int mode)
+{
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+
+	if (__brdinitflag == FALSE)				//brdInit() not previously executed
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+#asm
+	ld		a,0x5a
+;  	ioi 	ld (WDTCR),a			  	;hit watchdog
+	IOWRITE_A(WDTCR)
+
+	ld		hl,(sp+@sp+mode)
+	ld		de,08001h					;check range less than 1
+	add	hl,hl
+	ccf
+	rr		hl
+	sbc	hl,de							;less than one is invalid
+	jp		c,.errormsg
+
+	ld		hl,(sp+@sp+mode)
+	ld		de,0800Bh					;check range greater than 10
+	add	hl,hl
+	ccf
+	rr		hl
+	sbc	hl,de							;greater than ten is also invalid
+	jp		nc,.errormsg
+
+	ld		hl,(sp+@sp+mode)			;process power mode request
+	ld		a,l
+	cp		6
+	jp		nc,.set32khz				;if greater than power mode 5 set 32khz operations
+
+.setmainosc:
+	ld		a,(GCSRShadow)				;check if currently in main osc or 32khz operation
+	and	018h							;check bits 4,3
+	cp		010h
+	jp		nz,.recovermain			;if not equal recover from main osc operations
+
+.recover32:
+;; recovers from 32khz operations to main osc
+;; do not change sequence
+ 	ld		a,(GPSCRShadow)
+	and	0f8h							;disables 32khz divider
+	ld		(GPSCRShadow),a
+;	ioi	ld (GPSCR),a
+	IOWRITE_A(GPSCR)
+
+	ld		a,010h						;set main osc on at 32khz
+	ld		(GCSRShadow),a
+;	ioi	ld (GCSR),a
+	IOWRITE_A(GCSR)
+	call	updateTimers
+	ld		a,009h						;set to main osc with periodic int
+	ld		(GCSRShadow),a
+;	ioi	ld (GCSR),a
+	IOWRITE_A(GCSR)
+
+	ld		a,(GCDRShadow)
+	or		00ch							;turn on clock doubler
+	ld		(GCDRShadow),a
+;	ioi	ld (GCDR),a
+	IOWRITE_A(GCDR)
+
+	ld		a,(GCM0RShadow)
+	and	07eh							;set to normal spreading
+	ld		(GCM0RShadow),a
+;	ioi	ld (GCM0R),a
+	IOWRITE_A(GCM0R)
+
+	ld		a,(GCM1RShadow)
+	or		080h							;enable spreader
+	ld		(GCM1RShadow),a
+;	ioi	ld (GCM1R),a
+	IOWRITE_A(GCM1R)
+	jp		_oscdelay
+
+.recovermain:
+;; recovers from main osc operations to main osc
+;; do not change sequence
+;; mode 1  Cclk = Pclk = MainOsc/1 = 7.3728MHz
+;; mode 2  Cclk = Pclk = MainOsc/2 = 3.6864MHz
+;; mode 3  Cclk = Pclk = MainOsc/4 = 1.8423MHz
+;; mode 4  Cclk = Pclk = MainOsc/6 = 1.2288MHz
+;; mode 5  Cclk = Pclk = MainOsc/8 = 0.9216MHz
+											;BitWrPortI(GPSCR, &GPSCRShadow, 1, 4);	//short CS
+	ld		bc,osctable					;get register settings from table
+	ld		hl,(sp+@sp+mode)
+	add	hl,bc
+	ld		hl,(hl)
+	ld		h,0
+	push	hl
+	call	_useClockDivider3000
+	add	sp,2
+	jp		_oscdelay
+
+.set32khz:
+;; do not change sequence
+;; mode 6 Cclk = Pclk = 32768Hz
+;;	mode 7 Cclk = Pclk = 32KHz/2 = 16.384KHz
+;;	mode 8 Cclk = Pclk = 32KHz/4 =  8.192KHz
+;;	mode 9 Cclk = Pclk = 32KHz/8 =  4.096KHz
+;;	mode 10 Cclk = Pclk = 32kHz/16 = 2.048KHz
+	ld		a,(GCM1RShadow)
+	and	07eh							;disable spreader
+	ld		(GCM1RShadow),a
+;	ioi	ld (GCM1R),a
+	IOWRITE_A(GCM1R)
+
+	ld		a,(GCDRShadow)
+	and	0f0h							;turn off clock doubler
+	ld		(GCDRShadow),a
+;	ioi	ld (GCDR),a
+	IOWRITE_A(GCDR)
+
+	ld		bc,osctable					;get register settings from table
+	ld		hl,(sp+@sp+mode)
+	add	hl,bc
+	ld		hl,(hl)
+
+	ld		a,(GPSCRShadow)
+	and	0f8h							;clear out bits 2-0
+	or		l								;set 32khz undivided
+	ld		(GPSCRShadow),a
+;	ioi	ld (GPSCR),a
+	IOWRITE_A(GPSCR)
+
+	ld		a,014h						;use 32khz osc, disable main osc
+	ld		(GCSRShadow),a
+;	ioi	ld (GCSR),a
+	IOWRITE_A(GCSR)
+
+_oscdelay:								;provides delay to set oscillators
+	ld		a,0x5a
+	ld		b,180							;180 approx. 25 usec @ 7.3728MHz
+.oscloop:
+;  	ioi 	ld (WDTCR),a			  	;hit watchdog
+	IOWRITE_A(WDTCR)
+	djnz	.oscloop
+	ld		hl,0
+	jp		.done
+
+.errormsg:
+	ld		hl,0ffffh
+
+.done:
+	;return hl
+#endasm
+}
+
+/*** BeginHeader setPowerSource */
+
+int setPowerSource(int state);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+setPowerSource						<LP35XX.LIB>
+
+SYNTAX:			int setPowerSource(int state);
+
+DESCRIPTION:	Sets the controller to run under battery or
+					normal power source.
+
+PARAMETER1:		0 for normal power source,
+					1 for battery.
+
+RETURN VALUE:	0 if successful,
+					-1 if normal power source is unavailable
+					-2 if battery is unavailable
+
+SEE ALSO:		powerMode, rdPowerState
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int setPowerSource(int state)
+{
+	auto int rdstate;
+
+	//	0 = run on normal power
+	//	1 = on battery power
+	BitWrPortI(PFDR, &PFDRShadow, state, 7);	//configure PF7
+
+	rdstate = BitRdPortI(PBDR, 0);
+	if ((state == 0) && rdstate)	//asked for normal power but
+		return -1;						//power source unavailable
+
+	if ((state == 1) && !rdstate)	//asked for battery source but
+		return -2;						//did not set to battery
+
+	return 0;
+}
+
+/*** BeginHeader rdPowerState */
+
+int rdPowerState(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+rdPowerState						<LP35XX.LIB>
+
+SYNTAX:			int rdPowerState(void);
+
+DESCRIPTION:	Determines if the controller is running under battery or
+					normal power source.
+
+PARAMETER1:		None
+
+RETURN VALUE:	0 if on normal power source, 1 if on battery
+
+SEE ALSO:		powerMode, setPowerSource
+
+END DESCRIPTION **********************************************************/
+nodebug
+int rdPowerState()
+{
+	//	0 = running on normal power
+	//	1 = on battery power
+	// return (BitRdPortI(PBDR, 0));
+#asm
+	ld		a,01h					;mask bit 0
+	ld		hl,PBDR
+	ioi and a,(hl)
+	bool 	hl
+	rr 	hl 	 				; zero hl
+	ld 	l,a
+	bool 	hl 					; result 0 or 1
+#endasm
+}
+
+
+/*** BeginHeader _read_rtc_32kHz */
+
+root unsigned long int _read_rtc_32kHz(void);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_read_rtc_32kHz						<LP35XX.LIB>
+
+SYNTAX:			unsigned long int _read_rtc_32kHz(void);
+
+DESCRIPTION: This is a modified version for this library only and is used
+solely for timeout purposes in the xxxxAlert() functions at 32KHz/16.
+Lower byte register (RTC1R) is ignored during second read of registers.
+
+Reads the RTC directly - use with caution!
+
+RETURN VALUE: Time in seconds since January 1, 1980 (if RTC set correctly).
+
+END DESCRIPTION **********************************************************/
+#asm nodebug
+_read_rtc_32kHz::
+; returns long with seconds since 1 jan 80 directly from rtc
+	ld		hl,ix				; save ix
+	ex		de',hl
+	ld		ix,RTC0R  		; address of base register
+.read_rtc0:
+	ld		a,05ah
+;	ioi 	ld (WDTCR),a		;2 sec hitwd
+	IOWRITE_A(WDTCR)
+
+	xor	a					; must write 0 to unused bits (special behavior reg)
+	ioi	ld (ix), a  	; copy to holding registers
+	ioi	ld a, (ix+1) 	; top bit is seconds
+	and	80h				; ignore LSbits
+	ld		h, a
+	ioi	ld e, (ix+2)
+	ioi	ld d, (ix+3)
+	ioi	ld c, (ix+4)
+	ioi	ld b, (ix+5) 	; most sig
+   
+	xor	a					; must write 0 to unused bits (special behavior reg)
+	ioi	ld (ix), a   	; copy to holding registers again
+	ioi	ld a, (ix+1)	; get least again
+	and	80h				; ignore LSbits
+	cp		a, h      		; must not have changed
+	jr		nz, .read_rtc0	; if changed do it all again
+	ioi	ld a, (ix+2)	; get next byte
+	cp		a, e      		; must not have changed
+	jr		nz, .read_rtc0	; if changed do it all again
+	ioi	ld a, (ix+3)	; get next byte
+	cp		a, d      		; must not have changed
+	jr		nz, .read_rtc0	; if changed do it all again
+	ioi	ld a, (ix+4)	; get next byte
+	cp		a, c      		; must not have changed
+	jr		nz, .read_rtc0	; if changed do it all again
+	ioi	ld a, (ix+5)	; get last byte
+	cp		a, b      		; must not have changed
+	jr		nz, .read_rtc0	; if changed do it all again
+
+	; now shift seconds into bc:de place
+	sla	h					; move seconds LSbit (MSbit of h) into carry
+	rl		de					; rotate carry --> seconds LSBs --> carry
+	rl		c					; rotate carry --> seconds 3rd byte --> carry
+	rl		b					; rotate carry --> seconds 4th byte --> carry (lost)
+								; return value in bc:de
+	ex		de',hl
+	ld		ix,hl				; restore ix
+	jp		(iy)
+#endasm
+
+/*** BeginHeader serCommAlert */
+
+root void serCommAlert(int lowpowermode, int maxpowermode,	int powersource,
+						unsigned long timeout);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+serCommAlert					<LP35XX.LIB>
+
+SYNTAX:			void serCommAlert(int lowpowermode, int maxpowermode,
+						int powersource, unsigned long timeout);
+
+DESCRIPTION:	Use this function to poll serial port E receiver for any
+					activity or until timeout occurs.
+					It will enter into low power, disable normal power	source
+					and may enable external battery for polling.  Upon timeout or
+					correct byte from receiver, this function will enable normal
+					power source and exit.
+					Note: If normal power source becomes unavailable, maximum power
+					mode will not activate and the controller may reset.
+
+					Use devPowerSet(ALLDEVICES, xxx) before and after to
+					deactivate and activate all devices to operate at less
+					power.
+
+				   This function is non-reentrant.
+
+PARAMETER1:		Low power mode setting to enter, usually 10 (see powerMode()).
+PARAMETER2:		Max operating power mode, usually 1 (see powerMode()).
+PARAMETER3:		1=enable battery, 0=normal power.
+PARAMETER4:		Timeout in seconds if no activity on receiver line.
+					Enter 0 for no timeout.
+
+RETURN VALUE:	None
+
+SEE ALSO:		powerMode, digInAlert, timedAlert, devPowerSet, rdPowerState
+
+END DESCRIPTION **********************************************************/
+nodebug
+void serCommAlert(int lowpowermode, int maxpowermode,	int powersource,
+			unsigned long timeout)
+{
+	static unsigned long endtime, comptime;
+	static int notime;
+
+	WrPortI(SECR, &SECRShadow, 0x00);  //enable receiver, 8bit asynch, no interrupt
+
+	if (timeout == 0)
+	{
+		notime = 0;
+	}
+	else
+	{
+		notime = 1;
+		endtime = read_rtc_32kHz() + timeout;
+	}
+
+	powerMode(lowpowermode);
+
+#asm
+	ld		hl,(sp+@sp+powersource)		;set power source
+	bool	hl
+	jp		z,.polltime
+	ld		a,(PFDRShadow)
+	set	7,a					;set to battery
+;	ioi	ld (PFDR),a
+	IOWRITE_A(PFDR)
+.polltime:
+	ld		a,05ah
+;	ioi 	ld (WDTCR),a		;2 sec hitwd
+	IOWRITE_A(WDTCR)
+
+	ld		a,(notime)
+	and	01h
+	jp		z,.pollinput
+
+	ld		iy,.chktime
+	ld		hl,_read_rtc_32kHz		;return in bc:de
+	jp		(hl)
+
+.chktime:
+	ld		a,05ah
+;	ioi 	ld (WDTCR),a		;2 sec hitwd
+	IOWRITE_A(WDTCR)
+
+	ld		iy,endtime
+	ld		a,b					;start with most significant byte
+	cp		(iy+3)				;compare to endtime byte
+	jp		z,.regc				;if equal, check next byte
+	jp		c,.pollinput		;if current time is less, no use checking rest
+	jp		.done					;current time larger so get out
+.regc:
+	ld		a,c
+	cp		(iy+2)
+	jp		z,.regd				;if equal, check next byte
+	jp		c,.pollinput		;if current time is less, no use checking rest
+	jp		.done					;current time larger so get out
+.regd:
+	ld		a,d
+	cp		(iy+1)
+	jp		z,.rege				;if equal, check next byte
+	jp		c,.pollinput		;if current time is less, no use checking rest
+	jp		.done					;current time larger so get out
+.rege:
+	ld		a,e
+	cp		(iy+0)
+	jp		c,.pollinput		;if current time is less, check for input
+	jp		.done					;current time is equal or larger so get out
+
+.pollinput:
+	ld		a,05ah
+;	ioi 	ld (WDTCR),a		;2 sec hitwd
+	IOWRITE_A(WDTCR)
+
+;	ioi	ld a,(SESR)			; check data register bit
+	IOREAD_A(SESR)
+	bit	7,a
+	jp		nz,.done
+
+;	ioi	ld a,(SESR)			; receive buffer is data
+;	bit	6,a
+;	jp		z,.done
+
+;	ioi	ld a,(SESR)			; receive buffer overrun
+	IOREAD_A(SESR)
+	bit	5,a
+	jp		z,.polltime
+
+.done:
+	ld		a,(PFDRShadow)
+	res	7,a            	;set to normal power
+;	ioi	ld (PFDR),a
+	IOWRITE_A(PFDR)
+	ld		(PFDRShadow),a
+#endasm
+
+ 	powerMode(maxpowermode);
+}
+
+/*** BeginHeader timedAlert */
+
+root void timedAlert(int lowpowermode, int maxpowermode, int powersourc,
+	unsigned long timeout);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+timedAlert					<LP35XX.LIB>
+
+SYNTAX:			void timedAlert(int lowpowermode, int maxpowermode,
+						int powersource, unsigned long timeout)
+
+DESCRIPTION:	Use this function to poll real-time clock until timeout occurs.
+					It will enter into low power, disable normal power	source
+					and may enable external battery for polling.  Upon timeout
+					this function will enable normal	power source and exit.
+					Note: If normal power source becomes unavailable, maximum power
+					mode will not activate and the controller may reset.
+
+					Use devPowerSet(ALLDEVICES, xxx) before and after to
+					deactivate and activate all devices to operate at less
+					power.
+
+				   This function is non-reentrant.
+
+PARAMETER1:		Low power mode setting to enter, usually 10 (see powerMode()).
+PARAMETER2:		Max operating power mode, usually 1 (see powerMode()).
+PARAMETER3:		1=enable battery, 0=normal power.
+PARAMETER4:		Timeout in seconds.
+
+RETURN VALUE:	None
+
+SEE ALSO:		powerMode, digInAlert, serCommAlert, devPowerSet, rdPowerState
+
+END DESCRIPTION **********************************************************/
+nodebug
+void timedAlert(int lowpowermode, int maxpowermode, int powersource,
+	unsigned long timeout)
+{
+	static unsigned long endtime, comptime;
+
+	if (timeout == 0)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	endtime = read_rtc_32kHz() + timeout;
+	powerMode(lowpowermode);
+
+#asm
+	ld		hl,(sp+@sp+powersource)		;set power source
+	bool	hl
+	jp		z,.polltime
+	ld		a,(PFDRShadow)
+	set	7,a					;set to battery
+;	ioi	ld (PFDR),a
+	IOWRITE_A(PFDR)
+.polltime:
+	ld		a,05ah
+;	ioi 	ld (WDTCR),a		;2 sec hitwd
+	IOWRITE_A(WDTCR)
+
+	ld		iy,.chktime
+	ld		hl,_read_rtc_32kHz		;return in bc:de
+	jp		(hl)
+
+.chktime:
+	ld		a,05ah
+;	ioi 	ld (WDTCR),a		;2 sec hitwd
+	IOWRITE_A(WDTCR)
+
+	ld		iy,endtime
+	ld		a,b					;start with most significant byte
+	cp		(iy+3)				;compare to endtime byte
+	jp		z,.regc				;if equal, check next byte
+	jp		c,.polltime			;if current time is less, no use checking rest
+	jp		.done					;current time larger so get out
+.regc:
+	ld		a,c
+	cp		(iy+2)
+	jp		z,.regd				;if equal, check next byte
+	jp		c,.polltime			;if current time is less, no use checking rest
+	jp		.done					;current time larger so get out
+.regd:
+	ld		a,d
+	cp		(iy+1)
+	jp		z,.rege				;if equal, check next byte
+	jp		c,.polltime			;if current time is less, no use checking rest
+	jp		.done					;current time larger so get out
+.rege:
+	ld		a,e
+	cp		(iy+0)
+	jp		c,.polltime			;if current time is less, check again
+
+.done:
+	ld		a,(PFDRShadow)
+	res	7,a            	;set to normal power
+;	ioi	ld (PFDR),a
+	IOWRITE_A(PFDR)
+	ld		(PFDRShadow),a
+#endasm
+
+ 	powerMode(maxpowermode);
+}
+
+
+/*** BeginHeader digInAlert */
+
+root void digInAlert(int channel, int value, int lowpowermode, int maxpowermode,
+			int powersource, unsigned long timeout);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digInAlert					<LP35XX.LIB>
+
+SYNTAX:	void digInAlert(int channel, int value, int lowpowermode,
+				int maxpowermode,	int powersource, unsigned long timeout);
+
+DESCRIPTION:	Use this function to poll digital input for a value
+					or until timeout occurs.
+					It will enter into low power, disable normal power	source
+					and may enable external battery for polling.  Upon timeout or
+					correct byte from receiver, this function will enable normal
+					power source and exit.
+					Note: If normal power source becomes unavailable, maximum power
+					mode will not activate and the controller may reset.
+
+					Use devPowerSet(ALLDEVICES, xxx) before and after to
+					deactivate and activate all devices to operate at less
+					power.
+
+				   This function is non-reentrant.
+
+PARAMETER1:		Digital input channel, IN0 - IN15, to poll.
+PARAMETER2:		Input value of 0 or 1 to receive.
+PARAMETER3:		Low power mode setting to enter, usually 10 (see powerMode()).
+PARAMETER4:		Max operating power mode, usually 1 (see powerMode()).
+PARAMETER5:		1=enable battery, 0=normal power.
+PARAMETER6:		Timeout in seconds if input value is not received on channel.
+					Enter 0 for no timeout.
+
+RETURN VALUE:	None
+
+SEE ALSO:		powerMode, serCommAlert, timedAlert, devPowerSet, rdPowerState
+
+END DESCRIPTION **********************************************************/
+nodebug
+void digInAlert(int channel, int value, int lowpowermode, int maxpowermode,
+			int powersource, unsigned long timeout)
+{
+	static int aport, abit, avalue, notime;
+	static unsigned long endtime, comptime;
+	static const char _bitmask[] = "\x01\x02\x04\x08\x10\x20\x40\x80";
+
+	if (channel >= 8)
+	{
+		abit = _bitmask[channel&0x07];
+		aport = PADR;
+	}
+	else if (channel >= 4)
+		{
+			abit = _bitmask[channel-2];
+			aport = PBDR;
+		}
+	else if (channel >= 2)
+			{
+				abit = _bitmask[channel+2];
+				aport = PEDR;
+			}
+			else
+			{
+				abit = _bitmask[channel];
+				aport = PEDR;
+			}
+
+	avalue=value;
+
+	if (timeout == 0)
+	{
+		notime = 0;
+	}
+	else
+	{
+		notime = 1;
+		endtime = read_rtc_32kHz() + timeout;
+	}
+
+	powerMode(lowpowermode);
+
+#asm
+	ld		hl,(sp+@sp+powersource)		;set power source
+	bool	hl
+	jp		z,.polltime
+	ld		a,(PFDRShadow)
+	set	7,a					;set to battery
+;	ioi	ld (PFDR),a
+	IOWRITE_A(PFDR)
+.polltime:
+	ld		a,05ah
+;	ioi 	ld (WDTCR),a		;2 sec hitwd
+	IOWRITE_A(WDTCR)
+
+	ld		a,(notime)
+	and	01h
+	jp		z,.pollinput
+
+	ld		iy,.chktime
+	ld		hl,_read_rtc_32kHz		;return in bc:de
+	jp		(hl)
+
+.chktime:
+	ld		a,05ah
+;	ioi 	ld (WDTCR),a		;2 sec hitwd
+	IOWRITE_A(WDTCR)
+
+	ld		iy,endtime
+	ld		a,b					;start with most significant byte
+	cp		(iy+3)				;compare to endtime byte
+	jp		z,.regc				;if equal, check next byte
+	jp		c,.pollinput		;if current time is less, no use checking rest
+	jp		.done					;current time larger so get out
+.regc:
+	ld		a,c
+	cp		(iy+2)
+	jp		z,.regd				;if equal, check next byte
+	jp		c,.pollinput		;if current time is less, no use checking rest
+	jp		.done					;current time larger so get out
+.regd:
+	ld		a,d
+	cp		(iy+1)
+	jp		z,.rege				;if equal, check next byte
+	jp		c,.pollinput		;if current time is less, no use checking rest
+	jp		.done					;current time larger so get out
+.rege:
+	ld		a,e
+	cp		(iy+0)
+	jp		c,.pollinput		;if current time is less, check for input
+	jp		.done					;current time is equal or larger so get out
+
+.pollinput:
+	ld		a,05ah
+;	ioi 	ld (WDTCR),a		;2 sec hitwd
+	IOWRITE_A(WDTCR)
+
+	ld		a,(abit)
+	ld		hl,(aport)
+	ioi and a,(hl)
+	bool hl
+	rr 	hl 	 				; zero hl
+	ld 	l,a
+	bool 	hl 					; result 0 or 1
+	ld		a,(avalue)
+	cp		l
+	jp		nz,.polltime
+
+.done:
+	ld		a,(PFDRShadow)
+	res	7,a            	;set to normal power
+;	ioi	ld (PFDR),a
+	IOWRITE_A(PFDR)
+	ld		(PFDRShadow),a
+#endasm
+
+ 	powerMode(maxpowermode);
+}
+
+/*** BeginHeader brdInit */
+
+void brdInit ( void );
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+brdInit						<LP35XX.LIB>
+
+SYNTAX:			void brdInit (void);
+
+DESCRIPTION:	Call this function at the beginning of application code
+					to initialize the controller's I/O ports.
+
+	Summary of initialization
+	-------------------------
+	1.	Uses main oscillator.
+	2. Display/keypad buffer is disabled.
+	3. RS485 serial communications are not enabled.
+	4. RS232 serial communications are enabled.
+	5.	Unused configurable I/O are tied inputs or outputs set low.
+	6. Self-timed chip select is set to 109 nsec.
+	7. If installed, ADC device is reset and SCLKD is to 19200 baud.
+	8. If installed, ADC device are calibration constanst are read so
+		this function cannot run in RAM.
+	9. If installed, Relay is set to NC or Reset position.
+
+
+Port	Function 						I/O		brdInit( ) I/O State
+----- ----------------------- 	-------- --------------------------------------------
+PA0	IN8 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PA1	IN9 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PA2	IN10 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PA3	IN11 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PA4	IN12 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PA5	IN13 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PA6	IN14 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PA7	IN15 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PB0	Power Input Detect			Input		Driven by external or battery source
+PB1	CLKA - programming port		Input		Pulled-up when not driven by programming port
+PB2	IN4 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PB3	IN5 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PB4	IN6 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PB5	IN7 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PB6	LCD buffer enable				Output	High (disables)
+PB7	Serial Device Select			Output	High (active low)
+PC0	TXD - serial device			Output	High (serial set by ADC driver)
+PC1	RXD - serial device			Input		Pulled-up (serial set by ADC driver)
+PC2	TXC - RS232						Output	High (serial set by serial drivers)
+PC3	RXC - RS232						Input		Pulled-up (serial set by serial drivers)
+PC4	TXB - RS232						Output	High (serial set by serial drivers)
+PC5	RXB - RS232						Input		Pulled-up (serial set by serial drivers)
+PC6	TXA - programming port		Output	High when not driven by programming port
+PC7	RXA - programming port		Input		Pulled-up when not driven by programming port
+PD0	OUT0 - Digital Output		Output	Low (sinking)
+PD1	OUT1 - Digital Output		Output	Low (sinking)
+PD2	OUT2 - Digital Output		Output	Low (sinking)
+PD3	OUT3 - Digital Output		Output	Low (sinking)
+PD4	OUT4 - Digital Output		Output	Low (sinking)
+PD5	OUT5 - Digital Output		Output	Low (sinking)
+PD6	OUT6 - Digital Output		Output	Low (sinking)
+PD7	OUT7 - Digital Output		Output	Low (sinking)
+PE0	IN0 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PE1	IN1 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PE2	OUT8 - Digital Output		Output	Low (sourcing)
+PE3	OUT9 - Digital Output		Output	Low (sourcing)
+PE4	IN2 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PE5	IN3 - Digital Input			Input		Pulled to Vcc, Gnd or +K
+PE6	LCD/Keypad reset line		Output	High (active low)
+PE7	LCD/Keypad device select	Output	High (active low)
+PF0	ADC serial clock				Output	High (SCLKC set by ADC driver)
+PF1	ADC Busy line					Input		Low (ADC device driven)
+PF2	Not Used							Input		Pulled-up
+PF3	ADC device select				Output	High (active low)
+PF4	PWM0 - Analog Output			Output	High (PWM set by pwm driver)
+PF5	PWM1 - Analog Output 		Output	High (PWM set by pwm driver)
+PF6	PWM2 - Analog Output			Output	High (PWM set by pwm driver)
+PF7	Power Enable Control			Output	Low (to use external power source)
+PG0	RS485 transmit enable		Output	Low (disables)
+PG1	RS232 Shutdown	control		Output	Low (shutdown disabled)
+PG2	RS485 TXF						Output	High (serial set by serial drivers)
+PG3	RS485 RXF						Input		Pulled-up (serial set by serial drivers)
+PG4	Relay Set contact				Output	Low (normally open)
+PG5	Relay Reset contact			Output	Low (normally closed, reset state)
+PG6	TXE - RS232						Output	High (serial set by serial drivers)
+PG7	RXE - RS232, active			Input		Pulled-up (serial set by serial drivers)
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void brdInit (void)
+{
+	#GLOBAL_INIT {__brdinitflag  = FALSE;}
+	#GLOBAL_INIT {__adcinitflag  = FALSE;}
+	#GLOBAL_INIT {__rly_onboard  = FALSE;}
+	#GLOBAL_INIT {__adc_onboard  = FALSE;}
+
+	__brdinitflag = TRUE;
+	__adcinitflag = FALSE;
+	__rly_onboard = FALSE;
+	__adc_onboard = FALSE;
+
+	//---------------------------------------------------------------------
+	// Port A configuration
+	//
+	// PA0	IN8  - Digital Input		Jumper group 2: Pulled to Vcc, Gnd or +K
+	// PA1	IN9  - Digital Input		Jumper group 2: Pulled to Vcc, Gnd or +K
+	// PA2	IN10 - Digital Input		Jumper group 2: Pulled to Vcc, Gnd or +K
+	// PA3	IN11 - Digital Input		Jumper group 2: Pulled to Vcc, Gnd or +K
+	// PA4	IN12 - Digital Input		Jumper group 2: Pulled to Vcc, Gnd or +K
+	// PA5	IN13 - Digital Input		Jumper group 2: Pulled to Vcc, Gnd or +K
+	// PA6	IN14 - Digital Input		Jumper group 2: Pulled to Vcc, Gnd or +K
+	// PA7	IN15 - Digital Input		Jumper group 2: Pulled to Vcc, Gnd or +K
+	//---------------------------------------------------------------------
+	WrPortI(SPCR, &SPCRShadow, 0x80);		// set to all inputs
+
+	//---------------------------------------------------------------------
+	// Port B configuration
+	//
+	// PB0	Power Input Detect		Input		0=external power driven; 1=battery driven
+	// PB1	CLKA - programming port	Input		Pulled-up when not driven by programming port
+	// PB2	IN4 - Digital Input		Input		Jumper group 1: Pulled to Vcc, Gnd or +K
+	// PB3	IN5 - Digital Input		Input		Jumper group 1: Pulled to Vcc, Gnd or +K
+	// PB4	IN6 - Digital Input		Input		Jumper group 1: Pulled to Vcc, Gnd or +K
+	// PB5	IN7 - Digital Input		Input		Jumper group 1: Pulled to Vcc, Gnd or +K
+	// PB6	LCD buffer enable			Output	Pulled-up when not driven
+	// PB7	Serial Device Select		Output	Pulled-up when not driven by serial device
+	//---------------------------------------------------------------------
+	BitWrPortI(PBDR, &PBDRShadow, 1, 6);   // Set bit 6
+	BitWrPortI(PBDR, &PBDRShadow, 1, 7);   // Set bit 7
+	WrPortI(PBDDR, &PBDDRShadow, 0xC0);		// Set bits 7,6 to output, rest inputs
+
+	//---------------------------------------------------------------------
+	// Port C configuration
+	//
+	//	PC0	TXD - serial device		Output	High when not driven by serial ADC device
+	//	PC1	RXD - serial device		Input		Pulled-up when not driven by serial ADC device
+	//	PC2	TXC - RS232					Output	High when not device driven (set by serXopen)
+	//	PC3	RXC - RS232					Input		Pulled-up by device (set by serXopen)
+	//	PC4	TXB - RS232					Output	High when not device driven  (set by serXopen)
+	//	PC5	RXB - RS232					Input		Pulled-up by device (set by serXopen)
+	//	PC6	TXA - programming port	Output	High when not driven by programming port
+	//	PC7	RXA - programming port	Input		Pulled-up when not driven by programming port
+	//---------------------------------------------------------------------
+	//WrPortI(PCFR, &PCFRShadow, 0x00);					//set all bits to normal
+	WrPortI(PCDR, &PCDRShadow, PCDRShadow|0x15);		//set bits 4,2,0 high
+
+	//---------------------------------------------------------------------
+	// Port D configuration
+	//
+	// PD0	OUT0 - Digital Output	Low when not sinking
+	// PD1	OUT1 - Digital Output	Low when not sinking
+	// PD2	OUT2 - Digital Output	Low when not sinking
+	// PD3	OUT3 - Digital Output	Low when not sinking
+	// PD4	OUT4 - Digital Output	Low when not sinking
+	// PD5	OUT5 - Digital Output	Low when not sinking
+	// PD6	OUT6 - Digital Output	Low when not sinking
+	// PD7	OUT7 - Digital Output	Low when not sinking
+	//---------------------------------------------------------------------
+	WrPortI(PDCR, &PDCRShadow, 0x00);			//clear all bits to pclk/2
+	WrPortI(PDFR, &PDFRShadow, 0x00);			//clear all bits to normal function
+	WrPortI(PDDCR, &PDDCRShadow, 0x00);			//clear all bits to drive high and low
+	WrPortI(PDDR, &PDDRShadow, 0x00);			//clear all bits to output low
+	WrPortI(PDDDR, &PDDDRShadow, 0xff);			//set all bits to output
+
+	//---------------------------------------------------------------------
+	// Port E configuration
+	//
+	// PE0	IN0 - Digital Input			Input		Jumpered group 1: Pulled to Vcc, Gnd or +K
+	// PE1	IN1 - Digital Input			Input		Jumpered group 1: Pulled to Vcc, Gnd or +K
+	// PE2	OUT8 - Digital Output		Output	Low when not sourcing
+	// PE3	OUT9 - Digital Output		Output	Low when not sourcing
+	// PE4	IN2 - Digital Input			Input		Jumpered group 1: Pulled to Vcc, Gnd or +K
+	// PE5	IN3 - Digital Input			Input		Jumpered group 1: Pulled to Vcc, Gnd or +K
+	// PE6	LCD/Keypad reset line		Output	Pulled-up when not driven by LCD/Keypad
+	// PE7	LCD/Keypad device select	Output	Pulled-up when not driven by LCD/Keypad
+	//---------------------------------------------------------------------
+	WrPortI(PECR, &PECRShadow, 0x00);		//clear all bits to pclk/2
+	WrPortI(PEFR, &PEFRShadow, 0x00);		//clear all bits to normal function
+	WrPortI(PEDR, &PEDRShadow, 0x80);		//set bits 7,6 output high
+	WrPortI(PEDDR, &PEDDRShadow, 0xcc);		//set bits 7,6,3,2 to output
+														//clear bits 5,4,1,0 to input
+
+	//---------------------------------------------------------------------
+	// Port F configuration
+	//
+	// PF0	ADC serial clock			Output	High when not driven by SCLKC
+	// PF1	ADC Busy line				Input		Normally low when not ADC driven
+	// PF2	Not Used						Input		Pulled-up; J6
+	// PF3	ADC device select			Output	Pulled-up when not ADC driven
+	// PF4	PWM0 							Output	Pulled-up when not driven
+	// PF5	PWM1  						Output	Pulled-up when not driven
+	// PF6	PWM2 							Output	Pulled-up when not driven
+	// PF7	Power Enable Control		Output	Low to drive external power source; high for battery
+	//---------------------------------------------------------------------
+	WrPortI(PFCR, &PFCRShadow, 0x00);		//clear all bits for pclk/2
+	WrPortI(PFFR, &PFFRShadow, 0x00);		//clear all bits for normal function
+	WrPortI(PFDCR, &PFDCRShadow, 0x00);		//clear all bits to drive high and low
+#ifdef ADC_ONBOARD
+	WrPortI(PFDR, &PFDRShadow, 0x79);		//set bits 6,5,4,3,0 high
+	WrPortI(PFDDR, &PFDDRShadow, 0xf9);		//set bits 7,6,5,4,3,0 to output
+														//clear bits 2,1 to input
+#else
+	WrPortI(PFDR, &PFDRShadow, 0x7b);		//set bits 6,5,4,3,1,0 high
+	WrPortI(PFDDR, &PFDDRShadow, 0xfb);		//set bits 7,6,5,4,3,1,0 to output
+														//clear bit 2 to input
+#endif
+
+	//---------------------------------------------------------------------
+	// Port G configuration
+	//
+	// PG0	RS485 transmit enable	Output	Pulled-low disables RS485 transmit
+	//	PG1	RS232 Shutdown	control	Output	Pulled-up when not driven; RXE active
+	//	PG2	RS485 TXF					Output	Pulled-up when not RS485 driven
+	//	PG3	RS485 RXF					Input		Driven by RS485
+	//	PG4	Relay Set contact			Output	Low; pulled-down when not driven (NO)
+	//	PG5	Relay Reset contact		Output	Low; pulled-down when not driven (NC default)
+	//	PG6	TXE - RS232					Output	High when not device driven (set by serXopen)
+	//	PG7	RXE - RS232, active		Input		Pulled-up by device (set by serXopen)
+	//---------------------------------------------------------------------
+	WrPortI(PGCR, &PGCRShadow, 0x00);		//clear all bits for pclk/2
+	WrPortI(PGFR, &PGFRShadow, 0x00);		//clear all bits for normal function
+	WrPortI(PGDCR, &PGDCRShadow, 0x00);		//clear bits 6,5,4,2,1,0 drive output
+	WrPortI(PGDR, &PGDRShadow, 0xcc);		//set all bits except bits 5,4
+	WrPortI(PGDDR, &PGDDRShadow, 0x77);		//set bits to output except bits 7,3
+
+	//---------------------------------------------------------------------
+	// set global power save control self-timed chip select
+	//---------------------------------------------------------------------
+	WrPortI(GPSCR, &GPSCRShadow, GPSCRShadow|0xe0);		//set to 109 nsec
+
+#ifdef ADC_ONBOARD
+	__adc_onboard = TRUE;
+	// clear table and read all calibration constants
+	memset(_adcCalibS, 0, sizeof(_adcCalibS));
+	memset(_adcCalibD, 0, sizeof(_adcCalibD));
+	memset(_adcCalibM, 0, sizeof(_adcCalibM));
+	anaInEERd(ALLCHAN, SINGLE, 0);
+	anaInEERd(ALLCHAN, DIFF, 0);
+	anaInEERd(ALLCHAN, mAMP, 0);
+
+	// setup sclk
+	BitWrPortI (PFFR, &PFFRShadow, 1, 0); 		//set PF0 as SCLK from serial D transfer clock
+	BitWrPortI (PFDDR, &PFDDRShadow, 1, 0);	//set PF0 to output
+	anaInConfig(0, 0, ADC_SCLKBAUD);				//reset adc device and sclk baud
+#endif
+
+#ifdef RLY_ONBOARD
+	__rly_onboard = TRUE;
+#endif
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */
+
+
+

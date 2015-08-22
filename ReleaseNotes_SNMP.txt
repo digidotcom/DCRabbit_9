@@ -1,0 +1,54 @@
+******************************************************
+
+	SNMP Release Notes
+
+******************************************************
+******************************************************
+VERSION 2.02
+
+NEW FEATURES
+
+BUG FIXES
+- Defect #81632.  SNMP_SET operation for negative 
+  integer values was incorrect.
+
+OTHER FUNCTIONAL CHANGES
+
+******************************************************
+******************************************************
+VERSION 2.01
+
+*********************IMPORTANT!!!*********************
+  This module release is only compatible with Dynamic 
+  C versions 9.01 and greater.  Versions of Dynamic C 
+  earlier than 9.01 will not be able to be used with 
+  this module.  If you have questions about module 
+  comparability, please contact technical support for 
+  assistance:
+ 	(530) 757.3737
+  	Fax: 530.753.5141
+  	E-mail: zworld@zworld.com
+******************************************************
+
+NEW FEATURES
+
+BUG FIXES
+- Defect #81267.  TIMETICK objects now work reliably.
+- Defect #81268.  SNMP UDP socket now always opened when
+  interface comes up.
+
+OTHER FUNCTIONAL CHANGES
+- Internal changes to support DC9.0 non-contiguous xmem packet
+  buffering.
+
+******************************************************
+******************************************************
+VERSION 1.01
+
+NEW FEATURES
+
+BUG FIXES
+
+OTHER FUNCTIONAL CHANGES
+
+******************************************************

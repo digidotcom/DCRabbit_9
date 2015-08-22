@@ -1,0 +1,1117 @@
+/*
+ *		dns.lib
+ *		Copyright (C) Z-World, Inc. All rights reserved.
+ *		Portions used with permission of Erick Engelke.
+ *
+ * Domain Name System.  This library handles host name
+ * resolution.
+ */
+
+/*** BeginHeader  ********************************************/
+#ifndef __DNS_LIB
+#define __DNS_LIB
+
+#ifdef DNS_DEBUG
+	#define _dns_nodebug debug
+#else
+	#define _dns_nodebug nodebug
+#endif
+
+#ifndef DNS_MAX_RESOLVES
+	#define DNS_MAX_RESOLVES 4
+#endif
+
+#ifndef DNS_MAX_NAME
+	#ifdef MAX_DOMAIN_LENGTH
+		#define DNS_MAX_NAME MAX_DOMAIN_LENGTH
+	#else
+		#define DNS_MAX_NAME 64
+	#endif
+#endif
+
+#ifndef DNS_MAX_DATAGRAM_SIZE
+	#define DNS_MAX_DATAGRAM_SIZE 512
+#endif
+
+#ifndef DNS_RETRY_TIMEOUT
+	#define DNS_RETRY_TIMEOUT 2000
+#endif
+
+#ifndef DNS_NUMBER_RETRIES
+	#define DNS_NUMBER_RETRIES 2
+#endif
+
+#ifndef DNS_MIN_KEEP_COMPLETED
+	#define DNS_MIN_KEEP_COMPLETED 10000
+#endif
+
+#ifndef DNS_SOCK_BUF_SIZE
+	#define DNS_SOCK_BUF_SIZE 1024
+#endif
+
+#if _USER
+	#define _dns_server_table servlist_compatibility
+#endif
+
+typedef struct {
+	int				id;
+	unsigned int 	flags;
+	longword			resolved_ip;
+	unsigned long	timeout;
+	int				numretries;
+	longword			nameserver;		// IP addr of nameserver being tried
+} _dns_table_type;
+
+// Values for the flags field
+#define _DNS_COMPLETED					0x0001
+#define _DNS_FAILED						0x0002
+#define _DNS_SUCCEEDED					0x0004
+#define _DNS_TIMEDOUT					0x0008
+#define _DNS_DEFDOMAINFIRST			0x0010
+#define _DNS_FAILEDFIRSTDOMAIN		0x0020
+#define _DNS_FULLYQUALIFIED			0x0040
+
+// Return values for resolve_name_check()
+#define RESOLVE_SUCCESS				 1
+#define RESOLVE_AGAIN				 0
+#define RESOLVE_FAILED				-1
+#define RESOLVE_TIMEDOUT			-2
+#define RESOLVE_HANDLENOTVALID	-3
+#define RESOLVE_NOENTRIES			-1
+#define RESOLVE_LONGHOSTNAME		-2
+#define RESOLVE_NONAMESERVER		-4
+
+// Structure that represents the header of a DNS datagram
+typedef struct {
+	unsigned int id;
+	unsigned int flags;
+	unsigned int numquestions;
+	unsigned int numanswers;
+	unsigned int numauthority;
+	unsigned int numadditional;
+	/* The rest of the datagram goes here */
+} _dns_header;
+
+// Structure that represents the end of a query section
+typedef struct {
+	unsigned int type;
+	unsigned int class;
+} _dns_query_end;
+
+// Structure that represents the middle section of a Resource Record
+typedef struct {
+	/* Domain name goes here */
+	unsigned int type;
+	unsigned int class;
+	unsigned long ttl;
+	unsigned int datalen;
+	/* Resource data goes here */
+} _dns_rr_part;
+
+// Flags for ServList functions
+#define DNS_PREDEFINED	0x0002	// This server is predefined (i.e. added using ifconfig(...IFS_NAMESERVER_ADD..)
+#define DNS_PPP			0x0008	// Nameserver specified by IPCP when starting PPP interface
+#define DNS_DHCP			0x0020	// Nameserver provided by DHCP server
+#define DNS_ALL_SOURCES	(DNS_PREDEFINED|DNS_PPP|DNS_DHCP)
+#define DNS_SRV_OK		0x0100   // Server OK last time we checked
+#define DNS_ALL_HEALTH	(DNS_SRV_OK)
+	// Note that more than one of the above flags may be set for any server, since the same server may
+   // be specified by more than one source.  The above flags (treated as a single number) are used
+   // to specify a preference: the highest number is most preferred.  Thus, DHCP servers are preferred
+   // to PPP, which in turn are preferred over predefined.  If the OK flag is not set, then the server
+   // is obviously least preferred whatever the other flags (since it timed out last time).
+
+// Global variables for DNS support
+
+// The default domain is appended to host names to look up if the host name has no '.'
+// characters in it.  If this lookup fails, then the hostname
+// is tried without the domain name.
+char defaultdomain[DNS_MAX_NAME];
+char* def_domain;			// Default domain.  Points to the above array, or points to const string,
+								// or may be NULL if there is no default domain.
+
+#if 0
+longword def_nameservers_conf[MAX_NAMESERVERS];	// Name servers configured
+																// by the user
+int _last_nameserver_conf;	// Index to the last name server in the configured
+									//array
+longword def_nameservers_dhcp[DHCP_NUM_DNS];	// Name servers set up by DHCP
+int _last_nameserver_dhcp;	// Index to the last name server in the DHCP array
+longword* def_nameservers;	// Points to either the conf or DHCP name server
+									// array
+int* _last_nameserver;	// Points to the index of the last name server in the
+								// configured or DHCP array
+#endif
+#if !(_USER)
+#ifndef DISABLE_DNS
+long _dns_table;			// Pointer to the internal request table
+_rs_udp_Socket _dns_sock;	// The DNS UDP socket
+long _dns_sock_buffer;	// Ponter to the buffer for the DNS UDP socket
+int _dns_id;				// ID number for the next request
+int _dns_sock_open;		// Boolean for whether the DNS socket is currently
+								// open
+char _dns_dgram[DNS_MAX_DATAGRAM_SIZE];	// Buffer in which to receive
+														// and construct datagrams
+int _dns_num_requests;	// The current number of outstanding requests
+
+#ifdef USE_DHCP
+	#define DNS_TABLE_SIZE	(MAX_NAMESERVERS+DHCP_NUM_DNS*NUM_DHCP_IF)
+#else
+	#define DNS_TABLE_SIZE	MAX_NAMESERVERS
+#endif
+
+ServTableEntry _dns_servers[DNS_TABLE_SIZE];	// Server table.  Sorted in order of descending preference.
+ServTableDesc _dns_server_table;
+
+#endif	// DISABLE_DNS
+#endif   // rabbitsys non-user mode
+
+// Masks for the flags field of the DNS datagram header
+#define _DNS_FLAGS_QR		0x8000	// 1 for query, 0 for response
+#define _DNS_FLAGS_OPCODE	0x7800	// 0 for standard query
+#define _DNS_FLAGS_AA		0x0400	// 1 for authoritative answer
+#define _DNS_FLAGS_TC		0x0200	// 1 for truncated reply
+#define _DNS_FLAGS_RD		0x0100	// 1 for recursion desired
+#define _DNS_FLAGS_RA		0x0080	// 1 for recursion available
+#define _DNS_FLAGS_ZERO		0x0070	// Must be zero
+#define _DNS_FLAGS_RCODE	0x000F	// Return code (0--no error, 3--name error)
+
+// rcode values (return code)
+#define _DNS_RCODE_NOERROR					0		// No error
+#define _DNS_RCODE_FORM						1		// Format error
+#define _DNS_RCODE_FAIL						2		// Server failed
+#define _DNS_RCODE_NAME						3		// Name does not exist
+#define _DNS_RCODE_NOTIMPLEMENTED		4		// Not implemented
+#define _DNS_RCODE_REFUSED					5		// Name server refusing to do
+															// request
+
+// Query types
+#define _DNS_QUERY_A			  1	// IP address (supported)
+#define _DNS_QUERY_NS		  2	// Name server (unsupported)
+#define _DNS_QUERY_CNAME	  5	// Canonical name (unsupported)
+#define _DNS_QUERY_PTR		 12	// Pointer record (unsupported)
+#define _DNS_QUERY_HINFO	 13	// Host info (unsupported)
+#define _DNS_QUERY_MX		 15	// Mail exchange record (unsupported)
+#define _DNS_QUERY_AXFR		252	// Request for zone transfer (unsupported)
+#define _DNS_QUERY_ANY		255	// Request for all records (unsupported)
+
+/*** EndHeader */
+
+
+/*** BeginHeader _dns_init */
+void _dns_init(void);
+/*** EndHeader */
+
+_dns_nodebug void _dns_init(void)
+{
+	auto _dns_table_type init_table;
+	auto int i;
+
+	LOCK_DNS();
+
+	// Set the default domain
+	def_domain = MY_DOMAIN;
+
+#ifndef DISABLE_DNS
+	// Set the DNS ID to an initial value
+	_dns_id = 1;
+
+	if(!_initialized)
+	{
+		// Allocate our table and buffer
+		_dns_table = xalloc(DNS_MAX_RESOLVES * (sizeof(_dns_table_type) +
+	                                        DNS_MAX_NAME));
+		_dns_sock_buffer = xalloc(DNS_SOCK_BUF_SIZE);
+	}
+	// Initialize the table
+	init_table.id = -1;
+	for (i = 0; i < DNS_MAX_RESOLVES; i++) {
+		root2xmem(_dns_table + (i * (sizeof(_dns_table_type) +
+		                             DNS_MAX_NAME)),
+		          &init_table, sizeof(_dns_table_type));
+	}
+
+	_dns_sock_open = 0;
+	_dns_num_requests = 0;
+
+#endif	// DISABLE_DNS
+	UNLOCK_DNS();
+}
+
+/*** BeginHeader _rs_resolve_name_start */
+/* START FUNCTION DESCRIPTION ********************************************
+resolve_name_start                     <DNS.LIB>
+
+SYNTAX: int resolve_name_start(char* hostname);
+
+KEYWORDS:		tcpip, dns, ip address
+
+DESCRIPTION:	Starts the function of resolving a host name into an IP
+					address.  The given host name must is limited to
+					DNS_MAX_NAME characters (64 by default), including the
+					null terminator.  If a default domain is to be added, then
+					the two strings together are limited to DNS_MAX_NAME.
+					This function returns a handle that must be used in the
+					subsequent resolve_name_check() and resolve_cancel()
+					functions.
+
+PARAMETER1: 	host name to convert to an IP address
+
+RETURN VALUE:  > 0	handle for subsequest resolve_name_* calls
+					RESOLVE_NOENTRIES (-1)		could not start the resolve
+						process because there were no resolve entries free
+					RESOLVE_LONGHOSTNAME (-2)	the given hostname was too large
+					RESOLVE_NONAMESERVER (-4)	no nameserver defined
+
+SEE ALSO:      resolve_name_check, resolve_cancel, resolve
+
+END DESCRIPTION **********************************************************/
+
+_system int _rs_resolve_name_start(char* hostname);
+/*** EndHeader */
+
+#ifdef DISABLE_UDP
+	#error "Cannot use DNS (name server) functions if DISABLE_UDP is defined"
+#endif
+
+_dns_nodebug _system int _rs_resolve_name_start(char* hostname)
+{
+	_SYS_CALL_VARS
+	auto _dns_table_type entry;
+	auto char entry_hostname[DNS_MAX_NAME];
+	auto long addr;
+	auto int i;
+	auto int hostnamelen;
+	auto int retval;
+	auto long oldest_time;
+	auto long oldest_addr;
+
+	if ((hostnamelen = strlen(hostname)) >= DNS_MAX_NAME) {
+		// The hostname is too large to store internally
+		return (RESOLVE_LONGHOSTNAME);
+	}
+
+	if (!_dns_server_table.num && !isaddr(hostname)) {
+		// No nameserver defined
+		return (RESOLVE_NONAMESERVER);
+	}
+
+	LOCK_DNS();
+	// Open the socket if necessary
+	if (_dns_sock_open == 0)
+	{
+#if _SYSTEM
+		_dns_sock.userSocket = 0;
+#endif
+		_dns_sock_open = _rs_udp_extopen(&_dns_sock, IF_ANY, 0, -1, 53,
+				NULL, _dns_sock_buffer,
+		      DNS_SOCK_BUF_SIZE) != 0;
+#ifdef DNS_VERBOSE
+		if (!_dns_sock_open)
+			printf("dns udp socket open failed.\n");
+#endif
+	}
+
+	// Find an empty slot in the table
+	addr = _dns_table;
+	oldest_time = 0;
+	oldest_addr = 0;
+	for (i = 0; i < DNS_MAX_RESOLVES; i++) {
+		xmem2root(&entry, addr, sizeof(_dns_table_type));
+		if (entry.id == -1) {
+			// Found our entry
+			break;
+		} else {
+			// Check for old entries that the user has apparently abandoned
+			// that we can reuse
+			if (((entry.flags & _DNS_COMPLETED) != 0) &&
+			    (chk_timeout(entry.timeout + DNS_MIN_KEEP_COMPLETED)) &&
+			    (chk_timeout(entry.timeout + oldest_time))) {
+				oldest_time = MS_TIMER - entry.timeout;
+				oldest_addr = addr;
+			}
+		}
+		addr += sizeof(_dns_table_type) + DNS_MAX_NAME;
+	}
+	if (entry.id != -1) {
+		// No free entries
+		if (oldest_addr != 0) {
+			// ...But we can use an old entry
+			addr = oldest_addr;
+			xmem2root(&entry, addr, sizeof(_dns_table_type));
+			_dns_num_requests--;
+		} else {
+			// No free entries in the resolve table
+			UNLOCK_DNS();
+			return (RESOLVE_NOENTRIES);
+		}
+	}
+
+	// We've got the entry, now let's fill it out
+	entry.id = _dns_id;
+	entry.flags = 0;
+	entry.resolved_ip = 0;
+	entry.numretries = 0;
+	entry.nameserver = servlist_first(&_dns_server_table, 0, NULL);	// Start with most preferred
+
+	// Increment the id, and detect overflow
+	_dns_id++;
+	if (_dns_id < 0) {
+		_dns_id = 1;
+	}
+
+	// if the address is in dotted decimal
+	// format just set the entry.
+	if(isaddr(hostname)) {
+		entry.resolved_ip = inet_addr(hostname);
+		entry.timeout = MS_TIMER;
+		entry.flags = _DNS_COMPLETED | _DNS_SUCCEEDED;
+		root2xmem(addr, &entry, sizeof(_dns_table_type));
+		UNLOCK_DNS();
+		return entry.id;
+	}
+
+	strcpy(entry_hostname, hostname);
+	// Check if it ends with a '.'--in this case, it is fully-qualified
+	if (entry_hostname[hostnamelen - 1] == '.') {
+		entry.flags |= _DNS_FULLYQUALIFIED;
+		entry_hostname[hostnamelen - 1] = '\0';
+		hostnamelen--;
+	}
+
+	if (((entry.flags & _DNS_FULLYQUALIFIED) == 0) && (def_domain != NULL) &&
+	    (strchr(entry_hostname, '.') == NULL)) {
+		entry.flags |= _DNS_DEFDOMAINFIRST;
+	}
+
+	retval = _send_resolve_req(&entry, entry_hostname);
+	if (retval < 0) {
+		UNLOCK_DNS();
+		return (RESOLVE_LONGHOSTNAME);
+	}
+
+	entry.timeout = MS_TIMER;
+
+	_dns_num_requests++;
+
+	// Copy the entry to the xmem table
+	root2xmem(addr, &entry, sizeof(_dns_table_type));
+	root2xmem(addr + sizeof(_dns_table_type), entry_hostname, hostnamelen + 1);
+
+	UNLOCK_DNS();
+	return (entry.id);
+}
+
+/*** BeginHeader _rs_resolve_name_check */
+/* START FUNCTION DESCRIPTION ********************************************
+resolve_name_check                     <DNS.LIB>
+
+SYNTAX: int resolve_name_check(int handle, longword* resolved_ip);
+
+KEYWORDS:		tcpip, dns, ip address
+
+DESCRIPTION:	Checks if the DNS lookup represented by the given
+					handle has completed.  On success, it fills in the
+					resolved IP address in the space pointed to by the
+					resolved_ip parameter.
+
+PARAMETER1: 	handle that represents a DNS lookup process
+PARAMETER2:		a pointer to a user-supplied longword where the
+					resolved IP address will be placed
+
+RETURN VALUE:	RESOLVE_SUCCESS	The address was successfully resolved.
+											The given handle will no longer be valid
+											after this value is returned.
+					RESOLVE_AGAIN		The resolve process has not completed,
+											and resolve_name_check() needs to be
+											called again.
+					RESOLVE_FAILED		The DNS server responded that the given
+											host name does not exist.  The given
+											handle will no longer be valid after this
+											value is returned.
+					RESOLVE_TIMEDOUT	The request has been cancelled because a
+											response from the DNS server was not
+											received before the last timeout expired.
+											The given handle will no longer be valid
+											after this value is returned.
+					RESOLVE_HANDLENOTVALID	There is no request for the given
+													handle.
+					RESOLVE_NONAMESERVER		No nameserver defined
+
+SEE ALSO:      resolve_name_start, resolve_cancel, resolve
+
+END DESCRIPTION **********************************************************/
+
+_system int _rs_resolve_name_check(int handle, longword* resolved_ip);
+/*** EndHeader */
+
+_dns_nodebug _system int _rs_resolve_name_check(int handle, longword* resolved_ip)
+{
+	_SYS_CALL_VARS
+	auto long addr;
+	auto int i;
+	auto _dns_table_type entry;
+	auto int retval;
+
+   _RK_CHK_POINTER(resolved_ip)
+
+	// Call tcp_tick so that we can drive DNS lookups with only
+	// resolve_name_check()
+	_rs_tcp_tick(NULL);
+
+	LOCK_DNS();
+	// Find the entry that corresponds to the handle
+	addr = _dns_table;
+	for (i = 0; i < DNS_MAX_RESOLVES; i++) {
+		xmem2root(&entry, addr, sizeof(_dns_table_type));
+		if (entry.id == handle) {
+			// Found our entry
+			break;
+		}
+		addr += sizeof(_dns_table_type) + DNS_MAX_NAME;
+	}
+	// Didn't find the handle
+	if (entry.id != handle) {
+#ifdef DNS_VERBOSE
+		printf("DNS: check: handle not valid\n");
+#endif
+		retval = RESOLVE_HANDLENOTVALID;
+	} else {
+		// Found the handle--is the request finished?
+		if ((entry.flags & _DNS_COMPLETED) != 0) {
+			// Did the request succeed?
+			if ((entry.flags & _DNS_SUCCEEDED) != 0) {
+				*resolved_ip = entry.resolved_ip;
+				retval = RESOLVE_SUCCESS;
+			// Did the request fail?
+			} else if ((entry.flags & _DNS_FAILED) != 0) {
+#ifdef DNS_VERBOSE
+				printf("DNS: check: resolve failed\n");
+#endif
+				retval = RESOLVE_FAILED;
+			// Did the request time out?
+			} else if ((entry.flags & _DNS_TIMEDOUT) != 0) {
+#ifdef DNS_VERBOSE
+				printf("DNS: check: resolve timed out\n");
+#endif
+				retval = RESOLVE_TIMEDOUT;
+				_dns_sock_open = 0;	// Force reopen of socket next time.
+			// One of the above flags _must_ have been set, or else the
+			// world is strange indeed
+			} else {
+				// Should never happen
+				retval = RESOLVE_FAILED;
+			}
+			// Now invalidate the entry
+			entry.id = -1;
+			root2xmem(addr, &entry, sizeof(_dns_table_type));
+			_dns_num_requests--;
+		} else {
+			retval = RESOLVE_AGAIN;
+		}
+	}
+
+	UNLOCK_DNS();
+	return (retval);
+}
+
+/*** BeginHeader _rs_resolve_cancel */
+/* START FUNCTION DESCRIPTION ********************************************
+resolve_cancel                         <DNS.LIB>
+
+SYNTAX: int resolve_cancel(int handle);
+
+KEYWORDS:		tcpip, dns, ip address
+
+DESCRIPTION:	Cancels the resolve request represented by the given
+					handle.  If handle is given as 0, then this function
+					cancels all outstanding resolve requests.
+
+PARAMETER1: 	handle that represents a DNS lookup process, or 0 to
+					cancel all outstanding resolve requests
+
+RETURN VALUE:	RESOLVE_SUCCESS	The resolve request corresponding to the
+											given handle has been cancelled.  The
+											given handle will no longer be valid after
+											this value is returned.
+					RESOLVE_HANDLENOTVALID	There is no request for the given
+													handle.
+					RESOLVE_NONAMESERVER		No nameserver defined
+
+SEE ALSO:      resolve_name_start, resolve_name_check, resolve
+
+END DESCRIPTION **********************************************************/
+
+_system int _rs_resolve_cancel(int handle);
+/*** EndHeader */
+
+#ifdef DISABLE_UDP
+	#error "Cannot use DNS (name server) functions if DISABLE_UDP is defined"
+#endif
+
+_dns_nodebug _system int _rs_resolve_cancel(int handle)
+{
+	_SYS_CALL_VARS
+	auto int i;
+	auto long addr;
+	auto _dns_table_type entry;
+	auto int retval;
+
+	if (!_dns_server_table.num) {
+		// No nameserver defined
+		return (RESOLVE_NONAMESERVER);
+	}
+
+	LOCK_DNS();
+	// Find the entry that corresponds to the handle
+	addr = _dns_table;
+	retval = RESOLVE_HANDLENOTVALID;
+	for (i = 0; i < DNS_MAX_RESOLVES; i++) {
+		xmem2root(&entry, addr, sizeof(_dns_table_type));
+		if ((entry.id == handle) || (handle == 0)) {
+			// Found our entry
+			retval = RESOLVE_SUCCESS;
+			entry.id = -1;
+			root2xmem(addr, &entry, sizeof(_dns_table_type));
+			_dns_num_requests--;
+			if (handle != 0) {
+				break;
+			}
+		}
+		addr += sizeof(_dns_table_type) + DNS_MAX_NAME;
+	}
+	if (handle == 0) {
+		_dns_num_requests = 0;
+	}
+
+	UNLOCK_DNS();
+	return (retval);
+}
+
+/*** BeginHeader _send_resolve_req */
+int _send_resolve_req(_dns_table_type* entry, char* hostname);
+/*** EndHeader _send_resolve_req */
+
+_dns_nodebug int _send_resolve_req(_dns_table_type* entry, char* hostname)
+{
+	auto _dns_header* header;
+	auto char* ptr;
+	auto int retval;
+	auto _dns_query_end* query_end;
+	auto int query_len;
+
+	// Fill in the header
+	header = (_dns_header *)_dns_dgram;
+	header->id = intel16(entry->id);
+	// Only the recursion desired flag is needed for a request
+	header->flags = intel16(_DNS_FLAGS_RD);
+	header->numquestions = intel16(1);
+	header->numanswers = 0;
+	header->numauthority = 0;
+	header->numadditional = 0;
+
+	// Fill in the query
+	ptr = _dns_dgram + sizeof(_dns_header);
+
+	// Pack the hostname into the query, using DNS's bizarre packing scheme
+
+	query_len = sizeof(_dns_header) + strlen(hostname) + 2;
+	if (query_len > DNS_MAX_DATAGRAM_SIZE) {
+		// Hostname overruns the buffer
+#ifdef DNS_VERBOSE
+		printf("DNS: hostname too long: %d\n", query_len);
+#endif
+		return (-1);
+	}
+	strcpy(ptr, hostname);
+	// Check if we need to add the default domain
+	if (((entry->flags & _DNS_FULLYQUALIFIED) == 0) && (def_domain != NULL) &&
+	    ((((entry->flags & _DNS_DEFDOMAINFIRST) != 0) &&
+		   ((entry->flags & _DNS_FAILEDFIRSTDOMAIN) == 0)) ||
+		  (((entry->flags & _DNS_DEFDOMAINFIRST) == 0) &&
+		   ((entry->flags & _DNS_FAILEDFIRSTDOMAIN) != 0)))) {
+		// Add the default domain, if possible
+		query_len += strlen(def_domain) + 1;
+		if ((query_len - sizeof(_dns_header) - 2) > DNS_MAX_NAME) {
+			// Domain will overrun the buffer on receive
+#ifdef DNS_VERBOSE
+			printf("DNS: domain too long\n");
+#endif
+			return (-1);
+		}
+		strcat(ptr, ".");
+		strcat(ptr, def_domain);
+	}
+
+	// Encode the name in-place
+	retval = _dns_pack_name(ptr, ptr);
+	if (retval < 0) {
+#ifdef DNS_VERBOSE
+		printf("DNS: could not pack name\n");
+#endif
+		return (-1);
+	}
+	ptr += retval;
+	query_len += sizeof(_dns_query_end);
+	if (query_len > DNS_MAX_DATAGRAM_SIZE) {
+		// The query end will overrun the buffer
+#ifdef DNS_VERBOSE
+		printf("DNS: query too long: %d\n", query_len);
+#endif
+		return (-1);
+	}
+	query_end = (_dns_query_end *)ptr;
+	query_end->type = intel16(_DNS_QUERY_A);
+	query_end->class = intel16(1);	// IP query
+
+#ifdef DNS_VERBOSE
+	printf("DNS: sending query to %08lX\n", entry->nameserver);
+#endif
+	// Send the datagram
+	retval = _rs_udp_xsendto(&_dns_sock, paddr(_dns_dgram), query_len,
+		entry->nameserver, 53);
+	if (retval < query_len) {
+#ifdef DNS_VERBOSE
+		printf("DNS: sendto failed: %d\n", retval);
+#endif
+		if (retval < 0) {
+      	_rs_udp_close(&_dns_sock);
+	      _dns_sock_open = _rs_udp_extopen(&_dns_sock, IF_ANY, 0, -1,
+	      		53, NULL,
+	      		_dns_sock_buffer,
+	      		DNS_SOCK_BUF_SIZE) != 0;
+			retval = _rs_udp_xsendto(&_dns_sock, paddr(_dns_dgram), query_len,
+				entry->nameserver, 53);
+      }
+	}
+	return (0);
+}
+
+/*** BeginHeader _dns_pack_name */
+int _dns_pack_name(char* dest, char* src);
+/*** EndHeader */
+
+_dns_nodebug int _dns_pack_name(char* dest, char* src)
+{
+	auto char* src_p;
+	auto int src_len;
+	auto char* dest_p;
+	auto int label_len;
+
+	/*
+	 * The hostname is packed into the query in the rather odd DNS packing
+	 * scheme.  Each label (that is, a part of the hostname in between the
+	 * dots, "www" for www.zworld.com for instance) consists of the length
+	 * of the label followed by the label itself.  The null byte ends the
+	 * hostname
+	 */
+
+	/*
+	 * In this routine, the hostname is packed in reverse order, since that's
+	 * actually quite a bit easier.
+	 */
+
+	// Point the src_p pointer to the end of the string
+	src_len = strlen(src);
+	src_p = src + src_len - 1;
+	// Point the dest_p pointer to what will be the end of the packed name
+	dest_p = dest + src_len + 1;
+
+	// Fill in the final 0 in the packed name
+	*(dest_p--) = 0;
+
+	// Loop over the src string
+	label_len = 0;
+	while (src_p >= src) {
+		if (*src_p != '.') {
+			// Not a dot, so just copy it in
+			*(dest_p--) = *(src_p--);
+			label_len++;
+		} else if (label_len <= 63) {
+			// Is a dot, so copy in the label length
+			*(dest_p--) = label_len;
+			src_p--;
+			label_len = 0;
+		} else {
+			// Is a dot, but label length too long (> 63)
+			return (-1);
+		}
+	}
+	if (label_len <= 63) {
+		*dest_p = label_len;
+	} else {
+		return (-1);
+	}
+	return (src_len + 2);
+}
+
+/*** BeginHeader _dns_tick */
+void _dns_tick(void);
+/*** EndHeader */
+
+/*
+ * This function processes any responses we have received and updates
+ * the resolve table appropriately.
+ */
+_dns_nodebug void _dns_tick(void)
+{
+	LOCK_DNS();
+	if (_dns_sock_open == 1) {
+		// Keep processing until all of the datagrams have been processed
+		while (_rs_sock_bytesready(&_dns_sock) >= 0) {
+			_dns_process_response();
+		}
+
+		// All the datagrams have now been processed.
+		// Now we need to check timeouts so that we can do retransmissions
+		if (_dns_num_requests > 0) {
+			_dns_check_timeouts();
+		}
+	}
+	UNLOCK_DNS();
+}
+
+/*** BeginHeader _dns_process_response */
+void _dns_process_response();
+/*** EndHeader */
+
+_dns_nodebug void _dns_process_response()
+{
+	auto int dgram_len;
+	auto _dns_header* header;
+	auto _dns_table_type entry;
+	auto int i;
+	auto long addr;
+	auto int id;
+	auto int numquestions;
+	auto char* ptr;
+	auto _dns_rr_part* rr_part;
+	auto char hostname[DNS_MAX_NAME+1]; // Added one for the expansion that
+	                                    // takes place with the DNS encoding
+	auto int namelen;
+	auto char with_domain;
+
+#ifdef DNS_VERBOSE
+	printf("DNS: process_response\n");
+#endif
+
+	// Read the next datagram
+	dgram_len = _rs_udp_recvfrom(&_dns_sock, _dns_dgram, DNS_MAX_DATAGRAM_SIZE,
+		NULL, NULL);
+	if (dgram_len < 0) {
+		// This shouldn't happen
+#ifdef DNS_VERBOSE
+		printf("DNS: udp_recv error: %d\n", dgram_len);
+#endif
+		return;
+	} else if (dgram_len < sizeof(_dns_header)) {
+		// Short datagram
+#ifdef DNS_VERBOSE
+		printf("DNS: datagram too short: %d\n", dgram_len);
+#endif
+		return;
+	}
+
+	// Find the corresponding DNS table entry
+	header = (_dns_header *)_dns_dgram;
+	id = intel16(header->id);
+	addr = _dns_table;
+	for (i = 0; i < DNS_MAX_RESOLVES; i++) {
+		xmem2root(&entry, addr, sizeof(_dns_table_type));
+		if (entry.id == id) {
+			// Found our entry
+			break;
+		}
+		addr += sizeof(_dns_table_type) + DNS_MAX_NAME;
+	}
+	if ((entry.id != id) || ((entry.flags & _DNS_COMPLETED) != 0)) {
+		// Didn't find the matching entry
+#ifdef DNS_VERBOSE
+		printf("DNS: no matching entry\n");
+#endif
+		return;
+	}
+
+	// We're skipping the checking of the response code here until we've
+	// verified the hostname in the query section
+
+   // Got a response, so mark server as 'OK'
+   servlist_set_health(&_dns_server_table, entry.nameserver, DNS_SRV_OK, DNS_SRV_OK);
+
+	// Handle the query portion
+	numquestions = intel16(header->numquestions);
+	ptr = _dns_dgram + sizeof(_dns_header);
+	for (i = 0; i < numquestions; i++) {
+		// Only check the first query (we should really only have
+		// one query, though)
+		if (i == 0) {
+			xmem2root(hostname, addr + sizeof(_dns_table_type),
+			          DNS_MAX_NAME);
+			// The following looks strange, but it works.  We're encoding
+			// the hostname into its own buffer.  This works since the
+			// encoding always expands by one character, and we do the encoding
+			// backwards.
+			namelen = _dns_pack_name(hostname, hostname);
+			with_domain = 0;
+			if (strncmp(hostname, ptr, DNS_MAX_NAME+1) != 0) {
+				if (def_domain != NULL) {
+					// Try with the domain added
+					if ((strlen(hostname) + strlen(def_domain) + 2) <= (DNS_MAX_NAME+1)) {
+						_dns_pack_name(hostname + namelen - 1, def_domain);
+						if (strncmp(hostname, ptr, DNS_MAX_NAME+1) != 0) {
+							return;
+						}
+						// Matched with the default domain
+						with_domain = 1;
+					} else {
+						// Couldn't fit the default domain in the hostname buffer
+						return;
+					}
+				} else {
+					// No default domain to try
+					return;
+				}
+			}
+		}
+		ptr = memchr(ptr, 0, DNS_MAX_NAME + 1);
+		if (ptr == NULL) {
+			return;
+		}
+		ptr = ptr + 1 + sizeof(_dns_query_end);
+	}
+
+	// Put the hostname back like it was before checking the query
+	xmem2root(hostname, addr + sizeof(_dns_table_type), DNS_MAX_NAME);
+
+	// Check the response code
+	i = intel16(header->flags);
+	if ((i & _DNS_FLAGS_RCODE) == _DNS_RCODE_NAME) {
+		// The name doesn't exist
+		if ((def_domain != NULL) &&
+		    ((entry.flags & _DNS_FAILEDFIRSTDOMAIN) != 0) &&
+		    ((((entry.flags & _DNS_DEFDOMAINFIRST) != 0) &&
+		      (with_domain == 0)) ||
+		     (((entry.flags & _DNS_DEFDOMAINFIRST) == 0) &&
+		      (with_domain == 1)))) {
+			// This is the last failure
+			entry.flags = _DNS_COMPLETED | _DNS_FAILED;
+			entry.timeout = MS_TIMER;
+		} else if (def_domain == NULL) {
+			// Can't append the domain
+			entry.flags = _DNS_COMPLETED | _DNS_FAILED;
+			entry.timeout = MS_TIMER;
+		} else if ((entry.flags & _DNS_FAILEDFIRSTDOMAIN) == 0) {
+			// This is the first failure--need to resend
+			entry.flags |= _DNS_FAILEDFIRSTDOMAIN;
+			if (_send_resolve_req(&entry, hostname) == -1) {
+				entry.flags = _DNS_COMPLETED | _DNS_FAILED;
+			}
+			entry.timeout = MS_TIMER;
+		} else {
+			// We got a datagram that fails the domain that we have
+			// already failed, so we ignore this datagram
+			return;
+		}
+		root2xmem(addr, &entry, sizeof(_dns_table_type));
+		return;
+	} else if ((i & _DNS_FLAGS_RCODE) != _DNS_RCODE_NOERROR) {
+		// Some strange, miscellaneous error--switch to the next name
+		// server and send the request
+#ifdef DNS_VERBOSE
+		printf("DNS: trying next nameserver\n");
+#endif
+     	entry.nameserver = servlist_next(&_dns_server_table, entry.nameserver, 0, NULL);
+		if (entry.nameserver && entry.numretries < DNS_NUMBER_RETRIES) {
+			_send_resolve_req(&entry, hostname);
+			entry.numretries++;
+		} else {
+			entry.timeout = MS_TIMER;
+			entry.flags |= _DNS_COMPLETED | _DNS_TIMEDOUT;
+		}
+		root2xmem(addr, &entry, sizeof(_dns_table_type));
+		return;
+	}
+
+	// Check the number of answers
+	if (intel16(header->numanswers) == 0) {
+#ifdef DNS_VERBOSE
+		printf("DNS: no DNS answers\n");
+#endif
+		return;
+	}
+
+	// We should now be pointing at the first answer
+	// Iterate through the answers
+	for (i = 0; i < intel16(header->numanswers); i++) {
+		// We need to skip the domain name first
+		while (((*ptr & 0xc0) != 0xc0) && (*ptr != 0x00) &&
+		       ((ptr - _dns_dgram) < dgram_len)) {
+			ptr++;
+		}
+		if ((*ptr & 0xc0) == 0xc0) {
+			// Skip the pointer to an earlier label
+			ptr += 2;
+		} else if (*ptr == 0x00) {
+			ptr += 1;
+		} else {
+			// Error
+			return;
+		}
+
+		// We're now in the middle of a resource record
+		rr_part = (_dns_rr_part *)ptr;
+		if ((intel16(rr_part->type) != _DNS_QUERY_A) ||
+		    (intel16(rr_part->class) != 1) || (intel16(rr_part->datalen) != 4)) {
+			// Wrong answer type--skip to next answer
+			ptr += sizeof(_dns_rr_part) + intel16(rr_part->datalen);
+			if ((ptr + sizeof(longword) - _dns_dgram) > dgram_len) {
+				return;
+			} else {
+				continue;
+			}
+		}
+		ptr += sizeof(_dns_rr_part);
+
+		// Finally, finally, FINALLY, we're at the IP address
+		// Check that the IP address falls within the datagram
+		if ((ptr + sizeof(longword) - _dns_dgram) > dgram_len) {
+			return;
+		}
+		// Copy out the IP address
+		entry.resolved_ip = intel(*((longword *)ptr));
+		entry.flags = _DNS_COMPLETED | _DNS_SUCCEEDED;
+		entry.timeout = MS_TIMER;
+		root2xmem(addr, &entry, sizeof(_dns_table_type));
+#ifdef DNS_VERBOSE
+		printf("DNS: IP addr = %08lX\n", entry.resolved_ip);
+#endif
+		return;
+	}
+}
+
+/*** BeginHeader _dns_check_timeouts */
+void _dns_check_timeouts();
+/*** EndHeader */
+
+_dns_nodebug void _dns_check_timeouts()
+{
+	auto long addr;
+   auto longword ip;
+	auto int i;
+	auto _dns_table_type entry;
+	auto char hostname[DNS_MAX_NAME+1]; // Added one for the expansion that
+	                                    // takes place with the DNS encoding
+
+	addr = _dns_table;
+	for (i = 0; i < DNS_MAX_RESOLVES; i++) {
+		xmem2root(&entry, addr, sizeof(_dns_table_type));
+
+		if ((entry.id != -1) && ((entry.flags & _DNS_COMPLETED) == 0) &&
+		    chk_timeout(entry.timeout + DNS_RETRY_TIMEOUT)) {
+			// Need to retransmit
+#ifdef DNS_VERBOSE
+			printf("DNS: retransmit #%d\n", entry.numretries);
+#endif
+			if (entry.numretries < DNS_NUMBER_RETRIES &&
+             (ip = servlist_next(&_dns_server_table, entry.nameserver, 0, NULL))) {
+				// Still have some retries left
+           	entry.nameserver = ip;
+				xmem2root(hostname, addr + sizeof(_dns_table_type), DNS_MAX_NAME);
+				_send_resolve_req(&entry, hostname);
+				entry.numretries++;
+			} else {
+				// Out of retries
+				entry.flags = _DNS_COMPLETED | _DNS_TIMEDOUT;
+            // Clear the 'OK' flag to lower preference of this server
+            servlist_set_health(&_dns_server_table, entry.nameserver, DNS_SRV_OK, 0);
+			}
+			entry.timeout = MS_TIMER;
+			root2xmem(addr, &entry, sizeof(_dns_table_type));
+		}
+
+		addr += sizeof(_dns_table_type) + DNS_MAX_NAME;
+	}
+}
+
+/*** BeginHeader _rs_resolve */
+/* START FUNCTION DESCRIPTION ********************************************
+resolve                                <DNS.LIB>
+
+SYNTAX: longword resolve(char* name);
+
+KEYWORDS:		tcpip, dns, ip address
+
+DESCRIPTION: 	Convert a text string which contains either the dotted ip
+               address or host name into the longword containing the ip
+               address.  NOTE:  this function blocks. Names are currently
+               limited to 64 characters. If it is necessary to lookup
+               larger names, #define DNS_MAX_NAME <length in chars>.
+
+PARAMETER1: 	ip address to convert.
+
+RETURN VALUE:  0 could not resolve the address
+               !0 ip address name resolved to
+
+SEE ALSO:      inet_addr, inet_ntoa, resolve_name_start,
+					resolve_name_check, resolve_cancel
+
+END DESCRIPTION **********************************************************/
+
+_system longword _rs_resolve(char* name);
+/*** EndHeader */
+
+_dns_nodebug _system longword _rs_resolve(char* name)
+{
+	_SYS_CALL_VARS
+	auto int handle;
+	auto longword resolved_ip;
+	auto int retval;
+
+#ifdef DNS_VERBOSE
+	printf("DNS: resolving %s\n", name);
+#endif
+
+	if (isaddr(name)) {
+		return (aton(name));
+	}
+
+#ifndef DISABLE_DNS
+	if (!_dns_server_table.num) {
+		// No nameserver defined
+#ifdef DNS_VERBOSE
+		printf("DNS: no nameserver\n");
+#endif
+		return (0);
+	}
+
+	handle = _rs_resolve_name_start(name);
+	if (handle < 0) {
+#ifdef DNS_VERBOSE
+		printf("DNS: bad handle (%d)\n", handle);
+#endif
+		return (0L);
+	}
+	while ((retval = _rs_resolve_name_check(handle, &resolved_ip)) ==
+	       RESOLVE_AGAIN) {
+		// Keep checking
+		_rs_tcp_tick(NULL);
+	}
+	if (retval == RESOLVE_SUCCESS) {
+#ifdef DNS_VERBOSE
+		printf("DNS: resolved to %08lX\n", resolved_ip);
+#endif
+		return (resolved_ip);
+	} else {
+#ifdef DNS_VERBOSE
+		printf("DNS: not resolved (%d)\n", retval);
+#endif
+		return (0L);
+	}
+#else
+	return (0L);
+#endif
+}
+
+/*** BeginHeader  ********************************************/
+#endif
+/*** EndHeader ***********************************************/

@@ -1,0 +1,2323 @@
+/*** BeginHeader */
+#ifndef __UTIL_LIB
+#define __UTIL_LIB
+/*** EndHeader */
+
+
+// Contains utility functions used by Rabbit targets
+// Group functions by type/attribute so that watch expressions have access
+
+
+/*** Beginheader _flag_prot16, _ptr_prot16, _prot16_save, _flag_prot32,
+                 _ptr_prot32, _prot32_save, _flag_pvalid */
+extern bbram char _flag_prot16;
+extern bbram int *_ptr_prot16;
+extern bbram int  _prot16_save;
+extern bbram char _flag_prot32;
+extern bbram long *_ptr_prot32;
+extern bbram long  _prot32_save;
+extern bbram int _flag_pvalid;
+/*** Endheader */
+
+// Ensure all protected variables' information is in battery-backed RAM,
+//  just in case there is a choice!  (EG:  RCM3200)
+bbram char _flag_prot16;
+bbram int *_ptr_prot16;
+bbram int  _prot16_save;
+bbram char _flag_prot32;
+bbram long *_ptr_prot32;
+bbram long  _prot32_save;
+bbram int _flag_pvalid;
+
+/*** BeginHeader _switch */
+root void _switch();
+/*** EndHeader _switch */
+
+#asm nodebug root
+// input arguments: HL = switch value, BC = number of cases, never zero, DE = address of table
+_switch::
+	ex  	de,hl      			;switch value to DE, switch table value to hl
+.trycase:
+	ld 	a,e     				;compare switch value to case label value
+	cp    (hl)
+	inc hl
+	jr    nz,.nomatchlsbyte
+	ld    a,d
+	cp    (hl)
+	inc 	hl
+	jr    nz,.nomatchmsbyte
+	ld    e,(hl)  				;case label's logical address
+	inc 	hl
+	ld    d,(hl)
+	ex    de,hl					;de points at logical address, hl at destination
+	ld    a,h
+	cp		0xe0					;check if address is above 0xE000
+	jr		c,.noxpcchg
+	inc 	de
+	ld    a,(de)  				;case label's bank address
+	ld    xpc,a       		;switch to bank
+.noxpcchg:
+	add 	sp, 2
+	jp 	(hl)        		;jump to case label
+.nomatchlsbyte:
+	inc 	hl          		;skip over msbyte of case label value
+.nomatchmsbyte:
+	dec 	bc          		;decrement number of cases
+	ld    a,b
+	or    c
+	inc 	hl          		;skip over case label's address
+	inc 	hl
+	inc 	hl
+	jr    nz,.trycase
+#if !__SEPARATE_INST_DATA__
+	ex (sp), hl					;return to address at end of table
+#endif
+	ret
+#endasm
+
+/*** Beginheader sspixfn_,rspixfn_ */
+root void sspixfn_();
+root void rspixfn_();
+/*** EndHeader */
+
+#asm nodebug fast
+
+; sspixfn_ (correlate with rspixfn_)
+; FEATURES:
+;               No    Use IX as frame pointer
+;               No    Save/Restore register variables
+;               Yes   Stack overflow & corruption
+;               Yes   Function call tracing
+; CALLING :
+;    > DC5  exx ;preserve first argument
+;           ld    hl,-<local variable byte usage>
+;               call    <thisfunction>
+; INPUT   :
+;           HL = Space Required for Locals As Negative Value
+; OUTPUT  :
+;           None
+
+sspixfn_::
+	pop 	iy          		; return address & error address for error handler
+	pop 	de          		; return address from user's function
+	push  de
+	add 	hl,sp
+	ld    sp,hl    			; Adjust Stack
+	ld    hl,(STACK_LIMIT)
+	add 	hl,sp
+	jp    nc,sser1 			; Stack Overflow
+; checksum top 2 bytes of stack (return address)
+	ld    a,e
+	xor   d
+; push on auxiliary stack
+	ld    hl,(AUX_STACK_PTR)
+	dec 	hl
+; order important to protect aux stack against corruption by interrupt
+	ld    (AUX_STACK_PTR),hl ; Restore Stack Pointer
+	ld    (hl),a            ; Save Checksum
+	ld    de,(AUX_STACK_LIMIT)
+	add   hl,de
+	jp    nc,sser2          ; AUX_STACK Overflow
+	push  iy            		; restore Ret Addr
+	exx             			; restore first argument to user's function
+	jp    _fentry 				; track function nesting for debugging
+
+; rspixfn_ (correlate with sspixfn_)
+; FEATURES:
+;               No    Use IX as frame pointer
+;               No    Save/Restore register variables
+;               Yes   Stack overflow & corruption
+;               Yes   Function call tracing
+; CALLING :
+;           exx ;preserve any function return value
+;           ld    hl,<local variable byte usage>
+;               call    <thisfunction>
+; INPUT   :
+;           HL = Space Required for Locals
+; OUTPUT  :
+;           None
+
+rspixfn_::
+	pop   iy            		; use return address for error address
+	add   hl,sp
+	ld  	sp,hl    			; remove local variables
+	pop   hl            		; obtain return address
+	push  hl
+	ld  	a,l
+	xor   h         			; checksum return address
+	ld     hl,(AUX_STACK_PTR)
+	xor   (hl)      			; compare with function entry checksum
+	jp    nz,sser3    		; Checksum Error
+	inc   hl            		; Pop checksum off auxiliary stack
+	ld  (AUX_STACK_PTR),hl
+	push  iy          		; return address
+	exx             			; Restore any function return value
+	jp    _fexit  				; Allow F8 Key to Function
+#endasm
+
+/*** Beginheader sspixffn_,rspixffn_ */
+root void sspixffn_();
+root void rspixffn_();
+/*** EndHeader */
+
+#asm nodebug fast
+
+; sspixffn_ (correlate with rspixffn_)
+; FEATURES:
+;               No    Use IX as frame pointer
+;               No    Save/Restore register variables
+;               No    Stack overflow & corruption
+;               No    Function call tracing
+; CALLING :
+;    > DC5  exx ;preserve first argument
+;           ld    hl,-<local variable byte usage>
+;               call    <thisfunction>
+; INPUT  :
+;           HL = Space Required for Locals As Negative Value
+; OUTPUT :
+;           None
+
+sspixffn_::
+	pop 	iy          		; Ret Addr
+	add 	hl,sp
+	ld    sp,hl       		; Adjust Stack
+	push  iy          		; Restore Ret Addr
+	exx             			; restore first argument to user's function
+	ret
+
+; rspixffn_ (correlate with sspixffn_)
+; FEATURES:
+;               No    Use IX as frame pointer
+;               No    Save/Restore register variables
+;               No    Stack overflow & corruption
+;               No    Function call tracing
+; CALLING :
+;           exx ;preserve any function return value
+;           ld    hl,<local variable byte usage>
+;           call    <thisfunction> for F80
+;           jump    <thisfunction> for Z180
+; INPUT   :
+;           HL = Space Required for Locals
+; OUTPUT  :
+;           None
+
+rspixffn_::
+	pop   iy            		; return address
+	add 	hl,sp
+	ld    sp,hl    			; Adjust Stack
+	push  iy          		; return address
+	exx             			; Restore any function return value
+	ret
+
+#endasm
+
+/*** Beginheader sspixffndbg_,rspixffndbg_ */
+root void sspixffndbg_();
+root void rspixffndbg_();
+/*** EndHeader */
+
+#asm nodebug fast
+
+; sspixffndbg_ (correlate with rspixffndbg_)
+; FEATURES:
+;               No    Use IX as frame pointer
+;               No    Save/Restore register variables
+;               No    Stack overflow & corruption
+;               Yes   Function call tracing
+; CALLING :
+;    > DC5  exx ;preserve first argument
+;           ld    hl,-<local variable byte usage>
+;               call    <thisfunction>
+; INPUT  :
+;           HL = Space Required for Locals As Negative Value
+; OUTPUT :
+;           None
+
+sspixffndbg_::
+	pop 	iy          		; Ret Addr
+	add 	hl,sp
+	ld    sp,hl       		; Adjust Stack
+	push  iy          		; Restore Ret Addr
+	exx             			; restore first argument to user's function
+	jp    _fentry 				; track function nesting for debugging
+
+; rspixffndbg_ (correlate with sspixffndbg_)
+; FEATURES:
+;               No    Use IX as frame pointer
+;               No    Save/Restore register variables
+;               No    Stack overflow & corruption
+;               Yes   Function call tracing
+; CALLING :
+;           exx ;preserve any function return value
+;           ld    hl,<local variable byte usage>
+;           call    <thisfunction> for F80
+;           jump    <thisfunction> for Z180
+; INPUT   :
+;           HL = Space Required for Locals
+; OUTPUT  :
+;           None
+
+rspixffndbg_::
+	pop   iy            		; return address
+	add 	hl,sp
+	ld    sp,hl    			; Adjust Stack
+	push  iy          		; return address
+	exx             			; Restore any function return value
+	jp    _fexit  				; Allow F8 Key to Function
+#endasm
+
+
+/*** Beginheader sspixrf_,rspixrf_ */
+root void sspixrf_();
+root void rspixrf_();
+/*** EndHeader */
+
+#asm nodebug fast
+
+; sspixrf_ (correlate with rspixrf_)
+; FEATURES:
+;               Yes   Use IX as frame pointer
+;               Yes   Save/Restore register variables
+;               Yes   Stack overflow & corruption
+;               Yes   Function call tracing
+; CALLING :
+;    > DC5  exx ;preserve first argument
+;           ld    hl,stack_change   -- amount to add to stack pointer
+;           ld    de,register_base  -- address to save-restore registers
+;           ld    bc,count -- count of register bytes to move
+;               call    <thisfunction>
+; INPUT   :
+;           HL = Local & Register Variable Stack Usage As Negative Value
+;           DE = Address to Save Registers
+;           BC = Size of Register Block
+; OUTPUT  :
+;           None
+
+sspixrf_::
+	pop 	iy          		; return address & error address for error handler
+	push  ix            		; Save caller's frame pointer
+	ld    ix,0
+	add   ix,sp    			; Set Frame Pointer
+	add   hl,sp
+	ld    sp,hl    			; Adjust Stack
+	ex    de,hl    			; DE = Target is Stack
+	ldir                		; Save Registers
+	ld    hl,(STACK_LIMIT)
+	add   hl,sp
+	jp    nc,sser1 			; Stack Overflow
+; checksum top 4 bytes of stack (return address & frame pointer)
+	ld    a,(ix)  				; Compute Stack Checksum
+	xor   (ix+1)
+	xor   (ix+2)
+	xor   (ix+3)
+; push on auxiliary stack
+	ld    hl,(AUX_STACK_PTR)
+	dec   hl
+; order important to protect aux stack against corruption by interrupt
+	ld    (AUX_STACK_PTR),hl ; Restore Stack Pointer
+	ld    (hl),a  ; Save Checksum
+	ld    de,(AUX_STACK_LIMIT)
+	add   hl,de
+	jp    nc,sser2    		; AUX_STACK Overflow
+	push  iy            		; restore Ret Addr
+	exx             			; restore first argument to user's function
+	jp    _fentry 				; track function nesting for debugging
+
+; rspixrf_ (correlate with sspixrf_)
+; FEATURES:
+;               Yes   Use IX as frame pointer
+;               Yes   Save/Restore register variables
+;               Yes   Stack overflow & corruption
+;               Yes   Function call tracing
+; CALLING :
+;           exx ;preserve any function return value
+;           ld    hl,stack_change   -- amount to add to stack pointer
+;           ld    de,register_base  -- address to save-restore registers
+;           ld    bc,count -- count of register bytes to move
+;               call    <thisfunction>
+; INPUT   :
+;           HL = Local & Register Variable Stack Usage
+;           DE = Address to Save Registers
+;           BC = Size of Register Block
+; OUTPUT  :
+;           None
+
+rspixrf_::
+	pop   iy            		; use return address for error address
+	push  hl            		; Save Stack Adjustment
+	ld    hl,2
+	add   hl,sp     			; Source of Move
+	ldir            			; Restore Registers
+	pop   hl        			; Stack Adjustment
+	add   hl,sp
+	ld    sp,hl       		; Adjust Stack
+	ld    a,(ix)
+	xor   (ix+1)
+	xor   (ix+2)
+	xor   (ix+3)   			; A = Checksum
+	pop   ix            		; Restore IX
+	ld    hl,(AUX_STACK_PTR)
+	xor   (hl)
+	jp    nz,sser3 			; Checksum Error
+	inc   hl            		; Pop checksum off auxiliary stack
+	ld    (AUX_STACK_PTR),hl
+	push  iy          		; return address
+	exx             			; Restore any function return value
+	jp    _fexit  				; Allow F8 Key to Function
+#endasm
+
+/*** Beginheader sspixrff_ */
+root void sspixrff_();
+/*** EndHeader */
+
+#asm nodebug fast
+
+; sspixrff_ (correlate with rspixrff_)
+; FEATURES:
+;               Yes   Use IX as frame pointer
+;               Yes   Save/Restore register variables
+;               No    Stack overflow & corruption
+;               Yes   Function call tracing
+; CALLING :
+;    > DC5  exx ;preserve first argument
+;           ld    hl,stack_change   -- amount to add to stack pointer
+;           ld    de,register_base  -- address to save-restore registers
+;           ld    bc,count -- count of register bytes to move
+;               call    <thisfunction>
+; INPUT   :
+;           HL = Local & Register Variable Stack Usage As Negative Value
+;           DE = Address to Save Registers
+;           BC = Size of Register Block
+; OUTPUT  :
+;           None
+
+sspixrff_::
+	pop   iy            		; Ret Addr
+	push  ix
+	ld    ix,0
+	add   ix,sp    			; Set Frame Pointer
+	add   hl,sp
+	ld    sp,hl    			; Adjust Stack
+	ex    de,hl    			; DE = Target Stack
+	ldir                		; Save Registers
+	push  iy            		; Restore Ret Addr
+	exx             			; restore first argument to user's function
+	jp    _fentry 				; track function nesting for debugging
+
+#endasm
+
+/*** Beginheader sspixrffw_ */
+root void sspixrffw_();
+/*** EndHeader */
+
+#asm nodebug fast
+; sspixrffw_ (correlate with rspixrff_)
+; FEATURES:
+;               Yes   Use IX as frame pointer
+;               Yes   Save/Restore register variables
+;               No    Stack overflow & corruption
+;               No    Function call tracing
+; CALLING :
+;    > DC5  exx ;preserve first argument
+;           ld    hl,stack_change   -- amount to add to stack pointer
+;           ld    de,register_base  -- address to save-restore registers
+;           ld    bc,count -- count of register bytes to move
+;               call    <thisfunction>
+; INPUT   :
+;           HL = Local & Register Variable Stack Usage As Negative Value
+;           DE = Address to Save Registers
+;           BC = Size of Register Block
+; OUTPUT  :
+;           None
+
+sspixrffw_::
+	pop   iy            		; Ret Addr
+	push  ix
+	ld    ix,0
+	add   ix,sp    			; Set Frame Pointer
+	add   hl,sp
+	ld    sp,hl    			; Adjust Stack
+	ex    de,hl    			; DE = Target Stack
+	ldir                		; Save Registers
+	exx             			; restore first argument to user's function
+	jp    (iy)     			;return
+
+#endasm
+
+/*** Beginheader rspixrff_ */
+root void rspixrff_();
+/*** EndHeader */
+
+#asm nodebug fast
+
+; rspixrff_ (correlate with sspixrff_,sspixrffw_)
+; FEATURES:
+;               Yes   Use IX as frame pointer
+;               Yes   Save/Restore register variables
+;               No    Stack overflow & corruption
+;               Yes   Function call tracing
+; CALLING :
+;           exx ;preserve any function return value
+;           ld    hl,stack_adj
+;           ld    de,regdest
+;           ld    bc,count of reg bytes
+;           call    <thisfunction> for F80
+;           jump    <thisfunction> for Z180
+; INPUT   :
+;           HL = Local & Register Variable Stack Usage
+; OUTPUT  :
+;           None
+
+rspixrff_::
+	pop   iy            		; return address
+	push  hl            		; Save Stack Adjustment
+	ld    hl,2
+	add   hl,sp     			; Source of Move
+	ldir            			; Restore Registers
+	pop   hl        			; Stack Adjustment
+	add   hl,sp
+	ld    sp,hl       		; Adjust Stack
+	pop   ix            		; Restore IX
+	push  iy          		; return address
+	exx             			; Restore any function return value
+	jp    _fexit  				; Allow F8 Key to Function
+
+#endasm
+
+
+/*** Beginheader sspixff_,rspixff_ */
+root void sspixff_();
+root void rspixff_();
+/*** Endheader */
+
+#asm nodebug fast
+
+; sspixff_ (correlate with rspixff_)
+; FEATURES:
+;               Yes   Use IX as frame pointer
+;               No    Save/Restore register variables
+;               No    Stack overflow & corruption
+;               No    Function call tracing
+; CALLING :
+;              exx  ;preserve first argument
+;           ld    hl,-<local variable byte usage>
+;               call    <thisfunction>
+; INPUT   :
+;           HL = Space Required for Locals As Negative Value
+; OUTPUT  :
+;           None
+
+sspixff_::
+	pop   iy            		; Ret Addr
+	push  ix
+	ld    ix,0
+	add   ix,sp    			; Set Frame Pointer
+	add   hl,sp
+	ld    sp,hl    			; Adjust Stack
+	push  iy            		; Restore Ret Addr
+	exx             			; restore first argument to user's function
+	ret
+
+; rspixff_ (correlate with sspixff_)
+; FEATURES:
+;               Yes   Use IX as frame pointer
+;               No    Save/Restore register variables
+;               No    Stack overflow & corruption
+;               No    Function call tracing
+; CALLING :
+;           exx ;preserve any function return value
+;           ld    hl,<local variable byte usage>
+;           call    <thisfunction> for Rabbit
+; INPUT   :
+;           HL = Space Required for Locals
+; OUTPUT  :
+;           None
+
+rspixff_::
+	pop   iy            		; return address
+	add   hl,sp
+	ld    sp,hl       		; Adjust Stack
+	pop   ix
+	push  iy          		; return address
+	exx             			; Restore any function return value
+	ret
+#endasm
+
+/*** Beginheader sspixffdbg_,rspixffdbg_ */
+root void sspixffdbg_();
+root void rspixffdbg_();
+/*** Endheader */
+
+#asm nodebug fast
+
+; sspixffdbg_ (correlate with rspixff_)
+; FEATURES:
+;               Yes   Use IX as frame pointer
+;               No    Save/Restore register variables
+;               No    Stack overflow & corruption
+;               Yes   Function call tracing
+; CALLING :
+;              exx  ;preserve first argument
+;           ld    hl,-<local variable byte usage>
+;               call    <thisfunction>
+; INPUT   :
+;           HL = Space Required for Locals As Negative Value
+; OUTPUT  :
+;           None
+
+sspixffdbg_::
+	pop   iy            		; Ret Addr
+	push  ix
+	ld    ix,0
+	add   ix,sp    			; Set Frame Pointer
+	add   hl,sp
+	ld    sp,hl    			; Adjust Stack
+	push  iy            		; Restore Ret Addr
+	exx             			; restore first argument to user's function
+	jp    _fentry 				; track function nesting for debugging
+
+; rspixffdbg_ (correlate with sspixff_)
+; FEATURES:
+;               Yes   Use IX as frame pointer
+;               No    Save/Restore register variables
+;               No    Stack overflow & corruption
+;               Yes   Function call tracing
+; CALLING :
+;           exx ;preserve any function return value
+;           ld    hl,<local variable byte usage>
+;           call    <thisfunction> for Rabbit
+; INPUT   :
+;           HL = Space Required for Locals
+; OUTPUT  :
+;           None
+
+rspixffdbg_::
+	pop   iy            		; return address
+	add   hl,sp
+	ld    sp,hl       		; Adjust Stack
+	pop   ix
+	push  iy          		; return address
+	exx             			; Restore any function return value
+	jp    _fexit  				; Allow F8 Key to Function
+#endasm
+
+
+/*** BeginHeader intr1 */
+root void intr1();
+/*** EndHeader */
+#asm
+intr1::
+	pop	iy
+	pop	ix
+	pop	hl
+	pop	de
+	pop	bc
+	exx
+	pop	de
+	pop	bc
+	pop	af
+	ex		af,af'
+	pop	af
+	ld		xpc,a
+	pop	ip
+	pop	hl
+	pop	af
+	reti
+#endasm
+
+/*** BeginHeader intr2 */
+root void intr2();
+/*** EndHeader */
+#asm
+intr2::
+	pop	iy
+	pop	ix
+	pop	hl
+	pop	de
+	pop	bc
+	exx
+	pop	de
+	pop	bc
+	pop	af
+	ex		af,af'
+	pop	af
+	ld		xpc,a
+	pop	ip
+	pop	hl
+	pop	af
+	ipres
+	ret
+#endasm
+
+/*** BeginHeader entint_ */
+root void entint_();
+/*** EndHeader */
+#asm
+entint_::
+	pop	hl
+
+	push	ip
+	ld		a,xpc
+	push	af
+	ex		af,af'
+	push	af
+	push	bc
+	push	de
+	exx
+	push	bc
+	push	de
+	push	hl
+	push	ix
+	push	iy
+
+	exx
+	jp		(hl)
+#endasm
+
+
+/*** Beginheader sser3,sser2,sser1 */
+root void sser3();
+root void sser2();
+root void sser1();
+/*** Endheader */
+
+#asm nodebug fast
+sser3::
+	ld 	hl,-ERR_STACKCORRUPTED	  		; Stack Corrupted Runtime Error
+	jp 	.sser1a
+sser2::
+	ld 	hl,-ERR_AUXSTACKOVERFLOW		; AUX_STACK Overflow
+	jr 	.sser1a
+sser1::
+	ld 	hl,-ERR_STACKOVERFLOW   		; Stack Overflow Runtime Error
+.sser1a:
+	push	hl
+	call	exception
+	add	sp, 2
+	call	exit				; if return from runtime err handler, exit out!
+#endasm
+
+
+/*** Beginheader _param2  */
+root void _param2();
+/*** Endheader */
+#asm nodebug
+; Read Two Parameters on Stack
+;
+; HL = First Parameter
+; DE = Second Parameter
+;
+_param2::
+	pop   iy    				; Protect Return Address
+	pop   bc    				; Protect Caller's Return Address
+	pop   hl    				; First Parameter
+	pop   de    				; Second Parameter
+	push  de    				; Restore Stack
+	push  hl
+	push  bc
+	push  iy
+	ret
+#endasm
+
+/*** Beginheader _param3  */
+root void _param3();
+/*** Endheader */
+#asm nodebug
+; Read Three Parameters on Stack
+;
+; HL = First Parameter
+; DE = Second Parameter
+; BC = Third Parameter
+;
+_param3::
+	exx         				; Use Alternate Registers for Protection
+	pop   hl    				; Protect Return Address
+	pop   de    				; Protect Caller's Return Address
+	exx         				; Read Parameters
+	pop   hl    				; First Parameter
+	pop   de    				; Second Parameter
+	pop   bc    				; Third Parameter
+	push  bc    				; Restore Stack
+	push  de    				; Restore Stack
+	push  hl
+	exx
+	push  de
+	push  hl
+	exx
+	ret
+#endasm
+
+/*** BeginHeader StdOutStr */
+void StdOutStr(char *buf);  // xmits null terminated string to stdout window
+/*** EndHeader */
+
+
+// utility functions not in Rabbit BIOS or unique to Rabbit targets
+// make integer operations always available for watch expressions
+
+/*** BeginHeader */
+// compile operators devoted to a particular type for watch expression access
+#if (NO_BIOS==0 && _RESTRICT_WATCHCODE_==0)
+#ifndef BIOSCODE
+#asm nodebug
+.dummyLAD: equ L_add        // additive & multiplicative operators
+.dummyGASL: equ G_asl
+.dummyLSB: equ L_sub
+.dummyLML: equ L_mul
+
+.dummyLA: equ L_and        // logical operators
+.dummyGA: equ G_and
+.dummyLO: equ L_or
+.dummyGO: equ G_or
+.dummyLXO: equ L_xor
+.dummyGXO: equ G_xor
+
+.dummyGcom: equ G_com
+
+.dummyGMD: equ G_mod        // divide operators
+.dummyGDV: equ G_div
+.dummyLDV: equ L_div
+.dummyLMD: equ L_mod
+.dummyLASR: equ L_asr
+.dummyGASR: equ G_asr
+
+.dummyIL: equ I__L
+.dummyUL: equ U__L
+.dummyGC: equ G__C
+.dummyGF: equ G__F
+.dummyFC: equ F__C
+.dummyFL: equ F__L
+
+.dummyGNT: equ G_not
+.dummySWPS: equ swaps_
+.dummySWP4: equ swap4_
+.dummycneg: equ c_neg
+.dummyccom: equ c_com
+
+.dummycusr: equ c_usr
+.dummycasl: equ c_asl
+
+.dummylong0: equ long_0
+.dummyslong: equ slong_
+
+.dummycflt: equ cf_lt
+.dummycllt1: equ cl_glt
+.dummycgge: equ cg_ge
+.dummycgle: equ cg_le
+.dummycglt: equ cg_lt
+.dummycgt: equ c_gt
+.dummycle: equ c_le
+.dummycugt: equ c_ugt
+.dummycuge: equ c_uge
+.dummysstak: equ sstak
+
+.dummyFMLT: equ F_mul
+.dummyFDIV: equ F_div
+.dummyFADD: equ F_add
+.dummyFCON: equ Bg_Bf
+.dummyFNEG: equ F_neg
+
+_LongOperators_::          ; dummy tag to satisfy header reference
+_FloatOperators_::          ; dummy tag to satisfy header reference
+#endasm
+#endif
+#endif
+/*** EndHeader */
+
+
+/*** beginheader cg_lt */
+root void cg_lt();
+// signed & unsigned long comparisons
+/*** endheader */
+#asm nodebug
+; unsigned < ... compute stack-bcde carry if true
+cg_lt::
+	pop   iy 					;return
+	pop   hl 					;least
+	xor   a
+	sbc   hl,de 				;least sub
+	pop   hl 					;most
+	sbc   hl,bc 				;most sub
+	ld 	hl,0
+	rl 	l  					;carry to 1
+	jp 	(iy)  				;ret
+#endasm
+
+/*** beginheader cg_gt */
+root void cg_gt();
+// signed & unsigned long comparisons
+/*** endheader */
+#asm nodebug
+; unsigned >  .. bcde-stack result in carry
+cg_gt::
+	pop   iy 					;ret
+	pop   hl
+	xor   a  					;clc
+	ex 	de,hl
+	sbc   hl,de 				;least sub
+	pop   de 					;most
+	ld 	l,c
+	ld 	h,b
+	sbc   hl,de 				;most sub
+	ld 	hl,0
+	rl 	l  					; carry to l
+	jp 	(iy)
+#endasm
+
+/*** beginheader cg_le */
+root void cg_le();
+// signed & unsigned long comparisons
+/*** endheader */
+#asm nodebug
+; unsigned =< ... compute stack-bcde carry if true
+cg_le::
+	pop   iy 					;return
+	pop   hl 					;least
+	xor   a
+	sbc   hl,de 				;least sub
+	ex 	de,hl 				;save least result
+	pop   hl 					;most
+	sbc   hl,bc 				;most sub
+	jr 	c,.cglea  			;if less than
+	jr		nz,.cglea
+	ld 	a,e
+	or 	d  					;check most result
+	jr 	nz,.cglea
+	ccf      					;set carry, is equal
+.cglea:
+	ld 	hl,0
+	rl 	l  					;carry to 1
+	jp 	(iy)  				;ret
+#endasm
+
+/*** beginheader cg_ge */
+root void cg_ge();
+// signed & unsigned long comparisons
+/*** endheader */
+#asm nodebug
+; unsigned >=  .. bcde-stack result in carry
+cg_ge::
+	pop   iy 					;ret
+	pop   hl
+	xor   a  					;clc
+	ex 	de,hl
+	sbc   hl,de 				;least sub
+	ld 	a,l
+	ld 	l,c
+	ld 	c,a   				;exchange bc hl
+	ld 	a,h
+	ld 	h,b
+	ld 	b,a
+	pop   de 					;most
+	sbc   hl,de 				;most sub
+	jr 	c,.cggea  			;greater than for sure
+	jr 	nz,.cggea 			; not equal for sure and carry=0
+	ld 	a,c
+	or 	b  					;test for zero, clear carry
+	jr 	nz,.cggea
+	ccf      					;is a zero
+.cggea:
+	ld 	hl,0
+	rl 	l  					; carry to l
+	jp 	(iy)
+#endasm
+
+/*** beginheader cl_gt,cl_lt,cl_glt,cl_glt1 */
+root void cl_lt();
+root void cl_gt();
+root void cl_glt();
+root void cl_glt1();
+// signed & unsigned long comparisons
+/*** endheader */
+#asm nodebug
+cl_lt::
+	ld 	hl,4
+	call  swaps_
+cl_gt::
+	ld 	hl,1
+cl_glt::
+	push  hl
+	call  sstak
+	pop   hl
+	push  af
+	call  long_0
+	jp 	nz,.clgt1
+	pop   af
+	jp 	.clgt2
+.clgt1:
+	pop   af
+	ld 	hl,2
+	jp 	nc,.clgt2
+	dec   l
+.clgt2:
+	pop   de
+	pop   bc
+	pop   bc
+	push  de
+	dec   l
+	ret
+#endasm
+
+/*** beginheader cl_le,cl_ge,sstak */
+root void cl_le();
+root void cl_ge();
+root void sstak();
+// signed & unsigned long comparisons
+/*** endheader */
+#asm nodebug
+cl_le::
+	ld 	hl,4
+	call  swaps_
+cl_ge::
+	ld 	hl,2
+	jp 	cl_glt
+sstak::
+	ld 	hl,6
+	add   hl,sp
+	ld 	a,(hl)
+	sub   e
+	ld 	e,a
+	inc   hl
+	ld 	a,(hl)
+	sbc   a,d
+	ld 	d,a
+	inc   hl
+	ld 	a,(hl)
+	sbc   a,c
+	ld 	c,a
+	inc   hl
+	ld 	a,(hl)
+	ld 	l,b
+	ld 	h,a
+	sbc   a,b
+	ld 	b,a
+	push  af
+	ld 	a,h
+	xor   l
+	jp 	p,.snorml
+	pop   af
+	ccf
+	ret
+.snorml:
+	pop   af
+	ret
+	ret
+.outLL:
+	pop   hl
+	inc   sp
+	inc   sp
+	ex 	(sp),hl
+	ret
+.negst4:
+	push  hl
+	push  bc
+	ld 	bc,1024
+	ld 	hl,6
+	add   hl,sp
+	xor   a
+.ngst4l:
+	ld 	a,c
+	sbc   a,(hl)
+	ld 	(hl),a
+	inc   hl
+	dec   b
+	jp 	nz,.ngst4l
+	pop   bc
+	pop   hl
+	ret
+#endasm
+
+/*** beginheader flt_0, cf_le, cf_lt, cf_ge, cf_gt */
+// float comparisons
+root void flt_0();
+root void cf_le();
+root void cf_lt();
+root void cf_ge();
+root void cf_gt();
+/*** endheader */
+
+#asm nodebug
+; floating comparision routines
+flt_0::
+	pop   iy 					;return address
+	ld 	a,b   				;exp
+	rl 	c
+	rla      					;a has exponent
+	or 	a  					; zero exponent is zero floating number
+	jp 	nz,.tru
+	jp 	.fals
+cf_ge::
+	pop   iy 					;return address
+	pop   hl 					;least sig
+	or 	a  					;clear carry
+	sbc   hl,de 				;stack least -de
+	ex 	de,hl 				;save least result
+	pop   hl 					;most sig stack
+	ld 	a,h   				;save sign
+	sbc   hl,bc 				;most sig dif
+	ld 	c,a   				;save sign
+	jr 	nz,.cfgt1		;cant be zero
+	ex 	af,af'   			;save carry
+	ld 	a,d
+	or 	e  					;see if zero
+	jp 	z,.tru 		;ok
+	jr 	.cfgt1a
+; stack>bcde
+cf_gt::
+	pop   iy 					;return address
+	pop   hl 					;least sig
+	or 	a  					;clear carry
+	sbc   hl,de 				;stack least -de
+	ex 	de,hl 				;save least result
+	pop   hl 					;most sig stack
+	ld 	a,h   				;save sign
+	sbc   hl,bc 				;most sig dif
+; result in hlde carry set if stack less
+	ld 	c,a   				;save sign of stack in c
+.cfgt1:
+	ex 	af,af'   			;save carry
+.cfgt1a:
+	ld 	a,b
+	or 	c  					;if both signs neg or signs dif reverse
+	jp 	m,.cfgt2  	;reverse sense
+	ex 	af,af'   			;get carry
+	jp 	c,.fals   	;stack less
+	ld 	a,h
+	or 	l
+	or 	d
+	or 	e  					;zero in a
+	jp 	z,.fals   	;stack not greater
+	jp 	.tru
+.cfgt2:
+	ex 	af,af'   			;get carry
+	jp 	c,.tru 				;stack less for negs means is greater
+	jp 	.fals
+.tru:
+	ld 	hl,1
+	or 	l
+	jp 	(iy)  				;return
+.fals:
+	ld 	hl,0
+	and   l
+	jp 	(iy)
+cf_le::
+	pop   iy 					;return address
+	pop   hl 					;least
+	or 	a  					;clc
+	sbc   hl,de 				;stack - bcde least
+	ex 	de,hl 				;save least result
+	pop   hl						;most
+	ld 	a,h   				;save sign
+	sbc   hl,bc 				;most result
+	ld 	c,a   				;save sign
+	jr 	nz,.cflt1 	;not zero
+	ex 	af,af'   			;save carry
+	ld 	a,d
+	or 	e
+	jp 	z,.tru
+	jr 	.cflt1a
+; stack<bcde
+cf_lt::
+	pop   iy 					;return address
+	pop   hl 					;least
+	or 	a  					;clc
+	sbc   hl,de 				;stack - bcde least
+	ex 	de,hl 				;save least result
+	pop   hl 					;most
+	ld 	a,h   				;save sign
+	sbc   hl,bc 				;most result
+; result in hlde carry set if stack less
+	ld		c,a   				;save signs in b and c
+.cflt1:
+	ex 	af,af'   			;save carry
+.cflt1a:
+	ld 	a,b
+	or 	c  					;if both neg or dif signs reverse
+	jp 	m,.cflt2		; go reverse sense
+	ex 	af,af'
+	jp 	c,.tru 		;if stack<bcde
+	jp 	.fals
+; case of both neg, revers sense
+.cflt2:
+	ld 	a,h
+	or 	l
+	or 	d
+	or 	e
+	jr 	z,.fals		;not greater
+	ex 	af,af'   			;get carry
+	jp 	c,.fals
+	jp 	.tru
+#endasm
+
+/*** beginheader eq_4, cf_eq, cf_ne, neq_4 */
+// comparisons for long or float
+root void eq_4();
+root void cf_eq();
+root void cf_ne();
+root void neq_4();
+/*** endheader */
+#asm nodebug
+;test equal 32 bit long or float bc-de vs. top 2 words of stack under ret
+eq_4::
+cf_eq::
+	xor   a
+.utl_eq_4b:
+	exx      					;enter here with a=1 for inverse logic
+	pop   hl 					;return
+	exx
+	pop   hl 					;least
+	sbc   hl,de 				;least - least
+	pop   hl 					;most
+	jr 	nz,.utl_eq_4a 			;if already not equal
+	sbc   hl,bc 				;most - most
+	jr		nz,.utl_eq_4a
+	ld 	hl,1  				;is equal
+	exx
+	push  hl 					;ret
+	exx
+	xor   a,l
+	ld 	l,a   				;set polarity
+	ret
+.utl_eq_4a:   ld hl,0  			; not equal
+	exx
+	push  hl
+	exx
+	xor   a,l
+	ld 	l,a   				;set polarity
+	ret
+
+; test not equal 32 vs. 32
+cf_ne::
+neq_4::
+	ld 	a,1
+	or 	a  					;clear c
+	jr 	.utl_eq_4b
+#endasm
+
+/*** beginheader long_0 */
+// comparisons for long or float
+root void long_0();
+/*** endheader */
+#asm nodebug
+; test 32 bit bc-de == zero. z flag set and hl set 0 or 1 (for == zero)
+long_0::
+	ld 	a,b
+	or 	c
+	or 	d
+	or 	e
+	ret
+#endasm
+
+/*** beginheader L_not, G_not */
+// comparisons for long or float
+root void L_not();
+root void G_not();
+/*** endheader */
+#asm nodebug
+L_not::
+G_not::
+	ld 	hl,1
+	call  long_0
+	ret   z
+	dec   l
+	ret
+#endasm
+
+/*** beginheader swap4_ */
+root void swap4_();
+/*** endheader */
+#asm nodebug
+; swap bcde and stack
+swap4_::
+	exx
+	pop   hl 					;ret address
+	pop   de
+	pop   bc 					;most
+	exx
+	push  bc
+	push  de 					;least
+	exx
+	jp 	(hl)  				;return
+#endasm
+
+/*** beginheader swaps_ */
+root void swaps_();
+/*** endheader */
+#asm nodebug
+; swap bcde with double pointed to by (hl+sp)
+swaps_::
+	add   hl,sp
+	ld 	a,(hl)
+	ld 	(hl),e
+	ld 	e,a   				; swap e and (hl)
+	inc   hl
+	ld 	a,(hl)
+	ld 	(hl),d
+	ld 	d,a   				; swap d and (hl+1)
+	inc   hl
+	ld 	a,(hl)
+	ld 	(hl),c
+	ld 	c,a   				; swap c and (hl+2)
+	inc   hl
+	ld 	a,(hl)
+	ld 	(hl),b
+	ld 	b,a   				; swap b and (hl+3)
+	ret
+#endasm
+
+/*** beginheader I__L */
+// int to long conversions for value on stack
+root void I__L();
+/*** endheader */
+#asm nodebug
+; convert number on stack (under return) from x to y x..y
+; preserving registers hl de bc
+I__L::
+	exx
+	pop 	iy 					; get ret
+	pop 	de
+	ld 	a, d
+	rla
+	sbc 	hl,hl
+	push 	hl
+	push 	de
+	exx
+	jp 	(iy)
+#endasm
+
+/*** beginheader C__L, U__G, C__G, I__G, U__L */
+// int to long conversions for value on stack
+root void C__L();
+root void U__G();
+root void C__G();
+root void I__G();
+root void U__L();
+/*** endheader */
+#asm nodebug
+C__L::
+U__G::
+C__G::
+I__G::
+U__L::
+	exx
+	pop 	iy
+	pop 	de  					; get low bytes
+	bool	hl
+	rr 	hl   					; zero hl
+	push 	hl 					; high bytes
+	push 	de 					; low bytes
+	exx
+	jp 	(iy) 					;return
+#endasm
+
+/*** beginheader L__C, L__U, L__I, G__I, G__U, G__C */
+// long to int conversions for value on stack
+root void L__C();
+root void L__U();
+root void L__I();
+root void G__I();
+root void G__U();
+root void G__C();
+/*** endheader */
+
+#asm nodebug
+; convert from x to y x..y number on stack under return
+; preserve hl bc de
+L__C::
+L__U::
+L__I::
+G__I::
+G__U::
+G__C::
+	exx
+	pop 	iy
+	pop 	hl
+	ld 	(sp), hl
+	exx
+	jp 	(iy)  				; return
+#endasm
+
+/* Hc_Bl, Hc_Bg, Hu_Bg, Hu_Bl, Hi_Bg, Bg_Hu,
+   Bg_Hi, Bl_Hu, Bl_Hi, Bg_Hc, and Bl_Hc
+   have all been replaced with inline code in the compiler
+   --Gene Fodor 9/10/99 */
+
+
+/*** beginheader Hi_Bl */
+// char/int to long conversions for value in registers
+root void Hi_Bl();
+/*** endheader */
+
+#asm nodebug
+; convert hl signed to bcde long
+Hi_Bl::
+	ex 	de, hl
+	ld 	a,d
+	rla
+	sbc 	hl, hl
+	ld 	b,h
+	ld 	c,l
+	ret
+#endasm
+
+/* a. and o. are now inline functions */
+
+/*** beginheader x_ */
+root void x_();
+/*** endheader */
+#asm nodebug
+; X.     : Peform Logical XOR on HL and Item on Top of Stack
+;
+; INPUT  :
+;          HL   = Operand
+;          Stack (Ret Addr) (Operand)
+; OUTPUT :
+;          HL = HL ^ (SP)
+;          Stack Popped
+
+x_::
+	pop   iy
+	pop   de
+	ld 	a,l
+	xor   e
+	ld 	l,a
+	ld 	a,h
+	xor   d
+	ld 	h,a
+	jp 	(iy)
+#endasm
+
+
+/*** beginheader e_ */
+root void e_();
+/*** endheader */
+
+#asm nodebug
+; E.     : Test HL and (SP) for Equality
+;
+; INPUT  :
+;          HL = Operand
+;          Stack (Ret Addr) (Operand)
+; OUTPUT :
+;          HL = 1 && NZ, if HL == (SP)
+;          HL = 0 && Z,  if HL != (SP)
+
+e_::
+	pop   bc
+	pop   de
+	push  bc
+.utl_e_1:
+	ld 	a,h
+	cp 	d
+	ld 	a,l
+	ld 	hl,0
+	jp 	nz,.utl_e_f
+	cp 	e
+	jp 	nz,.utl_e_f
+	inc   l
+	ret
+.utl_e_f:
+	xor   a
+	ret
+#endasm
+
+/*** beginheader n_ */
+root void n_();
+/*** endheader */
+
+#asm nodebug
+; N.     : Test HL and (SP) for Inequality
+;
+; INPUT  :
+;          HL = Operand
+;          Stack (Ret Addr) (Operand)
+; OUTPUT :
+;          HL = 1 && NZ, if HL != (SP)
+;          HL = 0 && Z,  if HL == (SP)
+
+n_::
+	pop   bc
+	pop   de
+	push  bc
+.utl_n_1:
+	ld 	a,h
+	cp 	d
+	ld 	a,l
+	ld 	hl,1
+	ret   nz
+	cp 	e
+	ret   nz
+	dec   l
+	ret
+#endasm
+
+/*** beginheader c_tst */
+root void c_tst();
+root void c_asr();
+root void c_shf();
+root void c_usr();
+root void c_asl();
+/*** endheader ***/
+#asm nodebug
+c_tst::
+	ld 	a,h
+	xor   128
+	ld 	h,a
+	add   hl,de
+	ret
+#endasm
+
+/*** beginheader  c_asr, c_shf, c_usr */
+/* Rabbit Optimized versions of left and right shift
+ *  c_asr - signed right shift (preserves sign)
+ *  c_usr - unsigned right shift
+ * in:    de - number to shift
+ *        hl - amount of shift
+ * out:   hl - shifted number
+ *
+ * Note that 0<=hl<=15 or else hl result is undefined.
+ * ANSI spec states that shifts (hl values) equal
+ * to or greater than the
+ * number of bits in the word(de length) or undefined.
+ *
+ * Last modified: 9/20 Gene Fodor
+ */
+root void c_asr();
+root void c_shf();
+root void c_usr();
+/*** endheader ***/
+#asm nodebug
+c_asr::
+	bit 	7, d    				; test sign
+	jr 	z, c_usr     		; jump to handle positive case (i.e., unsigned)
+	ld 	a, l
+	ex 	de, hl
+	rra
+	jr 	nc, .utl_asr2
+	scf                 		; set carry (unfortunately, rr preserves carry)
+	rr 	hl
+	or 	a            		; test for zero
+	ret 	z           		; return if zero to make small shifts faster
+.utl_asr2:
+	rra
+	jr 	nc,.utl_asr3
+	scf             			; set carry
+	rr 	hl
+	scf                 		; set carry
+	rr 	hl
+	or 	a            		; test for zero
+	ret 	z           		; return if zero to make small shifts faster
+.utl_asr3:
+	rra
+	jr 	nc, .utl_asr4
+	rr 	hl
+	rr 	hl
+	rr 	hl
+	rr 	hl
+	ld 	de, 0xF000   		; 6 clocks (using "scf" per rr would be no better faster)
+	or 	hl, de       		; sets upper part of high byte
+.utl_asr4:
+	rra
+	ret 	nc
+	ld 	l,h
+	ld 	h,0XFF
+	ret
+c_usr::
+	ld 	a, l 					; unsigned right shift
+	ex 	de, hl
+	rra
+	jr 	nc, .utl_usr2
+	or 	a                	; clear carry
+	rr 	hl
+	or 	a            		; test for zero
+	ret 	z           		; return if zero to make small shifts faster
+.utl_usr2:
+	rra
+	jr 	nc,.utl_usr3
+	or 	a                	; clear carry
+	rr 	hl
+	or 	a                	; clear carry
+	rr 	hl
+	or 	a            		; test for zero
+	ret 	z           		; return if zero to make small shifts faster
+.utl_usr3:
+	rra
+	jr		nc, .utl_usr4
+	rr 	hl
+	rr 	hl
+	rr 	hl
+	rr 	hl
+	ld 	de, 0x0FFF   		; 6 clocks (using "or a" per rr would be no better faster)
+	and 	hl, de      		; clears upper part of high byte
+.utl_usr4:
+	rra        					; test for shift 8
+	ret 	nc
+	ld 	l,h          		; shift 8
+	ld 	h,0
+	ret
+
+#endasm
+
+/*** beginheader c_asl ***/
+/* Rabbit Optimized versions of left and right shift
+ *  c_asl - signed and unsigned left shift
+ * in:    de - number to shift
+ *        hl - amount of shift
+ * out:   hl - shifted number
+ *
+ */
+root void c_asl();
+/*** endheader ***/
+#asm nodebug
+c_asl::
+	ld 	a,l     				; left shift (sign doesn't matter)
+	ex 	de,hl
+	rra
+	jr 	nc,.utl_asl2
+	add 	hl,hl
+	or 	a            		; test for zero
+	ret 	z           		; return if zero to make small shifts faster
+.utl_asl2:
+	rra
+	jr 	nc,.utl_asl3
+	add 	hl,hl      			; add same as rl
+	add 	hl,hl
+	or 	a            		; test for zero
+	ret 	z           		; return if zero to make small shifts faster
+.utl_asl3:
+	rra
+	jr 	nc,.utl_asl4
+	add 	hl,hl
+	add 	hl,hl
+	add 	hl,hl
+	add 	hl,hl
+.utl_asl4:
+	rra
+	ret 	nc
+	ld 	h,l
+	ld 	l,0
+	ret
+#endasm
+
+/*** beginheader Bf_Hc, Bf_Hu, Bf_Hi */
+root void Bf_Hc();
+root void Bf_Hu();
+root void Bf_Hi();
+/*** endheader */
+#asm nodebug
+; convert floating to integer, character
+Bf_Hc::
+Bf_Hu::
+Bf_Hi::
+	call  Bf_Bl 				;convert tolong
+	ex 	de,hl 				;put least in hl
+	ret
+#endasm
+
+/*** beginheader F__I, F__U, F__C */
+root void F__I();
+root void F__U();
+root void F__C();
+/*** endheader */
+
+#asm nodebug
+; following converstion routines protect hl de bc
+; convert float to integer on stack
+F__I::
+F__U::
+F__C::
+	exx
+	pop   hl
+	pop   de 					;least
+	pop   bc 					;most
+	push  hl
+	call  Bf_Bl 				;convert to long in bcde
+	pop   hl 					;return
+	push  de 					;least only
+	push  hl
+	exx
+	ret
+#endasm
+
+/*** beginheader F__G, F__L */
+root void F__G();
+root void F__L();
+/*** endheader */
+#asm nodebug
+; convert float to long on stack
+F__G::   						; float to unsigned
+F__L::
+	exx      					;use alt registers
+	pop   hl 					;return
+	pop   de 					;least
+	pop   bc 					;most
+	push  hl 					;save return
+	call  Bf_Bl 				;protects alt regs
+	pop   hl
+	push  bc 					;most
+	push  de 					;least
+	push  hl 					;return
+	exx
+	ret
+#endasm
+
+/*** beginheader C__F, U__F, I__F, L__F, G__F */
+root void C__F();
+root void U__F();
+root void I__F();
+root void L__F();
+root void G__F();
+/*** endheader */
+
+#asm nodebug
+; convert character to float on stack
+C__F::
+	exx
+	pop   hl
+	pop   de
+	ld 	d,0
+	ld 	bc,0  				;extend sign
+	jr 	.utl_L..F1
+U__F::
+	exx
+	pop   hl 					;ret
+	pop   de 					;most
+	ld 	bc,0  				;extend sign
+	jr 	.utl_L..F1
+I__F::
+	exx
+	pop   hl 					;return
+	pop   de 					;most
+	ld 	bc,0  				;extend sign
+	bit   7,d
+	jr 	z,.utl_L..F1
+	dec   bc 					;make neg
+	jr 	.utl_L..F1
+; convert long to float on the stack
+L__F::
+	exx      					;use alt registers
+	pop   hl 					;return
+	pop   de 					;least
+	pop   bc 					;most
+.utl_L..F1:
+	push  hl 					;save return
+	exx   						;save regs
+	push  hl
+	push  de
+	push  bc
+	exx
+	call  Bl_Bf 				;answer in regs, uses alt regs
+.utl_L..F3:
+	exx
+	pop   bc 					;old regs
+	pop   de
+	pop   hl
+	exx
+	pop   hl
+	push  bc 					;most
+	push  de 					;least
+	push  hl 					;return
+	exx
+	ret
+G__F::
+	exx      					;use alt registers
+	pop   hl 					;return
+	pop   de 					;least
+	pop   bc 					;most
+.utl_G..F1:
+	push  hl 					;save return
+	exx   						;save regs
+	push  hl
+	push  de
+	push  bc
+	exx
+	call  Bg_Bf 				;answer in regs, uses alt regs
+	jr 	.utl_L..F3 				;continue
+#endasm
+
+/*** beginheader c_ge, c_le */
+root void c_ge();
+root void c_le();
+/*** endheader ***/
+#asm nodebug
+; de<=hl
+c_le::  ex de,hl
+; de>=hl return 1 if true, else zero. Set flags accordingly.
+c_ge::
+	add 	hl,hl
+	ccf
+	rr 	hl    ; (last three) complement MSB of hl (map to unsigned int) clears carry
+	rl 	de
+	ccf
+	rr 	de    				; complement MSB of de (map to unsigned int) preserves carry
+	scf      					; set the carry
+	sbc 	hl, de  				; sets carry if de >= hl
+	sbc 	hl, hl  				; hl=-1 if carry set, otherwise hl=0
+	bool	hl     				; hl=1 if de >= hl, otherwise hl=0
+	ret
+#endasm
+
+/*** beginheader c_lt, c_gt */
+root void c_lt();
+root void c_gt();
+/*** endheader ***/
+#asm nodebug
+; de<hl
+c_lt::
+	ex 	de,hl
+; de>hl
+c_gt::
+	add 	hl,hl
+	ccf
+	rr 	hl
+	rl 	de
+	ccf
+	rr 	de
+	sbc 	hl, de
+	sbc 	hl, hl
+	bool 	hl
+	ret
+#endasm
+
+/*** beginheader c_ult, c_ugt */
+root void c_ult();
+root void c_ugt();
+/*** endheader ***/
+#asm nodebug
+; unsigned int compare
+; de<hl
+c_ult::
+	ex 	de,hl
+; de>hl return hl 1 or 0 and set flags accordingly
+c_ugt::
+	or 	a  					;clc
+	sbc   hl,de
+	sbc   hl,hl
+	bool  hl
+	ret
+
+#endasm
+
+/*** beginheader c_ule, c_uge */
+root void c_ule();
+root void c_uge();
+/*** endheader ***/
+#asm nodebug
+; de<=hl
+c_ule::
+	ex 	de,hl
+; de>=hl
+c_uge::
+	scf
+	sbc   hl,de
+	sbc   hl,hl
+	bool  hl
+	ret
+#endasm
+
+
+/*** beginheader e_0 */
+root void e_0();
+/*** endheader */
+#asm nodebug
+; E.0    : Return C Logical Equivalent of HL
+;
+; INPUT  :
+;          HL = 16 Bit Value
+; OUTPUT :
+;          HL = 0, if HL == 0
+;          HL = 1, if HL != 0
+
+e_0::    ; ****improve - equivalent of bool, should never be used?
+	ld 	a,h
+	or 	l
+	ret   z
+	ld 	hl,1
+	ret
+
+; C.NOT  : Perform C Logical Not on HL
+;
+; INPUT  :
+;          HL = Operand
+; OUTPUT :
+;          HL = 1 && NZ, if HL == 0
+;          HL = 0 && Z,  if HL != 0
+#endasm
+
+/*** beginheader c_not */
+root void c_not();
+/*** endheader */
+#asm nodebug
+c_not::
+	bool 	hl
+	dec 	hl
+	bool 	hl
+	ret
+#endasm
+
+
+/*** Beginheader bound_e */
+root void bound_e();
+/*** Endheader */
+
+#asm nodebug
+; BOUND.E : Out of Bounds on Pointer Store
+;
+; INPUT  :
+;          HL = Pointer
+; OUTPUT :
+;          None ( Does Not Return )
+
+bound_e::
+	ld		hl, -ERR_BADPOINTER
+	push	hl
+	call	exception
+	add	sp, 2
+	call	exit				; if return from runtime err handler, exit out!
+#endasm
+
+/*** Beginheader abound_e */
+root void abound_e();
+/*** Endheader */
+
+#asm nodebug
+; ABOUND.E : Check for Array Index in Range
+;
+; INPUT  :
+;          None
+; OUTPUT :
+;          None
+
+abound_e::
+	ld		hl, -ERR_BADARRAYINDEX
+	push	hl
+	call	exception
+	add	sp, 2
+	call	exit
+#endasm
+
+
+/*** Beginheader BIT, bit */
+// if bitnum is not a constant value use this function
+// otherwise generate inline code
+// use C wrapper because of conflict when defining a label
+// with same name as the assembly instruction
+root unsigned BIT(void *address, unsigned int bitnum);
+root unsigned bit(void *address, unsigned int bitnum);
+/*** Endheader */
+
+nouseix nodebug root unsigned BIT(void *address, unsigned int bitnum)
+{
+#asm
+	call   __getmask__
+	and   (hl)
+	ld    hl,0
+	ret   z
+	inc   hl
+#endasm
+}
+
+/******************************************************************************/
+
+/*** BeginHeader _disable_peripheral_interrupts */
+void _disable_peripheral_interrupts(void);
+/*** EndHeader */
+
+#asm
+_disable_peripheral_interrupts::
+   ; disable slave port interrupt
+   ioi	ld a,(SPCR)
+   and	0xfc
+   ioi   ld (SPCR),a
+
+   ; disable all timer A interrupts
+   ld		a,(TACSRShadow)
+   and	0x01
+   ld		(TACSRShadow),a
+   ioi 	ld (TACSR),a
+
+   ; disable timer B interrupt
+   ld		a,(TBCRShadow)
+   and   0xfc
+   ld		(TBCRShadow),a
+   ioi	ld (TBCR),a
+
+	xor	a
+   ld		(TBCSRShadow),a
+   ioi	ld (TBCSR),a
+
+   ; disable external interrupt 0
+   ld		a,(I0CRShadow)
+   and	0xfc
+   ld		(I0CRShadow),a
+   ioi	ld (I0CR),a
+
+   ; disable external interrupt 1
+   ld		a,(I1CRShadow)
+   and	0xfc
+   ld		(I1CRShadow),a
+   ioi	ld (I1CR),a
+#if (CPU_ID_MASK(_CPU_ID_) >= R3000)
+	; disable PWM interrupt
+   ld		a,(PWL0RShadow)
+   and	0xf1
+   ld		(PWL0RShadow),a
+   ioi	ld (PWL0R),a
+
+   ; disable quadrature decoder interrupt
+   ld		a,(QDCRShadow)
+   and	0xfc
+   ld		(QDCRShadow),a
+   ioi	ld (QDCR),a
+
+   ; disable input capture interrupt
+   ld		a,(ICCRShadow)
+   and	0xfc
+   ld		(ICCRShadow),a
+   ioi	ld (ICCR),a
+#endif
+	ret
+#endasm
+
+/*** BeginHeader _disable_stack_limit_interrupt */
+void _disable_stack_limit_interrupt(void);
+/*** EndHeader */
+
+#asm
+_disable_stack_limit_interrupt::
+#if !__RABBITSYS
+	#if (_CPU_ID_) >= (R3000_R1)
+   ; disable stack limit checking
+	xor	a
+   ld		(STKCRShadow),a
+   ioi	ld (STKCR),a
+   #endif
+#endif
+	ret
+#endasm
+
+/*** BeginHeader _disable_serial_interrupt */
+void _disable_serial_interrupt(char *shadow, int port);
+/*** EndHeader */
+
+nodebug void _disable_serial_interrupt(char *shadow, int port)
+{
+#asm
+   ld		a,(hl)
+   and	0xfc
+   ld		(hl),a
+   ld		hl,(sp+@sp+port)
+   ioi	ld (hl),a
+#endasm
+}
+
+/******************************************************************************/
+
+/*** BeginHeader _disable_all_interrupts */
+void _disable_all_interrupts(void);
+/*** EndHeader */
+#asm
+
+_disable_all_interrupts::
+	; disable periodic interrupt
+   ioi	ld	a,(GCSR)
+   and	0xfc
+   ioi	ld (GCSR),a
+
+   ; disable secondary watchdog interrupt
+   ld		a,0x5a
+   ioi	ld (SWDTR), a
+   ld		a,0x52
+   ioi	ld (SWDTR), a
+   ld		a,0x44
+   ioi	ld (SWDTR), a
+
+	call	_disable_peripheral_interrupts
+	call	_disable_stack_limit_interrupt
+c	_disable_serial_interrupt(&SACRShadow, SACR);
+c	_disable_serial_interrupt(&SBCRShadow, SBCR);
+c	_disable_serial_interrupt(&SCCRShadow, SCCR);
+c	_disable_serial_interrupt(&SDCRShadow, SDCR);
+c	_disable_serial_interrupt(&SECRShadow, SECR);
+c	_disable_serial_interrupt(&SFCRShadow, SFCR);
+
+   ret
+#endasm
+
+/*** BeginHeader _unexp_interrupt */
+root void _unexp_interrupt();
+/*** EndHeader */
+
+#asm nodebug root
+_unexp_interrupt::
+	; runtime error # for unexpected interrupt loaded into hl in vector code
+	push	hl
+
+#if _SYSTEM
+	xor	a
+   ioi	ld (WPCR),a
+	inc	a                        ; if RabbitSys, log the error and MAYBE
+	lcall	_rs_mon_rt_error         ; we will return.
+#endif
+
+	bool	hl
+   ld		l,h
+	push	hl
+	call	_init_bad_interrupts
+   add	sp,2
+	ld		hl,(sp+0)
+
+   push	ip
+   push	ip
+   pop	de
+   ld		a,e
+   and	3
+   jr		z,.ip_level0
+	ipres
+.ip_level0:
+	call	exception
+	add	sp, 2				; if runtime error handler returns, continue on!
+
+	ret
+#endasm
+
+/*** Beginheader SET, set */
+// if bitnum is not a constant value use this function
+// otherwise generate inline code
+// use C wrapper because of conflict when defining a label
+// with same name as the assembly instruction
+void SET(void *address, unsigned int bitnum);
+void set(void *address, unsigned int bitnum);
+/*** Endheader */
+
+nouseix nodebug root void SET(void *address, unsigned int bitnum)
+{
+#asm
+	call  __getmask__
+	or    (hl)
+	ld    (hl),a
+#endasm
+}
+
+/*** Beginheader RES, res */
+// if bitnum is not a constant value use this function
+// otherwise generate inline code
+// use C wrapper because of conflict when defining a label
+// with same name as the assembly instruction
+void RES(void *address, unsigned int bitnum);
+void res(void *address, unsigned int bitnum);
+/*** Endheader */
+
+nouseix nodebug root void RES(void *address, unsigned int bitnum)
+{
+#asm
+	call  __getmask__
+	cpl
+	and   (hl)
+	ld    (hl),a
+#endasm
+}
+
+
+/*** Beginheader ipset */
+void ipset(int);
+/*** Endheader */
+
+/*** Beginheader ipres */
+void ipres(void);
+/*** Endheader */
+
+/*** Beginheader __getmask__ */
+/*** Endheader */
+
+// helper function for BIT, SET, RES
+// INPUT:
+// register HL:  address of field containing desired bit
+// has a hidden pseudo-argument return address as the calling
+// function's parameters are not repushed; remaining parameters
+// same as calling function's parameters
+// OUTPUT:
+// register A:   mask based upon bitnum % 8
+// register HL:  bit address adjusted for modulo of bitnum
+nouseix nodebug char __getmask__(void *retaddr, void *bitaddr, unsigned int bitnum)
+{
+	static const char mask[] = {1,2,4,8,16,32,64,128};
+#asm
+	ld    iy,bitnum
+	add   iy,sp     			;point to bit number
+	ld    a,(iy)   			;bit num
+.utl_bit1:
+	cp    8
+	jr    c,.utl_bit2   			; if less than 8 jr
+	inc   hl            		; next byte
+	sub   a,8
+	jr    .utl_bit1
+.utl_bit2:
+	ld    e,a     				;bit num
+	ld    d,0
+	ld    iy,mask
+	add   iy,de
+	ld    a,(iy)   			;mask
+#endasm
+}
+
+/*** beginheader upack, F_unpack */
+root void upack();
+root void F_unpack();
+/*** endheader */
+
+#asm nodebug
+;subroutine to unpack 2 floating args from hl-de to  regs
+; c (c') is exp -128 to +127. lde (l'd'e') is 24 bit unsigned mantissa
+; h (h') bit 7 has the sign
+; register set switched to floating that came in on stack
+upack::         				;unpacks floating args
+	ld 	a,h
+	xor   40h   				; re-range exponent to -1 for 2^0
+	rl 	l  					; get 8 bits of exponent to a-reg
+	rla
+	ld 	c,a   				;save exponent in c as signed number
+; insert hidden bit in mantissa
+	scf
+	rr 	l  					;lde has 24 bit unsigned number, c exponent
+; exponent adjusted for range -128 to + 127
+	exx
+.utl_unpack2:
+	ld 	a,h
+	xor   40h   				;adj exp range
+	rl 	l
+	rla
+	ld 	c,a   				;exponent in c sign in h
+	scf
+	rr 	l  					; number in lde unsigned, normalized to l
+	ret
+F_unpack::  					;external entry to unpack a floating number, protects
+; alternate registers
+; places exponent in c (and a), sign in h unsigned 24 bit number in lde
+; exponent is 1 count low, lde has value between 1.0 and 1.9999..
+.utl_unpack1: ; unpack one floating number in registers
+	ld 	l,c
+	ld 	h,b
+	jr 	.utl_unpack2
+#endasm
+
+/*** beginheader F_norm */
+/*** endheader */
+
+
+
+/*** beginheader S_right */
+root void S_right();
+/*** endheader */
+
+#asm nodebug
+; Unbiased rounding: If less than an infinite number of
+; bits is lost as a result of shifting to right, adding last bit lost
+; to remaining number produces a biased result because the average
+; amount added is +1/2 but the average amount lost is -1/2 only if
+; a very large number of bits was shifted off. Or'ing all bits lost
+; into least bit retained is unbiased regardless of number of bits lost.
+; Additional advantage is that no overflow can happen as a result of the
+; round operation. Disadvantage is that standard deviation is larger.
+
+
+; shift right (lde- 24 bits) up to 23 counts per C register
+; 298 clocks worst case HD64180, shift right 23 positions
+; returns A non zero if any bits shifted off end to right
+S_right::      ;ext entry, c is positive or zero, h undisturbed
+.utl_shrpc:
+	xor   a  					; .keep memory if any bits lost to right
+	ld 	b,a   				; .b is zero
+	bit   4,c   				; .test for 16
+	jr 	z,.utl_shrpa1 		; .
+	or 	d  					; .
+	or 	e  					; .remember if any 1's in 16 bits lost
+	ld 	e,l   				; .
+	ld 	l,b   				; .zero, shifting right 16 positions
+	ld 	d,b   				; .zero
+	jr 	.utl_shrpa5   	  	; .continue, 8 and 16 both not possible
+.utl_shrpa1:  bit   3,c   	; test for 8
+	jr 	z,.utl_shrp5a 	  	;.
+	or 	e  					; remember if any 1's in bits shifted off
+	ld 	e,d   				; shift right 8 bits
+	ld 	d,l   				; shift right 8 positions
+	ld 	l,b   				; zero
+.utl_shrpa5:
+	or 	a  					; .see if anything in a
+	jr 	z,.utl_shrp5a		; .
+	or 	80h   				; .set high bit to perserve nonzero state of A
+.utl_shrp5a:
+	bit   2,c   				; .test for 4
+	jr 	z,.utl_shrpa6		;.
+; shift 4 right keeping track of any 1's shifted off in a
+	srl   l  					; .
+	rr 	d
+	rr 	e
+	rra
+	srl   l
+	rr 	d
+	rr 	e
+	rra
+	srl   l
+	rr 	d
+	rr 	e
+	rra
+	srl   l
+	rr 	d
+	rr 	e
+	rra      					; .
+.utl_shrpa6:
+	bit   1,c   				; .test for 2
+	jr 	z,.utl_shrpa7 		; .
+	srl   l  					; .
+	rr 	d
+	rr 	e
+	rra
+	srl   l
+	rr 	d
+	rr 	e
+	rra      					; .
+.utl_shrpa7:
+	bit   0,c   				; .test for 1 more shift
+	jr 	z,.utl_shrpa8 		; .
+	srl   l  					; .
+	rr 	d
+	rr 	e
+	rra      					; .
+.utl_shrpa8:
+; now if A is non zero a 1 bit was lost at right at some point
+	ret      					; . 298 (no less) clocks worst case shift right 23 positions
+#endasm
+
+
+/*** Beginheader 	RevBitTable */
+extern const char RevBitTable[];
+#define BIT_REVERSE_TABLE
+/*** Endheader */
+
+
+// Lookup table for bit reversal of SPI data
+const char RevBitTable[] = {
+0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0,
+0x08, 0x88, 0x48, 0xC8, 0x28, 0xA8, 0x68, 0xE8, 0x18, 0x98, 0x58, 0xD8, 0x38, 0xB8, 0x78, 0xF8,
+0x04, 0x84, 0x44, 0xC4, 0x24, 0xA4, 0x64, 0xE4, 0x14, 0x94, 0x54, 0xD4, 0x34, 0xB4, 0x74, 0xF4,
+0x0C, 0x8C, 0x4C, 0xCC, 0x2C, 0xAC, 0x6C, 0xEC, 0x1C, 0x9C, 0x5C, 0xDC, 0x3C, 0xBC, 0x7C, 0xFC,
+0x02, 0x82, 0x42, 0xC2, 0x22, 0xA2, 0x62, 0xE2, 0x12, 0x92, 0x52, 0xD2, 0x32, 0xB2, 0x72, 0xF2,
+0x0A, 0x8A, 0x4A, 0xCA, 0x2A, 0xAA, 0x6A, 0xEA, 0x1A, 0x9A, 0x5A, 0xDA, 0x3A, 0xBA, 0x7A, 0xFA,
+0x06, 0x86, 0x46, 0xC6, 0x26, 0xA6, 0x66, 0xE6, 0x16, 0x96, 0x56, 0xD6, 0x36, 0xB6, 0x76, 0xF6,
+0x0E, 0x8E, 0x4E, 0xCE, 0x2E, 0xAE, 0x6E, 0xEE, 0x1E, 0x9E, 0x5E, 0xDE, 0x3E, 0xBE, 0x7E, 0xFE,
+0x01, 0x81, 0x41, 0xC1, 0x21, 0xA1, 0x61, 0xE1, 0x11, 0x91, 0x51, 0xD1, 0x31, 0xB1, 0x71, 0xF1,
+0x09, 0x89, 0x49, 0xC9, 0x29, 0xA9, 0x69, 0xE9, 0x19, 0x99, 0x59, 0xD9, 0x39, 0xB9, 0x79, 0xF9,
+0x05, 0x85, 0x45, 0xC5, 0x25, 0xA5, 0x65, 0xE5, 0x15, 0x95, 0x55, 0xD5, 0x35, 0xB5, 0x75, 0xF5,
+0x0D, 0x8D, 0x4D, 0xCD, 0x2D, 0xAD, 0x6D, 0xED, 0x1D, 0x9D, 0x5D, 0xDD, 0x3D, 0xBD, 0x7D, 0xFD,
+0x03, 0x83, 0x43, 0xC3, 0x23, 0xA3, 0x63, 0xE3, 0x13, 0x93, 0x53, 0xD3, 0x33, 0xB3, 0x73, 0xF3,
+0x0B, 0x8B, 0x4B, 0xCB, 0x2B, 0xAB, 0x6B, 0xEB, 0x1B, 0x9B, 0x5B, 0xDB, 0x3B, 0xBB, 0x7B, 0xFB,
+0x07, 0x87, 0x47, 0xC7, 0x27, 0xA7, 0x67, 0xE7, 0x17, 0x97, 0x57, 0xD7, 0x37, 0xB7, 0x77, 0xF7,
+0x0F, 0x8F, 0x4F, 0xCF, 0x2F, 0xAF, 0x6F, 0xEF, 0x1F, 0x9F, 0x5F, 0xDF, 0x3F, 0xBF, 0x7F, 0xFF
+};
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */
+
+

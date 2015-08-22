@@ -1,0 +1,171 @@
+///////////////////////////////////////////////////////////////////////
+
+/*** BeginHeader */
+#ifdef COMPILE_PRIMARY_PROG
+	#ifdef COMPILE_SECONDARY_PROG
+		#error "Cannot define both COMPILE_PRIMARY_PROG and COMPILE_SECONDARY_PROG."
+		#error "Remove at least one of them from the Compiler Options' Defines box."
+	#endif
+#endif
+
+//**** ID/User Blocks are almost always in the first flash, except in the case
+//****  of a 2 * 256K flash equipped board's DLP (IE: COMPILE_SECONDARY_PROG is
+//****  defined).  In this case, because the CS_FLASH and CS_FLASH2 definitions
+//****  are swapped, the ID/User Blocks appear to be located in the "second"
+//****  flash, and the macro is undefined and redefined appropriately below.
+#define IDUSERBLOCKS_FLASHNUM 1
+
+//**** These are redefinitions which are done if the macro COMPILE_SECONDARY_PROG
+//****  is defined. These cause (by default) the RAM to be split, and the top
+//****  half used, and they map the MB0CR and/or MB1CR quadrants as required to
+//****  access the DLP's and the ID/User Blocks' flash(es).
+//**** The default RAM split preserves all global and function-static variables.
+//****  For RAM reuse (or small RAM systems) define DONT_SPLIT_RAM, then primary
+//****  and secondary each use all RAM.  Battery backup of RAM isn't useful in
+//****  this case.
+//**** This is for situations where 2 co-resident programs are used ONLY, such
+//****  as a download manager and a downloaded program.  The downloaded program
+//****  should generally be the secondary program.
+//**** Conditional code prevents using the IDE to debug a secondary program.
+#ifdef  COMPILE_SECONDARY_PROG
+   #if RAM_COMPILE==1
+      #error "Intended for DOWN_LOAD sample only. Not compatible with RAM_COMPILE."
+   #endif
+   #ifdef  ROUTE_A18_TO_FLASH_A17
+      #if _FLASH_SIZE_ != 0x40
+         #error "Routing A18 to A17 only works on single 256K flash memory!"
+      #endif
+      /* Single 256K flash on CS0, split in half */
+		#define SPLIT_FLASH_SECONDARY_PROG
+      #undef  MB0CR_INVRT_A18
+      #define MB0CR_INVRT_A18  1
+      /* The value 0x20 means 128K partition for Secondary (assume 256K flash) */
+      #undef  FLASH_SIZE
+      #define FLASH_SIZE 0x20
+   #else
+		#if _FLASH_SIZE_ == 0x80
+			/* Single 512K flash on CS0, split in half */
+			#define SPLIT_FLASH_SECONDARY_PROG
+			/* The value 0x40 means 256K partition for Secondary (assume 512K flash) */
+			#undef  FLASH_SIZE
+			#define FLASH_SIZE 0x40
+			// DLP on CS0 in 2nd half of flash,
+			//  invert A18 to run in MB0CR quadrant
+			#undef MB0CR_INVRT_A18
+			#define MB0CR_INVRT_A18  1
+		#else
+			#define USER_BLOCK_NOT_IN_PROG_SPACE
+			/* Two flash memory chips; DLM on CS0, DLP on CS2 */
+	      #undef  CS_FLASH
+	      #define CS_FLASH   0x02
+	      #undef  CS_FLASH2
+	      #define CS_FLASH2  0x00
+			// ID/User Blocks are in the "second" flash
+			//  (swapped CS_FLASH, CS_FLASH2 definitions)
+			#undef  IDUSERBLOCKS_FLASHNUM
+			#define IDUSERBLOCKS_FLASHNUM 2
+		#endif
+   #endif
+   #ifndef DONT_SPLIT_RAM
+      #if (_RAM_SIZE_==0x80)
+         #undef _RAM_SIZE_
+         #define _RAM_SIZE_ 0x40
+      #else
+         #if (_RAM_SIZE_==0x40)
+            #undef _RAM_SIZE_
+            #define _RAM_SIZE_ 0x20
+         #else
+            #if (_RAM_SIZE_==0x20)
+               #undef _RAM_SIZE_
+               #define _RAM_SIZE_ 0x10
+            #else
+               #error "Unknown RAM size."
+            #endif
+        #endif
+      #endif
+      /* Locate secondary's RAM in upper half of it. */
+      #undef  RAM_SIZE
+      #define RAM_SIZE _RAM_SIZE_
+      #undef  RAM_START
+      #define RAM_START 0x80+RAM_SIZE
+   #endif   // ifndef DONT_SPLIT_RAM
+#endif //COMPILE_SECONDARY_PROG
+
+//**** These are redefinitions which are done if the macro COMPILE_PRIMARY_PROG
+//****  is defined.  These cause (by default) the RAM to be split, and the
+//****  bottom half used, and they map the MB0CR and/or MB1CR quadrants as
+//****  required to access the DLP's and the ID/User Blocks' flash(es).
+//**** The default RAM split preserves all global and function-static variables.
+//****  For RAM reuse (or small RAM systems) define DONT_SPLIT_RAM, then primary
+//****  and secondary each use all RAM.  Battery backup of RAM isn't useful in
+//****  this case.
+//**** This is for situations where 2 co-resident programs are used ONLY, such
+//****  as a download manager and a downloaded program.  The download manager
+//****  program should generally be the primary program.
+//**** The IDE is able to debug a primary program.
+#ifdef  COMPILE_PRIMARY_PROG
+   #if RAM_COMPILE==1
+      #error "Intended for DOWN_LOAD sample only. Not compatible with RAM_COMPILE."
+   #endif
+   #ifdef  ROUTE_A18_TO_FLASH_A17
+      #if _FLASH_SIZE_ != 0x40
+         #error "Routing A18 to A17 only works on single 256K flash memory!"
+      #endif
+		/* Single 256K flash on CS0, split in half */
+      #define SPLIT_FLASH_PRIMARY_PROG
+      #define USER_BLOCK_NOT_IN_PROG_SPACE
+      /* Flash memory holds two programs, assume 256K memory chip. */
+      /* The value 0x20 means 128K partition for Secondary (assume 256K flash) */
+      #undef  FLASH_SIZE
+      #define FLASH_SIZE 0x20
+      // Secondary area appears in MB1CR quadrant (two copies),
+      //  we are running first part of single flash.
+      // Do NOT invert A18 to make last half of flash visible in MB1CR quadrant.
+      #undef  CS_FLASH2
+      #define CS_FLASH2   0x00
+	#else
+		#if _FLASH_SIZE_ == 0x80
+			/* Single 512K flash on CS0, split in half */
+			#define SPLIT_FLASH_PRIMARY_PROG
+			#define USER_BLOCK_NOT_IN_PROG_SPACE
+			/* Flash memory holds two programs in a single 512K memory chip. */
+			/* The value 0x40 means 256K partition for Secondary (assume 512K flash) */
+			#undef  FLASH_SIZE
+			#define FLASH_SIZE 0x40
+			// Secondary area appears in MB1CR quadrant,
+			//  we are running first part of single flash.
+			// Do NOT invert A18 to make last half of flash visible in MB1CR quadrant.
+		#endif
+   #endif
+   #ifndef DONT_SPLIT_RAM
+      #if (_RAM_SIZE_==0x80)
+         #undef _RAM_SIZE_
+         #define _RAM_SIZE_ 0x40
+      #else
+         #if (_RAM_SIZE_==0x40)
+            #undef _RAM_SIZE_
+            #define _RAM_SIZE_ 0x20
+         #else
+            #if (_RAM_SIZE_==0x20)
+               #undef _RAM_SIZE_
+               #define _RAM_SIZE_ 0x10
+            #else
+               #error "Unknown RAM size."
+            #endif
+         #endif
+      #endif
+      #undef RAM_SIZE
+      #define RAM_SIZE _RAM_SIZE_
+   #endif   // ifndef DONT_SPLIT_RAM
+#endif //COMPILE_PRIMARY_PROG
+
+/*  DONT_SPLIT_RAM only for primary or secondary system splits. */
+#ifndef COMPILE_PRIMARY_PROG
+   #ifndef COMPILE_SECONDARY_PROG
+      #ifdef DONT_SPLIT_RAM
+         #warns "DONT_SPLIT_RAM ignored (you should remove it)."
+      #endif
+   #endif
+#endif
+/*** EndHeader */
+

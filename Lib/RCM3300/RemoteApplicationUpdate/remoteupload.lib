@@ -1,0 +1,487 @@
+/*** BeginHeader */
+#ifndef REMOTEUPLOAD_LIB
+#define REMOTEUPLOAD_LIB
+
+/* START LIBRARY DESCRIPTION *********************************************
+
+REMOTEUPLOAD.LIB
+	Copyright (c) 2003, ZWorld.
+
+DESCRIPTION:
+
+   This library provides functionalty for a DLP (downloaded program) which is
+   stored in serial flash and loaded into RAM by a parallel flash resident
+   loader.  The only user level functions in this file are dlp_init, which
+   initializes the DLP, dlp_handler which handles DLP shutdown, and
+   dlp_rebootdlm which forces a reboot to the DLM and can be used by a  custom
+   user interface.
+
+   In order for a program to function as a DLP dlp_init MUST be called.  If the
+   web interface is enabled, dlp_handler must be called regulary.  If a custom
+   DLP interface is being used, then one or both of the following must be done -
+   1) set dlp_do_reboot to 1 when custom reboot criteria is met and ensure that
+   dlp_handler() is called regulary (dlp_handler will see the flag set to 1 and
+   cause a reboot 2) call dlp_rebootdlm() directly when reboot criteria is met.
+   Failure to meet these requirements may result in a deployed program which is
+   not able to reboot back to the DLM.
+
+END DESCRIPTION **********************************************************/
+
+#if !FAST_RAM_COMPILE
+#error "Must compile this DLP to flash, to run in RAM!"
+#error "Incompatible with FLASH_COMPILE and RAM_COMPILE modes."
+#endif
+
+#if __SEPARATE_INST_DATA__
+#error "Must compile this DLM with separate instruction and data spaces turned off"
+#endif
+
+// If the web interface is being used, the page that gets served in the process
+// of rebooting includes a meta refresh tag so that the browser is redirected to
+// the home page of the download manager.  Changing this macro will change where
+// the browser is redirected to after a reboot to the download manager. The
+// parameter s must be a character buffer of at least 16 bytes.
+#ifndef DLP_REBOOT_CGI_REDIRECTTO(s)
+#define DLP_REBOOT_CGI_REDIRECTTO(s) 		inet_ntoa(s, MY_ADDR(IF_DEFAULT))
+#endif
+
+// This controls the number of seconds the browser should wait before refreshing
+// when rebooting into the download manager.
+#ifndef DLP_REBOOT_CGI_REFRESH_SEC
+#define DLP_REBOOT_CGI_REFRESH_SEC		5
+#endif
+
+// By default, debugging output is turned off.  To enable debugging output,
+// uncomment the following macro.
+//#define DLP_VERBOSE
+
+// By default, debug information is turned off in this file.  To enable
+// debugging, uncomment the following macro.
+//#define DLP_DEBUG
+
+/********************************
+ * End of configuration section *
+ ********************************/
+
+#ifndef DLP_USE_HTTP_INTERFACE
+	#ifndef DLP_USE_CUSTOM_INTERFACE
+   	#error Please specify a user interface for the DLP.
+   #endif
+#endif
+
+#ifdef DLP_USE_CUSTOM_INTERFACE
+	#ifndef DLP_USE_HTTP_INTERFACE
+		#warns "It is very important to make sure that the DLP has a way of "
+   	#warns "rebooting to the download manager.  DO NOT deploy a DLP that "
+      #warns "does not call dlp_rebootdlm(), either directly or via "
+      #warns "dlp_handler(), as that may leave the DLM unreachable."
+   #endif
+#endif
+
+#use "remoteuploaddefs.lib"
+
+#ifdef DLP_DEBUG
+	#define _dlp_nodebug
+#else
+	#define _dlp_nodebug nodebug
+#endif
+
+/*** EndHeader */
+
+/*** BeginHeader dlp_init, dlp_do_reboot */
+/* START FUNCTION DESCRIPTION ********************************************
+dlp_init                                      <REMOTEUPLOAD.LIB>
+
+SYNTAX:			void dlp_init();
+
+DESCRIPTION:	This function must be called after sock_init and is responsible
+					for initializing the DLP.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+void dlp_init();
+extern int dlp_do_reboot;
+/*** EndHeader */
+
+int dlp_do_reboot;
+
+#ifdef DLP_USE_HTTP_INTERFACE
+#ximport "lib/rcm3300/remoteapplicationupdate/pages/reboot.html" dlp_reboot_html
+#endif
+
+_dlp_nodebug
+void dlp_init()
+{
+	auto int spec;
+   auto int uid;
+	auto ruplNetworkPowerOnParameters networkparams;
+#ifdef DLP_VERBOSE
+	auto char 	ipstr[20];
+#endif
+
+#if RUPL_SAVE_RESTORE_NETWORK_PARAMS > 0
+	// Attempt to load network parameters saved to user block.  If network
+   // parameters have been saved, this function will restore them via ifconfig.
+   #if CC_VER < 0x0930
+	   if(rupl_loadnetworkparameters(&networkparams))
+	      ifconfig(IF_ANY, IFS_RESTORE, &networkparams.configuration, IFS_END);
+   #else
+   	ifs_restore(&networkparams.configuration);
+   #endif
+#endif
+
+#ifdef DLP_VERBOSE
+   printf("DLP >> ipaddr: %s\n", inet_ntoa(ipstr, MY_ADDR(IF_DEFAULT)));
+#endif
+
+	dlp_do_reboot = 0;
+   defineErrorHandler(dlp_runtime_error_handler);
+
+#ifdef DLP_USE_HTTP_INTERFACE
+	// if web interface for rebooting into the download manager is enabled,
+   // add the necessary resources for the interface.
+
+   // reboot.html is a the web page presented to the user to get the reboot
+   // process started.  It contains a link to reboot.cgi which is responsible
+   // for actually rebooting into the download manager.
+	spec = sspec_addxmemfile("/reboot.html", dlp_reboot_html, SERVER_HTTP);
+   if(spec < 0)
+   {
+	#ifdef DLP_VERBOSE
+   	printf("DLP >> Failed to add reboot.html\n");
+	#endif
+      exit(1);
+   }
+   // reboot.html belongs to the DLM realm, is readable by the RUPL_ADMIN_GROUP,
+   // not writeable, accessible to the HTTP server, and uses the authentication
+   // method specified by DLP_HTTP_SERVER_AUTH (which defaults to digest
+   // authentication.
+	sspec_setpermissions(spec, "DLM", RUPL_ADMIN_GROUP, 0x0000, SERVER_HTTP,
+                        RUPL_HTTP_SERVER_AUTH, NULL);
+
+	// reboot.cgi is responsible for two things.  First, it serves a simple page
+   // to the client which says that the download manager is being restarted, and
+   // it contains a META refresh tag that tells the browser to refresh the page
+   // after DLP_REBOOT_CGI_REFRESH_SEC seconds have elapsed.  It then redirects
+   // the browser to DLP_REBOOT_CGI_REDIRECTTO (these values default to 10
+   // seconds and _PRIMARY_STATIC_IP respectively).
+	spec = sspec_addfunction("/reboot.cgi", dlp_reboot_cgi, SERVER_HTTP);
+	if(spec < 0)
+   {
+	#ifdef DLP_VERBOSE
+   	printf("DLP >> Failed to add reboot.cgi\n");
+	#endif
+      exit(2);
+   }
+
+	// The permissions for reboot.cgi are set the same as reboot.html above
+	sspec_setpermissions(spec, "DLM", RUPL_ADMIN_GROUP, 0x0000, SERVER_HTTP,
+                        RUPL_HTTP_SERVER_AUTH, NULL);
+
+	// Add the DLM/DLP user as a user for the DLP HTTP server
+	uid = sauth_adduser(RUPL_USER_NAME, RUPL_USER_PASSWORD, SERVER_HTTP);
+	if(uid < 0)
+   {
+	#ifdef DLP_VERBOSE
+		printf("DLP >> ERROR: Can't add user \"" RUPL_USER_NAME "\"!\n" );
+	#endif
+      exit(3);
+	}
+   // Add the user as a member of the RUPL_ADMIN_GROUP
+   sauth_setusermask(uid, RUPL_ADMIN_GROUP, NULL);
+#endif
+}
+
+/*** BeginHeader dlp_reboot_cgi */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlp_reboot_cgi                                <REMOTEUPLOAD.LIB>
+
+SYNTAX:			int dlp_reboot_cgi(HttpState* state);
+
+DESCRIPTION:	This function is called by the HTTP server in response to a
+					user clicking on the Reboot link from reboot.html.  A web
+               page is sent to the remote client that contains a meta refresh
+               tag that redirects the client to the download manager's home
+               page (DLP_REBOOT_CGI_REDIRECTTO(s)) after
+               DLP_REBOOT_CGI_REFRESH_SEC seconds.
+
+PARAMETER:     Pointer to an HttpState structure (passed from the HTTP server).
+
+RETURN VALUE:	Always returns 0 indicating that the function no longer needs
+					to be called by the HTTP server.
+
+END DESCRIPTION **********************************************************/
+
+#use "http.lib"
+int dlp_reboot_cgi(HttpState* state);
+/*** EndHeader */
+
+xdata dlp_reboot_str_1
+{
+	"HTTP/1.0 200 OK\r\n" \
+	"Date: "
+};
+
+xdata dlp_reboot_str_2
+{
+	"Content-Type: text/html\r\n\r\n" \
+	"<!DOCTYPE HTML PUBLIC \"-//W3C//DTD W3 HTML//EN\">\r\n" \
+   "<html>" \
+   	"<head>" \
+         "<META HTTP-EQUIV=\"Pragma\" CONTENT=\"no-cache\">" \
+   		"<META HTTP-EQUIV=\"Expires\" CONTENT=\"-1\">" \
+   		"<META HTTP-EQUIV=Refresh CONTENT=\""
+};
+
+xdata dlp_reboot_str_3
+{
+   		"<title>Reboot</title>" \
+      "</head>" \
+   	"<body topmargin=0 leftmargin=0 marginwidth=0 marginheight=0" \
+       "bgcolor=#FFFFFF fgcolor=#009900>" \
+      	"<br><br><center>" \
+		   "<table border=0 width=65%% cellspacing=0 cellpadding=3>" \
+			   "<tr>"\
+            	"<th style=background-color:#009933;color:white>" \
+                   "Rabbit Semiconductor Download Manager" \
+               "</th>" \
+            "</tr>" \
+	   		"<tr>" \
+            	"<td style=background-color:#CCCCCC;color:black>" \
+                  "Rebooting Download Manager..." \
+               "</td>" \
+            "</tr>" \
+   		"</table>" \
+      "</body>" \
+      "<head>" \
+		   "<META HTTP-EQUIV=\"Pragma\" CONTENT=\"no-cache\">" \
+		   "<META HTTP-EQUIV=\"Expires\" CONTENT=\"-1\">" \
+		"</head>" \
+   "</html>"
+};
+
+_dlp_nodebug
+int dlp_reboot_cgi(HttpState* state)
+{
+	static char date[30];
+   static char ipstr[16];
+	static char buffer[1024];
+	static int hitcount;
+
+	http_date_str(date);
+   sprintf(buffer, "%ls%s%ls%d; URL=http://%s/\">%ls", dlp_reboot_str_1, date,
+   		  dlp_reboot_str_2, DLP_REBOOT_CGI_REFRESH_SEC,
+           DLP_REBOOT_CGI_REDIRECTTO(ipstr), dlp_reboot_str_3);
+	cgi_sendstring(state,buffer);
+	dlp_do_reboot = 1;
+
+   return 0;
+}
+
+/*** BeginHeader dlp_need_reboot */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlp_need_reboot                               <REMOTEUPLOAD.LIB>
+
+SYNTAX:			int dlp_need_reboot();
+
+DESCRIPTION:	Call this function to determine if the board needs to be
+					rebooted to the DLM.
+
+RETURN VALUE:  0 if no reboot needed.
+					1 if reboot is needed.
+
+END DESCRIPTION **********************************************************/
+
+int dlp_need_reboot();
+/*** EndHeader */
+
+_dlp_nodebug
+int dlp_need_reboot()
+{
+	return dlp_state.do_reboot == 1;
+}
+
+/*** BeginHeader dlp_handler */
+/* START FUNCTION DESCRIPTION ********************************************
+dlp_handler                                   <REMOTEUPLOAD.LIB>
+
+SYNTAX:			void dlp_handler();
+
+DESCRIPTION:	This function must be called by the main control loop of a
+					DLP.  This function is responsible for detecting when a reboot
+               is necessary, and rebooting to the DLM.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void dlp_handler();
+/*** EndHeader */
+
+_dlp_nodebug
+void dlp_handler()
+{
+   if(dlp_do_reboot)
+   {
+		dlp_rebootdlm();
+   }
+}
+
+/*** BeginHeader dlp_rebootdlm */
+/* START FUNCTION DESCRIPTION ********************************************
+dlp_rebootdlm                                 <REMOTEUPLOAD.LIB>
+
+SYNTAX:			void dlp_rebootdlm();
+
+DESCRIPTION:   This function should be called by a custom user interface to
+               reboot to the download manager.
+
+               If a custom DLP interface is being used, then one or both of the
+               following must be done - 1) set dlp_do_reboot to 1 when custom
+               reboot criteria is met and ensure that dlp_handler() is called
+               regulary (dlp_handler will see the flag set to 1 and cause a
+               reboot), 2) call dlp_rebootdlm() directly when reboot criteria is
+               met. Failure to meet these requirements may result in a deployed
+               program which is not able to reboot back to the DLM.
+
+RETURN VALUE:  None - this function does not return.
+
+END DESCRIPTION **********************************************************/
+
+void dlp_rebootdlm();
+/*** EndHeader */
+
+_dlp_nodebug
+void dlp_rebootdlm()
+{
+#ifdef DLP_USE_HTTP_INTERFACE
+   while(!http_idle())
+   {
+   	http_handler();
+   }
+#endif
+   ifdown(IF_ETH0);
+   dlp_startdlm();
+}
+
+/*** BeginHeader dlp_startdlm */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlp_startdlm                                  <REMOTEUPLOAD.LIB>
+
+SYNTAX:			void dlp_startdlm();
+
+DESCRIPTION:	This function takes care of the details associated with
+               invoking the parallel flash resident loader to reboot the
+               DLM
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void dlp_startdlm();
+/*** EndHeader */
+
+_dlp_nodebug
+void dlp_startdlm()
+{
+	auto int i;
+   auto int checksum;
+   auto char* sptr;
+	auto ldrStartDLP startDLP;
+	auto ldrStartDLM startDLM;
+
+	unsigned long waittime;
+
+#ifdef RUPL_SAVE_RESTORE_NETWORK_PARAMS
+	// This function may write to flash and should be called before any of
+   // the loader parameters are set since the flash write will most likely
+   // overwrite the area in the flash transfer buffer where these lie.
+  	rupl_savenetworkparameters();
+#endif
+
+   memset((void*)&startDLP, 0, sizeof(startDLP));
+   memset((void*)&startDLM, 0, sizeof(startDLM));
+
+   startDLP.type = LDR_TYPE_LDRSTARTDLP;
+	startDLM.type = LDR_TYPE_LDRSTARTDLM;
+   root2xmem(LDR_TYPE_LDRSTARTDLP_OFS, (void*)&startDLP, sizeof(startDLP));
+   root2xmem(LDR_TYPE_LDRSTARTDLM_OFS, (void*)&startDLM, sizeof(startDLM));
+
+   waittime = MS_TIMER + 500;
+   while(waittime > MS_TIMER);
+
+	ifdown(IF_ETH0);
+	rupl_switch_to_loader();
+}
+
+/*** BeginHeader dlp_runtime_error_handler */
+/* _START FUNCTION DESCRIPTION ********************************************
+dlp_runtime_error_handler                     <REMOTEUPLOAD.LIB>
+
+SYNTAX:			root void dlp_runtime_error_handler();
+
+DESCRIPTION:	Any runtime errors are filtered through this function.  When
+					a runtime error occurrs, this functions sets some information
+               in the RAM parameter area, and the calls _xexit which will
+               cause a watchdog timeout and will result in the DLM being
+               reloaded.  The DLM will see that a runtime error occurred in the
+               DLP and take necessary action.  See the documentation for
+               exception(), for more information about the information pushed
+               onto the stack before this function is called.
+
+RETURN VALUE:	This function does not return.
+
+END DESCRIPTION **********************************************************/
+root void dlp_runtime_error_handler();
+
+/*** EndHeader */
+
+_dlp_nodebug
+root void dlp_runtime_error_handler()
+{
+	static int	error, errxpc, erraddr;
+	auto ldrRunTimeErrorInfo rterror;
+	// get all the relevant parameters off the stack
+#asm
+	ld		hl, (sp+@SP+2)
+	ld		(error), hl		; get the runtime error code
+	ld		hl, (sp+@SP+6)
+	ld		(errxpc), hl	; get the XPC where exception() was called
+	ld		hl, (sp+@SP+8)
+	ld		(erraddr), hl 	; get the address exception() was called
+#endasm
+
+	errxpc = (errxpc >> 8) & 0x00FF;		// we want the upper byte only
+
+   memset((void*)&rterror, 0, sizeof(rterror));
+   rterror.type  = LDR_TYPE_RUNTIMEERROR;
+   rterror.xpc   = errxpc;
+   rterror.addr  = erraddr;
+   rterror.error = error;
+	rterror.checksum = rupl_dochecksum((void*)&rterror, sizeof(rterror) - sizeof(rterror.checksum));
+   root2xmem(LDR_TYPE_RUNTIMEERROR_OFS, (void*)&rterror, sizeof(rterror));
+
+	// All run time errors result in shutting down of the DLP.  Store run time
+   // error information in parameter area in ram so that DLM can handle errors
+   // appropriately
+#asm
+	; Dynamic C expects the XPC in the upper byte of HL,
+	; the error code in the lower byte, and the address of
+	; the error in HL', i.e. HL = [xpc][error], HL' = [address]
+   ; _xexit will cause a watchdog timeout - when the DLP is being run under the
+   ; control of the DLM, error information will be passed to the DLM on startup.
+
+	ld		hl, (error)				; load L
+	ld		a, (errxpc)
+	ld		h, a						; load H
+	exx
+	ld		hl, (sp+@SP+14)		; load HL'
+	exx
+	call	_xexit					; halt execution (Dynamic C will notice)
+#endasm
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

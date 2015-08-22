@@ -1,0 +1,3 @@
+
+SHOW
+   Display all configurable variables.

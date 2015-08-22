@@ -1,0 +1,1994 @@
+/*** BeginHeader  **********************************/
+#ifndef __XMEM
+#define __XMEM
+
+#ifndef _xmem_debug
+#define _xmem_debug nodebug
+#endif
+
+// A macro to be used in assembler code.  On entry, AHL contains
+// linear (20-bit only) address.  Converts this to segmented form
+// with XPC value in A, and logical part in HL (in range 0xE000-0xEFFF).
+
+#define _LIN2SEG	add hl,hl $ rla $ add hl,hl $ rla $ add hl,hl $ rla $ add hl,hl $ rla $\
+		sub 0x0E $ or a $ rr hl $ scf $ rr hl $ scf $ rr hl $ scf $ rr hl
+
+// Trashes flags and af'.
+// _GEN_LIN2SEG allows you to normalize to a specific range  The value
+// to normalize can also be put into registers b, c, d, or e
+
+#define _GEN_LIN2SEG(X) add hl,hl $ rla $ add hl,hl $ rla $ add hl,hl $ rla $\
+	add hl,hl $ rla $ sub X $ ex af, af' $ ld a, X $ rra $ rr hl $ rra $ rr hl $\
+	rra $ rr hl $ rra $ rr hl $ ex af, af'
+
+
+
+// Assembler macro to call the _xmem_gc (get char) routine.  Expects A to contain
+// the relevant XPC value; HL to contain the logical address in 0xE000-0xFFFF range.
+// On return, HL contains byte at that location (H=0).  _XMEM_GW is similar except
+// it returns a 2-byte value, and _XMEM_GL returns a long in BCDE.
+#define _XMEM_GC	db 0xCF $ dw _xmem_gc $ db 0
+#define _XMEM_GW	db 0xCF $ dw _xmem_gw $ db 0
+#define _XMEM_GL	db 0xCF $ dw _xmem_gl $ db 0
+
+// Assembler macro to call the _xmem_pc (put char) routine.  Expects A to contain
+// the relevant XPC value; HL to contain the logical address in 0xE000-0xFFFF range,
+// E to contain the byte to write.  _XMEM_PW is similar, except puts 2 bytes in DE.
+// On return, HL in incremented to point to the next destination word.  _XMEM_PL
+// stores the longword in BCDE, and increments HL on return.
+#define _XMEM_PC	db 0xCF $ dw _xmem_pc $ db 0
+#define _XMEM_PW	db 0xCF $ dw _xmem_pw $ db 0
+#define _XMEM_PL	db 0xCF $ dw _xmem_pl $ db 0
+
+// Assembler macro to call the _xmem_mvc (move chars) routine.  Expects A to contain
+// the relevant XPC value; HL or DE contains a logical address in 0xE000-0xEFFF range,
+// BC contains number of bytes to move (<=4k).  DE or HL contains an address in
+// root data.  One and only one of HL or DE must point in the xmem window; the other
+// must point to root data.  Data is moved from (HL) to (DE).
+// On return, HL and DE set to their values on entry, plus byte count.  BC zero.
+#define _XMEM_MVC	db 0xCF $ dw _xmem_mvc $ db 0
+
+// These macros do the same as _XMEM_MVC, except the source or destination is an
+// internal (ioi) or external (ioe) I/O address.  Note that the memory address always
+// increments, but the I/O address stays fixed.
+#define _XMEM_MVC_IOE2MEM	db 0xCF $ dw _xmem_mvc_ioe2mem $ db 0
+#define _XMEM_MVC_IOI2MEM	db 0xCF $ dw _xmem_mvc_ioi2mem $ db 0
+#define _XMEM_MVC_MEM2IOE	db 0xCF $ dw _xmem_mvc_mem2ioe $ db 0
+#define _XMEM_MVC_MEM2IOI	db 0xCF $ dw _xmem_mvc_mem2ioi $ db 0
+
+// Assembler macro to call the _xmem_clc (compare chars) routine.  Expects A to contain
+// the relevant XPC value; HL or DE contains a logical address in 0xE000-0xEFFF range,
+// BC contains number of bytes to compare (<=4k) in "inner djnz form" (see xmemcmp()
+// function for details).  DE or HL contains an address in
+// root data.  Data is compared between (HL) and (DE).
+// On return, HL and DE point past fist mismatch char, or end of string.  BC is
+// remaining char count in inner djnz form; zero iff exact match.
+// A set to 0 if exact match, non-zero if not.  Cy flag set iff first mismatch byte
+// at (DE) is less than (HL).  Cy flag clear if exact match, or (HL) < (DE).
+// Comparison is in an unsigned sense.
+#define _XMEM_CLC	db 0xCF $ dw _xmem_clc $ db 0
+
+#define _IOELSIDR	db 0xDB,0xED,0xD0
+#define _IOILSIDR	db 0xD3,0xED,0xD0
+#define _IOELDISR	db 0xDB,0xED,0x90
+#define _IOILDISR	db 0xD3,0xED,0x90
+
+/*** EndHeader ***********************************************/
+
+
+/*** BeginHeader _gen_lin2seg ********************************/
+void _gen_lin2seg(long* laddr, char norm);
+#define _lin2seg(laddr) _gen_lin2seg(laddr, 0xe)
+/*** EndHeader ***********************************************/
+
+
+#if 0
+#asm xmem
+_asm_gen_lin2seg::
+	_GEN_LIN2SEG(c)
+	lret
+#endasm
+#endif
+
+_stack_debug
+void _gen_lin2seg(long* laddr, char norm) {
+	auto int old_ix;
+#asm
+	ld	(sp+@sp+old_ix),ix
+
+    	ld hl, (sp+@sp+norm)
+      ld c, l
+      ld	ix, (sp+@sp+laddr)
+      ld	hl, (ix+2)
+      ld	a, l
+      ld	hl, (ix)
+		_GEN_LIN2SEG(c)
+      ld	ix, (sp+@sp+laddr)
+      ld (ix), l
+		ld (ix+1), h
+      ld (ix+2), a
+	ld	ix,(sp+@sp+old_ix)
+#endasm
+}
+
+
+/* START LIBRARY DESCRIPTION *********************************************
+XMEM.LIB
+	Copyright (c) 1999, ZWorld.
+
+DESCRIPTION:
+	Xtended memory support functions.  The define ROUTE_A18_TO_FLASH_A17
+	will change WriteFlash() into remapping MB1CR while writing.
+
+   Note: _xavail, xavail and xrelease moved into this library from
+   lib\bioslib\stack.lib, since they are not needed by the BIOS.
+
+FUNCTION DICTIONARY:
+	root2xmem(,,)
+	xmem2root(,,)
+	xmem2xmem(,,)
+   _xavail(,,)
+   xavail()
+   xrelease(,)
+	WriteFlash(,,)
+	WriteFlash2(,,)
+	WriteFlashArray(,,,,)
+	WriteFlash2Array(,,,)
+	paddr()
+	paddrDS()
+	paddrSS()
+	xstrlen()
+	xmemchr()
+	xmemcmp()
+	xgetint()
+	xsetint(,)
+	xgetlong()
+	xsetlong(,)
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader root2xmem ***********************************/
+int root2xmem(unsigned long dest, void* rootSrc, unsigned len);
+/*** EndHeader ***********************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+root2xmem                    <XMEM.LIB>
+
+SYNTAX: int root2xmem(unsigned long dest, void *src, unsigned len);
+
+PARAMETER1:		Physical address of destination.
+PARAMETER2:		Logical address of source data.
+PARAMETER3:		Length of source data in bytes.
+
+DESCRIPTION:   Stores "len" characters from logical address "src" to
+physical address "dest".
+
+RETURN VALUE:	0 - success
+				  -1 - attempt to write flash area, nothing written
+				  -2 - source not all in in root
+
+SEE ALSO:		xmem2xmem, xmem2root
+
+END DESCRIPTION **********************************************************/
+_xmem_debug useix
+int root2xmem(unsigned long dest, void *src, unsigned len)
+{
+#ifdef XMEM_FAST_COPY
+	#asm
+   ld		hl,(sp+@sp+len)
+   ld		de,4098
+   or		a
+   sbc	hl,de
+   jr		nc,.do_general  ; j. if length >= 4098
+   ; Do quickest move
+	ld		hl,(sp+@sp+len)
+   ld		b,h
+   ld		c,L
+   bool	hl
+   jr		z,.zero_len
+   ld		hl,(sp+@sp+dest+2)
+   ld		a,L
+   ld		hl,(sp+@sp+dest)
+	_LIN2SEG
+   ex		de,hl
+   ld		hl,(sp+@sp+src)
+   ; Dest is now segmented in A/DE, src is in HL, len in BC
+   _XMEM_MVC
+.zero_len:
+   c	return 0;
+
+.do_general:
+
+   #endasm
+#endif
+	return xmem2xmem(dest,paddr(src),len);
+}
+
+
+/*** BeginHeader xmem2root ***********************************/
+//int xmem2root(unsigned long dest, void* rootSrc, unsigned len);
+int xmem2root(void *dest, unsigned long src, unsigned len);
+/*** EndHeader ***********************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+xmem2root                    <XMEM.LIB>
+
+SYNTAX: int xmem2root(void *dest, unsigned long src, unsigned len);
+
+PARAMETER1:		Physical address of destination.
+PARAMETER2:		Logical address of source data.
+PARAMETER3:		Length of source data in bytes.
+
+DESCRIPTION:   Stores "len" characters from physical address "src" to
+logical address "dest".
+
+RETURN VALUE:	0 - success
+				  -1 - attempt to write flash area, nothing written
+				  -2 - dest not all in in root
+
+SEE ALSO:		xmem2xmem, root2xmem
+
+END DESCRIPTION **********************************************************/
+_xmem_debug useix
+int xmem2root(void *dest,unsigned long int src, unsigned int len)
+{
+#ifdef XMEM_FAST_COPY
+	#asm
+   ld		hl,(sp+@sp+len)
+   ld		de,4098
+   or		a
+   sbc	hl,de
+   jr		nc,.do_general  ; j. if length >= 4098
+   ; Do quickest move
+   ld		hl,(sp+@sp+dest)
+   ex		de,hl				; Save dest in DE
+	ld		hl,(sp+@sp+len)
+   ld		b,h
+   ld		c,L
+   bool	hl
+   jr		z,.zero_len
+   ld		hl,(sp+@sp+src+2)
+   ld		a,L
+   ld		hl,(sp+@sp+src)
+   _LIN2SEG
+   ; Src is now segmented in A/HL, dest is in DE
+   _XMEM_MVC
+.zero_len:
+   c	return 0;
+
+.do_general:
+
+   #endasm
+#endif
+	return xmem2xmem(paddr(dest),src,len);
+}
+
+/*** BeginHeader xmem2xmem, xmem_cpyblkfwd, xmem_cpyblkbwd ***/
+int xmem2xmem(unsigned long dest, unsigned long src, unsigned int length);
+root void xmem_cpyblkfwd();
+root void xmem_cpyblkbwd();
+/*** EndHeader ***********************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+xmem2xmem                    <XMEM.LIB>
+
+SYNTAX: int xmem2xmem(unsigned long dest, unsigned long src, unsigned len);
+
+PARAMETER1:		Physical address of destination.
+PARAMETER2:		Physical address of source data.
+PARAMETER3:		Length of source data in bytes.
+
+DESCRIPTION:   Stores "len" characters from physical address "src" to
+physical address "dest".
+
+RETURN VALUE:	0 - success
+				  -1 - attempt to write flash area, nothing written
+
+SEE ALSO:		xmem2root, root2xmem
+
+END DESCRIPTION **********************************************************/
+
+#asm
+;
+;	xmem_cpyblkfwd
+;
+;	This function assumes that the dest address is aligned on an even
+;	boundary and that the source will not cross an 8k boundary and the
+;  destination will not cross an 64k boundary.
+;
+;	This routine copies by placing the source within the XPC range and
+;	ldp'ing the destination into place.
+;
+xmem_cpyblkfwd::
+		ld		a,xpc								; save the frame pointer, and xpc
+		push	af
+		push	ix
+
+		ld		de,0xe000						; de=lsw(dest)-0xe000
+		ld		hl,(sp+10)
+		or		a
+		sbc	hl,de
+		ex		de,hl
+		ld		hl,(sp+11)						; hl:e=(dest-0xe000)>>8
+		jr		nc,.xcbf_1
+		dec	h
+.xcbf_1:
+		ld		l,d
+
+		add	hl,hl								; h=(dest-0xe000)>>12
+		add	hl,hl
+		add	hl,hl
+		add	hl,hl
+		ld		a,h
+		ld		xpc,a								; xpc=(dest-0xe000)>>12
+
+		ex		de,hl								; calculate the offset in xpc window
+		ld		a,h								;    ix=(dest&0x0fff)|0xe000
+		and	0x0f
+		or		0xe0
+		ld		h,a
+		ld		ix,hl
+
+		ld		iy,(sp+6)						; a:iy=dest, hl=length
+		ld		hl,(sp+8)
+		ld		a,l
+		ld		hl,(sp+14)
+
+		rr		hl									; count words not bytes
+		ld		c,h								; c:b=length
+		ld		b,l
+
+		ex		af,af'
+		ld		a,l
+		or		a
+		jr		nz,.xcbf_2
+		dec	c
+
+.xcbf_2:
+		ex		af,af'
+		jr		z,.xcbf_0or1
+		jr		nc,.xcbf_start
+
+		ld		e,(ix)							; copy single first byte
+		inc	ix									;   no need for locking because
+		ldp	hl,(iy)							;   we will be overwriting next
+		ld		l,e								;   byte anyways.
+		ldp	(iy),hl
+
+		ld		de,0x0001						; advance the pointer
+		add	iy,de
+		adc	a,d
+
+.xcbf_start:
+		ld		de,0x0002						; copying word by word
+
+xcbf_loop:
+		ld		hl,(ix)							; 9
+		ldp	(iy),hl							; 12
+		add	ix,de								; 4
+		add	iy,de								; 4
+		adc	a,d								; 2, (adc a,0x00) propragate carry
+		djnz	xcbf_loop						; 5, critical path 36/word
+		dec	c
+		jp		p,xcbf_loop
+
+xcbf_done:
+		pop	ix
+		pop	af
+		ld		xpc,a
+		ret
+
+.xcbf_0or1:
+		jr		nc,xcbf_done					; length==0 just return
+
+		ld		e,(ix)							; copy the single byte
+		inc	ix
+		push	ip									; lock while updating the byte
+		ipset	1
+		ldp	hl,(iy)
+		ld		l,e
+		ldp	(iy),hl
+		pop	ip
+		inc	iy
+		jr		xcbf_done
+
+;
+;	xmem_cpyblkbwd
+;
+;	This function assumes that the dest address is aligned on an even
+;	boundary and that the source will not cross an 8k boundary and the
+;  destination will not cross an 64k boundary.
+;
+;	This routine copies by placing the source within the XPC range and
+;	ldp'ing the destination into place.
+;
+xmem_cpyblkbwd::
+		ld		a,xpc								; save the frame pointer, and xpc
+		push	af
+		push	ix
+
+		ld		de,0xf000						; de=lsw(dest)-0xf000
+		ld		hl,(sp+10)
+		or		a
+		sbc	hl,de
+		ex		de,hl
+		ld		hl,(sp+11)						; hl:e=(dest-0xf000)>>8
+		jr		nc,.xcbb_1
+		dec	h
+.xcbb_1:
+		ld		l,d
+
+		add	hl,hl								; h=(dest-0xf000)>>12
+		add	hl,hl
+		add	hl,hl
+		add	hl,hl
+		ld		a,h
+		ld		xpc,a								; xpc=(dest-0xf000)>>12
+
+		ex		de,hl								; calculate the offset in xpc window
+		ld		a,h								;    ix=(dest&0x0fff)|0xf000
+		or		a,0xf0
+		ld		h,a
+		ld		ix,hl
+
+		ld		iy,(sp+6)						; a:iy=dest, hl=length
+		ld		hl,(sp+8)
+		ld		a,l
+		ld		hl,(sp+14)
+
+		rr		hl									; count words not bytes
+		ld		c,h								; c:b=length
+		ld		b,l
+
+		ex		af,af'
+		ld		a,l
+		or		a
+		jr		nz,.xcbb_2
+		dec	c
+
+.xcbb_2:
+		ex		af,af'
+		jr		z,.xcbb_0or1
+		jr		nc,.xcbb_start
+
+		push	ip									; lock to make updating byte atomic
+		ipset	1
+
+		dec	ix
+		ld		e,(ix)
+
+		ex		de,hl								; move the pointer
+		ld		de,0xffff
+		add	iy,de
+		adc	a,e
+		ex		de,hl
+
+		ldp	hl,(iy)
+		ld		l,e
+		ldp	(iy),hl
+		pop	ip
+
+.xcbb_start:
+		ld		de,0xfffe						; copying word by word
+
+xcbb_loop:
+		add	ix,de								; 4
+		ld		hl,(ix)							; 9
+		add	iy,de								; 4
+		adc	a,d								; 2, (adc a,0x00) propragate carry
+		ldp	(iy),hl							; 12
+		djnz	xcbb_loop						; 5, critical path 36/word
+		dec	c
+		jp		p,xcbb_loop
+
+xcbb_done:
+		pop	ix
+		pop	af
+		ld		xpc,a
+		ret
+
+.xcbb_0or1:
+		jr		nc,xcbb_done					; length==0 just return
+
+		push	ip									; lock to make updating byte atomic
+		ipset	1
+		dec	ix
+		ld		e,(ix)
+
+		ex		de,hl								; move the pointer
+		ld		de,0xffff
+		add	iy,de
+		adc	a,e
+		ex		de,hl
+
+		ldp	hl,(iy)
+		ld		l,e
+		ldp	(iy),hl
+		pop	ip
+
+		jr		xcbb_done
+#endasm
+
+_xmem_debug
+int xmem2xmem(unsigned long dest, unsigned long src, unsigned int len)
+{
+	auto long tocopy;
+
+#ifdef XMEM_FAST_COPY
+	auto char buf[128];
+
+   if (len < sizeof(buf)+1) {
+   	xmem2root(buf, src, len);
+      root2xmem(dest, buf, len);
+      return 0;
+   }
+#endif
+
+#if FAST_RAM_COMPILE && !(__RABBITSYS)
+	// load-to-flash, run-in-RAM has flash mapped only in Q4 - RabbitSys has no
+   // flash mapped in load-to-flash, run-in-RAM mode.
+	if (dest >= ((RAM2_START + RAM2_SIZE) << 12ul)) {
+		return -1;							// destination is in flash!
+	}
+#elif FLASH_COMPILE
+	// normal run-in-flash has flash mapped below RAM
+	if (dest < (RAM_START << 12ul)) {
+		return -1;							// destination is in flash!
+	}
+#endif
+
+	if(dest<=src) {							/* forward copy */
+		while(len) {
+			tocopy=4096-(dest&4095);
+			if(tocopy>len)
+				tocopy=len;
+
+			xmem_cpyblkfwd(dest,src,tocopy);
+			dest+=tocopy;
+			src+=tocopy;
+			len-=(int)tocopy;
+		}
+	} else { 									/* backward copy */
+		while(len) {
+			tocopy=(dest+len)&4095;
+
+			if(tocopy==0)
+				tocopy=4096;
+
+			if(tocopy>len)
+				tocopy=len;
+
+			xmem_cpyblkbwd(dest+len,src+len,tocopy);
+			len-=(int)tocopy;
+		}
+	}
+
+	return 0;
+}
+
+/*** BeginHeader xavail */
+long xavail(long * addr_ptr);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+xavail                         <STACK.LIB>
+
+SYNTAX: long xavail(long * addr_ptr);
+
+DESCRIPTION: Returns the maximum length of memory that may be successfully
+obtained by an immediate call to xalloc(), and optionally allocates that
+amount.
+
+PARAMETER1: addr_ptr: Address of a longword, in root data memory, to store
+the address of the block.  If this pointer is NULL, then the block is not
+allocated.  Otherwise, the block is allocated as if by a call to xalloc().
+
+RETURN VALUE: The size of the largest free block available.  If this is zero,
+then *addr_ptr will not be changed.
+
+KEYWORDS: xalloc
+
+SEE ALSO: xalloc, _xalloc, _xavail, xrelease, xalloc_stats
+END DESCRIPTION **********************************************************/
+
+_xmem_debug
+long xavail(long * addr_ptr)
+{
+#if _USER
+	return _sys_xavail(addr_ptr, 1, XALLOC_MAYBBB);
+#else
+	return _rs_xavail(addr_ptr, 1, XALLOC_MAYBBB);
+#endif
+}
+
+/*** BeginHeader xrelease */
+#if _USER
+	#define xrelease _sys_xrelease
+#else
+	#define xrelease _rs_xrelease
+#endif
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+xrelease                         <STACK.LIB>
+
+SYNTAX: void xrelease(long addr, long sz);
+
+DESCRIPTION: Release a block of memory previously obtained by xalloc() or
+by xavail() with a non-null parameter.  xrelease() may only be called to
+free the most recent block obtained.  It is NOT a general-purpose
+malloc/free type dynamic memory allocator.  Calls to xalloc()/xrelease()
+must be nested in first-allocated/last-released order, similar to the
+execution stack.  The addr parameter must be the return value from
+xalloc().  If not, then a runtime exception will occur.  The sz parameter
+must also be equal to the actual allocated size, however this is not
+checked.  The actual allocated size may be larger than the requested
+size (because of alignment overhead).  The actual size may be obtained by
+calling _xalloc() rather than xalloc().  For this reason, it is recommended
+that your application consistently uses _xalloc() rather than xalloc()
+if you intend to use this function.
+
+PARAMETER1: addr: Address of storage previously obtained by _xalloc().
+PARAMETER2: sz: Size of storage previously returned by _xalloc().
+
+KEYWORDS: xalloc
+
+SEE ALSO: xalloc, _xalloc, xavail, _xavail, xalloc_stats
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader WriteFlashArray *****************************/
+int WriteFlashArray(int flashnum, unsigned long flashDst, void* rootSrc[],
+                    unsigned numbytes[], int numsources);
+extern int _assumeF2_erased;
+/*** EndHeader ***********************************************/
+
+#if _USER
+#error "RabbitSys does not support writing to flash."
+
+#else
+int _assumeF2_erased;
+
+#define MBXCR_CS_MASK 0x03	// MBxCR chip select bit mask
+
+_xmem_debug
+int WriteFlashArray(int flashnum, unsigned long flashDst, void* rootSrc[],
+                    unsigned numbytes[], int numsources)
+{
+#if (RAM_COMPILE==1)
+#warnt "Write to flash will only be simulated in RAM mode"
+#warnt "Flash is not mapped, 0-7FFFFh is mapped to RAM"
+#endif
+
+	static unsigned flashAddr;
+	static char flashBase;
+	static int retval;
+	static int stat_flashnum;
+
+	auto unsigned long flashPtr, addr32, sectorMask;
+	auto unsigned offsetMask, offset;
+	auto int mbXcrBegin, mbXcrEnd;
+	auto int i;
+	auto unsigned nbytes, totalbytes;
+	auto unsigned bytesread, tempbytes;
+	auto unsigned src_offset;
+	auto int more_needed;
+	auto char savedFlashXPC;
+   auto struct userBlockInfo uBI;
+
+#GLOBAL_INIT{_assumeF2_erased=0;}
+
+	retval = 0;
+
+	// Check if this is a valid flash number
+	if (flashnum != 1 && flashnum != 2) {
+		retval = -1;
+	}
+
+	if (numsources < 0) {
+		retval = -2;
+	}
+
+	totalbytes = 0;
+	// Calculate the total number of bytes to write
+	for (i = 0; i < numsources; i++) {
+		totalbytes += numbytes[i];
+		if ((unsigned) rootSrc[i] >= 0xE000u ||
+		    ((unsigned) rootSrc[i] + numbytes[i]) > 0xE000u)
+		{
+			retval = -2;
+			break;
+		}
+	}
+
+	// Determine the begin write quadrant's MBxCR content
+	switch (xGetQuadrant(flashDst)) {
+	case 0:
+		mbXcrBegin = MB0CRShadow;		// quadrant 1
+		break;
+	case 1:
+		mbXcrBegin = MB1CRShadow;		// quadrant 2
+		break;
+	case 2:
+		mbXcrBegin = MB2CRShadow;		// quadrant 3
+		break;
+	case 3:
+		mbXcrBegin = MB3CRShadow;		// quadrant 4
+		break;
+	default:
+		retval = -1;	// not in physical memory range at all!
+		break;
+	}
+
+	// Determine the end write quadrant's MBxCR content
+	switch (xGetQuadrant(flashDst + (unsigned long) totalbytes - 1ul)) {
+	case 0:
+		mbXcrEnd = MB0CRShadow;		// quadrant 1
+		break;
+	case 1:
+		mbXcrEnd = MB1CRShadow;		// quadrant 2
+		break;
+	case 2:
+		mbXcrEnd = MB2CRShadow;		// quadrant 3
+		break;
+	case 3:
+		mbXcrEnd = MB3CRShadow;		// quadrant 4
+		break;
+	default:
+		retval = -1;	// not in physical memory range at all!
+		break;
+	}
+
+	// Check if we are outside the flash(es) area
+#ifndef CS_FLASH
+	#ifndef CS_FLASH2
+	retval = -1;		// no flash at all!
+	#endif	//CS_FLASH2
+#endif	// CS_FLASH
+#ifdef CS_FLASH
+	if (flashnum == 1) {
+		if (((mbXcrBegin & MBXCR_CS_MASK) != CS_FLASH) ||
+		    ((mbXcrEnd & MBXCR_CS_MASK) != CS_FLASH)) {
+			retval = -1;	// flash 1 is not mapped here!
+		}
+	}
+#else	//ifndef CS_FLASH
+	if (flashnum == 1) {
+		retval = -1;		// no "primary" flash!
+	}
+#endif	//CS_FLASH
+#ifdef CS_FLASH2
+	if (flashnum == 2) {
+		#if (RUN_IN_RAM_CS == 2)
+		retval = -1;		// CS2 is RAM, not flash!
+		#else
+		if (((mbXcrBegin & MBXCR_CS_MASK) != CS_FLASH2) ||
+		    ((mbXcrEnd & MBXCR_CS_MASK) != CS_FLASH2)) {
+			retval = -1;	// flash 2 is not mapped here!
+		}
+		#endif
+	}
+#else	//ifndef CS_FLASH2
+	if (flashnum == 2) {
+		retval = -1;		// no "secondary" flash!
+	}
+#endif	//CS_FLASH2
+
+	// check for unintentional attempt to write into ID or User Blocks
+	if (!_overwrite_block_flag && SysIDBlock.tableVersion &&
+	    (flashnum == IDUSERBLOCKS_FLASHNUM) && totalbytes)
+	{
+		GetUserBlockInfo(&uBI);
+		if (uBI.blockSize) {
+			// both ID and User Blocks (if it exists use image B start
+			//  address, otherwise use image A start address)
+			addr32 = uBI.addrB ? uBI.addrB : uBI.addrA;
+		} else {
+			// only ID Block, no User Block (topAddr is always valid,
+			//  even if there is no ID Block or only an ID Block)
+			addr32 = uBI.topAddr - sizeof(SysIDBlock);
+		}
+		if ((flashDst < uBI.topAddr) && ((flashDst + totalbytes) > addr32)) {
+			retval = -4;	// attempt to write to flash ID/User Blocks!
+		}
+	}
+
+	// If nothing to write, or an error has been detected, then return
+	if (!totalbytes || !numsources || retval) {
+		if (flashnum == 1) {
+  	   	_overwrite_block_flag = 0;
+  	   }
+		return retval;
+   }
+
+	i 				= 0;	// Start with the first source buffer
+	src_offset	= 0;	// Initially a 0 offset into the first source buffer
+	flashPtr 	= flashDst;
+	sectorMask 	= _FlashInfo.sectorSize - 1;
+	sectorMask 	= ~sectorMask;
+	offsetMask 	= (int) (~sectorMask);
+	stat_flashnum = flashnum;
+
+	// Special handling for 2nd flash
+	if (flashnum == 2) {
+		// set this or flash driver will prevent writes to "ID block"
+		_overwrite_block_flag = 1;
+
+		// change flash access XPC to point to appropriate quadrant
+		savedFlashXPC = _FlashInfo.flashXPC;
+		_FlashInfo.flashXPC = (char) (xGetQuadrant(flashDst) * 0x40 - 0x0E);
+	}
+
+	retval = 0;
+	while(totalbytes) {
+		// calculate xpc and offset of flash as xmem address
+		addr32 = (flashPtr&sectorMask)-0xe000ul;
+		flashAddr = (unsigned) ((addr32 & 0x00000FFFL) | 0xE000L);
+		flashBase = (char) ((addr32 & 0x000FF000L) >> 12);
+
+		// copy the destination flash sector to flash buffer
+		xmem2xmem(flash_buf_phys, flashPtr&sectorMask, _FlashInfo.sectorSize);
+
+		if (flashPtr % _FlashInfo.sectorSize) {
+			// this case can only happen the first time thru
+			offset = (unsigned) (flashPtr % _FlashInfo.sectorSize);
+			nbytes = _FlashInfo.sectorSize - ((unsigned) flashPtr & offsetMask);
+
+			if (nbytes > totalbytes)	// if destination is entirely in the sector
+				nbytes = totalbytes;		//  and ends before the sector boundary
+
+			flashPtr -= flashPtr % _FlashInfo.sectorSize;	// align flash dest.
+
+		}
+		else if(totalbytes < _FlashInfo.sectorSize) {
+			// this case can only happen the last time thru
+			offset = 0;
+			nbytes = totalbytes;
+		}
+		else {
+			offset = 0;
+			nbytes = _FlashInfo.sectorSize;
+		}
+
+		// Fill in this sector with the source data
+		bytesread = 0;
+		while (bytesread < nbytes) {
+			// Do we need to get more source data to fill this sector?
+			more_needed = (numbytes[i] - src_offset + bytesread) < nbytes;
+			// Remember how many bytes we are filling in
+			tempbytes = more_needed ? numbytes[i] - src_offset : nbytes - bytesread;
+			// copy into correct offset of flash buffer
+			root2xmem(flash_buf_phys + (unsigned long) offset + bytesread,
+			          (char *) rootSrc[i] + src_offset, tempbytes);
+			bytesread += tempbytes;
+			// Get more source data from the next source
+			if (more_needed) {
+				i++;
+				src_offset = 0;
+			}
+			else {
+				src_offset += tempbytes;
+			}
+		}
+
+		// number of bytes remaining
+		totalbytes -= nbytes;
+
+#asm
+		call	hitwd							// necessary for flash with larger sectors (i.e. 4kb)
+
+		ld    hl,(flashAddr)				// put offset in hl
+		ex  	de,hl							// WriteFlash expects it in de
+		ld    hl,(flashBase)				// put XPC in A
+		ld  	a,l
+		push  de
+		push  af
+		ld		a, (stat_flashnum)
+		cp		001h
+		jr		z, .skip_F2_erased
+   	ld		a, (_assumeF2_erased)
+	   cp		001h
+	   jr		z, .sectorMode
+.skip_F2_erased:
+   	ld		a, (_FlashInfo+writeMode)
+		cp		010h					; large/nonuniform sectors? (writeMode >= 0x10)
+		jr		nc, .largeMode		; yes, go write to (assumed) pre-erased sector
+	   cp		002h					; sector-write mode? (writeMode == 2)
+	   jr		z, .sectorMode		; yes, go write inherently-erased sector
+	; otherwise, fall through to (default) byte-write mode
+	;  (currently, only writeModes 1 and 3 are defined to be byte-write)
+.byteMode:
+	; Byte-write mode assumes that the flash sector must be erased before
+	;  any bytes in the sector can be written to.
+		pop   af
+		push  af
+#if _RK_FIXED_VECTORS && FLASH_COMPILE
+		ld   hl, _EraseFlashSect
+		lcall _CallRAMFunction
+#else
+		call _EraseFlashSect
+#endif
+
+.largeMode:
+	; Large/nonuniform sector mode assumes that the sector has already
+	;  been erased before the WriteFlashArray call is made.
+.sectorMode:
+	; Sector mode assumes that the flash does an internal sector erase
+	;  after the flash's sector buffer is written to.
+		pop   af
+		pop   de
+
+      ld    bc,(_FlashInfo+sectorSize)
+		call	_WriteFlash
+		ld    (retval),hl					// hl has return value (0 is good)
+#endasm
+
+		flashPtr += _FlashInfo.sectorSize;		// adjust flash ptr
+	}
+
+	if (flashnum == 2) {
+		_FlashInfo.flashXPC = savedFlashXPC;
+		_assumeF2_erased = 0;
+	}
+
+  	_overwrite_block_flag = 0;
+
+	return retval;
+}
+#endif
+
+/*** BeginHeader WriteFlash2Array ****************************/
+int WriteFlash2Array(unsigned long flashDst, void* rootSrc[],
+                     unsigned numbytes[], int numsources);
+/*** EndHeader ***********************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+WriteFlash2Array                 <XMEM.LIB>
+
+SYNTAX: int WriteFlash2Array(unsigned long flashDst, void* rootSrc[],
+                             unsigned numbytes[], int numsources);
+
+DESCRIPTION:  Write a set of scattered information to the 2nd flash in
+a contiguous block.  The sources are given in the rootSrc array, and the
+corresponding number of bytes in each source is given in the numbytes[]
+array.  All sources must be in root.  numsources specifies the number of
+entries in the rootSrc and numbytes arrays.  The flashDst address plus
+the sum of numbytes[] area must be within memory quadrant(s) already
+mapped to the second flash.  This function is not reentrant.
+
+NOTE:  this function should NOT be used if you are using the second
+flash device for a flash file system, e.g. if you are writing a
+TCP/IP-based application!
+
+NOTE 2:  This function is extremely dangerous when used with large-sector
+flash.  Don't do it.
+
+NOTE 3:  The sum of the lengths in numbytes[] must not exceed 65535 bytes,
+else not all data will be written.
+
+PARAMETER1:  the physical address of the flash destination
+PARAMETER2:  array of pointers to the root sources
+PARAMETER3:  array of numbers of bytes to write for each source
+PARAMETER4:  number of sources specified in rootSrc[] and numbytes[]
+
+RETURN VALUE:	0 - success
+				  -1 - attempt to write non-2nd flash area, nothing written
+				  -2 - rootSrc[] entry not in root
+				  -3 - timeout while writing flash
+
+END DESCRIPTION *********************************************************/
+
+_xmem_debug
+int WriteFlash2Array(unsigned long flashDst, void* rootSrc[],
+                     unsigned numbytes[], int numsources)
+{
+	return WriteFlashArray(2, flashDst, rootSrc, numbytes, numsources);
+}
+
+
+/*** BeginHeader WriteFlash ***********************************/
+int WriteFlash(unsigned long flashDst, void* rootSrc, unsigned len);
+/*** EndHeader ***********************************************/
+
+/* _START FUNCTION DESCRIPTION ********************************************
+WriteFlash                       <XMEM.LIB>
+
+SYNTAX: int WriteFlash(unsigned long flashDst, void* rootSrc, unsigned len);
+
+DESCRIPTION: Write len bytes to physical address flashDst from rootSrc.
+the source must be in root. It is OK to cross a 1k page boundary in flash.
+This function is not reentrant.
+
+NOTE 1: It is unwise to use this function and depend on flash sector sizes
+not changing. Z-World/Rabbit makes no guarantee that any board will
+always have the same flash type. Some products may be released with
+large sector flash which makes rewriting flash at run-time impractical
+if there is not a lot of RAM available for for a transfer buffer.
+
+A better alternative for storing things in flash is to use the User ID
+Block. The functions writeUserBlock() and readUserBlock() are available to
+access the block. These function are and will continue to be machine code
+and source code compatible with use on huge sector flash types.
+
+NOTE 2:  This function is extremely dangerous when used with large-sector
+flash.  Don't do it.
+
+NOTE 3:  As of Dynamic C 7.25, the hardware watchdog timer is hit when
+calling WriteFlash() since repeated writes to 4kb or larger sectors may
+take too long for the virtual watchdog to successfully update it.  Keep
+this in consideration when using WriteFlash().
+(NOTE: "call hitwd" HAS BEEN COMMENTED OUT!)
+
+PARAMETER1:  the physical address of the flash destination
+PARAMETER2:  pointer to the root source
+PARAMETER3:  number of bytes to write
+
+RETURN VALUE:	0 - success
+				  -1 - attempt to write non-flash area, nothing written
+				  -2 - rootSrc not in root
+				  -3 - timeout while writing flash
+				  -4 - attempt to write to ID block sector(s)
+
+END DESCRIPTION **********************************************************/
+
+_xmem_debug
+int WriteFlash(unsigned long flashDst, void* rootSrc, unsigned len)
+{
+	return WriteFlashArray(1, flashDst, &rootSrc, &len, 1);
+}
+
+/*** BeginHeader WriteFlash2 ***********************************/
+int WriteFlash2(unsigned long flashDst, void* rootSrc, unsigned len);
+/*** EndHeader ***********************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+WriteFlash2                      <XMEM.LIB>
+
+SYNTAX: int WriteFlash2(unsigned long flashDst, void* rootSrc, unsigned len);
+
+DESCRIPTION: Write len bytes to physical address flashDst on the 2nd
+flash device from rootSrc.  The source must be in root.  The flashDst
+address plus the sum of numbytes[] area must be within memory
+quadrant(s) already mapped to the second flash.  This function is
+not reentrant.
+
+NOTE:  this function should NOT be used if you are using the second
+flash device for a flash file system, e.g. if you are writing a
+TCP/IP-based application!
+
+NOTE 2:  This function is extremely dangerous when used with large-sector
+flash.  Don't do it.
+
+PARAMETER1:  the physical address of the flash destination
+PARAMETER2:  pointer to the root source
+PARAMETER3:  number of bytes to write
+
+RETURN VALUE:	0 - success
+				  -1 - attempt to write non-2nd flash area, nothing written
+				  -2 - rootSrc not in root
+				  -3 - timeout while writing flash
+
+END DESCRIPTION *********************************************************/
+
+_xmem_debug
+int WriteFlash2(unsigned long flashDst, void* rootSrc, unsigned len)
+{
+	return WriteFlashArray(2, flashDst, &rootSrc, &len, 1);
+}
+
+/*** BeginHeader paddr */
+
+/* START FUNCTION DESCRIPTION ********************************************
+paddr                         <xmem.LIB>
+
+SYNTAX:  unsigned long paddr(void *pointer)
+
+DESCRIPTION:  Converts a logical pointer into its physical address.  This
+              function is compatible with both shared and separate I&D
+              space compile modes.  Use caution when converting a pointer
+              into the xmem window (0xE000 to 0xFFFF), as this function
+              will return the physical address based on the XPC on entry.
+
+PARAMETER1:  pointer to convert
+
+RETURN VALUE:	physical address of pointer
+
+SEE ALSO:  paddrDS, paddrSS
+END DESCRIPTION *********************************************************/
+
+unsigned long paddr(void *pointer);
+
+/*** EndHeader */
+
+_xmem_debug
+unsigned long paddr(void *pointer)
+{
+#asm
+		xor 	a							; Checking for D space
+		ld		c, 0						; default to no A16, A19 inversions in xor mask
+		ld		hl, (sp+@SP+pointer)	; get logical address into HL
+      call  dkcLogicalToPhysical
+#endasm
+}
+
+/*** BeginHeader paddrDS */
+
+/* START FUNCTION DESCRIPTION ********************************************
+paddrDS                       <xmem.LIB>
+
+SYNTAX: unsigned long paddrDS(void* pointer)
+
+DESCRIPTION: Converts a "Data Segment" logical pointer into its physical
+             address.  This function assumes that pointer points to static
+             (excluding bbram) data, which eliminates some runtime testing
+             as compared with the more general function, paddr().  This
+             function will generate incorrect results if used for
+             addresses in the root code (i.e. program code or constants),
+             bbram (only available in fast RAM compile mode), stack (i.e.
+             auto variables), or xmem segments.
+
+PARAMETER1:  Logical static (non-bbram) data pointer to convert.
+
+RETURN VALUE:	Physical address of pointer.
+
+SEE ALSO:  paddr, paddrSS
+END DESCRIPTION *********************************************************/
+
+#define paddrDS paddr
+
+/*** EndHeader */
+
+/*** BeginHeader paddrSS */
+
+/* START FUNCTION DESCRIPTION ********************************************
+paddrSS                       <xmem.LIB>
+
+SYNTAX: unsigned long paddrSS(void* pointer)
+
+DESCRIPTION: Convert a logical pointer into its physical address.  This
+             function assumes the pointer points to data in the stack
+             segment, which eliminates some runtime testing compared with
+             the more general function, paddr().  The stack segment is
+             used to store "auto" data items.  This function
+             will generate incorrect results if used for addresses in the
+             root code (i.e. program code or constants), data (i.e.
+             statically allocated variables), or xmem segments.
+
+PARAMETER1:  pointer to convert, pointing to stack ("auto") data.
+
+RETURN VALUE:	physical address of pointer
+
+SEE ALSO:    paddr, paddrDS
+END DESCRIPTION **********************************************************/
+
+#define paddrSS paddr
+
+/*** EndHeader */
+
+
+/*** BeginHeader xstrlen */
+
+/* START FUNCTION DESCRIPTION ********************************************
+xstrlen                       <XMEM.LIB>
+
+SYNTAX: unsigned int xstrlen(long src)
+
+DESCRIPTION: Return the length of the string in xmem pointed to by src.
+             If there is no null terminator within the first 65536 bytes
+             of the string, then the return value will be meaningless.
+
+PARAMETER1:  xmem (linear) address of the first character of the string.
+             Note: to perform a normal null-terminated search, ensure
+             that src is in the range 0..2**20-1.  If the MSB of src is
+             not zero (i.e. bits 24-31) then that char will be used to
+             terminate the search rather than the standard "null"
+             terminator.  E.g. to determine the length of a string
+             terminated by an '@', call using
+               xstrlen(paddr(my_string) | (long)'@' << 24);
+
+RETURN VALUE:	length of string, not counting the terminator.
+
+END DESCRIPTION **********************************************************/
+
+xmem unsigned int xstrlen(long src);
+/*** EndHeader */
+
+#asm xmem nodebug
+xstrlen::
+	ld		a,b			; Set A to terminating char to look for.  Normally the MSB (B) will
+							; be zero.  If it is not, then the search will look for the specified
+							; char instead of null.
+	ex		af,af'
+	; CDE = paddr of string
+	ld		a,c
+	ex		de,hl
+	ld		iy,hl
+	; A/IY = paddr
+	ld		bc,0		; BC = counter
+	ld		de,2		; DE = increment for address
+	; test for odd address.  If so, test 1st byte only, so rest loops on even addr only.
+	rr		hl
+	jr		nc,.loop
+	ldp	hl,(iy)
+	ex		af,af'
+	cp		L
+	jr		z,.done
+	ex		af,af'
+	inc	bc			; BC now 1.
+	add	iy,bc
+	adc	a,0
+.loop:
+	ldp	hl,(iy)
+	ex		af,af'
+	cp		L
+	jr		z,.done
+	inc	bc
+	cp		h
+	jr		z,.done
+	inc	bc
+	ex		af,af'
+	add	iy,de
+	adc	a,0
+	jr		.loop
+
+.done:
+	ld		h,b
+	ld		l,c
+	lret
+#endasm
+
+/*** BeginHeader xmemset */
+
+/* START FUNCTION DESCRIPTION ********************************************
+xmemset                       <XMEM.LIB>
+
+SYNTAX: void xmemset(long dst, char c, unsigned len)
+
+DESCRIPTION: Set an area of xmem to the specified character, as for
+             memset().  Unlike memset(), this does not return any value.
+
+PARAMETER1:  xmem (linear) address of the first character of the area
+             to set.
+PARAMETER2:  The character to set all byte locations to.
+PARAMETER3:  The number of characters to set (0 to 65535 inclusive).
+
+
+END DESCRIPTION **********************************************************/
+
+xmem void xmemset(long dst, char c, unsigned len);
+/*** EndHeader */
+
+#asm xmem nodebug
+xmemset::
+	ld		a,c
+   ld		hl,(sp+9)	; get len parm
+   ld		b,h
+   ld		c,l
+   bool	hl
+   jr		z,.zerolen
+   ld		hl,(sp+7)	; get char (in L)
+   ex		de,hl
+   _LIN2SEG
+   ; Now AHL is segmented address, E is char to set, and BC is len (1..65536)
+   _XMEM_PC				; Write the first location
+   ; Write in chunks of up to 4k.  Each time, A (seg) is incremented and DE/HL decremented by 4k
+   ; When less than 4k is left, this is the last iteration.
+   ld		d,h
+   ld		e,l
+   inc	de				; Dest one more than src, so same byte is propagated
+   dec	bc				; Already set one char.
+   ld		de',bc		; Save initial count
+   exx
+.loop:
+   ld		hl,4095
+   or		a
+   sbc	hl,de			; Set Cy if 4096 or more to go
+   jr		nc,.lastiter
+   exx
+   ld		bc,4096
+   _XMEM_MVC			; Set the next 4096
+   inc	a
+   res	4,h			; H will be 0xF?.  Decrement HL by 4096 by setting H to 0xE?
+   ld		d,h
+   ld		e,l
+   inc	de
+   exx
+   ld		hl,-4096
+   add	hl,de
+   ex		de,hl
+	jr		.loop
+.lastiter:
+   ld		bc',de		; Store remaining amount
+   ex		de,hl
+   bool	hl
+   jr		z,.zerolen
+   exx
+   _XMEM_MVC			; Set the last amount less than 4096
+.zerolen:
+	lret
+#endasm
+
+/*** BeginHeader xmemchr */
+
+/* START FUNCTION DESCRIPTION ********************************************
+xmemchr                       <XMEM.LIB>
+
+SYNTAX: long xmemchr(long src, char ch, unsigned short n)
+
+DESCRIPTION: Search for the first occurrence of character ch in the xmem
+             area pointed to by src.
+
+PARAMETER1:  xmem (linear) address of the first character from which
+             to search.
+PARAMETER2:  character to search for.
+PARAMETER3:  maximum number of characters to search.
+
+RETURN VALUE:	physical address of the character which was found, or 0
+               if the character was not found within n bytes from the
+               start.
+
+END DESCRIPTION **********************************************************/
+
+useix long xmemchr(long src, char ch, unsigned short n);
+/*** EndHeader */
+
+_xmem_debug useix
+long xmemchr(long src, char ch, unsigned short n) {
+	auto int retval;
+#asm xmemok
+	ld		c,(ix+n)
+	ld		b,(ix+n+1)
+	ld		a,b
+	or		c
+	jr		z,.end				; Still more to search?
+	ld		de',1
+	ld		hl,(ix+src)
+	ld		d,(ix+src+2)
+	ld		e,(ix+ch)
+	ld		iy,hl
+	ld		a,l				; Is this an odd address?
+	and	1
+	jr		z,.beginloop
+	ld		a,d				; It is an odd address...
+	ldp	hl,(iy)
+	ld		a,l
+	cp		e
+	jr		z,.end				; Found it?
+	ld		a,d
+	exx
+	add	iy,de
+	adc	a,0
+	exx
+	ld		d,a
+	dec	bc
+	ld		a,b
+	or		c
+	jr		z,.end				; Still more to search?
+.beginloop:
+	ld		de',2
+.findchr:
+	ld		a,d
+	ldp	hl,(iy)
+	ld		a,l
+	cp		e
+	jr		z,.end				; Found it?
+	dec	bc
+	ld		a,b
+	or		c
+	jr		z,.end				; Still more to search?
+	ld		a,h
+	cp		e
+	jr		z,.end				; Found it?
+	ld		a,d
+	exx
+	add	iy,de				; Increment long src address
+	adc	a,0
+	exx
+	ld		d,a
+	dec	bc					; Decrement counter
+	ld		a,b
+	or		c
+	jr		nz,.findchr		; Still more to search?
+.end:
+	ld		(ix+retval),c
+	ld		(ix+retval+1),b
+#endasm
+	if (retval == 0) {
+		return 0;
+	} else {
+		return (long)(src + (n - retval));
+	}
+}
+
+/*** BeginHeader xmemcmp */
+
+/* START FUNCTION DESCRIPTION ********************************************
+xmemcmp                       <XMEM.LIB>
+
+SYNTAX: int xmemcmp(long xstr, char * str, unsigned short n)
+
+DESCRIPTION: Test whether xmem string at xstr matches the root memory
+             string at str.  n bytes are compared.
+
+PARAMETER1:  xmem (linear) address of the first character of the first
+             string to compare.
+PARAMETER2:  root address of the first character of the second string
+             to compare.
+PARAMETER3:  length of each string.  If n is zero, returns zero.
+             n must be less than or equal 4097.
+
+RETURN VALUE:	0: exact match.
+               >0: xstr > str
+               <0: xstr < str
+
+END DESCRIPTION **********************************************************/
+
+int xmemcmp(long xstr, char * str, unsigned short n);
+/*** EndHeader */
+
+_xmem_debug
+int xmemcmp(long xstr, char * str, unsigned short n) {
+   if (!n)
+   	return 0;
+   #asm
+   ld		hl,(sp+@sp+n)
+   ; Set up byte counter in "inner djnz form" as required by _XMEM_CLC.
+   ld		b,L
+   ld		c,h
+   ld		a,b
+   or		a
+   jr		z,.noinc
+   inc	c
+.noinc:
+   ld		hl,(sp+@sp+str)
+   ex		de,hl
+   ld		hl,(sp+@sp+xstr+2)
+   ld		a,L
+   ld		hl,(sp+@sp+xstr)
+   _LIN2SEG
+   _XMEM_CLC
+   ld		l,a
+   sbc	a,a
+   ld		h,a
+   #endasm
+   // return HL (0, >0, <0)
+}
+
+/*** BeginHeader xgetint */
+
+/* START FUNCTION DESCRIPTION ********************************************
+xgetint                       <XMEM.LIB>
+
+SYNTAX: int xgetint(long src)
+
+DESCRIPTION: Return the integer pointed to by src.  This is the most
+             efficient function for obtaining 2 bytes from xmem.
+
+PARAMETER1:  xmem (linear) address of the integer value to retrieve.
+
+RETURN VALUE:	Integer value (2-bytes) at src.
+
+END DESCRIPTION **********************************************************/
+
+root int xgetint(long src);
+/*** EndHeader */
+
+// Note that this is a root function so that we can use ret cc instruction,
+// and have slightly less call/return overhead.
+#asm root nodebug
+xgetint::
+	ld		h,d
+	ld		l,e
+	inc	d			; Test whether near end of 64k page
+	ld		a,c
+	ldp	hl,(hl)	; Get the value
+	ret	nz			; not near end of page; return
+	inc	e
+	ret	nz			; not at very end of page; return
+	inc	a			; there was a 64k wrap-around: reload from next page
+	ex		de,hl		; Set HL to zero (DE was zero), DE = current value (E only valid)
+	ldp	hl,(hl)
+	ld		h,L		; MSB is LSB of new value,
+	ld		l,e		; get LSB of previous value.
+	ret
+#endasm
+
+/*** BeginHeader xsetint */
+
+/* START FUNCTION DESCRIPTION ********************************************
+xsetint                       <XMEM.LIB>
+
+SYNTAX: void xsetint(long dst, int val)
+
+DESCRIPTION: Set the integer pointed to by dst.  This is the most
+             efficient function for writing 2 bytes to xmem.
+
+PARAMETER1:  xmem (linear) address of the integer value to set.
+PARAMETER2:  value to store into the above location.
+
+END DESCRIPTION **********************************************************/
+
+xmem void xsetint(long dst, int val);
+/*** EndHeader */
+
+#asm xmem nodebug
+xsetint::
+	ld		h,d
+	ld		l,e
+	ld		a,c
+	inc	d					; Test whether near end of 64k page
+	jr		nz,.doldp		; No, just do LDP
+	inc	e
+	jr		z,.eop			; DE was -1: straddles end of 64k page
+.doldp:
+	ld		iy,hl				; A/IY = paddr
+	ld		hl,(sp+7)		; HL = value
+	ldp	(iy),hl
+	lret
+.eop:
+	; Cannot use LDP.  Change to segmented address in XPC window
+	; HL has LSBs of paddr (=65535); A is MSB of paddr.  DE = 0.
+	;_LIN2SEG					; convert A/HL to segmented form
+	;_LIN2SEG is more general than we need: do optimized version of it...
+	rla
+	rla
+	rla
+	rla
+	or		0x0F
+	sub	0x0E
+	ld		de,0xEFFF
+	ld		hl,(sp+7)		; get value
+	ex		de,hl
+	; jump to root routine to store word in DE to A/HL (segmented),
+	; which will issue lret to return to our caller.
+	jp		_xmem_pw
+
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+xgetlong                       <XMEM.LIB>
+
+SYNTAX: long xgetlong(long src)
+
+DESCRIPTION: Return the longword pointed to by src.  This is the most
+             efficient function for obtaining 4 bytes from xmem.
+
+PARAMETER1:  xmem (linear) address of the long value to retrieve.
+
+RETURN VALUE:	Long integer value (4-bytes) at src.
+
+END DESCRIPTION **********************************************************/
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+xgetfloat                       <XMEM.LIB>
+
+SYNTAX: float xgetfloat(long src)
+
+DESCRIPTION: Return the float pointed to by src.  This is the most
+             efficient function for obtaining 4 bytes from xmem.
+
+PARAMETER1:  xmem (linear) address of the long value to retrieve.
+
+RETURN VALUE:	float value (4-bytes) at src.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader xgetlong, xgetfloat */
+xmem float xgetfloat(long src);
+xmem long xgetlong(long src);
+/*** EndHeader */
+
+#asm xmem nodebug
+xgetlong::
+xgetfloat::      ; function is ignorant of data type so same code works
+	ld		h,d
+	ld		l,e
+	ld		a,c
+	inc	d
+	ldp	hl,(hl)
+	jr		z,.hi256
+	; no page wrap
+	dec	d
+	inc	de
+	inc	de
+	ex		de,hl
+	ldp	hl,(hl)
+	ld		b,h
+	ld		c,L
+	lret
+.hi256:
+	inc	e
+	jr		z,.get3
+	inc	e
+	jr		z,.get2
+	inc	e
+	jr		z,.get2split
+	; no page wrap
+	dec	d
+	dec	e
+	ex		de,hl
+	ldp	hl,(hl)
+	ld		b,h
+	ld		c,L
+	lret
+.get3:
+	; only L is valid.  Next 3 on next 64k page
+	inc	a
+	ex		de,hl
+	; e = last byte of prev page; hl = 0
+	ldp	hl,(hl)
+	ld		d,l
+	ld		c,h
+	ldp	hl,(2)
+	ld		b,l
+	lret
+.get2:
+	; HL valid, next 2 on next 64k page
+	inc	a
+	ex		de,hl
+	; de = value from prev page, hl = 0
+	ldp	hl,(hl)
+	ld		b,h
+	ld		c,L
+	lret
+.get2split:
+	; HL valid, next 2 bytes split over 64k boundary
+	dec	de			; DE now -1
+	ex		de,hl
+	ldp	hl,(hl)	; only L valid from this
+	ld		c,l
+	inc	a
+	ldp	hl,(0)
+	ld		b,L
+	lret
+#endasm
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+xsetlong                       <XMEM.LIB>
+
+SYNTAX: void xsetlong(long dst, long val)
+
+DESCRIPTION: Set the long integer pointed to by dst.  This is the most
+             efficient function for writing 4 bytes to xmem.
+
+PARAMETER1:  xmem (linear) address of the long integer value to set.
+PARAMETER2:  value to store into the above location.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+xsetfloat                       <XMEM.LIB>
+
+SYNTAX: void xsetfloat(long dst, float val)
+
+DESCRIPTION: Set the float pointed to by dst.  This is the most
+             efficient function for writing 4 bytes to xmem.
+
+PARAMETER1:  xmem (linear) address of the float value to set.
+PARAMETER2:  value to store into the above location.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader xsetlong, xsetfloat */
+xmem void xsetfloat(long dst, float val);
+xmem void xsetlong(long dst, long val);
+/*** EndHeader */
+
+#asm xmem nodebug
+xsetlong::
+xsetfloat::   ; function is ignorant of data type so same code works
+	ld		h,d
+	ld		l,e
+	inc	d					; Test whether near end of 64k page
+	jr		nz,.doldp		; No, just do LDPs
+	ld		a,e
+	or		3
+	inc	a
+	jr		z,.eop			; DE was -1,-2,-3 or -4: straddles end of 64k page
+.doldp:
+	ld		a,c
+	ld		iy,hl				; A/IY = paddr
+	ld		hl,(sp+7)		; HL = value LSBs
+	ldp	(iy),hl
+	inc	iy
+	inc	iy
+	ld		hl,(sp+9)		; value MSBs
+	ldp	(iy),hl
+	lret
+.eop:
+	; Cannot use LDP.  Change to segmented address in XPC window
+	; HL has LSBs of paddr; C is MSB of paddr. E contains LSBs of paddr.
+	ld		a,c
+	rla
+	rla
+	rla
+	rla
+	or		0x0F
+	sub	0x0E
+	ld		d,0xEF			; now A/DE is segmented addr
+	ld		hl,(sp+9)		; get value MSBs
+	ld		b,h
+	ld		c,L
+	ld		hl,(sp+7)		; value LSBs
+	ex		de,hl
+	; jump to root routine to store longword in BCDE to A/HL (segmented),
+	; which will issue lret to return to our caller.
+	jp		_xmem_pl
+
+#endasm
+
+
+/*** BeginHeader _xmem_gc */
+/*=== Do NOT call this function from C! ===*/
+root int _xmem_gc(char * p);
+/*** EndHeader */
+#asm root nodebug
+_xmem_gc::
+	ld		xpc,a
+	ld		l,(hl)
+	ld		h,0				; HL contains source byte
+	lret
+#endasm
+
+/*** BeginHeader _xmem_gw */
+/*=== Do NOT call this function from C! ===*/
+root int _xmem_gw(char * p);
+/*** EndHeader */
+#asm root nodebug
+_xmem_gw::
+	ld		xpc,a
+	ld		hl,(hl)
+	lret
+#endasm
+
+/*** BeginHeader _xmem_gl */
+/*=== Do NOT call this function from C! ===*/
+root long _xmem_gl(char * p);
+/*** EndHeader */
+#asm root nodebug
+_xmem_gl::
+	ld		xpc,a
+	ld		e,(hl)
+	inc	hl
+	ld		d,(hl)
+	inc	hl
+	ld		c,(hl)
+	inc	hl
+	ld		b,(hl)
+	lret
+#endasm
+
+/*** BeginHeader _xmem_pc */
+/*=== Do NOT call this function from C! ===*/
+root char * _xmem_pc(char * p, int val);
+/*** EndHeader */
+#asm root nodebug
+_xmem_pc::
+	ld		xpc,a
+	ld		(hl),e
+	lret
+#endasm
+
+/*** BeginHeader _xmem_pw */
+/*=== Do NOT call this function from C! ===*/
+root char * _xmem_pw(char * p, int val);
+/*** EndHeader */
+#asm root nodebug
+_xmem_pw::
+	ld		xpc,a
+	ld		(hl),e
+	inc	hl
+	ld		(hl),d
+	inc	hl
+	lret
+#endasm
+
+/*** BeginHeader _xmem_pl */
+/*=== Do NOT call this function from C! ===*/
+root char * _xmem_pl(char * p, long val);
+/*** EndHeader */
+#asm root nodebug
+_xmem_pl::
+	ld		xpc,a
+	ld		(hl),e
+	inc	hl
+	ld		(hl),d
+	inc	hl
+	ld		(hl),c
+	inc	hl
+	ld		(hl),b
+	inc	hl
+	lret
+#endasm
+
+/*** BeginHeader _xmem_mvc */
+/*=== Do NOT call this function from C! ===*/
+root char * _xmem_mvc(char * p, char * q, word len);
+/*** EndHeader */
+#asm root nodebug
+_xmem_mvc::
+	ld		xpc,a
+	ldir
+	lret
+#endasm
+
+/*** BeginHeader _xmem_mvc_ioe2mem */
+/*=== Do NOT call this function from C! ===*/
+root char * _xmem_mvc_ioe2mem(char * p, char * q, word len);
+/*** EndHeader */
+#asm root nodebug
+_xmem_mvc_ioe2mem::
+	ld		xpc,a
+
+ioi ld	 a, (GCPU)			;check for R2000 or R3000
+	 and	 0x0f
+    jr	 z, .pre3ka       ;if R2000 series, jump
+ioi ld	 a, (GREV)			;check for 3000A or later
+	 and	 0x0f
+    jr	 nz, .r3ka        ;if R3000A or higher, jump
+
+.pre3ka: ;for CPU's before R3000A...
+	; Transform length (BC) to 'inner djnz form'.
+   ld    a,c                        ; c:b = length
+   ld    c,b
+   ld    b,a
+
+   or    a
+   jr    z,.loop
+   inc   c
+.loop:
+ioe	ld		a,(hl)							; copy bytes
+   ld    (de),a
+   inc   de
+   djnz  .loop
+   dec   c
+   jr    nz,.loop
+   jr .exit
+.r3ka: ;R3000A or better...
+	_IOELSIDR
+.exit:
+	lret
+#endasm
+
+/*** BeginHeader _xmem_mvc_ioi2mem */
+/*=== Do NOT call this function from C! ===*/
+root char * _xmem_mvc_ioi2mem(char * p, char * q, word len);
+/*** EndHeader */
+#asm root nodebug
+_xmem_mvc_ioi2mem::
+	ld		xpc,a
+
+ioi ld	 a, (GCPU)			;check for R2000 or R3000
+	 and	 0x0f
+    jr	 z, .pre3ka       ;if R2000 series, jump
+ioi ld	 a, (GREV)			;check for 3000A or later
+	 and	 0x0f
+    jr	 nz, .r3ka        ;if R3000A or higher, jump
+
+.pre3ka:
+	; Transform length (BC) to 'inner djnz form'.
+   ld    a,c                        ; c:b = length
+   ld    c,b
+   ld    b,a
+
+   or    a
+   jr    z,.loop
+   inc   c
+.loop:
+ioi	ld		a,(hl)							; copy bytes
+   ld    (de),a
+   inc   de
+   djnz  .loop
+   dec   c
+   jr    nz,.loop
+   jr .exit
+.r3ka:  ;R3000A or better...
+	_IOILSIDR
+.exit:
+	lret
+#endasm
+
+/*** BeginHeader _xmem_mvc_mem2ioe */
+/*=== Do NOT call this function from C! ===*/
+root char * _xmem_mvc_mem2ioe(char * p, char * q, word len);
+/*** EndHeader */
+#asm root nodebug
+_xmem_mvc_mem2ioe::
+	ld		xpc,a
+
+ioi ld	 a, (GCPU)			;check for R2000 or R3000
+	 and	 0x0f
+    jr	 z, .x2ei_loop    ;if R2000 series, jump
+ioi ld	 a, (GREV)			;check for 3000A or later
+	 and	 0x0f
+    jr	 nz, .r3ka        ;if R3000A or higher, jump
+
+.x2ei_loop:
+ioe	ldi
+		dec	de			; compensate to keep same I/O addr
+		jp		v,.x2ei_loop
+      jr .exit
+.r3ka:  ;R3000A or better...
+	_IOELDISR
+.exit:
+	lret
+#endasm
+
+/*** BeginHeader _xmem_mvc_mem2ioi */
+/*=== Do NOT call this function from C! ===*/
+root char * _xmem_mvc_mem2ioi(char * p, char * q, word len);
+/*** EndHeader */
+#asm root nodebug
+_xmem_mvc_mem2ioi::
+	ld		xpc,a
+
+ioi ld	 a, (GCPU)			;check for R2000 or R3000
+	 and	 0x0f
+    jr	 z, .x2ii_loop    ;if R2000 series, jump
+ioi ld	 a, (GREV)			;check for 3000A or later
+	 and	 0x0f
+    jr	 nz, .r3ka        ;if R3000A or higher, jump
+.x2ii_loop:
+ioi	ldi
+		dec	de			; compensate to keep same I/O addr
+		jp		v,.x2ii_loop
+      jr .exit
+.r3ka:  ;R3000A or better...
+	_IOILDISR
+.exit:
+	lret
+#endasm
+
+/*** BeginHeader _xmem_clc */
+/*=== Do NOT call this function from C! ===*/
+root char * _xmem_clc(char * p, char * q, word len);
+/*** EndHeader */
+#asm root nodebug
+_xmem_clc::
+	ld		xpc,a
+.loop:
+	ld		a,(de)
+   inc	de
+   sub	(hl)
+   inc	hl
+   jr		nz,.retn
+	djnz	.loop
+   dec	c
+   jr		nz,.loop
+.retn:
+	lret
+#endasm
+
+/*** BeginHeader xGetQuadrant */
+int xGetQuadrant(unsigned long PhyAddr);
+/*** EndHeader */
+
+_xmem_debug
+int xGetQuadrant(unsigned long PhyAddr)
+{
+	auto int retval;
+
+#asm
+		ld 	hl, (sp+@sp+PhyAddr+2)	; interested only in the MSBs
+		ld		a, l							; ensure all 12 MSbits . . .
+		and	a, 0F0h						;  of PhyAddr are . . .
+		or		a, h							;  zero bits
+		jr		z, .ShiftToQuadrant		; jump if valid physical address
+
+		ld		hl, -1						; error, not in any quadrant!
+		jr		.Done
+
+.ShiftToQuadrant:
+		srl	l								; move L's quadrant bits in 3:2
+		srl	l								;  position to 1:0 position
+.Done:
+		ld		(sp+@sp+retval), hl
+#endasm
+
+	return retval;
+}
+
+
+/*** BeginHeader  ***********************************/
+#endif
+/*** EndHeader ***********************************************/

@@ -1,0 +1,142 @@
+<!-- This file shows how to use selection variables in ZHTML scripting.  See
+     the tags in the <FORM> ... </FORM> section. -->
+
+<HTML>
+
+<HEAD>
+<TITLE>Sprinkler Schedule</TITLE>
+</HEAD>
+
+<BODY>
+<H1>Sprinkler Schedule</H1>
+
+<FORM ACTION="/index.zhtml" METHOD="POST">
+
+<?z if (error()) { ?>
+   <FONT COLOR="red">0 to 23 hours and 0 to 59 minutes</FONT>
+<?z } ?>
+
+<TABLE BORDER="1">
+<TR>
+  	<th>Time</th>
+	<th colspan="1">Station 1 (JP4-1)</th>
+	<th colspan="1">Station 2 (JP4-2)</th>
+</TR>
+
+<TR>
+	<th rowspan="2">Zone 1</th>
+	<td><INPUT TYPE="text" NAME="<?z varname($station[0].houron[0]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].houron[0]) ?>">:
+
+	<INPUT TYPE="text" NAME="<?z varname($station[0].minuteon[0]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].minuteon[0]) ?>">Hr:Min On</td>
+
+	<td><INPUT TYPE="text" NAME="<?z varname($station[1].houron[0]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].houron[0]) ?>">:
+
+	<INPUT TYPE="text" NAME="<?z varname($station[1].minuteon[0]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].minuteon[0]) ?>">Hr:Min On</td>
+</TR>
+<TR>
+	<td><INPUT TYPE="text" NAME="<?z varname($station[0].houroff[0]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].houroff[0]) ?>">:
+
+	<INPUT TYPE="text" NAME="<?z varname($station[0].minuteoff[0]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].minuteoff[0]) ?>">Hr:Min Off</td>
+
+	<td><INPUT TYPE="text" NAME="<?z varname($station[1].houroff[0]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].houroff[0]) ?>">:
+
+	<INPUT TYPE="text" NAME="<?z varname($station[1].minuteoff[0]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].minuteoff[0]) ?>">Hr:Min Off</td>
+</TR>
+
+<TR>
+	<th rowspan="2">Zone 2</th>
+	<td><INPUT TYPE="text" NAME="<?z varname($station[0].houron[1]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].houron[1]) ?>">:
+
+	<INPUT TYPE="text" NAME="<?z varname($station[0].minuteon[1]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].minuteon[1]) ?>">Hr:Min On</td>
+
+	<td><INPUT TYPE="text" NAME="<?z varname($station[1].houron[1]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].houron[1]) ?>">:
+
+	<INPUT TYPE="text" NAME="<?z varname($station[1].minuteon[1]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].minuteon[1]) ?>">Hr:Min On</td>
+</TR>
+<TR>
+	<td><INPUT TYPE="text" NAME="<?z varname($station[0].houroff[1]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].houroff[1]) ?>">:
+
+	<INPUT TYPE="text" NAME="<?z varname($station[0].minuteoff[1]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].minuteoff[1]) ?>">Hr:Min Off</td>
+
+	<td><INPUT TYPE="text" NAME="<?z varname($station[1].houroff[1]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].houroff[1]) ?>">:
+
+	<INPUT TYPE="text" NAME="<?z varname($station[1].minuteoff[1]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].minuteoff[1]) ?>">Hr:Min Off</td>
+</TR>
+
+<TR>
+	<th rowspan="2">Zone 3</th>
+	<td><INPUT TYPE="text" NAME="<?z varname($station[0].houron[2]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].houron[2]) ?>">:
+
+	<INPUT TYPE="text" NAME="<?z varname($station[0].minuteon[2]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].minuteon[2]) ?>">Hr:Min On</td>
+
+	<td><INPUT TYPE="text" NAME="<?z varname($station[1].houron[2]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].houron[2]) ?>">:
+
+	<INPUT TYPE="text" NAME="<?z varname($station[1].minuteon[2]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].minuteon[2]) ?>">Hr:Min On</td>
+</TR>
+<TR>
+	<td><INPUT TYPE="text" NAME="<?z varname($station[0].houroff[2]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].houroff[2]) ?>">:
+
+	<INPUT TYPE="text" NAME="<?z varname($station[0].minuteoff[2]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[0].minuteoff[2]) ?>">Hr:Min Off</td>
+
+	<td><INPUT TYPE="text" NAME="<?z varname($station[1].houroff[2]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].houroff[2]) ?>">:
+
+	<INPUT TYPE="text" NAME="<?z varname($station[1].minuteoff[2]) ?>" SIZE=2
+   VALUE="<?z printf("%02d",$station[1].minuteoff[2]) ?>">Hr:Min Off</td>
+</TR>
+
+</TABLE>
+
+<BR>
+<H3>Current Time <?z print($currenttime) ?></H3>
+<P>
+<?z if($setclockmode==0) { ?>
+  <FORM ACTION="/index.zhtml" METHOD="POST">
+  <INPUT TYPE="submit" VALUE="Submit">
+  </FORM>
+  <FORM ACTION="/index.zhtml" METHOD="POST">
+  <INPUT TYPE="hidden" NAME="setclockmode" VALUE="1">
+  <INPUT TYPE="submit" VALUE="Set sprinkler clock">
+  </FORM>
+<?z } ?>
+</FORM>
+<P>
+<?z if($setclockmode!=0) { ?> 
+  <FORM ACTION="/index.zhtml" METHOD="POST">
+  <INPUT TYPE="submit" VALUE="Set   Hour : Minute">
+  <INPUT TYPE="text" NAME="RTChour" size=2 VALUE=<?z printf("%d",$RTChour) ?> >:
+  <INPUT TYPE="text" NAME="RTCmin" size=2 VALUE=<?z printf("%d",$RTCmin) ?> >
+  <INPUT TYPE="hidden" NAME="setclockmode" VALUE="2">
+  </FORM>
+  <FORM ACTION="/index.zhtml" METHOD="POST">
+  <INPUT TYPE="hidden" NAME="setclockmode" VALUE="0">
+  <INPUT TYPE="submit" VALUE="Cancel">
+  </FORM>
+<?z } ?>
+
+</BODY>
+
+</HTML>
+

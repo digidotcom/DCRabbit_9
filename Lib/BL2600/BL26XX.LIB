@@ -1,0 +1,4305 @@
+/*** Beginheader */
+#ifndef __BL26XX_LIB
+#define __BL26XX_LIB
+
+#if (_BOARD_TYPE_ < 0x1700 || _BOARD_TYPE_ > 0x17FF)
+#error "BL26XX.LIB only supports BL2600 series boards."
+#endif
+
+//#define BL2600_DEBUG
+
+#ifdef BL2600_DEBUG
+#define _bl2600_nodebug debug
+#else
+#define _bl2600_nodebug nodebug
+#endif
+
+/*** Endheader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+BL26XX.LIB
+Copyright (c) 2003, Z-World
+
+DESCRIPTION:	Support for the BL26XX series controllers.
+
+REVISION HISTORY:
+
+	Rev 1.0	EK		Initial release.
+	Rev 1.1	EK		Initialized __TriStateConfig configuration flag for
+   					the digHout	API function so it won't create false I/O
+            		exception error.
+	Rev 1.2	KM		Add ledOut() placeholder to prevent compiler errors.
+
+END DESCRIPTION **********************************************************/
+
+//------------------------------------------------------------------------
+//		API global variable section
+//------------------------------------------------------------------------
+/*** Beginheader 	__brdInitFlag,
+						__TriStateConfig,
+                  __TriStateConfigFlag,
+						__HoutConfigFlag,
+						__HoutConfig,
+						__SoutConfigFlag,
+						__SoutConfig,
+                  __ADConfigFlag,
+                  __DACConfig,
+                  __RangeChecking,
+                  __tdivisor,
+                  __SPIShadow,
+                  __bank0_shadow,
+                  __bank1_shadow,
+                  __bank2_shadow,
+                  numcycles_1us
+
+*/
+
+// Variables for API function usage
+extern int __brdInitFlag;
+extern int __TriStateConfig;
+extern int __TriStateConfigFlag;
+extern int __HoutConfigFlag;
+extern int __HoutConfig;
+extern int __SoutConfigFlag;
+extern int __SoutConfig;
+extern int __ADConfigFlag;
+extern int __DACConfig;
+extern int __RangeChecking;
+extern int __tdivisor;
+extern char __SPIShadow;
+extern char __bank0_shadow;
+extern char __bank1_shadow;
+extern char __bank2_shadow;
+extern int numcycles_1us;
+
+// ADC calibration data structure
+typedef struct
+{	float gain;
+	int offset;
+}calib;
+
+extern char ADC_Command[8];
+extern calib ADC_Cal_Table[8];
+
+extern int DAC_Command[8];
+extern calib DAC_vCal_Table[8];
+extern calib DAC_iCal_Table[8];
+
+// Digital I/O control addresses
+#define WR_BANK0		0x2000
+#define WR_BANK1		0x2001
+#define WR_BANK2		0x2002
+#define SPI PORT  	0x2003
+#define SPARE     	0x2004
+#define RD_BANK0		0x2005
+#define RD_BANK8		0x2006
+#define RD_BANK23		0x2007
+
+
+#define HOUT_LOW 	0x00
+#define HOUT_HIGH 0
+#define HOUT_HI_Z
+
+// Defaults for RS232 handshaking RTS/CTS
+#define SERC_RTS_SHADOW PGDRShadow
+#define SERC_RTS_PORT 	PGDR  //RTS I/O control port
+#define SERC_RTS_BIT 	2		//RTS on port C, PG2
+#define SERC_CTS_PORT 	PGDR  //CTS I/O control port
+#define SERC_CTS_BIT 	3		//CTS on Port C, PG3
+
+// External I/O device MACRO's
+#define SPI_PORT_ADDR	0x2003
+#define SPI_SF1000      7
+#define SPI_RN_PORT1    6
+#define SPI_RN_PORT2    5
+#define SPI_ADC_CHIP    4
+#define SPI_DAC_CHIP    3
+#define SPI_PWR_CNTRL	2
+
+// CLK divisor for SF1000 accesses
+#define SBC_SPI_DIVISOR __tdivisor
+#define SPI_CLK_DIVISOR 10
+
+#define MAXDACCOUNT	4095
+#define MINDACCOUNT	0
+#define ADOVERFLOW -4096
+
+#define ADCBOARD 	1		//board type
+#define EECLK 		0		//eeprom clock bit
+#define EEDATA 	1		//eeprom data bit
+#define EEACK 		1		//eeprom ack bit
+#define EEPROM_WRITE 0
+#define EEPROM_READ  1
+
+#define	CAL_ADC_SE0		0
+#define  CAL_ADC_SE1   	CAL_ADC_SE0 + 348
+#define  CAL_ADC_DIFF  	CAL_ADC_SE1 + 348
+#define  CAL_ADC_MA   	CAL_ADC_DIFF + 192
+
+#define	CAL_DACV_UNIPOLAR		CAL_ADC_MA + 48
+#define  CAL_DACV_BIPOLAR  	CAL_DACV_UNIPOLAR + 48
+#define  CAL_DACI_UNIPOLAR   	CAL_DACV_BIPOLAR  + 48
+#define  CAL_DACI_BIPOLAR   	CAL_DACI_UNIPOLAR + 48
+
+// ADC Mode
+#define DIRECTMODE   0x80
+#define REGISTERMODE 0x00
+
+// ADC modes for user selection
+#define SE0_MODE		0
+#define SE1_MODE		1
+#define DIFF_MODE    2
+#define mAMP_MODE    3
+
+
+#define DAC_UNIPOLAR_X1		2272
+#define DAC_UNIPOLAR_X2 	1136
+#define DAC_UNIPOLAR_X4    558
+#define DAC_UNIPOLAR_X5    284
+#define DAC_UNIPOLAR_X8    142
+#define DAC_UNIPOLAR_X10   71
+#define DAC_UNIPOLAR_X16   36
+#define DAC_UNIPOLAR_X20   18
+
+#define DAC_BIPOLAR_X1		2272
+#define DAC_BIPOLAR_X2 		1136
+#define DAC_BIPOLAR_X4    	558
+#define DAC_BIPOLAR_X5    	284
+#define DAC_BIPOLAR_X8    	142
+#define DAC_BIPOLAR_X10   	71
+#define DAC_BIPOLAR_X16   	36
+#define DAC_BIPOLAR_X20   	18
+
+// ADC control bytes for mode of operation
+#define SINGLE_ENDED 0x08
+#define DIFFERENTIAL 0x00
+
+#ifndef mAMP_GAINCODE
+#define mAMP_GAINCODE	4
+#endif
+
+#define DAC_UNIPOLAR	0
+#define DAC_BIPOLAR	1
+
+#define DAC_VOLT0_INDEX	0
+#define DAC_VOLT1_INDEX 1
+#define DAC_MA0_INDEX   2
+#define DAC_MA1_INDEX   3
+
+#define DAC_ASYNC			0
+#define DAC_SYNC			1
+
+// ADC Register address
+#define REG0   		0x00
+#define REG1  			0x01
+#define REG2  			0x02
+#define REG3  			0x03
+#define REG4  			0x04
+#define REG5  			0x05
+#define REG6  			0x06
+#define REG7  			0x07
+#define REG24  		0x18
+#define REG31  		0x1F
+
+// ADC Read/Write operation
+#define RD_REG       0x40
+#define WR_REG       0x00
+
+// ADC Word length
+#define BITS16       0x10
+#define BITS8        0x00
+
+// ADC Mode
+#define DIRECTMODE   0x80
+#define REGISTERMODE 0x00
+
+// SPI Clock Rate ~20Mbits/sec
+#define SPI_DAC_CLK 1825200L
+#define SPI_ADC_CLK 1825200L
+
+//#define SPI_DAC_CLK 230400L
+//#define SPI_ADC_CLK 230400L
+
+// Required for ethernet LIB's
+#define PORTA_AUX_IO
+
+
+// SF1000 control MACRO's
+#define SPI_SER_D		//use serial port D
+#define SF1000_CS_PORT 0x00
+#define CS_ENABLE	 BitWrPortE ( SPI_PORT_ADDR, &__SPIShadow, 0, SPI_SF1000 ); \
+						 SPIxor = 0xFF;		// Invert the received bits
+#define CS_DISABLE BitWrPortE ( SPI_PORT_ADDR, &__SPIShadow, 1, SPI_SF1000 )
+/*** Endheader */
+
+// Function execution flags
+int __brdInitFlag;
+int __TriStateConfig;
+int __TriStateConfigFlag;
+int __HoutConfigFlag;
+int __HoutConfig;
+int __SoutConfigFlag;
+int __SoutConfig;
+int __ADConfigFlag;
+int __DACConfig;
+int __RangeChecking;
+int __tdivisor;
+char __SPIShadow;
+char __bank0_shadow;
+char __bank1_shadow;
+char __bank2_shadow;
+int numcycles_1us;
+
+char ADC_Command[8];
+calib ADC_Cal_Table[8];
+
+int DAC_Command[8];
+calib DAC_vCal_Table[8];
+calib DAC_iCal_Table[8];
+
+
+#asm root _bl2600_nodebug
+;;;entry data byte must be in l
+_txadcbyte::
+	ld		c,l						; copy the byte value
+	xor	a							; a=0
+	ld		b, a						; bc = offset into BitRev table
+	ld		hl,RevBitTable			; get address of table
+	add	hl,bc						; calculate address of bit reversed byte
+	ld		l,(hl)					; get new byte
+	ld		h, a						; make integer
+
+	ld		a,l
+;	ioi	ld (SDDR),a				;load instruction byte first into transmit data reg
+  	IOWRITE_A(SDDR)
+	ld		a,08ch
+;	ioi	ld (SDCR),a				;transmit byte
+	IOWRITE_A(SDCR)
+.txshiftdone:						;wait for empty shift reg
+	ioi	ld	a,(SDSR)
+;	IOREAD_A(SDSR)
+	bit	2,a
+	jp		nz,.txshiftdone
+	ret
+#endasm
+
+#asm root _bl2600_nodebug
+;;;exit data byte will be in l
+_rxadcbyte::
+	ld		a,04ch					;receive byte one
+;	ioi	ld (SDCR),a
+	IOWRITE_A(SDCR)
+.rxdatafull:
+	ioi	ld	a,(SDSR)
+;	IOREAD_A(SDSR)
+	bit	7,a
+	jr		z,.rxdatafull
+	ioi	ld a,(SDDR)				;get byte from receive data reg
+;	IOREAD_A(SDDR)
+	ld		l,a
+
+   // Swap the order of the bits of the byte
+   ld		c,l						; copy the byte value
+	xor	a							; a=0
+	ld		b, a						; bc = offset into BitRev table
+	ld		hl,RevBitTable			; get address of table
+	add	hl, bc					; calculate address of bit reversed byte
+	ld		l,(hl)					; get new byte
+	ld		h, a						; make integer
+	ret
+#endasm
+
+
+#asm root _bl2600_nodebug
+_delay100usec::
+		ld		hl,(numcycles_1us)
+      ld		b,l
+      // 105 usec delay  = numcycles_1us * code cycles
+.delay100cycles:
+      push	af
+      push	bc			; Code = 105 cycles
+      push	de
+      push	hl
+      push	ix
+      pop	ix
+      pop	hl
+      pop	de
+      pop	bc
+      pop	af
+		djnz	.delay100cycles
+		ret
+#endasm
+
+/*** BeginHeader ledOut*/
+void ledOut(int led, int value);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+ledOut                                                  <BL26XX.LIB>
+
+SYNTAX:			void ledOut(int led, int value);
+
+DESCRIPTION:	placeholder to prevent compile-time errors.  There are
+no LED's to blink on a BL2600.
+
+PARAMETER:		N/A
+
+RETURN VALUE:	none.
+
+END DESCRIPTION **********************************************************/
+nodebug void ledOut (int led, int value)
+{
+	#warnt "There are no LED's on a BL2600 to blink."
+}
+
+/*** BeginHeader  _bias_adc */
+void _bias_adc(int channel, int gaincode);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_bias_adc			<BL26XX.LIB>
+
+SYNTAX:			void _bias_adc(int channel, int gaincode);
+
+END DESCRIPTION **********************************************************/
+void _bias_adc(int channel, int gaincode)
+{
+	auto int ch_pair, i;
+   auto float rawdata, bias_value;
+
+   ch_pair  = channel >> 1;
+   if(__DACConfig == DAC_UNIPOLAR)
+   	rawdata = 2000;
+   else
+      rawdata = 1000;
+
+   switch(gaincode)
+   {
+    	case 0:
+       	bias_value = 1;
+         break;
+      case 1:
+       	bias_value = 2;
+         break;
+      case 2:
+       	bias_value = 4;
+         break;
+      case 3:
+       	bias_value = 5;
+         break;
+      case 4:
+       	bias_value = 8;
+         break;
+      case 5:
+       	bias_value = 10;
+         break;
+   }
+   rawdata = (rawdata/bias_value) + .5;
+   __RangeChecking = FALSE;
+   anaOut((ch_pair + 4), (int)rawdata);
+   __RangeChecking = TRUE;
+
+   // Delay 600 usec for DAC settling time
+ 	asm call _delay100usec;
+   asm call _delay100usec;
+   asm call _delay100usec;
+   asm call _delay100usec;
+   asm call _delay100usec;
+   asm call _delay100usec;
+}
+
+
+
+/*** BeginHeader  _ads7870command */
+int _ads7870command(char cmd, char wrdata);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_ads7870command			<BL26XX.LIB>
+
+SYNTAX:			int _ads7870command(char cmd, char wrdata);
+
+DESCRIPTION: 	This driver is for the ADS7870 and is designed to serially
+					clock an instruction byte and serially read from or write
+               the command to the designated register of the ADS7870.
+
+               Refer to an ADS7870 specification for addressing registers.
+
+PARAMETER1:  	The instruction byte will initiate a read/write operation
+					at eight or sixteen bits on the designated register address.
+
+PARAMETER2:		Command data configures the registers addressed by the
+					instruction byte. Enter 0 if performing a read operation.
+
+RETURN VALUE:	- Write Operation returns a zero value.
+					- Read operation returns the data read from the ADC chip.
+
+SEE ALSO:		anaInConfig, swap, _txadcbyte, _rxadcbyte, RevBitTable
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+int _ads7870command(char cmd, char wrdata)
+{
+	static int rddata;
+	static char TAT7RShadow_Save;
+   static char SDERShadow_Save;
+   static char adc_clk;
+
+   #GLOBAL_INIT
+   {
+   	adc_clk = (char)((freq_divider * 19200.0/(float)SPI_ADC_CLK + 0.5) - 1L);
+   }
+
+   TAT7RShadow_Save = TAT7RShadow;
+   SDERShadow_Save  = SDERShadow;
+   WrPortI(SDER, &SDERShadow, 0x30);
+   WrPortI(TAT7R, &TAT7RShadow, adc_clk);	// Set the SPI bit rate for serial D
+
+#asm _bl2600_nodebug
+	ld 	de,SPI_PORT_ADDR		;Set DAC chip select low
+	ld 	hl,__SPIShadow
+   res	SPI_ADC_CHIP,(hl)
+ 	ioe 	ldd
+   exx
+
+	ld		hl,(sp+@sp+cmd)
+	bit	6,l					;check for write or read operation
+	jp		nz,.read8
+
+.write8:
+   call	_txadcbyte			;Send Command to ads7870
+	ld		hl,(sp+@sp+wrdata)
+	call	_txadcbyte			;Send Data to ads7870
+   exx
+   inc	de
+   inc	hl
+   set	SPI_ADC_CHIP,(hl)
+ 	ioe 	ldd
+   ld		hl,0					;return 0
+   jp		.done
+
+.read8:
+	call	_txadcbyte			;Send Command to ads7870
+	call	_rxadcbyte			;received clocked data
+	ld		h,0					;return value in hl
+   exx
+   inc 	de
+	inc	hl
+   set	SPI_ADC_CHIP,(hl)
+ 	ioe 	ldd
+   exx
+   ld		(rddata),hl
+.done:
+#endasm
+
+   WrPortI(TAT7R, &TAT7RShadow, TAT7RShadow_Save);
+   WrPortI(SDER, &SDERShadow, SDERShadow_Save);
+   return(rddata);
+}
+
+
+/*** BeginHeader anaInDriver */
+root int anaInDriver(char cmd);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInDriver					<BL26XX.LIB>
+
+SYNTAX:			int anaInDriver(char cmd);
+
+DESCRIPTION:	Low-level driver to read the ADS7870 ADC chip. This
+					function is non-reentrant.
+
+PARAMETER1:		The cmd parameter contains a gain code, channel code and
+					the MSB set high for direct mode access. The format is as
+               follows:
+
+					D7		D6 - D4		D3 - D0
+					--		---------	------------
+					1	   gain_code	channel_code
+
+					Use the following calculation and tables below to
+               determine cmd:
+
+					cmd = 0x80 | (gain_code<<4) + channel_code
+
+               ===========================================
+						gain_code	multiplier
+						---------	----------
+		 					0				 1
+		 					1				 2
+		 					2				 4
+		 					3				 5
+		 					4				 8
+		 					5				10
+		 					6				16
+		 					7				20
+					===========================================
+
+					===========================================
+
+					channel_code	Differential input lines
+					------------	----------------------------
+		 				0				+AIN0 -AIN1
+		 				1				+AIN2 -AIN3
+		 				2				+AIN4 -AIN5
+		 				3				+AIN6 -AIN7
+		 				4				Reserved
+		 				5				Reserved
+		 				6				Reserved
+		 				7				Reserved
+
+									 	Single-ended		milli-Amp
+									 	input lines			input lines
+						           	----------------------------
+		 				8				+AIN0					+AIN0
+		 				9				+AIN1 				+AIN1
+						10				+AIN2 				+AIN2
+						11				+AIN3 				+AIN3
+						12				+AIN4 				Reserved
+						13				+AIN5 				Reserved
+						14				+AIN6 				Reserved
+						15				+AIN7					Reserved
+					==============================================
+
+               ADC input circuit configuration infor:
+               --------------------------------------
+               The BL2600 board has been designed to extend the ADC input
+               circuit configurations, which is done by the anaInConfig
+               function. Here's a table that maps the BL2600 ADC circuit
+               configurations to the ADC channel_code listed above:
+
+               BL2600 ADC input           	ADC chip channel_code
+               ----------------              ---------------------
+               Differential			  --->    0 - 4
+               Single-Ended unipolar  --->    8 - 15
+               Single-Ended bipolar   --->    8 - 15
+               4-20ma                 --->    8 - 11
+
+RETURN VALUE:	A value corresponding to the voltage on the analog input
+				 	channel, which will be:
+
+		 			0-2047 = A/D Rawdata, for 11-bit conversions bit 12
+                        is used as a sign bit.
+					-1     = Conversion incomplete, busy bit timeout
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+int anaInDriver(char cmd)
+{
+   static int rawdata;
+   static char TAT7RShadow_Save;
+   static char SDERShadow_Save;
+   static char adc_clk;
+
+   #GLOBAL_INIT
+   {
+   	adc_clk = (char)((freq_divider * 19200.0/(float)SPI_ADC_CLK + 0.5) - 1L);
+   }
+
+   TAT7RShadow_Save = TAT7RShadow;
+   SDERShadow_Save  = SDERShadow;
+   WrPortI(SDER, &SDERShadow, 0x30);
+   WrPortI(TAT7R, &TAT7RShadow, adc_clk);	// Set the SPI bit rate for serial D
+
+#asm _bl2600_nodebug
+	ld 	de,SPI_PORT_ADDR		;Set DAC chip select low
+	ld 	hl,__SPIShadow
+   res	SPI_ADC_CHIP,(hl)
+ 	ioe 	ldd
+
+.wr_cmd:
+   exx
+   ld		hl,(sp+2)
+	call	_txadcbyte				;Send command Data to ads7870
+
+#ifndef ADC_X1CYC_DELAY
+// If ADC_X1CYC_DELAY is defined, then the data read from the ADC
+// will be data converted from the previous ADC cycle, otherwise
+// it will be data converted during this cycle.
+	ld		hl,(numcycles_1us)
+   ld		b,l
+   srl	b
+
+   ; Wait for to busy to go high
+   ; >2usec delay  = (numcycles_1us/2) * code cycles
+.busydelay:
+	djnz	.busydelay 		; Code = 5 cycles
+	ld		b,0xFF
+.busyhigh:
+	ioi	ld	a,(PFDR)
+;	IOREAD_A(PFDR)
+	bit	1,a
+	jp		z,.read16				;Wait for conversion to complete
+	djnz	.busyhigh
+   ld		hl,0xFFFF
+ 	jp		.done
+#endif
+
+.read16:
+   call	_rxadcbyte				;read first byte in hl
+
+	ld		e,l						;save upper byte
+	call	_rxadcbyte				;read LS byte
+	ld		h,e
+  	exx
+   inc	de
+   inc	hl
+
+   set	SPI_ADC_CHIP,(hl)
+   ioe 	ldd
+   exx
+
+	rr		hl								;convert to 12-bit data
+	rr		hl
+	rr		hl
+	rr		hl
+   ld		(rawdata),hl
+.done:
+#endasm
+
+	WrPortI(TAT7R, &TAT7RShadow, TAT7RShadow_Save);
+   WrPortI(SDER, &SDERShadow, SDERShadow_Save);
+   return(rawdata);
+}
+
+/*** BeginHeader  anaOutDriver */
+void anaOutDriver(int cmd);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutDriver				<BL26XX.LIB>
+
+SYNTAX:			void anaOutDriver(int cmd);
+
+DESCRIPTION: 	This is the low-level driver for the TLV5630 DAC chip, it
+					handles writing the rawdata output value to the DAC chip.
+               This function is non-reentrant
+
+PARAMETER1:    DAC command value, format is as follows:
+
+					D15 - D12	 		D11 - D0
+					---------------	------------------------
+					Channel = 0 - 3   Rawdata value = 0 - 4095
+
+					Use the following calculation to determine cmd:
+
+					cmd = (Channel<<12) | Rawdata value
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+void anaOutDriver(int cmd)
+{
+	static char TAT7RShadow_Save;
+   static char SDERShadow_Save;
+   static char dac_clk;
+
+   #GLOBAL_INIT
+   {
+   	dac_clk = (char)((freq_divider * 19200.0/(float)SPI_DAC_CLK + 0.5) - 1L);
+   }
+
+   TAT7RShadow_Save = TAT7RShadow;
+   SDERShadow_Save  = SDERShadow;
+   WrPortI(SDER, &SDERShadow, 0x30);
+   WrPortI(TAT7R, &TAT7RShadow, dac_clk);	// Set the SPI bit rate for serial D
+
+#asm _bl2600_nodebug
+	ld 	de,SPI_PORT_ADDR		; Assert DAC chip select
+	ld 	hl,__SPIShadow
+   res	SPI_DAC_CHIP,(hl)
+   ioe 	ldd
+   exx
+
+   ld		hl,(sp+@sp+cmd)		; Send upper command byte to DAC
+   ld		l,h
+   call	_txadcbyte
+
+	ld		hl,(sp+@sp+cmd)
+	call	_txadcbyte				; Send lower command byte to DAC
+
+   exx                   		; Deassert DAC chip select
+   inc	de
+   inc	hl
+   set	SPI_DAC_CHIP,(hl)
+ 	ioe 	ldd
+#endasm
+
+	WrPortI(TAT7R, &TAT7RShadow, TAT7RShadow_Save);
+   WrPortI(SDER, &SDERShadow, SDERShadow_Save);
+}
+
+/*** BeginHeader serMode */
+int serMode(int mode);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+serMode						<BL26XX.LIB>
+
+SYNTAX:       	int serMode(int mode);
+
+DESCRIPTION:   This function sets serial interfaces to be used by your
+					application program. This function must be called after
+               executing the serXOpen function(s), and before using any
+               of	the other serial port functions. This function is non-
+               reentrant.
+
+PARAMETER1:		Defines the serial port configuration, modes are as
+					follows:
+
+               Mode   Port C		     Port F     	   Port E
+               ----   ------          ------          ------
+               0      RS232, 3wire	  RS232, 3 wire   RS232, 3wire
+    				1      RS232, 3wire	  RS232, 3 wire   RS485
+					2      RS232, 5 wire   CTS/RTS         RS232, 3 wire
+    				3      RS232, 5 wire   CTS/RTS         RS485
+
+RETURN VALUE:	0  = Valid mode selected.
+					-1 = Invalid mode selected.
+
+SEE ALSO:		ser485Tx, ser485Rx and serX functions
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+int serMode(int mode)
+{
+	auto int status;
+	//---------------------------------------------------------------------
+	// Initialize signal pin PE3 for RS485 transmit control, and
+   // initially set the signal to disable the RS485 transmitter.
+	//---------------------------------------------------------------------
+	WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow|0x08));
+   WrPortI(PEFR,  &PEFRShadow,  (PEFRShadow&~0x08));
+   WrPortI(PEDR,  &PEDRShadow,  (PEDRShadow&~0x08));
+   WrPortI(PDCR,  &PDCRShadow,  (PDCRShadow&~0x0F));
+
+   //---------------------------------------------------------------------
+	// Initialize signal pin PD5 for selecting either RS485 or RS232
+   // as an application serial port option.
+	//---------------------------------------------------------------------
+   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow&~0x20));
+   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow|0x20));
+   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow&~0x20));
+   WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow&~0x20));
+   WrPortI(PDCR,  &PDCRShadow,  (PDCRShadow&~0xF0));
+
+   //---------------------------------------------------------------------
+	// Enable serial port E (bit 6 of PGFR controls serial port E)
+	//---------------------------------------------------------------------
+   WrPortI(PGFR, &PGFRShadow, (PGFRShadow|0x40));
+  	WrPortI(PGCR, &PGCRShadow, (PGCRShadow&~0xF0));
+
+   //---------------------------------------------------------------------
+	// Enable serial port F (bit 2 of PGFR controls serial port F)
+	//---------------------------------------------------------------------
+   WrPortI(PGFR, &PGFRShadow, (PGFRShadow|0x04));
+   WrPortI(PGCR, &PGCRShadow, (PGCRShadow&~0x0F));
+
+	//---------------------------------------------------------------------
+	//
+   // Set mode of operation
+   //
+   //  Mode   PortC		      Port F     	   Port E
+   //  ----   -----           ------         ------
+   //   0     RS232, 3 wire	RS232, 3 wire  RS232, 3wire
+   //   1     RS232, 3 wire	RS232, 3 wire  RS485
+	//	  2     RS232, 5 wire  	CTS/RTS        RS232, 3 wire
+   //   3     RS232, 5 wire  	CTS/RTS        RS485
+	//---------------------------------------------------------------------
+
+   status = 0;
+   switch (mode)
+	{
+		case 0:
+      	WrPortI(PDDR, &PDDRShadow, (PDDRShadow&~0x20));
+ 			break;
+
+		case 1:
+      	WrPortI(PDDR, &PDDRShadow, (PDDRShadow|0x20));
+			break;
+
+		case 2:
+      	// Set pin configuration for RTS/CTS, and set serial port E
+         // for RS232 operation.
+      	WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow&~0x20));
+         WrPortI(PGFR,  &PGFRShadow,  (PGFRShadow&~0x04));
+         WrPortI(PGDDR, &PGDDRShadow, (PGDDRShadow|0x04));
+         WrPortI(PGDDR, &PGDDRShadow, (PGDDRShadow&~0x08));
+         WrPortI(PGDCR, &PGDCRShadow, (PGDCRShadow&~0x04));
+         WrPortI(PGDR,  &PGDRShadow,  (PGDRShadow&~0x04));
+			break;
+
+      case 3:
+      	// Set pin configuration for RTS/CTS, and set serial port E
+         // for RS485 operation.
+      	WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow|0x20));
+         WrPortI(PGFR,  &PGFRShadow,  (PGFRShadow&~0x04));
+         WrPortI(PGDDR, &PGDDRShadow, (PGDDRShadow|0x04));
+         WrPortI(PGDDR, &PGDDRShadow, (PGDDRShadow&~0x08));
+         WrPortI(PGDCR, &PGDCRShadow, (PGDCRShadow&~0x04));
+         WrPortI(PGDR,  &PGDRShadow,  (PGDRShadow&~0x04));
+ 			break;
+
+		default:
+			// Unsupported mode, return error code.
+			status = -1;
+			break;
+	}
+	return(status);
+}
+
+
+/*** BeginHeader ser485Tx */
+root void ser485Tx(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Tx						<BL26XX.LIB>
+
+SYNTAX:			void ser485Tx(void);
+
+DESCRIPTION:   Enables the RS485 transmitter. The serMode function must
+					be executed before running this function. This function
+               is non-reentrant.
+
+					Note:
+               -----
+               Transmitted data is echo'ed back into the receive data
+               buffer. This echo'ed data could be used to identify when
+               to disable the transmitter by using one of the following
+               methods:
+
+               a) Byte mode...disable the transmitter after the byte that
+               is transmitted, is detected in the receive data buffer.
+
+               b) Block data mode...disable the transmitter after the
+               same number of bytes transmitted, are detected in the
+               receive data buffer.
+
+PARAMETER1:		None.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, serMode, ser485Rx
+
+END DESCRIPTION **********************************************************/
+
+#asm root _bl2600_nodebug
+ser485Tx::
+	push 	ip
+	ipset	1		 	; Stop normal ISR's to prevent race
+	ld 	de,PEDR 	; Port address
+	ld 	hl,PEDRShadow
+   set	3,(hl)   ; Set bit 3
+ 	ioi 	ldd   	; [io](de) <- (hl)  copy shadow to port
+	pop 	ip
+   ret
+#endasm
+
+
+
+/*** BeginHeader ser485Rx */
+root void ser485Rx(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Rx						<BL26XX.LIB>
+
+SYNTAX: 			void ser485Rx(void);
+
+DESCRIPTION:   Disables the RS485 transmitter. This puts you in listen
+					mode which allows you to receive data from the RS485
+               interface. The serMode function must be executed before
+               running this function, This function is non-reentrant.
+
+PARAMETER1:    None.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, serMode, ser485Tx
+
+END DESCRIPTION **********************************************************/
+
+#asm root _bl2600_nodebug
+ser485Rx::
+	push 	ip
+	ipset	1		 	; Stop normal ISR's to prevent race
+	ld 	de,PEDR 	; Port address
+	ld 	hl,PEDRShadow
+   res	3,(hl)   ; Clear bit 3
+	ioi 	ldd   	; [io](de) <- (hl)  copy shadow to port
+	pop 	ip
+   ret
+#endasm
+
+
+
+/*** BeginHeader digHoutConfig */
+void digHoutConfig(char configuration);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digHoutConfig				<BL26XX.LIB>
+
+SYNTAX:			void digHoutConfig(char configuration);
+
+DESCRIPTION:	Allows configuration of a High-Current output to be a
+					sinking or sourcing type output. Upon configuration the
+               output will be initially set to a OFF sate for the given
+               hardware output configuration. This function is non-
+               reentrant.
+
+               Note:
+               -----
+               Configuring a given output channel for tristate operation
+               using the digHTriStateConfig function, will override the
+               configuration done by the digHoutConfig function.
+
+PARAMETER1: 	Configuration byte to configure output channels HOUT0 -
+					HOUT3 as sinking or sourcing type outputs. To configure
+               set the corresponding bit 0 - 3 to one of the following
+               values.
+
+               0 = Sinking type output configuration
+            	1 = Sourcing type output configuration
+
+					7 6 5 4 3 2 1 0  Configuration parameter
+            	---------------  -----------------------
+            	^ ^ ^ ^ ^ ^ ^ ^
+			   	| | | | | | | |- Bits 0 used for setting Hout channel 0
+            	| | | | | | |--- Bits 1 used for setting Hout channel 1
+            	| | | | | |----- Bits 2 used for setting Hout channel 2
+            	| | | | |------- Bits 3 used for setting Hout channel 3
+               | | | |--------- Bits 4 - 7 not used
+
+ 					Example:
+            	--------
+               Configuration = 0x06;
+
+            	7 6 5 4 3 2 1 0  HOUT0 - HOUT3 configuration
+            	---------------  --------------------------------
+			   	| | | | | | | |- Bit0 = 0...Set Hout0 to sinking output
+            	| | | | | | |--- Bit1 = 1...Set Hout1 to sourcing output
+            	| | | | | |----- Bit2 = 1...Set Hout2 to sourcing output
+            	| | | | |------- Bit3 = 0...Set Hout3 to sinking output
+               | | | |--------- Bit4 - 7...Don't care
+
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, digHout
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+void digHoutConfig(char configuration)
+{
+   #GLOBAL_INIT {__brdInitFlag = FALSE;}
+	#GLOBAL_INIT {__HoutConfig	= 0x00;}
+	#GLOBAL_INIT {__HoutConfigFlag = FALSE;}
+
+	if(__brdInitFlag == FALSE)
+	{
+		// the brdInit function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+   configuration= configuration & 0x0F;
+	// Initialize the shadow registers for the high-current outputs
+	__HoutConfig =  configuration;
+	__HoutConfigFlag = TRUE;
+}
+
+/*** BeginHeader digHout */
+void digHout(int channel, int state);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digHout						<BL26XX.LIB>
+
+SYNTAX:			void digHout(int channel, int state);
+
+DESCRIPTION:   Sets the state of the High-Current output channel to a
+					logic 0, logic 1, or high-impedance. This function is
+               non-reentrant.
+
+               A runtime error will occur for the following conditions:
+               --------------------------------------------------------
+               1. Channel or state is out of range.
+               2. The brdInit or digHoutConfig functions not executed
+                  before executing the digHout function.
+               3. If trying to use a channel that is configured as a
+                  tristate output.
+
+PARAMETER1:		High-Current channels 0 to 3.
+
+PARAMETER2:		Sets a given channel to one of the following output
+					states depending on how the output was configured by
+               the digHoutConfig function:
+
+               Sinking configuration
+					-----------------------
+               0 = Connects the load to GND.
+            	1 = Puts the output in a high-impedance state.
+
+					Sourcing configuration
+					----------------------
+               0 = Puts the output in a high-impedance state.
+               1 = Connects the load to +HK(0-3).
+
+RETURN VALUE:	None.
+
+SEE ALSO:      brdInit, digHOutConfig
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+void digHout(int channel, int state)
+{
+	auto char mode;
+   auto char HoutCntrl;
+   auto char mask;
+
+	#GLOBAL_INIT {__brdInitFlag = FALSE;}
+  #GLOBAL_INIT {__HoutConfigFlag = FALSE;}
+  #GLOBAL_INIT {__TriStateConfigFlag = FALSE;}
+  #GLOBAL_INIT {__TriStateConfig = 0x00;}
+
+
+	if ((channel < 0) || (channel > 3) || (state < 0) || (state > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   // Check if channel is intialized as a tristate output
+	mask = 0x01 << channel;
+	if(__TriStateConfig & mask)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+ 	if(__brdInitFlag == FALSE || __HoutConfigFlag == FALSE)
+	{
+		// the brdInit and/or the digConfig function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   // Determine the channel configuration mode of operation
+   mode = (__HoutConfig >> channel) & 0x01;
+   __bank2_shadow &= ~(0xC0 >> (channel<<1));
+   //-----------------------------------------------------------
+ 	// Set output per the specified state and mode of operation
+   //
+   //  Control bit pair truth table
+   //	 ----------------------------
+   //  00 = High Impedance
+   //  01 = Sinking
+   //	 10 = Sourcing
+   //	 11 = Sourcing (API function will not use
+   //                 this combination)
+   //------------------------------------------------------------
+
+   if(mode == 0)    // Sinking configuration
+   {
+		switch(state)
+		{
+        case 0:
+            HoutCntrl = 0x40 >> (channel<<1);
+         	WrPortE(WR_BANK2, &__bank2_shadow, (__bank2_shadow | HoutCntrl));
+		  		break;
+
+			case 1:
+            HoutCntrl = 0xC0 >> (channel<<1);
+         	WrPortE(WR_BANK2, &__bank2_shadow, (__bank2_shadow & ~HoutCntrl));
+ 				break;
+      }
+	}
+   else // Sourcing configuration
+   {
+
+		switch(state)
+		{
+         case 0:
+            HoutCntrl = 0xC0 >> (channel<<1);
+         	WrPortE(WR_BANK2, &__bank2_shadow, (__bank2_shadow & ~HoutCntrl));
+		  		break;
+
+			case 1:
+         	HoutCntrl = 0x80 >> (channel<<1);
+         	WrPortE(WR_BANK2, &__bank2_shadow, (__bank2_shadow | HoutCntrl));
+ 				break;
+       }
+	}
+}
+
+
+/*** BeginHeader digHTriStateConfig */
+void digHTriStateConfig(char configuration);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digHTriStateConfig		<BL26XX.LIB>
+
+SYNTAX:			void digHTriStateConfig(char configuration);
+
+DESCRIPTION:	Allows configuration of a High-Current output to be
+					a tristate type output. Upon configuration the output
+               will be initially set to a high-impedance state. This
+               function is non-reentrant.
+
+PARAMETER1: 	Configuration byte to configure HOUT0 - HOUT3 output
+					channels as tristate type outputs. To configure set
+               the corresponding 0 - 3 bits to one of the of the
+               following values.
+
+               0 = Disable Tristate output operation
+            	1 = Enable Tristate output operation
+
+					7 6 5 4 3 2 1 0  Configuration parameter
+            	---------------  -----------------------
+            	^ ^ ^ ^ ^ ^ ^ ^
+			   	| | | | | | | |- Bits 0 used for setting Hout channel 0
+            	| | | | | | |--- Bits 1 used for setting Hout channel 1
+            	| | | | | |----- Bits 2 used for setting Hout channel 2
+            	| | | | |------- Bits 3 used for setting Hout channel 3
+               | | | |--------- Bits 4 - 7 not used
+
+ 					Example:
+            	--------
+               Configuration = 0x09;
+
+            	7 6 5 4 3 2 1 0  HOUT0 - HOUT3 configuration
+            	---------------  ---------------------------
+			   	| | | | | | | |- Bit0 = 1, Hout0 Tristate output enabled
+            	| | | | | | |--- Bit1 = 0, Hout1 Tristate output disabled
+            	| | | | | |----- Bit2 = 0, Hout2 Tristate output disabled
+            	| | | | |------- Bit3 = 1, Hout3 Tristate output enabled
+               | | | |--------- Bit4 - 7, Don't care
+
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, digHoutTristate
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+void digHTriStateConfig(char configuration)
+{
+   #GLOBAL_INIT {__brdInitFlag = FALSE;}
+	#GLOBAL_INIT {__TriStateConfig = 0x00;}
+	#GLOBAL_INIT {__TriStateConfigFlag = FALSE;}
+
+	if(__brdInitFlag == FALSE)
+	{
+		// the brdInit function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+   configuration = configuration & 0x0F;
+	// Initialize the shadow registers for the high-current outputs
+	__TriStateConfig =  configuration;
+	__TriStateConfigFlag = TRUE;
+}
+
+
+/*** BeginHeader digHoutTriState */
+void digHoutTriState(int channel, int state);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digHoutTriState			<BL26XX.LIB>
+
+SYNTAX:			void digHoutTriState(int channel, int state);
+
+DESCRIPTION:   Sets the state of the High-Current output channel to a
+					logic 0, logic 1, or high-impedance. This function is
+               non-reentrant.
+
+               A runtime error will occur for the following conditions:
+               --------------------------------------------------------
+               1. Channel or state is out of range.
+               2. The brdInit or digHTriStateConfig functions not executed
+                  before executing the digOutTriState function.
+               3. If trying to use a channel that is not configured as a
+                  tristate output.
+
+
+PARAMETER1:		High-Current channels 0 to 3.
+
+PARAMETER2:		Sets a given channel to one of the following output
+					states depending on how the output was configured by
+               the digHoutConfig function:
+
+					TriState configuration
+					----------------------
+               0 = Connects the load to GND.
+              	1 = Connects the load to +HK(0-3).
+					2 = Puts the output in a high-impedance state.
+
+RETURN VALUE:	None.
+
+SEE ALSO:      brdInit, digHOutConfig
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+void digHoutTriState(int channel, int state)
+{
+	auto char mode;
+   auto char HoutTriCntrl;
+   auto char mask;
+
+	#GLOBAL_INIT {__brdInitFlag = FALSE;}
+   #GLOBAL_INIT {__TriStateConfigFlag = FALSE;}
+
+	if ((channel < 0) || (channel > 3) || (state < 0) || (state > 2))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+ 	if(__brdInitFlag == FALSE || __TriStateConfigFlag == FALSE)
+	{
+		// the brdInit and/or the digConfig function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   mask = 0x01 << channel;
+	if(!(__TriStateConfig & mask))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   //-----------------------------------------------------------
+ 	// Set output per the specified state and mode of operation
+   //
+   //  Control bit pair truth table
+   //	 ----------------------------
+   //  00 = High Impedance
+   //  01 = Sinking
+   //	 10 = Sourcing
+   //	 11 = Sourcing (API function will not use
+   //                 this combination)
+   //------------------------------------------------------------
+
+   __bank2_shadow &= ~(0xC0 >> (channel<<1));
+   HoutTriCntrl = 0xC0 >> (channel<<1);
+   WrPortE(WR_BANK2, &__bank2_shadow, (__bank2_shadow & ~HoutTriCntrl));
+
+// !!! For internal use only !!!
+// !!! Do not remove this delay for application programs !!!
+#ifndef REMOVE_DIGITALIO_DELAY
+	asm call _delay100usec;
+#endif
+
+   switch(state)
+	{
+		case 0:
+      	HoutTriCntrl = 0x40 >> (channel<<1);
+         WrPortE(WR_BANK2, &__bank2_shadow, (__bank2_shadow | HoutTriCntrl));
+		  	break;
+
+		case 1:
+        	HoutTriCntrl = 0x80 >> (channel<<1);
+        	WrPortE(WR_BANK2, &__bank2_shadow, (__bank2_shadow | HoutTriCntrl));
+ 			break;
+
+      case 2:
+        	HoutTriCntrl = 0xC0 >> (channel<<1);
+        	WrPortE(WR_BANK2, &__bank2_shadow, (__bank2_shadow & ~HoutTriCntrl));
+ 			break;
+	}
+}
+
+
+/*** BeginHeader digOutConfig */
+void digOutConfig(int configuration);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digOutConfig				<BL26XX.LIB>
+
+SYNTAX:			void digOutConfig(int configuration);
+
+DESCRIPTION:  	This functions will allow you to set any of the 16
+				  	configuable I/O channels to be a sinking type output.
+
+              	This configuration information is used by the digOut
+              	function to determine if a given channel is configured
+              	as an output. If it isn't, the given channel will be
+              	locked-out from being used by the digOut function.
+               This function is non-reentrant.
+
+PARAMETER1:   	Configuration is a 16 bit parameter for which each bit
+              	corresponds to a configurable I/O channel 0 thru 15. A
+               channel can be enabled by setting the corresponding bit
+               number 0 - 15 to a logic one.
+
+			  	  	0 = Disables the channel for output operation.
+              	1 = Enables the channel to be an Output.
+
+               For example:
+               ------------
+				  	Configuration = 0x8005...Sets channels 0, 2 & 15 for
+                                        output operation, and channels
+                                        1 and 3-14 are locked-out for
+                                        control by the digOut function.
+RETURN VALUE:	None.
+
+SEE ALSO:      brdInit, digIn, digOut
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+void digOutConfig(int configuration)
+{
+	#GLOBAL_INIT {__brdInitFlag = FALSE;}
+   #GLOBAL_INIT {__SoutConfig = 0x0000;}
+	#GLOBAL_INIT {__SoutConfigFlag = FALSE;}
+
+	if(__brdInitFlag == FALSE)
+	{
+		// the brdInit function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// Initialize the configuration registers for standard
+   // sinking only high-current outputs.
+	__SoutConfig = configuration;
+	__SoutConfigFlag = TRUE;
+
+}
+
+
+/*** BeginHeader digOut */
+void digOut(int channel, int state);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digOut						<BL26XX.LIB>
+
+SYNTAX:     	void digOut(int channel, int state);
+
+DESCRIPTION:   Sets the state of a configurable I/O channel DIO00–DIO15
+					to a logic 0 or a logic 1. This function will only allow
+               control of channels that are configured to be an output
+               by the digOutConfig function. This function is non-
+               reentrant.
+
+               A runtime error will occur for the following conditions:
+               --------------------------------------------------------
+               1. Channel or state is out of range.
+               2. The brdInit or digOutConfig functions not executed
+                  before executing the digOut function.
+               3. If trying to use a channel that is not configured as
+               	a digital output by digOutConfig.
+
+
+PARAMETER1:	 	Digital output channel 0 - 15.
+
+PARAMETER2:		Set output to one of the following states:
+
+              	0 = Connects the load to GND.
+            	1 = Puts the output in a high-impedance state.
+
+RETURN VALUE:	None.
+
+SEE ALSO: 		brdInit, digOutConfig, digIn
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+void digOut(int channel, int state)
+{
+	auto int outputBit;
+	auto int mask;
+
+	#GLOBAL_INIT {__brdInitFlag = FALSE;}
+	#GLOBAL_INIT {__SoutConfigFlag = FALSE;}
+
+	if ((channel < 0) || (channel > 15) || (state < 0) || (state > 1))
+	{
+   	// Invalid channel or value
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+ 	if(__brdInitFlag == FALSE || __SoutConfigFlag == FALSE)
+	{
+		// The brdInit and/or the digOutConfig function has not been
+      // executed.
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   mask = 0x01<<channel;
+   if(!(__SoutConfig & mask))
+   {
+   	// The specified digout channel is invalid
+      exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+   }
+
+   // Determine the output configuration, then set per the value parameter
+	if(state)
+	{
+   	// Turn sinking type output OFF (High-Impedance)
+   	if(channel < 8)
+      {
+      	outputBit = 0x01 << channel;
+         WrPortE(WR_BANK0, &__bank0_shadow, (__bank0_shadow & ~outputBit));
+      }
+      else
+      {
+      	outputBit = 0x01 << (channel - 8);
+         WrPortE(WR_BANK1, &__bank1_shadow, (__bank1_shadow & ~outputBit));
+      }
+ 	}
+	else
+	{
+		// Turn sinking type output ON (Connects the load to GND)
+      if(channel < 8)
+      {
+      	outputBit = 0x01 << channel;
+         WrPortE(WR_BANK0, &__bank0_shadow, (__bank0_shadow | outputBit));
+      }
+      else
+      {
+      	outputBit = 0x01 << (channel - 8);
+         WrPortE(WR_BANK1, &__bank1_shadow, (__bank1_shadow | outputBit));
+      }
+	}
+}
+
+/*** BeginHeader digOutBank */
+void digOutBank(char bank, char data);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digOutBank					<BL26XX.LIB>
+
+SYNTAX:     	void digOutBank(char bank, char data);
+
+DESCRIPTION:   Sets the state of a bank of configurable I/O channels
+               DIO00–DIO15 to a logic 0 or a logic 1. This function
+               only allows control of channels that are configured
+               to be an output by the digOutConfig function. This
+               function is non-reentrant.
+
+               A runtime error will occur for the following conditions:
+               --------------------------------------------------------
+               1. Bank is out of range.
+               2. The brdInit or digOutConfig functions not executed
+                  before executing the digOutBank function.
+
+PARAMETER1:	 	Digital output bank to be updated.
+					0 = Digital outputs DIO07 - DIO00
+               1 = Digital outputs DIO15 - DIO08
+
+PARAMETER2:		Data value to be written to the specified digital output
+					bank, the data format and bitwise value is as follows:
+
+               Bank0 and Bank1 Data Format
+               ---------------------------
+               Data       D7    D6    D5    D4    D3   D2    D1    D0
+               Bank0    DIO07 DIO06 DIO05 DIO04 DIO03 DIO02 DIO01 DIO00
+               Bank1    DIO15 DIO14 DIO13 DIO12 DIO11 DIO10 DIO09 DIO08
+
+               Bitwise value:
+               --------------
+               0 = Connects the load to GND.
+            	1 = Puts the output in a high-impedance state.
+
+RETURN VALUE:	None.
+
+SEE ALSO: 		brdInit, digOutConfig, digOut, digIn
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+void digOutBank(char bank, char data)
+{
+	if ((bank < 0) || (bank > 1))
+	{
+   	// Invalid bank
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   if (__brdInitFlag == FALSE)
+	{
+		// Invalid bank or brdInit hasn't executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+  	if(bank == 0)
+   {
+   	data = (char)__SoutConfig & ~data;
+   	WrPortE(WR_BANK0, &__bank0_shadow, data);
+   }
+   else
+   {
+   	data = (char)(__SoutConfig>>8) & ~data;
+   	WrPortE(WR_BANK1, &__bank1_shadow, data);
+ 	}
+}
+
+/*** BeginHeader digIn */
+int digIn(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digIn							<BL26XX.LIB>
+
+SYNTAX:			int digIn(int channel);
+
+DESCRIPTION:   Reads the state of a digital input channel. And if a given
+					channel has been configured to be a digital output, then
+               the value read will be the state of the output channel.
+               This function is non-reentrant.
+
+               A runtime error will occur for the following conditions:
+               --------------------------------------------------------
+               1. Channel is out of range.
+               2. The brdInit function not executed before executing
+                  the digIn function.
+
+PARAMETER1:		Input channel to be read, 0 - 31.
+
+					0  - 15 = Channels DIO00 - DIO15.
+               16 - 31 = Channels IN16  - IN31.
+
+RETURN VALUE:	The logic state of the specified channel.
+					0 = Logic low.
+               1 = Logic High.
+
+SEE ALSO:		brdInit, digOutConfig, digOut, digInBank
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+int digIn(int channel)
+{
+	auto int input_state, input_bit;
+
+	#GLOBAL_INIT{__brdInitFlag = FALSE;}
+
+	if(!__brdInitFlag)
+	{
+		// the brdInit function hasn't been executed as of yet
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	// Check for proper I/O channel range w/analog option
+	if ((channel < 0) || (channel > 31))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// Check for 1st 8 digital input channels
+	if(channel < 8)
+	{
+		input_bit = 0x01 << channel;
+		input_state = RdPortE(RD_BANK0) & input_bit;
+	}
+	// Check for 2nd 8 digital input channels
+	else if(channel >= 8 && channel <= 15)
+	{
+		input_bit = 0x01 << (channel - 8);
+		input_state = RdPortE(RD_BANK8) & input_bit;
+	}
+	else if(channel >= 16 && channel <= 23)
+	{
+		input_bit = 0x01 << (channel - 16);
+      if(channel >= 16 && channel <= 17)
+      {
+      	// Adjust mask due to ch 16 & 17 are on pins PE4 & PE5
+      	input_bit = input_bit << 4;
+      	input_state = RdPortI(PEDR) & input_bit;
+      }
+      else
+      {
+    		input_state = RdPortI(PFDR) & input_bit;
+      }
+	}
+   else
+   {
+   	input_bit = 0x01 << (channel - 24);
+		input_state = RdPortE(RD_BANK23) & input_bit;
+   }
+	input_state = (input_state > 0) ? 1 : 0;
+	return(input_state);
+}
+
+/*** BeginHeader digInBank */
+char digInBank(int bank);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digInBank				<BL26XX.LIB>
+
+SYNTAX:			char digInBank(int bank);
+
+DESCRIPTION:   Reads the state of 8 digital input channels via bank 0 - 3.
+					If the channel being read is 0 - 15 (bank 0 or 1) and has
+               been configured to be a digital output then the value read
+               will be the state of the output channel. This function is
+               non-reentrant.
+
+               A runtime error will occur for the following conditions:
+               --------------------------------------------------------
+               1. Bank is out of range.
+               2. The brdInit function not executed before executing
+                  the digInBank function.
+
+
+PARAMETER1:		Digital input bank 0 - 3.
+
+					Bank  Channels Read
+               ----  -------------
+					 0    DIO00 - DIO07
+                1   	DIO08 - DIO15
+					 2   	IN16 - IN23
+					 3  	IN24 - IN31
+
+
+RETURN VALUE:	Data read from digital input bank 0 - 3.
+
+					Data Format:
+               ------------
+					D7 = MSB input channel
+					D6 =    |
+					D5 =    |
+					D4 =    |
+					D3 =    |
+					D2 =    |
+					D1 =    V
+					D0 = LSB input channel
+
+SEE ALSO:		brdInit, digOutConfig, digOut, digIn
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+char digInBank(int bank)
+{
+	auto int data;
+
+	#GLOBAL_INIT{__brdInitFlag = FALSE;}
+
+	if(!__brdInitFlag)
+	{
+		// the brdInit function hasn't been executed as of yet
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	// Check for proper I/O channel range w/analog option
+	if ((bank < 0) || (bank > 3))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   data = 0;
+   switch(bank)
+   {
+   	case 0:
+			data = RdPortE(RD_BANK0);
+      	break;
+
+      case 1:
+			data = RdPortE(RD_BANK8);
+         break;
+
+      case 2:
+      	data  = (RdPortI(PEDR) & 0x30) >> 4;
+    		data |= (RdPortI(PFDR) & 0xFC);
+      	break;
+
+      case 3:
+			data = RdPortE(RD_BANK23);
+         break;
+   }
+ 	return(data);
+}
+
+
+/*** BeginHeader anaInConfig */
+void anaInConfig(int ch_pair, int opmode);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInConfig					<BL26XX.LIB>
+
+SYNTAX: 			void anaInConfig(int ch_pair, int opmode);
+
+DESCRIPTION:  	Configures an ADC input channel pair for a given mode of
+					operation. This function must be called before accessing
+               the ADC chip. This function is non-reentrant.
+
+               Channel pairs are:
+               -----------------
+               Channels 0 & 1
+               Channels 2 & 3
+               Channels 4 & 5
+               Channels 6 & 7
+
+               The modes of operation are as follows:
+               --------------------------------------
+					- Single-Ended unipolar 0 - 20V
+					- Single-Ended bipolar ±10V
+					- Differential bipolar ±20V
+					- 4-20ma operation
+
+               Note:
+               -----
+               If you configure DAC chip using the anaOutConfig function
+               you must call it first before executing this function. This
+               is because the ADC uses DAC channels 4-7 (internal channels
+               only) to bias the ADC input circuit.
+
+PARAMETER1:		Channel pairs values are:
+               -------------------------
+               0 = Channels 0 & 1
+               1 = Channels 2 & 3
+               2 = Channels 4 & 5
+               3 = Channels 6 & 7
+
+PARAMETER2:   	Select the mode of operation for the ADC channel pair.
+               Values are as follows:
+
+            	0 = Single-Ended unipolar 0 - 20V
+		   		1 = Single-Ended bipolar ±10V
+		   		2 = Differential bipolar ±20V
+					3 = 4-20ma operation
+
+RETURN VALUE:	None.
+
+SEE ALSO:     	brdInit, anaInCalib, anaIn, anaInVolts, anaInmAmps,
+					anaInDiff
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+void anaInConfig(int ch_pair, int opmode)
+{
+	auto int channel;
+
+   // Calculate actual channel to be configured
+   channel = ch_pair << 1;
+
+   //-----------------------------------------------------------
+ 	// Set output per the specified state and mode of operation
+   //
+   //  Bit pair truth table
+   //	 --------------------
+   //	 0 = Single-Ended unipolar 0 - 20V
+	//  1 = Single-Ended bipolar ±10V
+	//  2 = Differential bipolar ±20V
+	//	 3 = 4-20ma operation
+   //------------------------------------------------------------
+
+   // Disable DAC application program error checks
+   __RangeChecking = FALSE;
+
+   switch(opmode)
+   {
+     	// Configure DAC and Load Calibration data
+     	case 0:
+      	// Set bias voltage to zero volts, unipolar operation
+         anaOut((ch_pair + 4), 0);
+         ADC_Command[channel]     = 0xF0;
+         ADC_Command[(channel)+1] = 0xF0;
+         ADC_Command[(channel)]   |= SE0_MODE;
+        	ADC_Command[(channel)+1] |= SE0_MODE;
+        	break;
+
+     	case 1:
+      	// Set bias voltage to ~1.111 volts, bipolar operation
+         anaOut((ch_pair + 4), 2272);
+         ADC_Command[channel]     = 0xF0;
+         ADC_Command[(channel)+1] = 0xF0;
+        	ADC_Command[(channel)]   |= SE1_MODE;
+        	ADC_Command[(channel)+1] |= SE1_MODE;
+        	break;
+
+      case 2:
+      	// Set bias voltage to ~1.111 volts, bipolar operation
+         anaOut((ch_pair + 4), 2272);
+         ADC_Command[channel]     = 0xF0;
+         ADC_Command[(channel)+1] = 0xF0;
+       	ADC_Command[(channel)]   |= DIFF_MODE;
+        	ADC_Command[(channel)+1] |= DIFF_MODE;
+        	break;
+
+      case 3:
+      	// Set bias voltage to zero volts, unipolar operation
+      	anaOut((ch_pair + 4), 0);
+         ADC_Command[channel]     = 0xF0;
+         ADC_Command[(channel)+1] = 0xF0;
+        	ADC_Command[(channel)]   |= mAMP_MODE;
+        	ADC_Command[(channel)+1] |= mAMP_MODE;
+       	break;
+   }
+
+   // Enable DAC error checking....ADC uses DAC for input circuit biasing
+   __RangeChecking = TRUE;
+
+   // Set a flag for the DAC anaOutConfig function to detect that this
+   // function has executed in the application program, and for it to
+   // generate an error if it executes from this point on.
+   if(__brdInitFlag)
+	{
+   	__ADConfigFlag = TRUE;
+	}
+}
+
+
+/*** BeginHeader anaInCalib */
+int anaInCalib(int channel, int opmode, int gaincode,
+               int value1, float volts1,
+               int value2, float volts2);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInCalib					<BL26XX.LIB>
+
+SYNTAX:			int anaInCalib(int channel, int opmode, int gaincode,
+                              int value1, float volts1,
+                              int value2, float volts2);
+
+DESCRIPTION:   Calibrates the response of a given ADC channel as a linear
+					function with using two conversion points provided by the
+               user. A Gain and offset constant are calculated and placed
+               into global table _adcInCalib. This function is non-
+               reentrant.
+
+               Note: Recommend using the 10 & 90% points of the MAX
+               voltage range when calibrating a channel.
+
+
+PARAMETER1:		ADC channel number 0 to 7, AIN0-AIN7.
+
+               CH  	Single-Ended 	  Differential       4-20ma
+		    		--		------------   ----------------   	-------
+		 			0	  	   AIN0 			+AIN0  and  -AIN1  	 AIN0
+					1        AIN1                              AIN1
+		 			2	  	   AIN2 			+AIN2  and  -AIN3     AIN2
+		 			3	  	   AIN3                              AIN3
+		 			4	  	   AIN4 			+AIN4  and  -AIN5
+		 			5	  	   AIN5
+					6	  	   AIN6 			+AIN6  and  -AIN7
+		 			7	  	   AIN7
+
+PARAMETER2:   	Select the mode of operation for the ADC channel
+               calibration data being read. Values are as follows:
+
+            	0 = Single-Ended unipolar 0 - 20V
+		   		1 = Single-Ended bipolar ±10V
+		   		2 = Differential bipolar ±20V
+					3 = 4-20ma operation
+
+PARAMETER3:		Gaincode of 0 to 7. The table below applies for Single
+					Ended, Differential modes, and 4-20ma modes:
+
+					Gaincode  Macro	SE-Unipolar  SE-Bipolar  DIFF_Bipolar
+					--------  ------	-----------  ----------  ----------
+		 			0 	  		GAIN_X1		20V         ±10V   	  ±20V
+		 			1 	  		GAIN_X2	   10V			 ±5V       ±10V
+		 			2 	  		GAIN_X4		 5V 		  ±2.5V	      ±5V
+		 			3 	  		GAIN_X5 	    4V		  ±2.0V		   ±4V
+		 			4 	  		GAIN_X8**  2.5V		 ±1.25V	    ±2.5V
+		 			5 	  		GAIN_X10		 2V	  	 ±1.00V 		   ±2V
+		 			6 	  		GAIN_X16	 1.25V	   	----	  	±1.25V
+		 			7 	  		GAIN_X20	 1.00V	   	----     ±1.00V
+
+					** is used for 4-20ma operation.
+
+					Notes:
+					------
+		    		SE = Signal-Ended mode
+            	DI = Differential Mode
+
+
+PARAMETER4:		The first ADC value.
+PARAMETER5:		The voltage corresponding to the first ADC value.
+PARAMETER6:		The second ADC value.
+PARAMETER7:		The voltage corresponding to the second ADC value.
+
+RETURN VALUE:	0, if sucessful.
+				  -1, if not able to make calibration constants.
+
+SEE ALSO: 		brdInit, anaInConfig, anaIn, anaInmAmps, anaInDiff,
+               anaInVolts
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+int anaInCalib(int channel, int opmode, int gaincode,
+               int value1, float volts1,
+               int value2, float volts2)
+{
+	auto float gain;
+   auto int offset;
+	auto float calc_voltage;
+   auto calib cal_data;
+
+	#GLOBAL_INIT {__brdInitFlag   = FALSE;}
+
+	if(!__brdInitFlag || channel < 0 || channel > 7)
+	{
+		// The brdInit function hasn't been executed as of yet
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	if(!(opmode == SE0_MODE   ||
+        opmode == SE1_MODE   ||
+        opmode == DIFF_MODE  ||
+        opmode == mAMP_MODE))
+	{
+		// The opmode is invalid
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	if(gaincode < 0 || gaincode > 7)
+	{
+		// The gaincode parameter is out of range
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// Should use points near each end of range
+	if((volts1 == volts2) || (value1 == value2))
+   	return -1;
+
+	offset = (int)((volts2*value1 - volts1*value2)/(volts2-volts1));
+	if (offset == value1)
+		gain = volts2/(offset-value2);
+	else
+		gain = volts1/(offset-value1);
+
+   cal_data.gain = gain;
+	cal_data.offset = offset;
+
+   _anaInEEWr(channel, opmode, gaincode, &cal_data);
+   ADC_Command[channel] |= 0xF0;
+  	return(0);
+}
+
+/*** BeginHeader anaIn */
+unsigned int anaIn(int channel, int gaincode);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaIn							<BL26XX.LIB>
+
+SYNTAX:        unsigned int anaIn(int channel, int gaincode);
+
+DESCRIPTION:   Reads the state of an analog input channel. This function
+					is non-reentrant.
+
+             	Note:
+               -----
+              	If the access is for an ADC single-ended bipolar channel
+               and the gaincode for the given channel has changed from
+               the previous cycle, then the eeprom will be read to get
+               the calibration constants for the new gain value.
+
+PARAMETER1:		ADC channel number 0 to 7, AIN0-AIN7.
+
+               CH  	Single-Ended 	  Differential       4-20ma
+		    		--		------------   ----------------   	-------
+		 			0	  	   AIN0 			+AIN0  and  -AIN1  	 AIN0
+					1        AIN1                              AIN1
+		 			2	  	   AIN2 			+AIN2  and  -AIN3     AIN2
+		 			3	  	   AIN3                              AIN3
+		 			4	  	   AIN4 			+AIN4  and  -AIN5
+		 			5	  	   AIN5
+					6	  	   AIN6 			+AIN6  and  -AIN7
+		 			7	  	   AIN7
+
+
+PARAMETER2:		Gaincode of 0 to 7. The table below applies for Single
+					Ended, Differential modes, and 4-20ma modes:
+
+ 					Gaincode  Macro	SE-Unipolar  SE-Bipolar  DIFF_Bipolar
+					--------  ------	-----------  ----------  ----------
+		 			0 	  		GAIN_X1		20V         ±10V   	  ±20V
+		 			1 	  		GAIN_X2	   10V			 ±5V       ±10V
+		 			2 	  		GAIN_X4		 5V 		  ±2.5V	      ±5V
+		 			3 	  		GAIN_X5 	    4V		  ±2.0V		   ±4V
+		 			4 	  		GAIN_X8**  2.5V		 ±1.25V	    ±2.5V
+		 			5 	  		GAIN_X10		 2V	  	 ±1.00V 		   ±2V
+		 			6 	  		GAIN_X16	 1.25V	   	----	  	±1.25V
+		 			7 	  		GAIN_X20	 1.00V	   	----     ±1.00V
+
+					** Is used for 4-20ma operation.
+
+					Notes:
+					------
+		    		SE = Signal-Ended mode
+            	DI = Differential Mode
+
+
+RETURN VALUE:  A value corresponding to the voltage on the analog input
+					channel, which will be:
+
+					0-2047 	for 11 bit A/D conversions
+
+SEE ALSO: 		brdInit, anaInConfig, anaInCalib, anaInmAmps, anaInDiff,
+               anaInVolts
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+unsigned int anaIn(int channel, int gaincode)
+{
+	auto int cmd;
+   auto int rawdata;
+
+	#GLOBAL_INIT {__brdInitFlag = FALSE;}
+   #GLOBAL_INIT {__RangeChecking = TRUE;}
+
+   if(__RangeChecking)
+   {
+		if(!__brdInitFlag || channel < 0 || channel > 7)
+		{
+			// The brdInit function hasn't been executed as of yet
+			exception(-ERR_BADPARAMETER);
+			exit(-ERR_BADPARAMETER);
+		}
+		if(gaincode < 0 || gaincode > 7)
+		{
+			// The gaincode is out of range
+			exception(-ERR_BADPARAMETER);
+			exit(-ERR_BADPARAMETER);
+		}
+   }
+   if((ADC_Command[channel] & 0x0F) == SE1_MODE)
+   {
+   	// Only re-bias ADC input if the gain value has changed
+      // from the previous access.
+   	if((ADC_Command[channel] & 0xF0) != (gaincode << 4))
+      {
+     		_bias_adc(channel, gaincode);
+      }
+   }
+
+   ADC_Command[channel] &= 0x0F;
+   ADC_Command[channel] |= (gaincode << 4);
+
+	if((ADC_Command[channel] & 0x0F) == DIFF_MODE)
+	{
+		switch(channel)
+		{
+			case 0: case 1: 	channel = 0; break;
+			case 2: case 3:	channel = 1; break;
+			case 4: case 5:	channel = 2; break;
+			case 6: case 7:	channel = 3; break;
+
+ 			default:
+				// channel is incorrect for differential mode
+				exception(-ERR_BADPARAMETER);
+				exit(-ERR_BADPARAMETER);
+		}
+
+		// Return the rawdata value from the given AD channel.
+		cmd = DIRECTMODE + DIFFERENTIAL + (gaincode<<4) + channel;
+	}
+   else 	// Opmode MUST be unipolar or 4-20ma.
+	{
+		// Return the rawdata value from the given AD channel.
+		cmd = DIRECTMODE + SINGLE_ENDED + (gaincode<<4) + channel;
+	}
+   rawdata = anaInDriver(cmd);
+   if((ADC_Command[channel] & 0x0F) == SE0_MODE ||
+   	(ADC_Command[channel] & 0x0F) == mAMP_MODE)
+	{
+		rawdata = rawdata & 0x07FF;
+	}
+	else
+	{
+		rawdata = rawdata & 0x0FFF;
+		if(rawdata & 0x0800)
+		{
+			rawdata = rawdata | 0xF000;
+		}
+	}
+  	return(rawdata);
+}
+
+/*** BeginHeader anaInVolts */
+float anaInVolts(int channel, int gaincode);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInVolts					<BL26XX.LIB>
+
+SYNTAX:     	float anaInVolts(int channel, int gaincode);
+
+DESCRIPTION:   Reads the state of a single-ended analog input channel
+					and uses the previously set calibration constants to
+               convert it to volts. This function is non-reentrant.
+
+               Note:
+               -----
+               If the gaincode for a given channel has changed from the
+               previous cycle then the following code accesses will occur.
+
+               1. The eeprom will be read to get the calibration constants
+                  for the new gain value.
+
+               2. The DAC will be written to bias the ADC input circuit
+                  for proper operation (The DAC access only applies for
+                  the single-ended bipolar ADC operation).
+
+PARAMETER1:	 	ADC channel of 0 - 7, AIN00 - AIN07.
+
+PARAMETER2:		Gaincode of 0 to 7. The table below applies for Single-
+					Ended modes only:
+
+ 					Gaincode  Macro	SE-Unipolar  SE-Bipolar
+					--------  ------	-----------  ----------
+		 			0 	  		GAIN_X1		20V         ±10V
+		 			1 	  		GAIN_X2	   10V			 ±5V
+		 			2 	  		GAIN_X4		 5V 		  ±2.5V
+		 			3 	  		GAIN_X5 	    4V		  ±2.0V
+		 			4 	  		GAIN_X8    2.5V		 ±1.25V
+		 			5 	  		GAIN_X10		 2V	  	 ±1.00V
+		 			6 	  		GAIN_X16	 1.25V	   	----
+		 			7 	  		GAIN_X20	 1.00V	   	----
+
+              	Note:
+					------
+		    		SE = Signal-Ended mode
+
+RETURN VALUE:	A voltage value corresponding to the voltage that's on the
+					analog input channel, or a value of -4096 which indicates
+               a overflow or out of range condition.
+
+SEE ALSO: 		brdInit, anaInConfig, anaIn, anaInmAmps, anaInDiff,
+               anaInCalib
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+float anaInVolts(int channel, int gaincode)
+{
+	auto int rawdata;
+	auto float anaVolts;
+
+   if((ADC_Command[channel] & 0x0F) == SE0_MODE)
+   {
+   	if((ADC_Command[channel] & 0xF0) != (gaincode << 4))
+   	{
+   		_anaInEERd(channel, SE0_MODE, gaincode,
+                    &ADC_Cal_Table[channel]);
+      }
+   }
+   else
+   {
+    	if((ADC_Command[channel] & 0xF0) != (gaincode << 4))
+   	{
+   		_anaInEERd(channel, SE1_MODE, gaincode,
+                    &ADC_Cal_Table[channel]);
+      }
+   }
+
+	rawdata  = anaIn(channel, gaincode);
+   if (rawdata&0x0800)  			//check bit 12 for sign and sign extend
+   {
+		rawdata = rawdata|0xF000;
+   }
+   if (rawdata >= 2047)
+   {
+      return(ADOVERFLOW);
+   }
+	rawdata  = ADC_Cal_Table[channel].offset - rawdata;
+	anaVolts = ADC_Cal_Table[channel].gain * rawdata;
+	return (anaVolts);
+}
+
+/*** BeginHeader anaInDiff */
+float anaInDiff(int channel, int gaincode);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInDiff					<BL26XX.LIB>
+
+SYNTAX:        float anaInDiff(int channel, int gaincode)
+
+DESCRIPTION:	Reads the state of differential analog input channels and
+					uses the	previously set calibration constants to convert
+					it to	volts. This function is non-reentrant.
+
+               Note:
+               -----
+               If the gaincode for a given channel has changed from the
+               previous cycle, then the eeprom will be read to get the
+               calibration constants for the new gain value.
+
+PARAMETER1:		channel 0, 2, 4, or 6 as indicated by the differential
+					positive line input. See below.
+
+					==============================================
+					 Channel		Differential inputs
+					----------	-------------------------------
+						 0			+AIN0 	-AIN1
+						 2			+AIN2 	-AIN3
+						 4			+AIN4 	-AIN5
+						 6			+AIN6 	-AIN7
+					==============================================
+
+PARAMETER2:  	Gaincode of 0 to 7. The table below applies for both
+					Single-Ended and Differential modes:
+
+					Gaincode  Defined Macro		Actual Gain   Voltage Range
+					--------  -------------		-----------	 ----------------
+		 				0 		 	GAIN_X1			(x1)			   +- 20v
+		 				1 		 	GAIN_X2	   	(x2)			   +- 10v
+		 				2 		 	GAIN_X4			(x4)			   +- 5v
+		 				3 		 	GAIN_X5			(x5)			   +- 4v
+		 				4 		 	GAIN_X8			(x8)			   +- 2.5v
+		 				5 		 	GAIN_X10			(x10)	 		   +- 2v
+		 				6 		 	GAIN_X16			(x16)			   +- 1.25v
+		 				7 		 	GAIN_X20			(x20)			   +- 1v
+					==========================================================
+
+RETURN VALUE:	A voltage value corresponding to the voltage on the analog
+					input channel.
+
+SEE ALSO:		 brdInit, anaInCalib, anaIn, anaInmAmps, anaInV
+
+RETURN VALUE:	A voltage value corresponding to the voltage that's on the
+					analog input channel, or a value of -4096 which indicates
+               a overflow or out of range condition.
+
+SEE ALSO: 		brdInit, anaInConfig, anaIn, anaInmAmps, anaInVolts,
+               anaInCalib
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+float anaInDiff(int channel, int gaincode)
+{
+	auto int rawdata;
+	auto float anaVolts;
+   auto calib cal_data;
+
+   if((ADC_Command[channel] & 0xF0) != (gaincode << 4))
+   {
+   	_anaInEERd(channel, DIFF_MODE, gaincode,
+                 &ADC_Cal_Table[channel]);
+   	_anaInEERd(channel, DIFF_MODE, gaincode,
+                 &ADC_Cal_Table[channel+1]);
+   }
+
+	rawdata = anaIn(channel, gaincode);
+	if (rawdata&0x0800)	//check bit 12 for sign and sign extend
+		rawdata = rawdata|0xF000;
+
+   if (rawdata >= 2047 || rawdata <= -2048)
+   {
+      return(ADOVERFLOW);
+   }
+
+	rawdata  = ADC_Cal_Table[channel].offset - rawdata;
+	anaVolts = ADC_Cal_Table[channel].gain * rawdata;
+	return(anaVolts);
+}
+
+/*** BeginHeader anaInmAmps */
+float anaInmAmps(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInmAmps					<BL26XX.LIB>
+
+SYNTAX:			float anaInmAmps(int channel);
+
+DESCRIPTION:   Reads the state of an analog input channel and uses the
+					previously set calibration constants to convert it to
+               current milli-amp floating point value. This function
+               is non-reentrant.
+
+PARAMETER1:		Channel is 0 to 3, AIN0 - AIN3:
+
+RETURN VALUE:	A current value corresponding	to the current on	the analog
+					input channel of a range 4.00 to 20.00 milli-Amps, or a
+               value of -4096 which indicates a overflow or out of range
+               condition.
+
+SEE ALSO: 		brdInit, anaInConfig, anaIn, anaInDiff, anaInVolts,
+               anaInCalib
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+float anaInmAmps(int channel)
+{
+	auto int rawdata;
+	auto float current;
+   auto calib cal_data;
+
+   if((ADC_Command[channel] & 0xF0) != (mAMP_GAINCODE << 4))
+   {
+   	_anaInEERd(channel, mAMP_MODE, mAMP_GAINCODE,
+                 &ADC_Cal_Table[channel]);
+   }
+	rawdata  =  anaIn(channel, mAMP_GAINCODE);
+  	if (rawdata&0x0800)  			//check bit 12 for sign and sign extend
+   {
+		rawdata = rawdata|0xF000;
+   }
+   if (rawdata >= 2047)
+   {
+      return(ADOVERFLOW);
+   }
+
+ 	rawdata  = ADC_Cal_Table[channel].offset - rawdata;
+	current  = ADC_Cal_Table[channel].gain * rawdata;
+	return(current);
+}
+
+/*** BeginHeader anaOutConfig,  */
+int anaOutConfig(char configuration, int mode);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutConfig				<BL26XX.LIB>
+
+SYNTAX:  		int anaOutConfig(char configuration, int mode);
+
+DESCRIPTION:   Configures the DAC chip for a given voltage output range,
+					either 0-10v or ±10v operation and loads the calibration
+               data for use by the DAC API functions. This function must
+               be called before accessing any of the DAC channels. This
+               function is non-reentrant.
+
+              	Note:
+               -----
+               If you configure DAC chip using the anaOutConfig function
+               you must call it first before executing the anaInConfig
+               function. This is because the ADC uses DAC channels 4-7
+               (internal channels only) to bias the ADC input circuit.
+
+PARAMETER1:		To set the output configuration, set the value to one
+					of following:
+
+               0 = Unipolar operation. (0 - 10V and 4 - 20ma)
+             	1 = Bipolar operation.  (±10V and 4 - 20ma)
+
+               Note: When the DAC is set for bipolar operation, the
+               4-20ma channels change from 12 to a 11 bit DAC resolution.
+
+PARAMETER2: 	Mode of operation:
+             	0 = Asynchronous...An output will be updated at the time
+                 	                the data is written to the given channel.
+			 		1 = Synchronous....All outputs will be updated with data
+                                  previously written when the anaOutStrobe
+                                  function is executed.
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, anaOut, anaOutmAmps, anaOutStrobe, anaOutConfig,
+					anaOutCalib
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+int anaOutConfig(char configuration, int mode)
+{
+	auto calib cal_data;
+	auto int i;
+
+   #GLOBAL_INIT{__ADConfigFlag = FALSE;}
+
+   if(__ADConfigFlag)
+	{
+		// Application error...The anaOutConfig function must be
+      // executed before configuring the A/D input channels
+      // with the anaInConfig function.
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   // Disable DAC power supply
+   WrPortE(SPI_PORT_ADDR, &__SPIShadow, 0xFB);
+
+ 	// Set DAC chip internal reference depending on configuration selected
+	// Set LDAC signal depending on mode of operation
+   if(configuration == 0)
+   {
+   	// Initialize D/A reg CTRL0, set Internal ref to 1 volt
+   	anaOutDriver(0x8004);
+   }
+   else
+   {
+   	// Initialize D/A reg CTRL0, set Internal ref to 2 volt
+   	anaOutDriver(0x8006);
+   }
+
+   // Initialize D/A reg CTRL1, config DAC for normal operation
+   // and fast conversion speed.
+   anaOutDriver(0x903F);
+
+   // Initialize DAC command byte for each DAC channel
+   DAC_Command[0] = 0x0000;
+   DAC_Command[1] = 0x1000;
+   DAC_Command[2] = 0x2000;
+   DAC_Command[3] = 0x3000;
+
+   // Following channels are used by the BL2600 ADC circuit.
+   DAC_Command[4] = 0x4000;
+   DAC_Command[5] = 0x5000;
+   DAC_Command[6] = 0x6000;
+   DAC_Command[7] = 0x7000;
+
+   // Set the DAC for Synchronous or Asynchronous mode of operation
+   if(mode == 0)
+   {
+   	BitWrPortI(PDDR, &PDDRShadow, 0, 4);
+   }
+   else
+   {
+   	BitWrPortI(PDDR, &PDDRShadow, 1, 4);
+   }
+   if(configuration == 0)
+   {
+   	__DACConfig = DAC_UNIPOLAR;
+      for(i=0; i<8; i++)
+      {
+   		// Load voltage unipolar calibration data
+      	_anaOutEERd(i, 0, &cal_data);
+         DAC_vCal_Table[i].gain = cal_data.gain;
+         DAC_vCal_Table[i].offset = cal_data.offset;
+
+         // Load 4-20ma unipolar calibration data
+         _anaOutEERd(i, 2, &cal_data);
+         DAC_iCal_Table[i].gain = cal_data.gain;
+         DAC_iCal_Table[i].offset = cal_data.offset;
+		}
+      anaOut(0, 4095);
+      anaOut(1, 4095);
+      anaOut(2, 4095);
+      anaOut(3, 4095);
+   }
+   else
+   {
+   	__DACConfig = DAC_BIPOLAR;
+   	for(i=0; i<8; i++)
+      {
+   		// Load voltage bipolar calibration data
+      	_anaOutEERd(i, 1, &cal_data);
+      	DAC_vCal_Table[i].gain = cal_data.gain;
+      	DAC_vCal_Table[i].offset = cal_data.offset;
+
+         // Load 4-20ma bipolar calibration data
+      	_anaOutEERd(i, 3, &cal_data);
+      	DAC_iCal_Table[i].gain = cal_data.gain;
+      	DAC_iCal_Table[i].offset = cal_data.offset;
+   	}
+      anaOut(0, 2047);
+      anaOut(1, 2047);
+      anaOut(2, 2047);
+      anaOut(3, 2047);
+   }
+}
+
+/*** BeginHeader anaOutCalib */
+int anaOutCalib(int channel, int calib_index,
+ 	             int value1, float volts1,
+                int value2, float volts2);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutCalib					<BL26XX.LIB>
+
+SYNTAX:        int anaOutCalib(int channel, int calib_index,
+ 										 int value1, float volts1,
+                               int value2, float volts2);
+
+DESCRIPTION:   Calibrates the response of a given DAC channel as a linear
+					function with using two conversion points provided by the
+               user. A Gain and offset constant is calculated and written
+               to EEPROM for use by the DAC API functions. This function
+               is non-reentrant.
+
+               Note: Recommend using the 10 & 90% points of the MAX
+               voltage range when calibrating a channel.
+
+PARAMETER1:	  	Channel number 0 to 3, AOUT00-AOUT03.
+
+PARAMETER2:		Index used to go to the proper location in the lookup
+               table for writing the calibration data.
+
+               0 = 0 - 10V calibration data.
+               1 = ±10V calibration data.
+               2 = 4 - 20ma calibration data (unipolar configuration).
+               3 = 4 - 20ma calibration data (bipolar configuration).
+
+PARAMETER3:	  The first DAC value (0 - 4095).
+
+PARAMETER4:	  The voltage/current corresponding to the first DAC value
+           	  (0- 10V, ±10V or 4 - 20 mA).
+
+PARAMETER5:	  The second DAC value (0 - 4095).
+
+PARAMETER6:	  The voltage/current corresponding to the second DAC value
+	       	  (0- 10V, ±10V or 4 - 20 mA).
+
+RETURN VALUE:	0, if sucessful.
+		        -1, if not able to make calibration constants.
+
+SEE ALSO:		brdInit, anaOut, anaOutVolts, anaOutmAmps, anaOutStrobe,
+					anaOutConfig
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+int anaOutCalib(int channel, int calib_index,
+ 	             int value1, float volts1,
+                int value2, float volts2)
+{
+	auto float gain;
+   int offset;
+   auto calib cal_data;
+
+  	#GLOBAL_INIT {__brdInitFlag = FALSE;}
+
+	if(__brdInitFlag == FALSE || channel < 0 || channel > 7)
+	{
+		// The brdInit function hasn't been executed and/or
+      // the channel is invalid.
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   if((volts1 == volts2) || (value1 == value2))
+   	return -1;
+	offset = (int) ((volts2*value1 - volts1*value2)/(volts2-volts1));
+	if (offset == value1)
+		gain = volts2/(offset-value2);
+	else
+		gain = volts1/(offset-value1);
+
+	cal_data.gain = gain;
+	cal_data.offset = offset;
+   DAC_Command[channel] = 0xFFFF;
+   return(_anaOutEEWr(channel, calib_index, &cal_data));
+}
+
+
+/*** BeginHeader anaOutStrobe */
+void anaOutStrobe(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutStrobe				<BL26XX.LIB>
+
+SYNTAX:        void anaOutStrobe(void);
+
+DESCRIPTION:   Strobes the DAC chip, which will update all the outputs
+					with the previously written values (or default value of
+               zero).
+
+               This function is only valid if the DAC chip has been
+               configured for Synchronous Mode of operation with using
+               the anaOutConfig function. This function is non-reentrant.
+
+PARAMETER1:    None.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, anaOut, anaOutmAmps, anaOutStrobe, anaOutConfig,
+					anaOutCalib,
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+void anaOutStrobe(void)
+{
+#asm _bl2600_nodebug
+	push 	ip
+	ipset	1		 	; Stop normal ISR's to prevent race
+   ; Set LDAC signal low to update the DAC outputs
+	ld 	de,PDDR 	; Port address
+	ld 	hl,PDDRShadow
+   res	4,(hl)   ; Clear bit 4
+ 	ioi 	ldd   	; [io](de) <- (hl)  copy shadow to port
+
+   ; Set LDAC back to a high state
+ 	ld 	de,PDDR 	; Port address
+	ld 	hl,PDDRShadow
+   set   4,(hl)   ; Set bit 4
+   ioi 	ldd   	; [io](de) <- (hl)  copy shadow to port
+	pop 	ip
+#endasm
+
+}
+
+/*** BeginHeader anaOutPwr */
+void anaOutPwr(int control);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaOutPwr				<BL26XX.LIB>
+
+SYNTAX:			void anaOutPwr(int control);
+
+DESCRIPTION:	Function to enable or disable the BL2600 power supply that is
+					used to power the DAC voltage or current output circuits. This
+               function is non-reentrant.
+
+               Warning:
+               --------
+               This function should be called after configuring all DAC
+               channels to a desired voltage and/or current. Unconfigured
+               voltage and 4-20ma DAC channels will be set to approx. zero
+               volts or 4 milliamps, respectively.
+
+
+PARAMETER1:   	Value to Enable or Disable the DAC power supply.
+					0 = Disable DAC power supply.
+               1 = Enable DAC power supply.
+
+RETURN VALUE:	None
+
+SEE ALSO:		anaOut, anaOutVolts, anaOutmAmps
+
+END DESCRIPTION ***************************************************************/
+
+_bl2600_nodebug
+void anaOutPwr(int control)
+{
+	#GLOBAL_INIT{__DACConfig = -1;}
+
+   if(!(__DACConfig == DAC_UNIPOLAR || __DACConfig == DAC_BIPOLAR))
+	{
+		// The brdInit function hasn't been executed and/or
+      // the channel is invalid.
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+   if(control)
+   {
+   	// Initialize D/A reg CTRL1, config DAC for normal operation
+   	// and fast conversion speed.
+   	anaOutDriver(0x900F);
+
+   	// Enable DAC power supply
+   	WrPortE(SPI_PORT_ADDR, &__SPIShadow, (__SPIShadow | 0x04));
+   }
+   else
+   {
+   	// Initialize D/A reg CTRL1, config DAC for normal operation
+   	// and fast conversion speed, and power down channels 0 - 3.
+   	anaOutDriver(0x903F);
+
+   	// Disable DAC power supply
+   	WrPortE(SPI_PORT_ADDR, &__SPIShadow, (__SPIShadow & ~0x04));
+	}
+}
+
+
+/*** BeginHeader anaOut */
+int anaOut(int ch,  int rawdata);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOut						<BL26XX.LIB>
+
+SYNTAX:			int anaOut(int ch, int rawdata)
+
+DESCRIPTION:	Sets the voltage on a given analog output channel. This
+               function is non-reentrant.
+
+PARAMETER1:		The DAC output channel to write (0 - 3).
+PARAMETER2:		A data value corresponding to the desired voltage on the
+               analog output channel (0-4095).
+
+RETURN VALUE:	0  = Data was successfully written to the DAC
+					-1 = Rawcount parameter is greater than 4095.
+
+SEE ALSO:		anaOutDriver, anaOutVolts, anaOutCalib
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+int anaOut(int ch, int rawdata)
+{
+	#GLOBAL_INIT {__brdInitFlag = FALSE;}
+   #GLOBAL_INIT {__RangeChecking = TRUE;}
+
+   if(__RangeChecking)
+   {
+		if(!__brdInitFlag)
+ 		{
+			// The brdInit function hasn't been executed as of yet
+			exception(-ERR_BADPARAMETER);
+			exit(-ERR_BADPARAMETER);
+		}
+		if(ch < 0 || ch > 3)
+		{
+			// The brdInit function hasn't been executed as of yet
+			exception(-ERR_BADPARAMETER);
+			exit(-ERR_BADPARAMETER);
+		}
+   }
+   if(DAC_Command[ch] == 0xFFFF)
+   {
+      DAC_Command[ch] = 0x0000;
+   	DAC_Command[ch] |= ch << 12;
+   }
+
+   if(rawdata > MAXDACCOUNT || rawdata < MINDACCOUNT)
+	{
+		rawdata = (rawdata > MAXDACCOUNT) ? MAXDACCOUNT : 0;
+	}
+   anaOutDriver(DAC_Command[ch] | rawdata);
+}
+
+
+/*** BeginHeader anaOutVolts */
+void anaOutVolts(int ch, float voltage);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutVolts					<BL26XX.LIB>
+
+SYNTAX:   		void anaOutVolts(int ch, float voltage);
+
+DESCRIPTION:   Sets the voltage of an analog output channel by using
+					the previously set calibration constants to calculate
+               the correct data values. This function is non-reentrant.
+
+PARAMETER1:		The DAC output channel (0 - 3).
+
+PARAMETER2:		The desired voltage on the output channel.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, anaOut, anaOutStrobe, anaOutConfig, anaOutCalib
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+void anaOutVolts(int ch, float voltage)
+{
+	auto int rawdata;
+   auto calib cal_data;
+
+   if(DAC_Command[ch] == 0xFFFF)
+   {
+   	DAC_Command[ch] |= ch << 12;
+      if(__DACConfig == DAC_UNIPOLAR)
+      {
+   		// Load voltage unipolar calibration data
+      	_anaOutEERd(ch, 0, &cal_data);
+         DAC_vCal_Table[ch].gain = cal_data.gain;
+         DAC_vCal_Table[ch].offset = cal_data.offset;
+
+         // Load 4-20ma unipolar calibration data
+         _anaOutEERd(ch, 2, &cal_data);
+         DAC_iCal_Table[ch].gain = cal_data.gain;
+         DAC_iCal_Table[ch].offset = cal_data.offset;
+		}
+   	else
+   	{
+    		// Load voltage bipolar calibration data
+      	_anaOutEERd(ch, 1, &cal_data);
+      	DAC_vCal_Table[ch].gain = cal_data.gain;
+      	DAC_vCal_Table[ch].offset = cal_data.offset;
+
+         // Load 4-20ma bipolar calibration data
+      	_anaOutEERd(ch, 3, &cal_data);
+      	DAC_iCal_Table[ch].gain = cal_data.gain;
+      	DAC_iCal_Table[ch].offset = cal_data.offset;
+
+      }
+   }
+   rawdata = (int)(DAC_vCal_Table[ch].offset -
+             (voltage / DAC_vCal_Table[ch].gain));
+	anaOut(ch, rawdata);
+}
+
+
+/*** BeginHeader anaOutmAmps */
+void anaOutmAmps(int ch, float current);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutmAmps					<BL26XX.LIB>
+
+SYNTAX:        void anaOutmAmps(int ch, float current);
+
+DESCRIPTION:   Sets the current of an analog output channel by using
+					the previously set calibration constants to calculate
+               the correct data values. This function is non-reentrant.
+
+
+PARAMETER1:		The DAC output channel (0 - 3).
+
+PARAMETER2:		The desired current on the output channel, valid range
+					is 4 - 20ma.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, anaOut, anaOutVolts, anaOutStrobe, anaOutConfig,
+					anaOutCalib
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+void anaOutmAmps(int ch, float current)
+{
+	auto int rawdata;
+   auto calib cal_data;
+
+   if(DAC_Command[ch] == 0xFFFF)
+   {
+   	DAC_Command[ch] |= ch << 12;
+      if(__DACConfig == DAC_UNIPOLAR)
+      {
+   		// Load voltage unipolar calibration data
+      	_anaOutEERd(ch, 0, &cal_data);
+         DAC_vCal_Table[ch].gain = cal_data.gain;
+         DAC_vCal_Table[ch].offset = cal_data.offset;
+
+         // Load 4-20ma unipolar calibration data
+         _anaOutEERd(ch, 2, &cal_data);
+         DAC_iCal_Table[ch].gain = cal_data.gain;
+         DAC_iCal_Table[ch].offset = cal_data.offset;
+		}
+   	else
+   	{
+    		// Load voltage bipolar calibration data
+      	_anaOutEERd(ch, 1, &cal_data);
+      	DAC_vCal_Table[ch].gain = cal_data.gain;
+      	DAC_vCal_Table[ch].offset = cal_data.offset;
+
+         // Load 4-20ma bipolar calibration data
+      	_anaOutEERd(ch, 3, &cal_data);
+      	DAC_iCal_Table[ch].gain = cal_data.gain;
+      	DAC_iCal_Table[ch].offset = cal_data.offset;
+
+      }
+   }
+	rawdata = (int)(DAC_iCal_Table[ch].offset -
+             (current / DAC_iCal_Table[ch].gain));
+	anaOut(ch, rawdata);
+}
+
+
+/*===================================================================
+	The following functions are for the EEPROM (24C04A) on
+	the BL2600 base unit.
+===================================================================*/
+/*** BeginHeader eeDelay */
+void eeDelay();
+/*** EndHeader */
+
+#asm _bl2600_nodebug
+eeDelay::
+	// ~4.7 usec delay for eeprom timing requirement
+	push	bc
+   push	hl
+	ld		hl,(numcycles_1us)
+   ld		b,l
+
+   // 4.7usec delay  = numcycles_1us * code cycles
+.eedelay1:
+	djnz	.eedelay1 		; Code = 5 cycles
+  	pop	hl
+   pop	bc
+   ret
+#endasm
+
+
+/*** BeginHeader _adcEEStart */
+void _adcEEStart(void);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_adcEEStart					<BL26XX.LIB>
+
+SYNTAX:        void _adcEEStart(void);
+
+DESCRIPTION:	Sends a start command to the eeprom device.
+
+PARAMETER1:		None.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION ***************************************************************/
+
+_bl2600_nodebug
+void _adcEEStart(void)
+{
+#asm _bl2600_nodebug
+	ld 	de,PGDR
+	ld 	hl,PGDRShadow
+   set	EECLK,(hl)
+   set	EEDATA,(hl)
+  	ioi 	ldd
+   inc	de
+   inc	hl
+   inc	bc
+   call	eeDelay
+
+	; This assumes Data and CLK are already high (!busy condition)
+	res	EEDATA,(hl)
+  	ioi 	ldd
+   inc	de
+   inc	hl
+	call	eeDelay
+
+   ; Set the CLK low so the data line can change
+   res	EECLK,(hl)
+  	ioi 	ldd
+   call	eeDelay
+#endasm
+}
+
+/*** BeginHeader _adcEEStop */
+void _adcEEStop(void);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_adcEEStop					<BL26XX.LIB>
+
+SYNTAX:			void _adcEEStop(void);
+
+DESCRIPTION:	Sends a stop command to the eeprom device.
+
+PARAMETER1:		None.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION ***************************************************************/
+
+_bl2600_nodebug
+void _adcEEStop(void)
+{
+#asm _bl2600_nodebug
+   ; Data line is an input being pulled high, CLK the logic high into
+   ; the eeprom device to signal a stop condition.
+	ld 	de,PGDR
+	ld 	hl,PGDRShadow
+
+   res	EEDATA,(hl)
+ 	ioi 	ldd
+   inc	de
+   inc	hl
+	call	eeDelay
+
+   set	EECLK,(hl)
+ 	ioi 	ldd
+   inc	de
+   inc	hl
+	call	eeDelay
+
+   set	EEDATA,(hl)
+ 	ioi 	ldd
+	call	eeDelay
+#endasm
+}
+
+/*** BeginHeader _adcEESetAck */
+int _adcEESetAck(void);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_adcEESetAck				<BL26XX.LIB>
+
+SYNTAX:			int _adcEESetAck(void);
+
+DESCRIPTION:	Sends an acknowledgement to the eprom device.
+
+PARAMETER1:		None.
+
+RETURN VALUE:	0, acknowledge success
+					1,	unsuccessful
+
+END DESCRIPTION ***************************************************************/
+
+_bl2600_nodebug
+int _adcEESetAck(void)
+{
+#asm _bl2600_nodebug
+	; Set the CLK low first before change data line to an output
+	ld 	de,PGDR
+	ld 	hl,PGDRShadow
+
+   ; Set data low for ACK cycle
+ 	res	EEDATA,(hl)
+	ioi 	ldd
+   inc	de
+   inc	hl
+   call	eeDelay
+
+   ; CLK the ACK into the EEPROM device
+ 	set	EECLK,(hl)
+	ioi 	ldd
+	inc	de
+   inc	hl
+   call	eeDelay
+
+   ; CLK the ACK into the EEPROM device
+ 	res	EECLK,(hl)
+	ioi 	ldd
+   call	eeDelay
+#endasm
+}
+
+
+/*** BeginHeader _adcEENoAck */
+void _adcEENoAck(void);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_adcEENoAck					<BL26XX.LIB>
+
+SYNTAX:			int _adcEENoAck(void);
+
+DESCRIPTION:	Sends a no acknowledgement to the eeprom device.
+
+PARAMETER1:		None.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION ***************************************************************/
+
+_bl2600_nodebug
+void _adcEENoAck(void)
+{
+#asm _bl2600_nodebug
+	; Set the CLK low first before change data line to an output
+	ld 	de,PGDR
+	ld 	hl,PGDRShadow
+
+   ; Set data high for a NO ACK cycle
+ 	set	EEDATA,(hl)
+	ioi 	ldd
+   inc	de
+   inc	hl
+   call	eeDelay
+
+   ; CLK the ACK status into the EEPROM device
+ 	set	EECLK,(hl)
+	ioi 	ldd
+   inc	de
+   inc	hl
+   call	eeDelay
+
+   ; Set the CLK line low
+ 	res	EECLK,(hl)
+	ioi 	ldd
+   call	eeDelay
+#endasm
+}
+
+/*** BeginHeader _adcEEGetAck */
+int _adcEEGetAck(void);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_adcEEGetAck				<BL26XX.LIB>
+
+SYNTAX:			int _adcEEGetAck(void);
+
+DESCRIPTION:	Checks for eeprom acknowledgement.
+
+PARAMETER1:		None.
+
+RETURN VALUE:	0, acknowledge success
+					1,	unsuccessful
+
+END DESCRIPTION ***************************************************************/
+
+_bl2600_nodebug
+int _adcEEGetAck(void)
+{
+#asm _bl2600_nodebug
+	exx
+   ld		de,PGDDR
+   ld		hl,PGDDRShadow
+ 	res   EEDATA,(hl)
+ 	ioi 	ldd
+   inc	de
+   inc	hl
+   exx
+
+   ; Set CLK high to create a low to high edge
+   ld 	de,PGDR
+	ld 	hl,PGDRShadow
+ 	set	EECLK,(hl)
+	ioi 	ldd
+   inc	de
+   inc	hl
+  	call	eeDelay
+
+   ; Read Data line see the eeprom device has ACK'ed
+	ioi	ld a,(de)
+	res	EECLK,(hl)
+	ioi 	ldd
+	inc	de
+   inc	hl
+  	call	eeDelay
+
+   exx
+   ld		de,PGDDR
+   ld		hl,PGDDRShadow
+ 	set   EEDATA,(hl)
+ 	ioi 	ldd
+	exx
+
+	bit	EEACK,a
+	jr		z,.itszero1
+	ld		hl,1
+	jp		.done1
+.itszero1:
+	ld		hl,0
+
+.done1:
+#endasm
+}
+
+
+/*** BeginHeader _adcEEWrByte */
+useix void _adcEEWrByte(char data);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_adcEEWrByte				<BL26XX.LIB>
+
+SYNTAX:			void _adcEEWrByte(char data);
+
+DESCRIPTION:	Clocks in eight bits into eeprom.
+
+PARAMETER1:		Data value to be written to the eeprom device.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION ***************************************************************/
+
+_bl2600_nodebug
+useix void _adcEEWrByte(char data)
+{
+#asm _bl2600_nodebug
+   ; Get data to be written to the eeprom device
+   ld		hl,(ix+data)
+   ld		c,l
+	ld		b,8
+
+   ld 	de,PGDR
+	ld 	hl,PGDRShadow
+
+   ; Loop to CLK 8 data bits into the eeprom device
+.loop:
+ 	sla	c
+	jr		nc,.clrbit
+
+.setbit:
+	set	EEDATA,(hl)
+	jr		.wrdata
+
+.clrbit:
+	res	EEDATA,(hl)
+
+   ; Put the bit value onto the data line
+.wrdata:
+ 	ioi 	ldd
+   inc	de
+   inc	hl
+   inc	bc
+	call	eeDelay
+
+   ; CLK data bit into eeprom device
+   set	EECLK,(hl)
+ 	ioi 	ldd
+   inc	de
+   inc	hl
+   inc	bc
+	call	eeDelay
+
+  	res	EECLK,(hl)
+ 	ioi 	ldd
+   inc	de
+   inc	hl
+   inc	bc
+   call	eeDelay
+	djnz	.loop
+
+  	set	EEDATA,(hl)
+ 	ioi 	ldd
+	call	eeDelay
+#endasm
+}
+
+
+/*** BeginHeader _adcEERdByte */
+useix void _adcEERdByte(char *data);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_adcEERdByte				<BL26XX.LIB>
+
+SYNTAX:			void _adcEERdByte(char *data);
+
+DESCRIPTION:	Clocks out eight bits from the eeprom.
+
+PARAMETER1:   	Pointer to the location to put the data read from the
+					eeprom device.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION ***************************************************************/
+
+_bl2600_nodebug
+useix void _adcEERdByte(char *data)
+{
+#asm _bl2600_nodebug
+	exx
+   ld		de,PGDDR
+   ld		hl,PGDDRShadow
+ 	res   EEDATA,(hl)
+ 	ioi 	ldd
+   inc	de
+   inc	hl
+   exx
+
+ 	ld		c,0
+	ld		b,8
+   ld 	de,PGDR
+	ld 	hl,PGDRShadow
+
+.loop:
+	; Set CLK High to make data stable
+	set	EECLK,(hl)
+ 	ioi 	ldd
+   inc	de
+   inc	hl
+   inc	bc
+   call	eeDelay
+
+   ; Read data line to get bit value
+   sla	c
+   ioi	ld a,(de)
+ 	srl	a
+   and	a,0x01
+   or		c
+   ld		c,a
+
+   ; Set CLK low
+   res	EECLK,(hl)
+ 	ioi 	ldd
+   inc	de
+   inc	hl
+   inc	bc
+   call	eeDelay
+ 	djnz	.loop
+
+   ; Set the data line to an output
+   exx
+   ld		de,PGDDR
+   ld		hl,PGDDRShadow
+ 	set   EEDATA,(hl)
+ 	ioi 	ldd
+	exx
+
+  	ld		a,c
+   ld		hl,(ix+data)
+	ld		(hl),a
+#endasm
+}
+
+
+/*** BeginHeader _eePromAccess */
+int _eePromAccess(void *buffer, int ee_address, int numbytes, int access);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_eePromAccess				<BL26XX.LIB>
+
+SYNTAX:        int _eePromAccess(void *buffer, int ee_address,
+										  int numbytes, int access)
+
+DESCRIPTION: 	Intermediate driver to interface the DAC/ADC API functions
+					to the low-level eeprom routines to perform the write or
+               read operations.
+
+					NOTE: This is a internal function not intended for
+               for use by the application program.
+
+PARAMETER1:		Pointer to the data buffer to be used for the eeprom access.
+
+PARAMETER2:    Starting location for the eeprom access.
+
+PARAMETER3:    Number of bytes to be processed.
+
+PARAMETER4:    Type of access to be done.
+					0 = Write operation.
+               1 = Read operation.
+
+RETURN VALUE:	0 = Operation completed successfully.
+		        -1 = Eeprom timeout, operation not completed.
+
+END DESCRIPTION ***************************************************************/
+
+_bl2600_nodebug
+int _eePromAccess(void *buffer, int ee_address, int numbytes, int access)
+{
+	auto char command_byte;
+   auto char block;
+   auto int retry;
+   auto int i;
+   auto int page;
+   auto int numBytes2;
+   auto int pageAddr2;
+   auto char *ptr;
+
+   ptr = (char*)buffer;
+   if(ee_address >= 2048)
+	{
+		// Check for invalid address
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+   if(access == EEPROM_WRITE && numbytes > 16)
+	{
+		// Number bytes to write exceeds eeprom max page size
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   command_byte = 0xA0;
+   // R/W Bit0....1 = Read eeprom
+   // 	         0 = Write eeprom
+
+   if(access == EEPROM_READ)
+      command_byte |= 0x01;
+   block = (char)(ee_address/256);
+   command_byte |= (block<<1);
+
+   page = 1;
+   if(!((ee_address + numbytes) <= 16))
+   {
+   	if(ee_address < 16)
+      {
+   		if(numbytes > (16 % ee_address))
+   		{
+   			page = 2;
+      		pageAddr2 = (16 % ee_address) + ee_address;
+        		numBytes2 = numbytes - (16 % ee_address);
+            numbytes = (16 % ee_address);
+   		}
+      }
+      else
+      {
+   		if(numbytes > (16 - (ee_address % 16)))
+   		{
+   			page = 2;
+      		pageAddr2 = 16 - ((ee_address % 16)) + ee_address;
+        		numBytes2 = numbytes - (16 - (ee_address % 16));
+            numbytes = 16 - (ee_address % 16);
+   		}
+      }
+   }
+   while(page)
+   {
+   	retry = 0;
+   	do
+   	{
+   		_adcEEStart();
+			_adcEEWrByte(command_byte & 0xFE);
+      	// Estimate timeout to be > 5msec
+    		if(retry++ > 600)
+      		return -1;
+   	}while(_adcEEGetAck());
+
+   	_adcEEWrByte((char) (ee_address & 0x00FF));
+ 		_adcEEGetAck();
+
+ 		if(access == EEPROM_READ)
+   	{
+      	_adcEEStart();
+ 			_adcEEWrByte(command_byte);
+     	 	_adcEEGetAck();
+      	for(i=0; i<numbytes; i++)
+      	{
+      		if(i < numbytes-1)
+      		{
+     	  			_adcEERdByte(ptr++);
+         		_adcEESetAck();
+      		}
+         	else
+         	{
+         		_adcEERdByte(ptr++);
+         		_adcEENoAck();
+         	}
+      	}
+   	}
+   	else
+   	{
+   		for(i=0; i<numbytes; i++)
+      	{
+  				_adcEEWrByte(*ptr++);
+         	_adcEEGetAck();
+   		}
+		}
+   	_adcEEStop();
+
+   	if(--page)
+   	{
+   		numbytes = numBytes2;
+   		ee_address = pageAddr2;
+      	block = (char)(ee_address/256);
+      	command_byte &= 0xF1;
+      	command_byte |= (block<<1);
+   	}
+   }
+   return 0;
+}
+
+
+/*** BeginHeader _anaInEERd */
+int _anaInEERd(int channel, int opmode, int gaincode, void *cal_data);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_anaInEERd					<BL26XX.LIB>
+
+SYNTAX:			_anaInEERd(int channel, int opmode, int gaincode,
+                          void *cal_data);
+
+DESCRIPTION:   Reads the calibration constants, gain and offset,  from
+					the eeprom located on the BL2600 base unit. This function
+               is non-reentrant.
+
+					NOTE: This is a internal function not intended for
+               for use by the application program.
+
+PARAMETER1:		ADC channel number 0 to 7, AIN0-AIN7.
+
+               CH  	Single-Ended 	  Differential       4-20ma
+		    		--		------------   ----------------   	-------
+		 			0	  	   AIN0 			+AIN0  and  -AIN1  	 AIN0
+					1        AIN1                              AIN1
+		 			2	  	   AIN2 			+AIN2  and  -AIN3     AIN2
+		 			3	  	   AIN3                              AIN3
+		 			4	  	   AIN4 			+AIN4  and  -AIN5
+		 			5	  	   AIN5
+					6	  	   AIN6 			+AIN6  and  -AIN7
+		 			7	  	   AIN7
+
+PARAMETER2:   	Select the mode of operation for the ADC channel
+               calibration data being read. Values are as follows:
+
+            	0 = Single-Ended, unipolar 0 - 20V
+		   		1 = Single-Ended, bipolar ±10V
+		   		2 = Differential, bipolar ±20V
+					3 = 4-20ma operation
+
+PARAMETER3:		Gaincode of 0 to 7. The table below applies for Single
+					Ended, Differential modes, and 4-20ma modes:
+
+					Gaincode  Macro	SE-Unipolar  SE-Bipolar  DIFF_Bipolar
+					--------  ------	-----------  ----------  ----------
+		 			0 	  		GAIN_X1		20V         ±10V   	  ±20V
+		 			1 	  		GAIN_X2	   10V			 ±5V       ±10V
+		 			2 	  		GAIN_X4		 5V 		  ±2.5V	      ±5V
+		 			3 	  		GAIN_X5 	    4V		  ±2.0V		   ±4V
+		 			4 	  		GAIN_X8**  2.5V		 ±1.25V	    ±2.5V
+		 			5 	  		GAIN_X10		 2V	  	 ±1.00V 		   ±2V
+		 			6 	  		GAIN_X16	 1.25V	   	----	  	±1.25V
+		 			7 	  		GAIN_X20	 1.00V	   	----     ±1.00V
+
+					** is used for 4-20ma operation.
+
+					Notes:
+					------
+		    		SE = Signal-Ended mode
+            	DI = Differential Mode
+
+PARAMETER4:	 	Calibration structure pointer to gain and offset values.
+
+RETURN VALUE:	 0, If successful.
+					-1, invalid address or range.
+
+SEE ALSO:		_anaInEEWr, _anaOutEEWr, _anaOutEERd
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+int _anaInEERd(int channel, int opmode, int gaincode, void *cal_data)
+{
+	auto int	status;
+	auto int ee_address;
+
+ 	switch(opmode)
+   {
+		case 0:
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			ee_address = CAL_ADC_SE0;
+         ee_address += gaincode * 48;
+			ee_address += channel  * 6;
+ 			// read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_READ);
+			break;
+
+      case 1:
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			ee_address = CAL_ADC_SE1;
+         ee_address += gaincode * 48;
+			ee_address += channel  * 6;
+			// read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_READ);
+			break;
+
+		case 2:
+			switch(channel)
+			{
+				case 0: case 1: 	channel = 0; break;
+				case 2: case 3:	channel = 1; break;
+				case 4: case 5:	channel = 2; break;
+				case 6: case 7:	channel = 3; break;
+
+            default:
+					// channel is incorrect for differential mode
+					exception(-ERR_BADPARAMETER);
+					exit(-ERR_BADPARAMETER);
+			}
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			ee_address = CAL_ADC_DIFF;
+         ee_address += gaincode * 24;
+			ee_address += channel  * 6;
+			// read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_READ);
+         break;
+
+      case 3:
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			ee_address = CAL_ADC_MA;
+			ee_address += channel * 6;
+			// read calibration constants from flash
+			status  = _eePromAccess(cal_data, ee_address, 6, EEPROM_READ);
+			break;
+
+      default:
+      	status = -1;
+         break;
+   }
+	return(status);
+}
+
+/*** BeginHeader _anaInEEWr */
+int _anaInEEWr(int channel, int opmode, int gaincode, void *cal_data);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_anaInEEWr					<BL26XX.LIB>
+
+SYNTAX:			int _anaInEEWr(int channel, int opmode, int gaincode,
+						            void *cal_data);
+
+DESCRIPTION:   Writes the calibration constants, gain and offset,  to
+					the eeprom located on the BL2600 base unit. This function
+               is non-reentrant.
+
+					NOTE: This is a internal function not intended for
+               for use by the application program.
+
+PARAMETER1:		ADC channel number 0 to 7, AIN0-AIN7.
+
+               CH  	Single-Ended 	  Differential       4-20ma
+		    		--		------------   ----------------   	-------
+		 			0	  	   AIN0 			+AIN0  and  -AIN1  	 AIN0
+					1        AIN1                              AIN1
+		 			2	  	   AIN2 			+AIN2  and  -AIN3     AIN2
+		 			3	  	   AIN3                              AIN3
+		 			4	  	   AIN4 			+AIN4  and  -AIN5
+		 			5	  	   AIN5
+					6	  	   AIN6 			+AIN6  and  -AIN7
+		 			7	  	   AIN7
+
+PARAMETER2:   	Select the mode of operation for the ADC channel
+               calibration data being read. Values are as follows:
+
+            	0 = Single-Ended, unipolar 0 - 20V
+		   		1 = Single-Ended, bipolar ±10V
+		   		2 = Differential, bipolar ±20V
+					3 = 4-20ma operation
+
+PARAMETER3:		Gaincode of 0 to 7. The table below applies for Single
+					Ended, Differential modes, and 4-20ma modes:
+
+					Gaincode  Macro	SE-Unipolar  SE-Bipolar  DIFF_Bipolar
+					--------  ------	-----------  ----------  ----------
+		 			0 	  		GAIN_X1		20V         ±10V   	  ±20V
+		 			1 	  		GAIN_X2	   10V			 ±5V       ±10V
+		 			2 	  		GAIN_X4		 5V 		  ±2.5V	      ±5V
+		 			3 	  		GAIN_X5 	    4V		  ±2.0V		   ±4V
+		 			4 	  		GAIN_X8**  2.5V		 ±1.25V	    ±2.5V
+		 			5 	  		GAIN_X10		 2V	  	 ±1.00V 		   ±2V
+		 			6 	  		GAIN_X16	 1.25V	   	----	  	±1.25V
+		 			7 	  		GAIN_X20	 1.00V	   	----     ±1.00V
+
+					** is used for 4-20ma operation.
+
+					Notes:
+					------
+		    		SE = Signal-Ended mode
+            	DI = Differential Mode
+
+PARAMETER4:	 	Calibration structure pointer to gain and offset values.
+
+RETURN VALUE:	 0, successful write to simulated eeprom.
+					-1, invalid address or range.
+
+
+SEE ALSO:		_anaInEERd, _anaOutEEWr, _anaOutEERd
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+int _anaInEEWr(int channel, int opmode, int gaincode, void *cal_data)
+{
+	auto int	status;
+	auto int ee_address;
+
+ 	switch(opmode)
+   {
+		case 0:
+			//	Calculate the offset into the user block of where the
+         // calibration constants are stored for a given A/D channel.
+			ee_address = CAL_ADC_SE0;
+         ee_address += gaincode * 48;
+			ee_address += channel * 6;
+			// read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_WRITE);
+			break;
+
+      case 1:
+			//	Calculate the offset into the user block of where the
+         // calibration constants are stored for a given A/D channel.
+			ee_address = CAL_ADC_SE1;
+         ee_address += gaincode * 48;
+			ee_address += channel * 6;
+			// read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_WRITE);
+			break;
+
+		case 2:
+			switch(channel)
+			{
+				case 0: case 1: 	channel = 0; break;
+				case 2: case 3:	channel = 1; break;
+				case 4: case 5:	channel = 2; break;
+				case 6: case 7:	channel = 3; break;
+
+				default:
+					// channel is incorrect for differential mode
+					exception(-ERR_BADPARAMETER);
+					exit(-ERR_BADPARAMETER);
+			}
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			ee_address = CAL_ADC_DIFF;
+         ee_address += gaincode * 24;
+			ee_address += channel * 6;
+
+			// read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_WRITE);
+         break;
+
+      case 3:
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			ee_address = CAL_ADC_MA;
+			ee_address += channel * 6;
+			// read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_WRITE);
+			break;
+
+      default:
+      	status = -1;
+         break;
+
+   }
+	return(status);
+}
+
+/*** BeginHeader _anaOutEERd */
+int _anaOutEERd(int channel, int config, void *cal_data);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_anaOutEERd					<BL26XX.LIB>
+
+SYNTAX:			int _anaOutEERd(int channel, int config, void *cal_data);
+
+DESCRIPTION:   Reads the calibration constants, gain and offset,  from
+					the eeprom located on the BL2600 base unit. This function
+               is non-reentrant.
+
+					NOTE: This is a internal function not intended for
+               for use by the application program.
+
+PARAMETER1:		The D/A output channel (0 - 3) for which the calibration
+               constants will be read.
+
+PARAMETER2:		DAC configuration used to index into the calibration
+					constants lookup table.
+
+               0 = 0 - 10V calibration data.
+               1 = ±10V calibration data.
+               2 = 4 - 20ma calibration data (unipolar configuration)
+               3 = 4 - 20ma calibration data (bipolar configuration)
+
+PARAMETER3:	 	Calibration structure pointer to gain and offset values.
+
+RETURN VALUE:	 0, If successful.
+					-1, invalid address or range.
+
+SEE ALSO:		 _anaInEEWr, _anaInEEWr, _anaOutEEWr
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+int _anaOutEERd(int channel, int config, void *cal_data)
+{
+	auto int	status;
+	auto int ee_address;
+
+ 	switch(config)
+   {
+		case 0:
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			ee_address = CAL_DACV_UNIPOLAR + (channel * 6);
+
+			// read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_READ);
+			break;
+
+      case 1:
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			ee_address = CAL_DACV_BIPOLAR + (channel * 6);
+
+         // read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_READ);
+			break;
+
+		case 2:
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			ee_address = CAL_DACI_UNIPOLAR + (channel * 6);
+
+			// read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_READ);
+         break;
+
+      case 3:
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			ee_address = CAL_DACI_BIPOLAR + (channel * 6);
+
+			// read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_READ);
+			break;
+
+      default:
+      	status = -1;
+         break;
+
+   }
+   return(status);
+}
+
+/*** BeginHeader _anaOutEEWr */
+int _anaOutEEWr(int channel, int config, void *cal_data);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_anaOutEEWr					<BL26XX.LIB>
+
+SYNTAX:			int _anaOutEEWr(int channel, int config, void *cal_data);
+
+DESCRIPTION:	Writes the calibration constants, gain and offset,  to
+					the eeprom located on the BL2600 base unit. This function
+               is non-reentrant.
+
+					NOTE: This is a internal function not intended for
+               for use by the application program.
+
+PARAMETER1:		The D/A output channel (0 - 3) for which the calibration
+               constants will be written.
+
+PARAMETER2:		DAC configuration used to index into the calibration
+					constants lookup table.
+
+               0 = 0 - 10V calibration data.
+               1 = ±10V calibration data.
+               2 = 4 - 20ma calibration data (unipolar configuration).
+               3 = 4 - 20ma calibration data (bipolar configuration).
+
+PARAMETER3:	 	Calibration structure pointer to gain and offset values.
+
+RETURN VALUE:	 0 = Data was successfully written to the eeprom.
+					-1 = Invalid address or range.
+
+SEE ALSO:      _anaInEEWr, _anaInEEWr, _anaOutEERd
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+int _anaOutEEWr(int channel, int config, void *cal_data)
+{
+	auto int	status;
+	auto int ee_address;
+
+ 	switch(config)
+   {
+		case 0:
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			ee_address = CAL_DACV_UNIPOLAR + (channel * 6);
+
+			// read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_WRITE);
+			break;
+
+      case 1:
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			ee_address = CAL_DACV_BIPOLAR + (channel * 6);
+			// read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_WRITE);
+			break;
+
+		case 2:
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			ee_address = CAL_DACI_UNIPOLAR + (channel * 6);
+
+			// read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_WRITE);
+         break;
+
+      case 3:
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			ee_address = CAL_DACI_BIPOLAR + (channel * 6);
+
+			// read calibration constants from flash
+			status = _eePromAccess(cal_data, ee_address, 6, EEPROM_WRITE);
+			break;
+
+      default:
+      	status = -1;
+         break;
+   }
+   return(status);
+}
+
+
+/*** BeginHeader brdInit */
+void brdInit(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+brdInit						<BL26XX.LIB>
+
+SYNTAX:			void brdInit(void);
+
+DESCRIPTION:	Call this function at the beginning of application code
+					to initialize the controller's I/O ports.
+
+					Port	Function 		I/O		brdInit State
+					----- -------------  -------  ------------
+					PA0	ID0	 		   I/O	  	Pulled-up
+					PA1	ID1	 			I/O		Pulled-up
+					PA2	ID2	 			I/O		Pulled-up
+					PA3	ID3	 			I/O 		Pulled-up
+					PA4	ID4    			I/O 		Pulled-up
+					PA5	ID5    			I/O 		Pulled-up
+					PA6	ID6    			I/O 		Pulled-up
+					PA7	ID7    			I/O 		Pulled-up
+					PB0	N/C 				Input		Pulled-up
+					PB1	N/C 			 	Input		Pulled-up
+					PB2	IA0				Output	High
+					PB3	IA1				Output   High
+					PB4	IA2				Output   High
+					PB5	N/C				Output	High
+					PB6	N/C				Output	High
+					PB7	N/C				Output	High
+					PC0	TXD SPI			Output   High
+					PC1	RXD SPI        Input    Pulled-up
+               PC2	TXC UART       Output   High
+					PC3	RXC UART       Input    Pulled-up
+					PC4	N/C  				Output   High
+					PC5	N/C            Input    Pulled-up
+					PC6	Prog Port      Output   Low
+					PC7	Prog Port      Input    Pulled-up
+					PD0   ENET	         Output   See Note
+               PD1   ENET	         Output   See Note
+					PD2   N/C        		Output   Low
+					PD3   N/C	        	Output   Low
+					PD4   /LDAC 	      Output   Low
+					PD5   PD5_485_232    Output   Low
+					PD6   N/C				Output   Low
+					PD7   N/C            Output   Low
+					PE0   ENET           Output   See Note
+					PE1   PE1_IOST       Output   High
+					PE2 	ENET           Output   See Note
+					PE3 	485_Tx_En      Output   Low
+					PE4 	IN00           Input    Pulled-up
+					PE5 	IN01           Input    Pulled-up
+					PE6 	N/C        		Output	Low
+					PE7 	N/C            Output	Low
+					PF0 	Serial CLKD    Output	Low
+					PF1 	ADC_Busy       Input		Pulled-up
+               PF2 	IN02          	Input    Pulled-up
+					PF3 	IN03           Input    Pulled-up
+					PF4 	IN04           Input    Pulled-up
+					PF5	IN05           Input    Pulled-up
+					PF6 	IN06           Input    Pulled-up
+					PF7 	IN07           Input    Pulled-up
+					PG0 	EE_CLK         Output
+					PG1 	EE_Data        O.C      Pulled-up
+					PG2 	TXF            Output	High
+					PG3 	RXF            Input		Pulled-up
+					PG4 	PG4_OE         Output	Low
+					PG5 	N/C	         Output	Low
+					PG6 	TXE            Output	High
+					PG7 	RXE            Input		Pulled-up
+
+
+               Note:
+               -----
+               The ethernet signals will be configured depending
+               on which core module is being used, here's a list
+               of the possible configuration.
+
+               Sig	RCM3000 RCM3100 RCM3200 RCM3300
+               ---   ------- ------- ------- -------
+               PD0   ENET 		OUT    ENET    OUT
+               PD1   ENET  	OUT 	 OUT     OUT
+               PE0   ENET 		OUT    ENET    ENET
+               PE2   ENET 		OUT    ENET    ENET
+
+               - ENET indicates the signal will be initialized by
+               the ethernet driver.
+
+               - OUT indicates the signal will be set to be an
+               output and set to a logic low.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		Please refer to the user manual for a complete listing
+					of all API functions for the BL2600 controller.
+
+END DESCRIPTION **********************************************************/
+
+_bl2600_nodebug
+void brdInit(void)
+{
+   auto long clkrate;
+   auto char cmd;
+
+   #GLOBAL_INIT{__SPIShadow=0xFB;}
+   #GLOBAL_INIT{__bank0_shadow=0x00;}
+   #GLOBAL_INIT{__bank1_shadow=0x00;}
+   #GLOBAL_INIT{__bank2_shadow=0x00;}
+
+   #GLOBAL_INIT
+	{
+   	// Number of CPU cycles required to obtain a period of 1 usec
+		numcycles_1us = (int)(19200L*32*freq_divider/1000000L)+1;
+ 	}
+
+	//---------------------------------------------------------------------
+	// Port A configuration
+	//
+   //	PA0	ID0	 	I/O 	 Pulled-up
+	//	PA1	ID1	 	I/O 	 Pulled-up
+	//	PA2	ID2	 	I/O 	 Pulled-up
+	//	PA3	ID3	 	I/O 	 Pulled-up
+	//	PA4	ID4    	I/O 	 Pulled-up
+	//	PA5	ID5    	I/O  	 Pulled-up
+	//	PA6	ID6    	I/O  	 Pulled-up
+	//	PA7	ID7    	I/O 	 Pulled-up
+   // Initialize port A & B for Aux I/O BUS operation.
+	//---------------------------------------------------------------------
+   #if _USER
+   _sys_setauxio(1);
+   #else
+   WrPortI(SPCR, &SPCRShadow, 0x8C);
+   #endif
+	WrPortI(PADR, &PADRShadow, 0xFF);		//set to output all high
+
+	//---------------------------------------------------------------------
+	// Port B configuration
+	//
+	//	PB0	N/C 				Input		Pulled-up
+	//	PB1	N/C 			 	Input		Pulled-up
+	//	PB2	IA0				Output	High
+	//	PB3	IA1				Output   High
+	//	PB4	IA2				Output   High
+	//	PB5	N/C				Output	High
+	//	PB6	N/C				Output	High
+	//	PB7	N/C				Output	High
+   // Port B is initialized for Aux I/O BUS operation via SPCR register.
+	//---------------------------------------------------------------------
+   // Set port B pins PB2 - PB7 lines to be outputs, PB0 and PB1 as inputs
+   WrPortI(PBDR, &PBDRShadow, 0xFC);
+   WrPortI(PBDDR, &PBDDRShadow, 0xFC);
+
+	//---------------------------------------------------------------------
+	// Port C configuration
+	//
+   //	PC0	TXD SPI		Output   High
+	//	PC1	RXD SPI  	Input    Pulled-up
+   // PC2	TXC UART 	Output   High
+	// PC3	RXC UART 	Input    Pulled-up
+	//	PC4	N/C  			Output   High
+	//	PC5	N/C      	Input    Pulled-up
+	//	PC6	Prog Port	Output   Low
+	//	PC7	Prog Port	Input    Pulled-up
+   // Notes:
+   // 1. SPI port D will be initialized after all uP pins are initialized.
+   // 2. UART serial port A will be initialized by the BIOS.
+   // 3. UART serial port C will be initialized by the serial open API
+   //    function if used by the application program.
+	//---------------------------------------------------------------------
+   // Set the serial port B to be normal I/O pins
+   WrPortI(PCFR, &PCFRShadow, (PCFRShadow&~0x10));
+
+	//---------------------------------------------------------------------
+	// Port D configuration
+	//
+   //	PD0   ENET	         Output   See Below
+   // PD1   ENET	         Output   See below
+	//	PD2   N/A        		Output   Low
+	//	PD3   N/A	        	Output   Low
+	//	PD4   /LDAC 	      Output   Low
+	//	PD5   Serial_Select  Output   Low
+	//	PD6   N/A				Output   Low
+	//	PD7   N/A            Output   Low
+   //
+   //  Sig	RCM3000 RCM3100 RCM3200 RCM3300
+   //  ---  ------- ------- ------- -------
+   //  PD0   ENET 	OUT    ENET    OUT
+   //  PD1   ENET  	OUT 	 OUT     OUT
+   //  PE0   ENET 	OUT    ENET    ENET
+   //  PE2   ENET 	OUT    ENET    ENET
+	//---------------------------------------------------------------------
+   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  &~ 0xFC));
+   WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow  &~ 0xFF));
+   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0xFC));
+   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0xFC));
+   WrPortI(PDCR,  &PDCRShadow,  0x00);
+
+   #ifdef BL26_ENET_OPT0 // Core type is RCM3000
+   // Nothing to be done....
+   #endif
+
+   #ifdef BL26_ENET_OPT1 // Core type is RCM3100
+   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  &~ 0x03));
+   WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow  &~ 0x03));
+   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0x03));
+   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0x03));
+   #endif
+
+   #ifdef BL26_ENET_OPT2 // Core type is RCM3200
+   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  &~ 0x02));
+   WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow  &~ 0x02));
+   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0x02));
+   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0x02));
+   #endif
+
+   #ifdef BL26_ENET_OPT3 // Core type is RCM3300
+   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  &~ 0x03));
+   WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow  &~ 0x03));
+   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0x03));
+   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0x03));
+   #endif
+
+	//---------------------------------------------------------------------
+	// Port E configuration
+	//
+   //	PE0   ENET           Output   See Below
+	//	PE1   Ext Strobe     Output   High
+	//	PE2 	ENET           Output   See Below
+	//	PE3 	485_Tx_En      Output   Low
+	//	PE4 	In0            Input    Pulled-up
+	//	PE5 	In1            Input    Pulled-up
+	//	PE6 	N/C	         Output	Low
+	//	PE7 	N/C            Output	Low
+   //
+   //  Sig	RCM3000 RCM3100 RCM3200 RCM3300
+   //  ---  ------- ------- ------- -------
+   //  PD0   ENET 	OUT    ENET    OUT
+   //  PD1   ENET  	OUT 	 OUT     OUT
+   //  PE0   ENET 	OUT    ENET    ENET
+   //  PE2   ENET 	OUT    ENET    ENET
+	//---------------------------------------------------------------------
+
+   WrPortI(PEFR,  &PEFRShadow,  (PEFRShadow  &~ 0xF8));
+   WrPortI(PEFR,  &PEFRShadow,  (PEFRShadow  |  0x02));
+   WrPortI(PEDR,  &PEDRShadow,  (PEDRShadow  &~ 0xFA));
+   WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow |  0xCA));
+   WrPortI(PECR,  &PECRShadow,  0x00);
+
+   // Set PE1....1 wait state, IORD & IOWR, with writes enabled
+	WrPortI(IB1CR, &IB1CRShadow, 0xF8);
+
+   #ifdef BL26_ENET_OPT0 // Core type is RCM3000
+   // Nothing to be done....
+   #endif
+
+   #ifdef BL26_ENET_OPT1 // Core type is RCM3100
+   WrPortI(PEFR,  &PEFRShadow,  (PEFRShadow  &~ 0x05));
+   WrPortI(PEDR,  &PEDRShadow,  (PEDRShadow  &~ 0x05));
+   WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow |  0x05));
+  	#endif
+
+   #ifdef BL26_ENET_OPT2 // Core type is RCM3200
+   // Nothing to be done....
+   #endif
+
+   #ifdef BL26_ENET_OPT3 // Core type is RCM3300
+   // Nothing to be done....
+   #endif
+
+
+   //---------------------------------------------------------------------
+	// Port F configuration
+	//
+	// PF0 	Serial CLKD    Output	Low
+	//	PF1 	ADC_Busy       Input		Pulled-up
+   // PF2 	IN02          	Input    Pulled-up
+	// PF3 	IN03           Input    Pulled-up
+	//	PF4 	IN04           Input    Pulled-up
+	//	PF5	IN05           Input    Pulled-up
+	//	PF6 	IN06           Input    Pulled-up
+	//	PF7 	IN07           Input    Pulled-up
+	//---------------------------------------------------------------------
+   WrPortI(PFFR,  &PFFRShadow,  0x01);
+   WrPortI(PFDR,  &PFDRShadow,  0x00);
+   WrPortI(PFDDR, &PFDDRShadow, 0x01);
+   WrPortI(PFDCR, &PFDCRShadow, 0x00);
+   WrPortI(PFCR,  &PFCRShadow,  0x00);
+
+	//---------------------------------------------------------------------
+	// Port G configuration
+   //
+	//	PG0 	EE_CLK         Output
+	//	PG1 	EE_Data        O.C      Pulled-up
+	//	PG2 	TXF            Output	High
+	//	PG3 	RXF            Input		Pulled-up
+	//	PG4 	PG4_OE         Output	Low
+   //	PG5 	N/C	         Output	Low
+	//	PG6 	TXE            Output	High
+	//	PG7 	RXE            Input		Pulled-up
+   // ** The brdInit function MUST set this signal as an input to assure
+   //    the digital high-current outputs don't activate without proper
+   //    application control. The PG4_OE signal will be configured to be
+   //    an output by the I/O configuration API functions.
+	//---------------------------------------------------------------------
+   WrPortI(PGFR,  &PGFRShadow,  0x44);
+   WrPortI(PGDR,  &PGDRShadow,  0x11);
+   WrPortI(PGDDR, &PGDDRShadow, 0x65);
+   WrPortI(PGDCR, &PGDCRShadow, 0x02);
+   WrPortI(PGCR,  &PGCRShadow,  0x00);
+
+   //---------------------------------------------------------------------
+	// Set all digital outputs to be in a high-impedance state.
+	//---------------------------------------------------------------------
+   WrPortE(WR_BANK0, &__bank0_shadow, 0x00);
+   WrPortE(WR_BANK1, &__bank1_shadow, 0x00);
+   WrPortE(WR_BANK2, &__bank2_shadow, 0x00);
+   WrPortE(SPI_PORT_ADDR, &__SPIShadow, 0xFB);
+
+   BitWrPortI(PGFR,  &PGFRShadow,  0, 4);
+   BitWrPortI(PGDR,  &PGDRShadow,  0, 4);
+   BitWrPortI(PGDDR, &PGDDRShadow, 1, 4);
+   BitWrPortI(PGDCR, &PGDCRShadow, 0, 4);
+
+   //---------------------------------------------------------------------
+	// Initially set the SPI port for serial data transfers of 1MBit and
+   // set CLK/DATA phase for ADC and DAC operation.
+	//---------------------------------------------------------------------
+	clkrate = 115200L; // (115200 baud * 10 bits) = 1MBit/sec
+	__tdivisor = (int)((freq_divider * 19200.0/(float)clkrate + 0.5) - 1L);
+	BitWrPortI(PCFR, &PCFRShadow, 1, 0);		// Set PC0 (and PC1) as TXD and RXD
+	WrPortI(TAT7R, &TAT7RShadow, __tdivisor);	// Set the SPI bit rate for serial D
+	WrPortI(SDCR, &SDCRShadow, 0x0C);			// Use internal clock for serial D
+
+   //---------------------------------------------------------------------
+   // Set SPI for 1Msec and Rabbitnet Normal/inactive high CLK timing.
+   // (ie default for Rabbitnet operation)
+   //
+   // Note: ADC and DAC API calls will change the CLK/DATA phase timing
+   // parameter and the SPI clock parameters for proper ADC/DAC operation.
+   //---------------------------------------------------------------------
+   WrPortI(SDER, &SDERShadow, 0x00);
+
+   // Set ADC and DAC to default operating ranges
+	// - DAC set for 0 - 10v unipolar operation
+   // - ADC set for 0 - 20v unipolar operation
+
+   // Disable DAC application program error checks
+   __RangeChecking = FALSE;
+	anaOutConfig(0, 0);
+
+   // Set DAC channels 4 - 7 to 0 volts for ADC circuit to be set
+   // for unipolar input configuration.
+  	anaOut(4, 0);
+   anaOut(5, 0);
+   anaOut(6, 0);
+   anaOut(7, 0);
+
+   // Enable DAC error checking....ADC uses DAC for input circuit biasing
+   __RangeChecking = TRUE;
+
+   // Initialize Reference/Oscillator control register
+	cmd = REGISTERMODE + WR_REG + BITS8 + REG7;
+	_ads7870command(cmd, 0x3e);
+
+	// Initialize ADC control register, read-back = mode 1
+	cmd = REGISTERMODE + WR_REG + BITS8 + REG3;
+	_ads7870command(cmd, 0x04);
+
+   anaInConfig(0, 0);
+   anaInConfig(1, 0);
+   anaInConfig(2, 0);
+   anaInConfig(3, 0);
+
+   // Set flag to indicate brdInit has been executed
+   __brdInitFlag = TRUE;
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */
+
+

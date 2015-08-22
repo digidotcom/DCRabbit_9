@@ -1,0 +1,514 @@
+/* START LIBRARY DESCRIPTION *********************************************
+TCP_CONFIG.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains the default network configurations for the
+   TCP/IP samples, and any other samples which use the TCP/IP
+   networking libraries.
+
+   The appropriate set of configuration macros is selected by a
+   "master" macro, TCPCONFIG.  Most of the Z-World supplied sample
+   programs will define this macro to 1.
+
+   If TCPCONFIG is set to a number 100 or greater, then a library
+   called "custom_config.lib" will be used.  This library is not
+   distributed with Dynamic C; it is expected that it will be created
+   by each user with appropriate test (or production) settings.  The
+   advantage of creating custom_config.lib is that it will not be
+   replaced by new releases of Dynamic C.
+
+   When a new release of Dynamic C is installed, the only action
+   necessary to use custom_config.lib is the addition of its location
+   to the LIB.DIR file.
+
+   custom_config.lib can be initially created, using this library
+   file as a template.
+
+   See the documentation or function help for ifconfig() for
+   information about the possible configuration parameters.
+
+   RabbitSys Note:  you MUST use config number 10 or 11 for RabbitSys
+   programs.  This is because the TCP/IP configuration is fixed
+   in this case.  The actual configuration depends on the board
+   type (and hence flavor or RabbitSys which is resident) and the
+   installed version of RabbitSys.  Config 10 is for non-uC/OS,
+   whereas config 11 supports the tasker.
+
+CONFIGURATION MACROS:
+
+   TCPCONFIG
+
+     Define this macro to an integer to select the appropriate
+     configuration.  Numbers from 100 and up will cause the
+     "custom_config" library to be used instead of the standard settings
+     herein.
+
+     If not defined, or defined to be zero, then no configuration will
+     be defined by this library -- you will need to explicitly define
+     all configuration macros in the main program code before the
+     #use dcrtcp.lib.
+
+   TCP_CONFIG
+
+     This is an alias for the above macro.  If you use it, you will
+     get a warning.  Use TCPCONFIG instead.
+
+TCPCONFIG Predefined Configuration Table:
+
+	The following table is an overview of the predefined TCPCONFIG
+	configuration values.  Note that "Runtime" means that that value
+	only allows runtime configuration.
+
+   TCPCONFIG | Ethernet | PPP | DHCP | Runtime | Comments
+   ----------+----------+-----+------+---------+-------------------------------
+       1     |   Yes    | No  | No   |   No    |
+   ----------+----------+-----+------+---------+-------------------------------
+       2     |   No     | Yes | No   |   No    |
+   ----------+----------+-----+------+---------+-------------------------------
+       3     |   Yes    | No  | Yes  |   No    |
+   ----------+----------+-----+------+---------+-------------------------------
+       4     |   Yes    | Yes | No   |   No    |
+   ----------+----------+-----+------+---------+-------------------------------
+       5     |   Yes    | No  | Yes  |   No    | Like #3, but no optional flags
+   ----------+----------+-----+------+---------+-------------------------------
+       6     |   Yes    | No  | No   |   Yes   |
+   ----------+----------+-----+------+---------+-------------------------------
+       7     |   Yes    | No  | Yes  |   No    | DHCP, with static IP fallback
+   ----------+----------+-----+------+---------+-------------------------------
+       8     |   No     | Yes | Yes  |   No    | PPP with modem support **
+   ----------+----------+-----+------+---------+-------------------------------
+       9     | Y (WiFi) | No  | No   |   No    | Prism2 chipset WiFi
+   ----------+----------+-----+------+---------+-------------------------------
+       10    | Y (WiFi) | No  | Yes  |   No    | Prism2 chipset WiFi, DHCP
+   ----------+----------+-----+------+---------+-------------------------------
+
+   ** Config 8 (PPP) assumes a modem is connected to serial port B, with
+      hardware flow control.  This is unlikely to work without modification.
+      It is intended more as a template for setting up your own configuration.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#ifndef TCP_CONFIG_H
+#define TCP_CONFIG_H
+
+#if __RABBITSYS
+	#ifndef TCPCONFIG
+   	#ifdef MCOS
+   		#define TCPCONFIG 12
+      #else
+      	#define TCPCONFIG 11
+		#endif
+   #endif
+   #if TCPCONFIG != 11 && TCPCONFIG != 12
+   	#undef TCPCONFIG
+   	#ifdef MCOS
+   		#define TCPCONFIG 12
+      #else
+      	#define TCPCONFIG 11
+		#endif
+   #endif
+#endif
+
+#ifndef TCPCONFIG
+	// Check for a common mistake.  TCPCONFIG is the correct macro name, but
+	// it's easy to try TCP_CONFIG instead.  Flag a warning and use the value
+	// anyway in that case.
+	#ifndef TCP_CONFIG
+   	#warnt "TCPCONFIG was not defined.  Defaulting to 0 (no predefined config)."
+      #warnt "To get rid of this warning, explicitly #define TCPCONFIG 0."
+		#define TCPCONFIG		0		// Zero means do not do any configuration: expects
+											// all config items to be defined in the main
+											// program.
+	#else
+		#define TCPCONFIG TCP_CONFIG
+		#warnt "TCPCONFIG is the correct TCP/IP config macro. Using TCP_CONFIG anyway..."
+	#endif
+#endif
+
+#if TCPCONFIG >= 100
+	#use "custom_config.lib"
+#else
+
+	/*
+	 * General Configuration:  You can specify your IP address, netmask,
+	 * name server, and gateway here, and they will be used in each of
+	 * the individual configurations below.
+	 */
+	#define _PRIMARY_STATIC_IP		"10.10.6.100"
+	#define _PRIMARY_NETMASK		"255.255.255.0"
+	#ifndef MY_NAMESERVER
+		#define MY_NAMESERVER		"10.10.6.1"
+	#endif
+	#ifndef MY_GATEWAY
+		#define MY_GATEWAY			"10.10.6.1"
+	#endif
+
+
+   /*
+    * WiFi Configuration: The following parameters can be changed to suit your
+    * 						  WiFi network configurations.
+    *
+    */
+
+  	// The following 4 keys can be selected, when using WEP encryption.
+   // Keys can be modified to match your access point or peer.
+   // Note that shorter keys are supported--in this case,
+   // shorten the key arrays below to the appropriate size.
+	#define _WIFI_KEY0 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89
+	#define _WIFI_KEY1 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89
+	#define _WIFI_KEY2 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89
+	#define _WIFI_KEY3 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89
+
+   // _WIFI_MODE can be defined as WIFICONF_INFRASTRUCT or WIFICONF_ADHOC
+   #define _WIFI_MODE			WIFICONF_INFRASTRUCT
+
+   // _WIFI_SSID is the name of the Service Set you prefer to connect to when
+   // operating in Infrastructure mode. (Length of string can be 0-32
+   // characters).  Set the SSID option to restrict it to a specific access
+   // point (again, the channel can be chosen automatically).  See the WiFi
+   // documentation for more configuration information.
+   #define _WIFI_SSID			""
+
+    // _WIFI_OWNCHANNEL and _WIFI_OWNSSID specify the communications channel
+   //  and SSID to be used if creating your own BSS. (ex. in Adhoc mode)
+   #define _WIFI_OWNCHANNEL	"10"				// Channel "0" through "14". Note that
+   														// different regions have different channel
+                                             // usage restrictions. Please check your country's
+                                             // RF regulatory commission for appropriate channel
+                                             // numbers to use for IEEE 802.11 networks.
+   #define _WIFI_OWNSSID	 	"rabbitTest"	// String specifying your BSS
+   														// id, between 1-32 characters.
+
+   // _WIFI_WEP_FLAG set to WIFICONF_WEP_ENABLE turns on key-based encryption,
+   // WIFICONF_WEP_DISABLE turns off encryption.
+   #define _WIFI_WEP_FLAG		WIFICONF_WEP_DISABLE
+
+   // _WIFI_AUTH_MODE specifies which authentication algorithm to use when
+   // connecting to another BSS.  Choose from WIFICONF_AUTH_OPEN_SYS,
+   // WIFICONF_AUTH_SHARED_KEY or WIFICONF_AUTH_ALL
+   #define _WIFI_AUTH_MODE		WIFICONF_AUTH_ALL
+
+   // _WIFI_USEKEY specifies which key from the above 4 keys, "0" through "3",
+   // we want to use, if you are using WEP encryption.
+   #define _WIFI_USEKEY			"0"
+
+   /*
+    * End WiFi Configuration
+    */
+
+
+	#if TCPCONFIG == 1
+		/*
+		 * Config 1: Simple static configuration of single ethernet interface
+		 */
+		#define USE_ETHERNET		1
+		#define IFCONFIG_ETH0 \
+				IFS_IPADDR,aton(_PRIMARY_STATIC_IP), \
+				IFS_NETMASK,aton(_PRIMARY_NETMASK), \
+				IFS_UP
+
+	#endif
+
+	#if TCPCONFIG == 2
+		/*
+		 * Config 2: Simple configuration with serial PPP interface on serial port C.
+		 */
+		#define USE_PPP_SERIAL	0x04		// Serial port C
+		#define PPP_SPEED			19200L
+
+	#endif
+
+	#if TCPCONFIG == 3
+		/*
+		 * Config 3: Dynamic configuration of single ethernet interface using DHCP.
+		 *           No fallbacks.
+		 */
+		#define USE_ETHERNET		1
+		#define USE_DHCP
+		#define DHCP_NUM_SMTP 1		// Get an SMTP server if possible
+		#define DHCP_CLASS_ID "Rabbit-TCPIP:Z-World:DHCP-Test:1.0.0"
+		#define DHCP_CLIENT_ID_MAC
+		#define IFCONFIG_ETH0 \
+				IFS_DHCP, 1, \
+				IFS_UP
+
+	#endif
+
+	#if TCPCONFIG == 4
+		/*
+		 * Config 4: Static configuration of both ethernet and PPP over serial port C.
+		 */
+		#define USE_PPP_SERIAL	0x04		// Serial port C
+		#define PPP_SPEED			19200L
+		#define USE_ETHERNET		1
+		#define IFCONFIG_ETH0 \
+				IFS_IPADDR,aton(_PRIMARY_STATIC_IP), \
+				IFS_NETMASK,aton(_PRIMARY_NETMASK), \
+				IFS_UP
+
+	#endif
+
+	#if TCPCONFIG == 5
+		/*
+		 * Config 5: Dynamic configuration of single ethernet interface using DHCP.
+		 *           Same as config #3, except does not predefine any of the
+		 *           optional flags.  This is a "blank slate" setting.
+		 *           Defines static fallbacks from definitions at top of this module.
+		 */
+		#define MY_IP_ADDRESS   _PRIMARY_STATIC_IP
+		#define MY_NETMASK		_PRIMARY_NETMASK
+		#define USE_ETHERNET		1
+		#define USE_DHCP
+		#define IFCONFIG_ETH0 \
+				IFS_DHCP, 1, \
+				IFS_UP
+
+	#endif
+
+	#if TCPCONFIG == 6
+		/*
+		 * Config 6: Empty Ethernet config that sets up nothing.  This is
+		 *           useful if all configuration will be done at run-time.
+		 */
+		#define USE_ETHERNET		1
+		#define IFCONFIG_ETH0 \
+				IFS_DOWN
+	#endif
+
+	#if TCPCONFIG == 7
+		/*
+		 * Config 7: DHCP Config with fallback to static address.
+		 *
+		 */
+
+		#define USE_DHCP
+		#define USE_ETHERNET	1
+		#define MY_IP_ADDRESS   _PRIMARY_STATIC_IP
+		#define MY_NETMASK	_PRIMARY_NETMASK
+		#define	IFCONFIG_ETH0        \
+				IFS_DHCP, 1, \
+				IFS_IPADDR,aton(MY_IP_ADDRESS), \
+				IFS_NETMASK,aton(MY_NETMASK), \
+				IFS_DHCP_FALLBACK, 1, \
+				IFS_UP
+	#endif
+
+	#if TCPCONFIG == 8
+		/*
+		 * Config 8: PPP over serial port B, with typical 57.6k Hayes-compatible modem handling.
+		 * DTE speed is set to 115200bps.
+       * Hardware flow control used, with CTS pin is assumed to be on PB0, RTS pin on PB6.
+       * This should be used as a template for your own configuration, since there are so
+       * many possibilities.
+		 */
+
+	   #define USE_PPP_SERIAL 0x02      // 0x02 for SERB, 0x04 for SERC, 0x08 for SERD, 0x10 for SERE
+	   #define IFCONFIG_PPP1   IFS_PPP_SPEED, 115200L, \
+	                           IFS_PPP_RTSPIN, PBDR, NULL, 6, \
+	                           IFS_PPP_CTSPIN, PBDR, 0, \
+	                           IFS_PPP_FLOWCONTROL, 1, \
+	                           IFS_PPP_REMOTEAUTH, "isp_logonid", "mY_PAsSwOrD", \
+	                           IFS_PPP_SENDEXPECT, "ATZ0E0 OK ATDT5555555 #ogin: %0 #word: %1 ~", \
+	                           IFS_PPP_MODEMESCAPE, 1, \
+	                           IFS_PPP_HANGUP, "ATH0 #ok", \
+	                           IFS_PPP_PASSIVE, 0, \
+	                           IFS_PPP_USEMODEM, 1, \
+	                           IFS_PPP_REMOTEIP, 0x0A0A0A01, \
+	                           IFS_UP
+	#endif
+	#if TCPCONFIG == 9
+		/*
+		 * Config 9: Simple static configuration of single WIFI interface
+		 */
+
+       // Indicate that we are using a single WiFi card
+		#define USE_WIFI 1
+
+      // Basic network configuration.
+		#define IFCONFIG_WIFI0 \
+				IFS_IPADDR,aton(_PRIMARY_STATIC_IP), \
+				IFS_NETMASK,aton(_PRIMARY_NETMASK), \
+				IFS_UP
+
+      // Use the Prism2 via an interposer board packet driver
+      #define WIFI_PKTDRV "cfprisminterp.lib"
+
+      // Create arrays with the keys
+	   const char _wifi_key0[] = { _WIFI_KEY0 };
+	   const char _wifi_key1[] = { _WIFI_KEY1 };
+	   const char _wifi_key2[] = { _WIFI_KEY2 };
+	   const char _wifi_key3[] = { _WIFI_KEY3 };
+
+	   // set the default wifi paramenters before sock_init()
+	   #define WIFI_INIT \
+	         wifi_ioctl(IF_WIFI0,WIFI_MODE, _WIFI_MODE,0);    \
+	         wifi_ioctl(IF_WIFI0,WIFI_SSID, _WIFI_SSID,0);       \
+	         wifi_ioctl(IF_WIFI0,WIFI_OWNCHAN, _WIFI_OWNCHANNEL,0);    \
+	         wifi_ioctl(IF_WIFI0,WIFI_OWNSSID, _WIFI_OWNSSID,0);    \
+	         wifi_ioctl(IF_WIFI0,WIFI_WEP_FLAG, _WIFI_WEP_FLAG,0);      \
+	         wifi_ioctl(IF_WIFI0,WIFI_AUTH, _WIFI_AUTH_MODE,0);      \
+	         wifi_ioctl(IF_WIFI0,WIFI_WEP_USEKEY, _WIFI_USEKEY,0); \
+	         wifi_ioctl(IF_WIFI0,WIFI_WEP_KEY0,_wifi_key0,sizeof(_wifi_key0));  \
+	         wifi_ioctl(IF_WIFI0,WIFI_WEP_KEY1,_wifi_key1,sizeof(_wifi_key1));  \
+	         wifi_ioctl(IF_WIFI0,WIFI_WEP_KEY2,_wifi_key2,sizeof(_wifi_key2));  \
+	         wifi_ioctl(IF_WIFI0,WIFI_WEP_KEY3,_wifi_key3,sizeof(_wifi_key3));
+	#endif
+	#if TCPCONFIG == 10
+      /*
+		 * Config 10: Dynamic configuration of single WIFI interface using DHCP.
+		 */
+
+		// Indicate that we are using a single WiFi card.
+		#define USE_WIFI 1
+
+		#define USE_DHCP
+
+		#define MY_IP_ADDRESS   _PRIMARY_STATIC_IP
+		#define MY_NETMASK		_PRIMARY_NETMASK
+
+  	   // Basic network configuration, with DHCP.
+		#define	IFCONFIG_WIFI0        \
+				IFS_DHCP, 1, \
+				IFS_UP
+
+      // Use the Prism2 via an interposer board packet driver
+      #define WIFI_PKTDRV "cfprisminterp.lib"
+
+      // Create arrays with the keys
+	   const char _wifi_key0[] = { _WIFI_KEY0 };
+	   const char _wifi_key1[] = { _WIFI_KEY1 };
+	   const char _wifi_key2[] = { _WIFI_KEY2 };
+	   const char _wifi_key3[] = { _WIFI_KEY3 };
+
+	   // set the default wifi paramenters before sock_init()
+		#define WIFI_INIT \
+	         wifi_ioctl(IF_WIFI0,WIFI_MODE, _WIFI_MODE,0);    \
+	         wifi_ioctl(IF_WIFI0,WIFI_SSID, _WIFI_SSID,0);       \
+	         wifi_ioctl(IF_WIFI0,WIFI_OWNCHAN, _WIFI_OWNCHANNEL,0);    \
+	         wifi_ioctl(IF_WIFI0,WIFI_OWNSSID, _WIFI_OWNSSID,0);    \
+	         wifi_ioctl(IF_WIFI0,WIFI_WEP_FLAG, _WIFI_WEP_FLAG,0);      \
+	         wifi_ioctl(IF_WIFI0,WIFI_AUTH, _WIFI_AUTH_MODE,0);      \
+	         wifi_ioctl(IF_WIFI0,WIFI_WEP_USEKEY, _WIFI_USEKEY,0); \
+	         wifi_ioctl(IF_WIFI0,WIFI_WEP_KEY0,_wifi_key0,sizeof(_wifi_key0));  \
+	         wifi_ioctl(IF_WIFI0,WIFI_WEP_KEY1,_wifi_key1,sizeof(_wifi_key1));  \
+	         wifi_ioctl(IF_WIFI0,WIFI_WEP_KEY2,_wifi_key2,sizeof(_wifi_key2));  \
+	         wifi_ioctl(IF_WIFI0,WIFI_WEP_KEY3,_wifi_key3,sizeof(_wifi_key3));
+	#endif
+	#if TCPCONFIG == 11 || TCPCONFIG == 12
+   	/*
+       * This is RabbitSys.  The configuration depends on the board type and version.  Do not
+       * change any of this, since the definitions for the kernel and the user program must
+       * match!
+       */
+      #if TCPCONFIG == 11
+	      #ifdef MCOS
+	         // Check for inappropriate config
+	         #error "Cannot use uC/OS with TCPCONFIG 11"
+	      #endif
+      #elif TCPCONFIG == 12
+	      #ifndef MCOS
+	         #error "Must use uC/OS with TCPCONFIG 12"
+	      #endif
+      #endif
+
+		#if __RABBITSYS != 1
+	      // Generic settings (independent of board type)...
+	      #define USE_VSPD        0x3F   // All serial ports
+	      #define USE_PPP_SERIAL  0        // no PPP as yet
+	      #define USE_PPPOE       0
+      #endif //rabbitsys!=1
+      // Note that any IFCONFIG_* definitions are only applied by the
+      // kernel.  They are basically ignored on the user side.
+      #define IFCONFIG_PPP0	IFS_DOWN, IFS_IPADDR, 1L
+      #define IFCONFIG_PPP1	IFS_DOWN, IFS_IPADDR, 1L
+      #define IFCONFIG_PPP2	IFS_DOWN, IFS_IPADDR, 1L
+      #define IFCONFIG_PPP3	IFS_DOWN, IFS_IPADDR, 1L
+      #define IFCONFIG_PPP4	IFS_DOWN, IFS_IPADDR, 1L
+      #define IFCONFIG_PPP5	IFS_DOWN, IFS_IPADDR, 1L
+
+
+      #define MAX_DOMAIN_LENGTH	128
+      #define DNS_MAX_NAME			MAX_DOMAIN_LENGTH
+		#define TCP_FASTSOCKETS 1
+
+
+
+      #define ETH_MTU		1500
+      #define PPP_MTU		1500
+      #define ETH_MAXBUFS	10
+      #define PKT_XBUFS		30
+
+      #define VIRTUAL_ETH	0			// No multi-homing
+
+      #define MAX_STRING	64
+      #define MAX_NAMESERVERS	2
+
+
+      #define TCP_DATAHANDLER
+      #define DNS_MAX_RESOLVES	2
+   	#define TCP_TWTIMEOUT 2000L
+	   #define KEEPALIVE_NUMRETRYS 4
+	   #define KEEPALIVE_WAITTIME 60
+
+
+      // Board-specific settings...
+      #if (_BOARD_TYPE_ >= RCM3300A) && (_BOARD_TYPE_ <= (RCM3300A+0x00FF)) \
+      	|| (_BOARD_TYPE_ == RCM3200) || (_BOARD_TYPE_ == BL2600M)          \
+			|| (_BOARD_TYPE_ == BL2600A) || (_BOARD_TYPE_ == BL2600N)
+      	// This is an RCM3300 or similar
+			#define USE_ETHERNET		0x01
+         #define ARP_TABLE_SIZE			12
+         #define ARP_ROUTER_TABLE_SIZE	4
+         #ifndef ARP_LONG_EXPIRY
+	      	#define ARP_LONG_EXPIRY          1200
+         #endif
+         #ifndef ARP_SHORT_EXPIRY
+	      	#define ARP_SHORT_EXPIRY         300
+         #endif
+         #ifndef ARP_PURGE_TIME
+	      	#define ARP_PURGE_TIME           7200
+         #endif
+			#define ARP_PERSISTENCE				4
+	      #define USE_DHCP
+         // Note that there are no fallbacks defined.  The user can configure
+         // fallbacks via the console, which are stored in flash and
+         // applied at run-time.
+	      #define IFCONFIG_ETH0 \
+	            IFS_DHCP, 1, \
+	            IFS_UP
+
+      #else
+      	#error "RabbitSys networking not supported on this board."
+      #endif
+
+      // If using DHCP, set all DHCP options explicitly
+      #ifdef USE_DHCP
+	      #define DHCP_NUM_SMTP 1    // Get an SMTP server if possible
+	      #define DHCP_NUM_ROUTERS 1
+	      #define DHCP_NUM_DNS 2
+	      #define DHCP_NUM_NTP 1
+	      #define DHCP_NUM_QOTD 0
+	      //#define DHCP_CLASS_ID "RabbitSys:Z-World:" ##_BOARD_TYPE_ ":1.0.0"
+	      //#define DHCP_CLASS_ID "RabbitSys:Z-World:"
+         //#define DHCP_CLASS_ID "MSFT\0             "
+         //#define DHCP_CLASS_ID	"RabbitSys:RabbitSemi:RCM3365:1.0."
+         //#define DHCP_CLASS_ID	"                                  "
+         #define DHCP_CLASS_ID "RabbitSys:RabbitSemi:RCM3200:1.0.0"
+	      #define DHCP_CLIENT_ID_MAC
+      #endif
+//      #define USE_IGMP 2
+		#define USE_MULTICAST
+
+
+   #endif
+
+
+#endif
+
+
+
+
+#endif	// TCP_CONFIG_H
+/*** EndHeader */

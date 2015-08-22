@@ -1,0 +1,948 @@
+/*** Beginheader */
+#ifndef __POWERCOREFLEX_LIB
+#define __POWERCOREFLEX_LIB
+
+#if !POWERCOREFLEX_SERIES
+#error "PowerCoreFLEX.LIB only supports the PowerCoreFLEX series prototyping board."
+#endif
+
+// For debugging this LIB enable the following macro
+//#define POWERCOREFLEX_DEBUG
+#ifdef POWERCOREFLEX_DEBUG
+#define _PowerCoreFLEX_nodebug debug
+#else
+#define _PowerCoreFLEX_nodebug nodebug
+#endif
+
+/*** endheader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+PowerCoreFLEX.LIB
+
+DESCRIPTION:	This is a sample library only.
+
+					Use with PowerCoreFLEX series core modules and prototyping board.
+					Add or modify functions to suit your applications.
+
+REVISION HISTORY:
+	06/25/04	EK 	Initial Creation
+
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader  __brdInitFlag */
+
+///////
+// The following macros are used with LCD/Keypad Modules and values
+// default here according to the prototyping board. They must be defined
+// before using graphic libraries.
+// Make modifications as necessary to match your application.
+///////
+
+
+// Macro's for setting the PWM mode of operation for TRIAC power control
+// (see the pwm_set function description for details)
+#ifndef PWM_CNTRL_FREQ
+#define PWM_CNTRL_FREQ	10000ul
+#endif
+
+
+// Macro's for setting the PWM mode of operation for a given DAC channel
+// (see the pwm_set function description for details)
+#ifndef DAC0_PWM3_CNTRL
+#define DAC0_PWM3_CNTRL PWM_SPREAD
+#endif
+
+#ifndef DAC1_PWM2_CNTRL
+#define DAC1_PWM2_CNTRL PWM_SPREAD
+#endif
+
+#ifndef DAC2_PWM1_CNTRL
+#define DAC2_PWM1_CNTRL PWM_SPREAD
+#endif
+
+// Variables for API function usage
+extern int __brdInitFlag;
+/*** EndHeader */
+
+// Variables for API function usage
+int __brdInitFlag;
+
+
+
+/*** Beginheader serMode */
+int serMode(int mode);
+
+//defaults for flow control RTS/CTS
+#define SERE_RTS_PORT PGDR
+#define SERE_RTS_SHADOW PGDRShadow
+#define SERE_RTS_BIT 2			//PG2
+#define SERE_CTS_PORT PGDR
+#define SERE_CTS_BIT 3			//PG3
+
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+serMode              <PowerCoreFLEX.LIB>
+
+SYNTAX:	      int serMode(int mode);
+
+DESCRIPTION:   User interface to set up serial communication lines for
+					this board. This function must be called after executing
+               the serXOpen() function. Whether you are opening one or
+               multiple serial ports this function must be executed after
+               executing the last serXOpen function AND before you start
+               using any of the serial ports. This function is non-
+               reentrant.
+
+PARAMETER1:    mode - defined serial port configuration if devices
+					are installed.
+
+   				Serial port setup:
+
+					Mode 	Port E      	PortF
+					----  ------         -----
+    				0		RS232 3wire		RS232 3wire
+    				1		RS232 5wire		CTS/RTS
+
+RETURN VALUE:	0 if valid mode; 1 if not.
+
+SEE ALSO:		See serX functions located in serial.lib.
+
+END DESCRIPTION **********************************************************/
+
+_PowerCoreFLEX_nodebug
+int serMode(int mode)
+{
+	auto int status;
+
+	status = 0;
+	switch (mode)
+	{
+		case 0:
+			//		Initialize Serial Ports
+			//    -----------------------
+			// 	RS232 serial port E 3 wire
+			// 	RS232 serial port F 3 wire
+ 			//
+			// Set bit 2 to the Alt function to enable serial
+			// ports F.
+			WrPortI(PGFR, &PGFRShadow, (PGFRShadow | 0x44));
+			break;
+
+		case 1:
+			// Set bit 2 to change I/O pins PG2 and PG3 to the primary function
+			WrPortI(PGFR, &PGFRShadow, (PGFRShadow | 0x40));
+			WrPortI(PGFR, &PGFRShadow, (PGFRShadow & ~0x04));
+			BitWrPortI(PGDR, &PGDRShadow, 0, SERE_RTS_BIT);
+			break;
+
+		default:
+			// unsupported mode
+			status = 1;
+			break;
+	}
+	return (status);
+}
+
+
+/*** BeginHeader	digOut */
+void digOut(int, int);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digOut					<PowerCoreFLEX.LIB>
+
+SYNTAX:			void digOut(int channel, int state);
+
+DESCRIPTION:	Sets the state of digital outputs 0 - 3. This function is
+					non-reentrant.
+
+              	Note: A runtime error will occur if the channel parameter
+					is out of range.
+
+PARAMETER1:		Digital output channel (0 - 3).
+					0 = OUT0  (sinking type output)
+               1 = OUT1  (sinking type output)
+               2 = OUT2  (sourcing type output)
+               3 = OUT3  (sourcing type output)
+
+PARAMETER2:		Output logic value (0 or 1).
+
+               Sinking type driver
+               -------------------
+               0 = Connects the load to GND.
+            	1 = Puts the output in a high-impedance state.
+
+               Sourcing type driver
+               --------------------
+            	0 = Puts the output in a high-impedance state.
+               1 = Connects the load to +K.
+
+
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, digIn
+
+END DESCRIPTION **********************************************************/
+
+_PowerCoreFLEX_nodebug
+void digOut(int channel, int state)
+{
+	#GLOBAL_INIT {__brdInitFlag = FALSE;}
+	if ((channel < 0) || (channel > 3) || (state < 0) || (state > 1))
+	{
+   	// Invalid channel or value
+		exception(ERR_BADPARAMETER);
+		exit(ERR_BADPARAMETER);
+	}
+ 	if(__brdInitFlag == FALSE)
+	{
+		// The brdInit and/or the digOutConfig function has not been
+      // executed.
+		exception(ERR_BADPARAMETER);
+		exit(ERR_BADPARAMETER);
+	}
+	switch(channel)
+   {
+   	case 0:
+      	BitWrPortI(PFDR, &PFDRShadow, !state, 1);
+      	break;
+      case 1:
+      	BitWrPortI(PEDR, &PEDRShadow, !state, 0);
+      	break;
+      case 2:
+      	BitWrPortI(PDDR, &PDDRShadow, state, 4);
+      	break;
+      case 3:
+      	BitWrPortI(PEDR, &PEDRShadow, state, 3);
+      	break;
+	}
+}
+
+/*** BeginHeader digIn */
+int  digIn(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digIn						<PowerCoreFLEX.LIB>
+
+SYNTAX:			int digIn(int channel);
+
+DESCRIPTION:	Reads the state of a digital input channel. This function
+					is non-reentrant.
+
+					Note: A runtime error will occur if the channel parameter
+					is out of range.
+
+PARAMETER1:		Digital input channel (0-1).
+
+               Note: The digital inputs are being simulated with using
+               switches SW2 and SW3 located on the prototyping board.
+
+               SW2 = IN0
+               SW3 = IN1
+
+RETURN VALUE:	The logic state of the input(0 or 1).
+
+SEE ALSO:		brdInit, digOut
+
+END DESCRIPTION **********************************************************/
+
+_PowerCoreFLEX_nodebug
+int digIn(int channel)
+{
+	auto int input_state;
+
+	#GLOBAL_INIT {__brdInitFlag = FALSE;}
+
+	if ((channel < 0) || (channel > 1))
+	{
+		exception(ERR_BADPARAMETER);
+		exit(ERR_BADPARAMETER);
+	}
+	if(!__brdInitFlag)
+	{
+		// the brdInit function hasn't been executed as of yet
+		exception(ERR_BADPARAMETER);
+		exit(ERR_BADPARAMETER);
+	}
+   switch(channel)
+   {
+    	case 0:
+   		input_state = BitRdPortI(PGDR, 4);
+   		break;
+   	case 1:
+   		input_state = BitRdPortI(PCDR, 3);
+   		break;
+   }
+   return(input_state);
+}
+
+
+/*** BeginHeader	ledOut */
+void ledOut(int, int);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ledOut					<PowerCoreFLEX.LIB>
+
+SYNTAX:			void ledOut(int led, int value);
+
+DESCRIPTION:	LED ON/OFF control
+
+PARAMETER1:		LED to control.
+						0  = DS4
+						1  = DS3
+
+PARAMETER2:		The value used to control the LED:
+						0 = OFF
+						1 = ON
+RETURN VALUE:	None
+
+SEE ALSO:		brdInit
+
+END DESCRIPTION **********************************************************/
+
+_PowerCoreFLEX_nodebug
+void ledOut(int led, int value)
+{
+
+	#GLOBAL_INIT {__brdInitFlag   = FALSE;}
+
+	if ((led < 0)   || (led > 1) || (value < 0) || (value > 1))	{
+		exception(ERR_BADPARAMETER);
+		exit(ERR_BADPARAMETER);
+	}
+   if(!__brdInitFlag)
+	{
+		// the brdInit function hasn't been executed as of yet
+		exception(ERR_BADPARAMETER);
+		exit(ERR_BADPARAMETER);
+	}
+
+   switch(led)
+   {
+      case 0:
+      	BitWrPortI(PDDR, &PDDRShadow, value, 5);
+      	break;
+
+      case 1:
+      	BitWrPortI(PCDR, &PCDRShadow, value, 2);
+      	break;
+	}
+}
+
+/*** BeginHeader switchIn */
+
+int switchIn(int swin);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+switchIn						<PowerCoreFLEX.LIB>
+
+SYNTAX:			int switchIn(int swin);
+
+DESCRIPTION:	Reads state of switch input.	This function is non-reentrant.
+
+					A runtime error will occur if brdInit() has not been
+					called first.
+
+PARAMETER1:		switch input to read
+						2  = S2
+						3  = S3
+
+
+RETURN VALUE:	State of the switch input, 1=open, 0=closed.
+
+SEE ALSO: 	brdInit
+
+END DESCRIPTION **********************************************************/
+
+_PowerCoreFLEX_nodebug
+int switchIn(int swin)
+{
+	#GLOBAL_INIT {__brdInitFlag   = FALSE;}
+
+	if	(__brdInitFlag == FALSE)
+	{
+		exception(ERR_BADPARAMETER);
+		exit(ERR_BADPARAMETER);
+	}
+
+	if (swin==2)
+   {
+   	return BitRdPortI(PGDR, 4);	//read PG4 for S2
+   }
+
+	if (swin==3)
+   {
+   	return BitRdPortI(PCDR, 3);	//read PC3 for S3
+   }
+
+}
+
+
+/*** BeginHeader DAC_CALIB_ADDR, _dacCalib */
+#define DACHANNELS 3
+#define MAXDACCOUNT	1024
+#define MINDACCOUNT	0
+
+//Offset into user block for calibration data
+#define DAC_CALIB_ADDR	(4096*GetIDBlockSize()-(ZWORLD_RESERVED_SIZE/2))
+
+//Array to hold the [0]=gain,[1]=offset values
+extern float _dacCalib[DACHANNELS][2];
+/*** EndHeader */
+
+float _dacCalib[DACHANNELS][2];	 //[0]=gain,[1]=offset
+
+
+/*** BeginHeader anaOutCalib */
+int anaOutCalib(int channel, int value1, float volts1,
+                             int value2, float volts2);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutCalib				<PowerCoreFLEX.LIB>
+
+SYNTAX:			int anaOutCalib(int channel, int value1, float volts1,
+						             				  int value2, float volts2);
+
+DESCRIPTION:	Calibrates the response of the DAC channel desired as a
+               linear function using the two conversion points provided.
+               Gain and offset constants are calculated and placed into
+               global table _dacCalib.
+
+PARAMETER1:    The analog output channel to be calibrated. The valid range
+					of channels is 0 to 2.
+
+PARAMETER2:		The first DAC value (0 - 1024).
+PARAMETER3:		The voltage (volts) corresponding to the first DAC value.
+PARAMETER4:		The second DAC value (0 - 1024).
+PARAMETER5:		The voltage (volts) corresponding to the second DAC value.
+
+RETURN VALUE:	0, if sucessful.
+					-1, if not able to make calibration constants.
+
+SEE ALSO:		anaOut, anaOutVolts, brdInit
+
+END DESCRIPTION **********************************************************/
+
+_PowerCoreFLEX_nodebug
+int anaOutCalib(int channel, int value1, float volts1,
+									  int value2, float volts2)
+{
+	auto float gain, offset;
+
+	if( (volts1 == volts2) || (value1 == value2) ) return -1;
+
+	offset = (volts2*value1 - volts1*value2)/(volts2-volts1);
+	if (offset == value1)
+		gain = volts2/(offset-value2);
+	else
+		gain = volts1/(offset-value1);
+
+	_dacCalib[channel][0] = gain;
+	_dacCalib[channel][1] = offset;
+
+	return 0;
+}
+
+/*** BeginHeader anaOut */
+root void anaOut(int channel, int rawdata);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOut					<PowerCoreFLEX.LIB>
+
+SYNTAX:			void anaOut(int channel, int rawdata)
+
+DESCRIPTION:   Sets the voltage on a given analog output channel. This
+               function is non-reentrant.
+
+PARAMETER1:    The analog output channel. The valid range of channels
+					are 0 to 2.
+
+PARAMETER2:		A value corresponding to the voltage on the analog output.
+
+               Valid Range = 0 - 1024
+
+RETURN VALUE:	None
+
+SEE ALSO:		anaOutVolts, anaOutCalib, brdInit
+
+END DESCRIPTION **********************************************************/
+
+_PowerCoreFLEX_nodebug
+void anaOut(int channel, int rawdata)
+{
+	auto char lsb_reg, msb_reg;
+   auto int options;
+
+	#GLOBAL_INIT {__brdInitFlag   = FALSE;}
+
+	if(!__brdInitFlag)
+	{
+		// the brdInit function hasn't been executed as of yet
+		exception(ERR_BADPARAMETER);
+		exit(ERR_BADPARAMETER);
+	}
+	if (channel < 0 || channel > 3)
+	{
+		exception(ERR_BADPARAMETER);
+		exit(ERR_BADPARAMETER);
+	}
+	if(rawdata > MAXDACCOUNT || rawdata < MINDACCOUNT)
+	{
+		rawdata = (rawdata > MAXDACCOUNT) ? MAXDACCOUNT : 0;
+	}
+   switch(channel)
+   {
+    	case 0:
+        	channel = 3;
+         options = DAC0_PWM3_CNTRL;
+      	break;
+
+      case 1:
+      	options = DAC1_PWM2_CNTRL;
+      	channel = 2;
+    		break;
+
+      case 2:
+      	options = DAC2_PWM1_CNTRL;
+      	channel = 1;
+         break;
+   }
+   if(rawdata == 0)
+	{
+		BitWrPortI(PFDR, &PFDRShadow, 0, channel + 4); //always low
+		BitWrPortI(PFFR, &PFFRShadow, 0, channel + 4); //normal output
+	}
+	else
+	{
+		rawdata--;	//counts are n+1
+		lsb_reg = rawdata << 6;
+		msb_reg = rawdata >> 2;
+		if(options & PWM_SPREAD)
+		{
+			lsb_reg |= 0x01; //prep spread flag
+		}
+		WrPortI(PWM0R + 2*channel, NULL, msb_reg);
+		WrPortI(PWL0R + 2*channel, NULL, lsb_reg);
+      BitWrPortI(PFFR, &PFFRShadow, 1, channel + 4); //PWM output
+	}
+}
+
+/*** BeginHeader anaOutVolts */
+void anaOutVolts(int channel, float voltage);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutVolts				<PowerCoreFLEX.LIB>
+
+SYNTAX:			void anaOutVolts(int channel, float voltage)
+
+DESCRIPTION:	Sets the voltage of an analog output channel by using
+					the previously set calibration constants to calculate
+               the correct data values.
+
+PARAMETER1:    The analog output channel. The valid range channels
+					are 0 to 2.
+
+PARAMETER2:		The voltage desired on the output channel.
+
+RETURN VALUE:	None
+
+SEE ALSO:		anaOut, anaOutCalib, brdInit
+
+END DESCRIPTION **********************************************************/
+
+_PowerCoreFLEX_nodebug
+void anaOutVolts(int channel, float voltage)
+{
+	auto int rawdata;
+
+	rawdata=(int)(_dacCalib[channel][1]-(voltage / _dacCalib[channel][0]));
+	anaOut(channel, rawdata);
+}
+
+
+
+/*** BeginHeader anaOutEERd */
+int anaOutEERd(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutEERd				<PowerCoreFLEX.LIB>
+
+SYNTAX:			int anaOutEERd(int channel);
+
+DESCRIPTION:	Reads the calibration constants, gain and offset from
+               simulated eeprom in flash, located at the top 2K of the
+               reserved UserBlock memory area. This function is non-
+               reentrant.
+
+               See the PowerCoreFLEX User's manual for the size of the
+               userblock area.
+
+PARAMETER1:    The analog output channel to be read. The valid range
+					of channels are 0 to 2.
+
+RETURN VALUE:	 0 = if successful.
+					-1 = invalid address or range.
+
+SEE ALSO:		anaOutEEWr, brdInit
+
+END DESCRIPTION **********************************************************/
+
+_PowerCoreFLEX_nodebug
+int anaOutEERd(int channel)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	// Calculate the offset into the user block of where the calibration
+	// constants are stored for a given DAC channel.
+	offset = DAC_CALIB_ADDR + ((&_dacCalib[channel][0] - _dacCalib[0])*4);
+
+	// read calibration constants from flash
+	status = readUserBlock( _dacCalib[channel], offset,
+									sizeof(_dacCalib[0][0])*2);
+	return(status);
+}
+
+
+/*** BeginHeader anaOutEEWr */
+int anaOutEEWr(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutEEWr				<PowerCoreFLEX.LIB>
+
+SYNTAX:			int anaOutEEWr(int channel);
+
+DESCRIPTION:	Writes the calibration constants, gain and offset, to
+               simulated eeprom in flash, located at the top 2K of the
+               reserved UserBlock memory area. This function is non-
+               reentrant.
+
+               See the PowerCoreFLEX User's manual for the size of the
+               userblock area.
+
+PARAMETER1:    The analog output channel to be written. The valid range
+					of channels are 0 to 2.
+
+RETURN VALUE:	 0 = successful write to simulated eeprom.
+					-1 = invalid address or range.
+
+SEE ALSO:		anaOutEERd, brdInit
+
+END DESCRIPTION **********************************************************/
+
+_PowerCoreFLEX_nodebug
+int anaOutEEWr(int channel)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	// Calculate the offset into the user block of where the calibration
+	// constants are stored for a given DAC channel.
+	offset = DAC_CALIB_ADDR + ((&_dacCalib[channel][0] - _dacCalib)*4);
+
+	// write calibration constants to flash
+	status = writeUserBlock(offset, &_dacCalib[channel][0],
+									sizeof(_dacCalib[0][0])*2);
+	return(status);
+}
+
+/*** BeginHeader brdInit */
+void brdInit(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+brdInit      			<PowerCoreFLEX.LIB>
+
+SYNTAX:			void brdInit(void);
+
+DESCRIPTION:	Call this function at the beginning of an application to
+					initialize the PowerCoreFLEX series core module running on
+               the PowerCoreFLEX prototyping board.
+
+               For other applications use this function as an example to
+               create your own board initialization routine.
+
+      			Port	Function 		I/O		brdInit State
+					----- -------------  -------  ------------
+					PA0	ID0	 		   I/O	  	Pulled-up
+					PA1	ID1	 			I/O		Pulled-up
+					PA2	ID2	 			I/O		Pulled-up
+					PA3	ID3	 			I/O 		Pulled-up
+					PA4	ID4    			I/O 		Pulled-up
+					PA5	ID5    			I/O 		Pulled-up
+					PA6	ID6    			I/O 		Pulled-up
+					PA7	ID7    			I/O 		Pulled-up
+					PB0	N/C 				Output	High
+					PB1	N/C 			 	Output	High
+					PB2	IA0				Output	High
+					PB3	IA1				Output   High
+					PB4	IA2				Output   High
+					PB5	N/C				Output	High
+					PB6	N/C				Output	High
+					PB7	N/C				Output	High
+					PC0	TXD SPI			Output   High
+					PC1	RXD SPI        Input    Pulled-up
+               PC2	LED1       		Output   High
+					PC3	SW3       		Input    Pulled-up
+					PC4	SFlash SI  		Output   High
+					PC5	SFlash SO      Input    Pulled-up
+					PC6	Prog Port      Output   Low
+					PC7	Prog Port      Input    Pulled-up
+					PD0   ENET	         Output   See Note
+               PD1   ADC vRef       Input		Driven by Ramp circuit
+					PD2   ENET       	   Input		See Note
+					PD3   ADC Temp		   Input    Driven by Ramp circuit
+					PD4   Sourcing			Output	Low
+					PD5   LED0				Output   High
+					PD6   SFlash			Output   High
+					PD7   End Ramp       Input		Low
+					PE0   Sinking  		Output	Low
+					PE1   ADC ramp INT   Input    Driven by Ramp circuit
+					PE2 	ENET           Output   See Note
+					PE3 	Sourcing			Output	Low
+					PE4 	RNET_CS       	Output   High
+					PE5   ZeroXing INT	Input    Driven by zero-crossing circuit
+					PE6 	LCD_CS     		Output	High
+					PE7 	LCD_DIR        Output	High
+               PF0 	RNET CLKD    	Output	Low
+					PF1 	Sinking Driver Output	Low
+               PF2 	SCR0          	Output	Low
+					PF3 	SCR1           Output   Low
+					PF4 	SCR_Pulse  		Output	Low
+					PF5	DAC2           Ouput    Low
+					PF6 	DAC1           Output   Low
+					PF7 	DAC0 				Output   Low
+					PG0 	ADC status		Input		Driven by Ramp circuit
+					PG1 	ADC Start Ramp Input 	Driven by Ramp circuit
+					PG2 	TXF            Output	High
+					PG3 	RXF            Input		Pulled-up
+					PG4 	SW2            Input		Pulled-up
+					PG5 	ADC_0	         Input		Driven by protoboard ADC circuit
+					PG6 	TXE            Output	High
+					PG7 	RXE            Input		Pulled-up
+
+               Note:
+               -----
+               The ethernet signals will be configured depending
+               on which core module is being used, here's a list
+               of the possible configuration.
+
+               Sig	Defined     Not Defined
+               ---   ---------	-----------
+               PD0   ENET 			OUT
+               PD2	ENET     	OUT
+               PE2   ENET 			OUT
+
+               - ENET indicates the signal will be initialized by
+               the ethernet driver.
+
+               - OUT indicates the signal will be set to be an
+               output and set to a logic high.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		Please refer to the user manual for a complete listing
+					of all API functions for the PowerCoreFLEX series core module.
+
+
+END DESCRIPTION **********************************************************/
+
+_PowerCoreFLEX_nodebug
+void brdInit (void)
+{
+	auto unsigned long macro;
+   auto int status;
+
+	#GLOBAL_INIT {__brdInitFlag  = FALSE;}
+
+	//---------------------------------------------------------------------
+	// Port A configuration
+	//
+   //	PA0	ID0	 	I/O 	 Pulled-up
+	//	PA1	ID1	 	I/O 	 Pulled-up
+	//	PA2	ID2	 	I/O 	 Pulled-up
+	//	PA3	ID3	 	I/O 	 Pulled-up
+	//	PA4	ID4    	I/O 	 Pulled-up
+	//	PA5	ID5    	I/O  	 Pulled-up
+	//	PA6	ID6    	I/O  	 Pulled-up
+	//	PA7	ID7    	I/O 	 Pulled-up
+	//---------------------------------------------------------------------
+ 	WrPortI(PADR, &PADRShadow, 0xFF);
+
+	//---------------------------------------------------------------------
+	// Port B configuration
+	//
+	//	PB0	SFLASH_CLK		Output	High
+	//	PB1	N/C 			 	Output	High
+	//	PB2	IA0				Output	High
+	//	PB3	IA1				Output   High
+	//	PB4	IA2				Output   High
+	//	PB5	N/C				Output	High
+	//	PB6	N/C				Output	High
+	//	PB7	N/C				Output	High
+   // Initialize port A & B for Aux I/O BUS operation.
+	//---------------------------------------------------------------------
+   WrPortI(PBDR, &PBDRShadow, 0xFF);
+   WrPortI(PBDDR, &PBDDRShadow, 0xFF);
+   WrPortI(SPCR, &SPCRShadow, 0x8C);
+
+	//---------------------------------------------------------------------
+	// Port C configuration
+	//
+   //	PC0	TXD SPI			Output   High
+	//	PC1	RXD SPI        Input    Pulled-up
+   // PC2	LED1       		Output   High
+	//	PC3	SW3       		Input    Pulled-up
+	//	PC4	SFlash SI  		Output   High
+	//	PC5	SFlash SO      Input    Pulled-up
+	//	PC6	Prog Port      Output   Low
+	//	PC7	Prog Port      Input    Pulled-up
+	//---------------------------------------------------------------------
+   WrPortI(PCFR, &PCFRShadow, (PCFRShadow&~0x3F));
+   WrPortI(PCDR, &PCDRShadow, (PCDRShadow| 0x3F));
+
+	//---------------------------------------------------------------------
+	// Port D configuration
+	//
+	//	PD0   ENET	         Output   See Note
+   // PD1   ADC vRef       Input		Driven by Ramp circuit
+	//	PD2   ENET       	   Input		See Note
+	//	PD3   ADC Temp		   Input    Driven by Ramp circuit
+	//	PD4   Sourcing			Output	Low
+	//	PD5   LED0				Output   High
+	//	PD6   SFlash			Output   High
+	//	PD7   End Ramp       Input		Low
+   //
+	// Sig	Defined     Not Defined
+   // ---   ---------	-------
+   // PD0   ENET 			OUT
+   // PD2	ENET     	OUT
+   // PE2   ENET 			OUT
+   //
+	//---------------------------------------------------------------------
+   status = _GetSysMacroValue("_DC_ETH0_", &macro);
+   if(status != 0)
+   {
+   	WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow  |  0xEF));
+   	WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0x75));
+   }
+   else
+   {
+   	WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow  |  0xEF));
+   	WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0x70));
+   }
+   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  & ~0xFA));
+   WrPortI(PDDCR, &PDDCRShadow, 0x00);
+   WrPortI(PDCR,  &PDCRShadow,  0x00);
+
+	//---------------------------------------------------------------------
+	// Port E configuration
+	//
+	//	PE0   Sinking  		Output	Low
+	//	PE1   ADC ramp INT   Input    Driven by Ramp circuit
+	//	PE2 	ENET           Output   See Note
+	//	PE3 	Sourcing			Output	Low
+	//	PE4 	RNET_CS       	Output   High
+	//	PE5   ZeroXing INT	Input    Driven by zero-crossing circuit
+	//	PE6 	LCD_CS     		Output	High
+	//	PE7 	LCD_DIR        Output	High
+   //
+   // Sig	Defined     Not Defined
+   // ---   --------		-----------
+   // PD0   ENET 			OUT
+   // PD2	ENET     	OUT
+   // PE2   ENET 			OUT
+	//---------------------------------------------------------------------
+
+
+   status = _GetSysMacroValue("_DC_ETH0_", &macro);
+   if(status != 0)
+   {
+   	WrPortI(PEDR,  &PEDRShadow,  (PEDRShadow  |  0xF6));
+   	WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow |  0xDD));
+   }
+   else
+   {
+   	WrPortI(PEDR,  &PEDRShadow,  (PEDRShadow  |  0xF6));
+   	WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow |  0xD9));
+   }
+   WrPortI(PEFR,  &PEFRShadow,  (PEFRShadow  & ~0x02));
+   WrPortI(PECR,  &PECRShadow,  0x00);
+
+   //---------------------------------------------------------------------
+	// Port F configuration
+	//
+   // PF0 	RNET CLKD    	Output	Low
+	//	PF1 	Sinking Driver Output	Low
+   // PF2 	SCR0          	Output	Low
+	//	PF3 	SCR1           Output   Low
+	//	PF4 	SCR_Pulse  		Output	Low
+	//	PF5	DAC2           Output   Low
+	//	PF6 	DAC1           Output   Low
+	//	PF7 	DAC0 				Output   Low
+	//---------------------------------------------------------------------
+   WrPortI(PFFR,  &PFFRShadow,  0x01);
+   WrPortI(PFDR,  &PFDRShadow,  0x00);
+   WrPortI(PFDDR, &PFDDRShadow, (PFDDRShadow | 0x0F));
+   WrPortI(PFDCR, &PFDCRShadow, 0x00);
+   WrPortI(PFCR,  &PFCRShadow,  0x00);
+
+
+	//---------------------------------------------------------------------
+	// Port G configuration
+   //
+	//	PG0 	ADC status		Input		Driven by Ramp circuit
+	//	PG1 	ADC Start Ramp Input 	Driven by Ramp circuit
+	//	PG2 	TXF            Output	High
+	//	PG3 	RXF            Input		Pulled-up
+	//	PG4 	SW2            Input		Pulled-up
+	//	PG5 	ADC_0	         Input		Driven by protoboard ADC circuit
+	//	PG6 	TXE            Output	High
+	//	PG7 	RXE            Input		Pulled-up
+	//---------------------------------------------------------------------
+   WrPortI(PGFR,  &PGFRShadow,  0x44);
+   WrPortI(PGDR,  &PGDRShadow,  0xFF);
+   WrPortI(PGDDR, &PGDDRShadow, 0x44);
+   WrPortI(PGDCR, &PGDCRShadow, 0x00);
+   WrPortI(PGCR,  &PGCRShadow,  0x00);
+
+
+	pwm_init(PWM_CNTRL_FREQ);
+   pwm_set(0,0,0);
+   pwm_set(1, 0, DAC2_PWM1_CNTRL);
+   pwm_set(2, 0, DAC1_PWM2_CNTRL);
+   pwm_set(3, 0, DAC0_PWM3_CNTRL);
+
+   #if !RAM_COMPILE
+   anaOutEERd(0);
+   anaOutEERd(1);
+   anaOutEERd(2);
+   #endif
+
+   // Set flag to indicate brdInit has been executed
+   __brdInitFlag = TRUE;
+}
+
+/*** Beginheader */
+
+#use "rn_cfg_PowerCoreFLEX.lib"  	// RabbitNet Configuration
+
+/*** endheader */
+
+
+/*** Beginheader */
+#endif
+/*** endheader */

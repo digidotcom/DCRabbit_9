@@ -1,0 +1,6 @@
+/*** BeginHeader */
+#error "SSL support does not come standard with Dynamic C."
+#error "If you need this feature it is available as a module"
+#error "and may be purchased online from ZWorld."
+#error " http://www.zworld.com"
+/*** EndHeader */

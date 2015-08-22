@@ -1,0 +1,887 @@
+/*******************************************************************************
+NFLASH_FAT.LIB
+   Copyright (c) Z-World, Inc., July 2004
+
+DESCRIPTION:
+   Filesystem specific functions for NAND flash devices.  Used as a device
+   driver with the FAT filesystem module.
+
+   The only API function that must be called directly by the application is
+   nf_InitDriver.
+
+SUPPORT LIB'S:
+   NFLASH.LIB, PART_DEFS.LIB
+*******************************************************************************/
+
+/*** BeginHeader */
+
+#define FAT_XD_DETECT_DB_TIME 50  // Debounce time for XD card detect in ms.
+
+#ifndef __NFLASH_FAT_LIB
+#define __NFLASH_FAT_LIB
+
+#ifndef MBR_DRIVER_INIT
+#define MBR_DRIVER_INIT nf_InitDriver(root_driver, NULL)
+#endif
+
+#ifndef MBR_DRIVER_INIT_AB
+#define MBR_DRIVER_INIT_AB(a,b) nf_InitDriver(a, b)
+#endif
+
+#ifndef MBR_SIG
+#define MBR_SIG "NFLASH-0"
+#endif
+
+#ifndef MBR_SIG_A
+#define MBR_SIG_A(a) "NFLASH-" # a
+#endif
+
+#ifndef __NFLASH_LIB
+#use "nflash.lib"
+#endif
+#ifndef __PART_DEFS_LIB
+#use "part_defs.lib"
+#endif
+#ifndef _ERRNO_H
+#use "ErrNo.lib"
+#endif
+
+#ifdef NFLASH_FAT_DEBUG
+#define _nflash_fat_nodebug debug
+#else
+#define _nflash_fat_nodebug nodebug
+#endif
+
+#ifdef FAT_BLOCK
+#define NFLASH_FAT_BLOCK
+#endif
+
+#if !NFLASH_USEERASEBLOCKSIZE
+#fatal "Nand flash FAT support requires nonzero NFLASH_USEERASEBLOCKSIZE!"
+#endif
+
+/*** EndHeader */
+
+/*** BeginHeader nf_getDevice */
+nf_device *nf_getDevice(nf_device *head, int index);
+/*** EndHeader */
+/* START_FUNCTION DESCRIPTION ********************************************
+nf_getDevice                  <NFLASH_FAT.LIB>
+
+SYNTAX: int nf_getDevice(nf_device *head, int index);
+
+DESCRIPTION: Helper function, walks a linked list of nf_device structures
+             to retrieve the one at position 'index'.
+
+PARAMETER1: head is a pointer to the first in a linked list of nf_device
+            structures.
+
+PARAMETER2: index is the (zero based) order in list of the desired
+            nf_device structure.
+
+RETURN VALUE: Address of the indexed nf_device struct in list, or
+              NULL if the end of the list is reached.
+END DESCRIPTION *********************************************************/
+_nflash_fat_nodebug
+nf_device *nf_getDevice(nf_device *head, int index)
+{
+	auto nf_device *element;
+
+	element = head;
+	while (element && index--) {
+		element = element->next;
+	}
+	return element;
+}
+
+
+/*** BeginHeader nf_EnumDevice */
+int nf_EnumDevice(mbr_drvr *driver, mbr_dev *dev, int devnum);
+/*** EndHeader */
+/* START_FUNCTION DESCRIPTION ********************************************
+nf_EnumDevice                 <NFLASH_FAT.LIB>
+
+SYNTAX: int nf_EnumDevice(mbr_drvr *driver, mbr_dev *dev, int devnum);
+
+DESCRIPTION: Callback used by FAT filesystem code to initialize the
+             storage device.
+
+PARAMETER1: driver is a pointer to the device controller handle.
+
+PARAMETER2: dev is a pointer to a device structure that will be filled in.
+
+PARAMETER3: devnum is the number of the device that is being initialized.
+
+RETURN VALUE: 0 if successful, or
+              the negative of a FAT filesystem error code.
+END DESCRIPTION *********************************************************/
+_nflash_fat_nodebug
+int nf_EnumDevice(mbr_drvr *driver, mbr_dev *device, int devnum)
+{
+	auto int tracks;
+	auto long sectors_per_track;
+	auto nf_device *dev;
+
+	dev = nf_getDevice((nf_device *) (driver->dev_struct), devnum);
+	if (!dev) {
+		return -EIO;
+	}
+
+	sectors_per_track = dev->pages * (dev->mainsize / 512L);
+	tracks = 1;
+	while (sectors_per_track > 0xFFFFL) {
+		sectors_per_track >>= 1L;
+		tracks <<= 1;
+	}
+
+	// fill in device structure
+	device->cylinder = tracks;
+	device->sec_track = (unsigned int) sectors_per_track;
+	device->seccount = sectors_per_track * tracks;
+	device->heads = 1;
+	device->byte_sec = 512;
+	// Exercise care with the following cast, it will be a problem if NAND flash
+	//  devices with 64 KB or larger page size are ever used!  Perhaps the
+	//  byte_page member should have been made an unsigned or long type?
+	device->byte_page = (int) dev->mainsize;
+	device->driver = driver;
+	device->dev_num = devnum;
+
+	return 0;
+}
+
+
+/*** BeginHeader nf_ReadSector */
+int nf_ReadSector(unsigned long page, char *buffer, mbr_dev *device,
+                  long xbuffer, long xbuf2);
+/*** EndHeader */
+/* START_FUNCTION DESCRIPTION ********************************************
+nf_ReadSector                 <NFLASH_FAT.LIB>
+
+SYNTAX: int nf_ReadSector(unsigned long page, char *buffer,
+                          mbr_dev *device, long xbuffer, long xbuf2);
+
+DESCRIPTION: Callback used by FAT filesystem code.  Reads out a sector
+             from the device.
+
+PARAMETER1: page is the "sector" to read.  This is a data page of the same
+            size as byte_page set in EnumDevice.
+
+PARAMETER2: buffer is a pointer to a root memory buffer to read the data
+            into.  If this argument is NULL, xbuffer will be used instead.
+
+PARAMETER3: device is a pointer to the mbr_dev structure for the device
+            being read from.
+
+PARAMETER4: xbuffer is the physical address of an xmem buffer to read the
+            data into.  Used only if buffer is NULL.
+
+PARAMETER5: xbuf2 is the physical address of an xmem buffer to read the
+            page's (sector's) spare data into.
+
+RETURN VALUE: 0 if successful, or
+              the negative of a FAT filesystem error code.
+END DESCRIPTION *********************************************************/
+_nflash_fat_nodebug
+int nf_ReadSector(unsigned long page, char *buffer, mbr_dev *device,
+                  long xbuffer, long xbuf2)
+{
+	auto int i, j, status;
+	auto long newECC[2], oldECC[2];
+	auto nf_device *dev;
+
+#ifdef NFLASH_FAT_VERBOSE
+	printf("\nrb %d %LX\n", device->dev_num, page);
+#endif
+	dev = nf_getDevice((nf_device *) (device->driver->dev_struct),
+	                   device->dev_num);
+	if (!dev) {
+		return -EIO;
+	}
+
+	// block if our previous NAND flash erase+(re)write operation is incomplete
+	if (dev->write_state) {
+#ifdef NFLASH_FAT_BLOCK
+		return -EINVAL;
+#else
+		if (nf_WriteContinue(device)) {
+			return -EBUSY;
+		}
+#endif
+	}
+
+	if (buffer) {
+		// use the physical address of the root buffer
+		xbuffer = paddr(buffer);
+	}
+
+	if (!xbuf2) {
+		// if no spare buffer provided, use (and reuse) the driver's spare buffer
+		xbuf2 = dev->sparebuffer;
+	}
+
+	// convert relative page number to the page's actual start address
+	page = (page + dev->startpage) << dev->erasebitshift;
+
+	j = dev->erasepages;	// iterate through all of the erase block's pages
+	while (j--) {
+#ifdef NFLASH_FAT_VERBOSE
+	printf("\nrp %d %LX\n", device->dev_num, page);
+#endif
+		// read main and spare data into caller's buffers (if provided)
+		if (_nf_deviceReadPage(dev, xbuffer, xbuf2, page)) {
+			return -EIO;	// page read time out I/O error
+		}
+
+		// check factory standard block marker byte (page's 0 based byte 517)
+		// Note:  The convention is that 0xFF is good, 0x00 indicates bad from
+		//        the factory, and that 0xF0 indicates gone bad while in use.
+		xmem2root(&i, xbuf2 + 5L, sizeof(char));
+		if (0xFF != (0xFF & i)) {
+			return -EBADBLOCK;	// bad block marker I/O error
+		}
+
+		// check if FAT is simply testing for good or bad block
+		//  (ie:  neither main data nor spare data buffer is provided)
+		if (!xbuffer && dev->sparebuffer == xbuf2) {
+			// FAT good/bad block test only, so return quickly.  Optimization for
+			//  speed is done here, could theoretically miss a bad erase block if
+			//  its bad page(s) are only marked later on!
+			return 0;
+		}
+
+		// Only check ECCs and increment main buffer address if main data has
+		//  actually been read into a provided (nonzero) main data buffer.
+		//  (The caller may want to read just an erase block's spare data.)
+		if (xbuffer) {
+			for (i = 0; i < 2; ++i) {
+				// get previous ECC, stored in NAND flash page's "spare" data
+				xmem2root(&oldECC[i], xbuf2 + 13L - (5L * (long) i), 3u);
+
+				// calculate new ECC based on NAND flash page's main data just read
+				newECC[i] = xCalculateECC256(xbuffer + (256L * (long) i));
+#ifdef NFLASH_FAT_VERBOSE
+				oldECC[i] &= 0x00FFFFFFL;
+				if (newECC[i] != oldECC[i]) {
+					printf("oldECC[%d] is %08lx, but newECC[%d] is %08lx.\n",
+					       i, oldECC[i], i, newECC[i]);
+					_nf_print_data("FAT's spare", page >> dev->pagebitshift, xbuf2,
+					               dev->sparesize);
+				}
+#endif
+
+				// check ECCs and correct data (or old ECC) if necessary
+				status = xChkCorrectECC256(xbuffer + (256L * (long) i), &oldECC[i],
+				                           &newECC[i]);
+				if (3 == status ) {
+					return -EBADDATA; 	// uncorrectable data or ECC I/O error
+				}
+				if (2 == status) {
+					// put the corrected ECC back into the "spare" data buffer
+					root2xmem(xbuf2 + 13L - (5L * (long) i), &oldECC[i], 3u);
+#ifdef NFLASH_FAT_VERBOSE
+					_nf_print_data("FAT's fixed spare", page, xbuf2, dev->sparesize);
+#endif
+				}
+			}	// end for
+
+			// a main data buffer is provided, so step through it page by page
+			xbuffer += 1L << dev->pagebitshift;
+		}	// end if
+
+		if (dev->sparebuffer != xbuf2) {
+			// a spare data buffer is provided, so step through it page by page
+			xbuf2 += dev->sparesize;
+		}
+
+		page += 1L << dev->pagebitshift;
+	}	// end while
+
+	return 0;
+}
+
+
+/*** BeginHeader nf_WriteSector */
+int nf_WriteSector(unsigned long page, char *buffer, mbr_dev *device,
+                   long xbuffer, long xbuf2);
+/*** EndHeader */
+/* START_FUNCTION DESCRIPTION ********************************************
+nf_WriteSector                <NFLASH_FAT.LIB>
+
+SYNTAX: int nf_WriteSector(unsigned long page, char *buffer,
+                           mbr_dev *device, long xbuffer, long xbuf2);
+
+DESCRIPTION: Callback used by FAT filesystem code.  Writes to a sector on
+             the specified device.
+
+PARAMETER1: page is the "sector" to write to.  This is a data page of the
+            same size as byte_page set in nf_EnumDevice().
+
+PARAMETER2: buffer is a pointer to a root memory buffer to write the data
+            from.  If this argument is NULL, xbuffer will be used instead.
+
+PARAMETER3: device is a pointer to the mbr_dev structure for the device
+            being written to.
+
+PARAMETER4: xbuffer is the physical address of an xmem buffer to write
+            data from. Used only if buffer is NULL.
+
+PARAMETER5: xbuf2 is the physical address of an xmem buffer containing the
+            page's (sector's) spare data.
+
+RETURN VALUE: 0 if successful, or
+              the negative of a FAT filesystem error code.
+END DESCRIPTION *********************************************************/
+_nflash_fat_nodebug
+int nf_WriteSector(unsigned long page, char *buffer, mbr_dev *device,
+                   long xbuffer, long xbuf2)
+{
+	auto int rc;
+	auto nf_device *dev;
+
+#ifdef NFLASH_FAT_VERBOSE
+	printf("\nwb %d %LX\n", device->dev_num, page);
+#endif
+	dev = nf_getDevice((nf_device *) (device->driver->dev_struct),
+	                   device->dev_num);
+	if (!dev) {
+		return -EIO;
+	}
+
+	// block if our previous NAND flash erase+(re)write operation is incomplete
+	if (dev->write_state) {
+#ifdef NFLASH_FAT_BLOCK
+		return -EINVAL;
+#else
+		rc = nf_WriteContinue(device);
+    	// If busy code returned, show driver busy with previous write
+      if (rc == -EBUSY) return -EDRVBUSY;
+      // See if error or request for the same page that just finished writing
+      if (rc ||
+         (long)page == ((dev->write_page >> dev->erasebitshift)-dev->startpage))
+   		return rc;  // If so, return code
+      // Otherwise, a new page write is requested, go start the new write
+#endif
+	}
+
+	if (buffer) {
+		// use the physical address of the root buffer
+		xbuffer = paddr(buffer);
+	}
+
+	// set up pre-erase+(re)write information
+	dev->write_buffer = xbuffer;
+	// if a spare buffer is provided, use it; otherwise use (and reuse) the
+	//  driver's spare buffer
+	dev->sparebfbuf = (xbuf2) ? xbuf2 : dev->sparebuffer;
+	// convert relative page number to the page's actual start address
+	dev->write_page = (page + dev->startpage) << dev->erasebitshift;
+	dev->write_state = -1;	// flag to indicate that pre-erase is in progress
+
+   // go initiate actual erase+(re)write, return error or write begun code
+	return nf_WriteContinue(device);
+}
+
+
+/*** BeginHeader nf_WriteContinue */
+int nf_WriteContinue(mbr_dev *device);
+/*** EndHeader */
+/* START_FUNCTION DESCRIPTION ********************************************
+nf_WriteContinue              <NFLASH_FAT.LIB>
+
+SYNTAX: int nf_WriteContinue(mbr_dev *device);
+
+DESCRIPTION: Checks current progress of a sector write operation, and
+             if necessary begins the next step in a multi-page write
+             operation.
+
+PARAMETER1: device is a pointer to the mbr_dev structure for the device
+            being written to.
+
+RETURN VALUE: 0 if there is no pending write activity, or
+              the negative of a FAT filesystem error code.
+END DESCRIPTION *********************************************************/
+_nflash_fat_nodebug
+int nf_WriteContinue(mbr_dev *device)
+{
+	auto int status;
+	auto long myMainAddr, mySpareAddr, myWriteAddr, pageOffset;
+	auto nf_device *dev;
+
+	dev = nf_getDevice((nf_device *) (device->driver->dev_struct),
+	                   device->dev_num);
+	if (!dev) {
+		return -EIO;
+	}
+	if (!(dev->write_state)) {
+		// done (nothing to do!)
+		return 0;
+	}
+	if ((-2 > dev->write_state) || (dev->erasepages < dev->write_state)) {
+		// unknown state!
+		dev->write_state = 0;	// error, abandon this write operation
+		return -EINVAL;
+	}
+
+#ifndef NFLASH_FAT_BLOCK
+	// get NAND flash device's status (saved for program page operation states)
+	status = _nf_deviceStatus(dev);
+	if (!(0x40 & status)) {
+		// NAND flash device is still busy
+		return -EBUSY;
+	}
+#else
+// complete entire write before returning
+while (dev->write_state) {
+#endif
+	// NAND flash device is not busy
+	switch (dev->write_state) {
+	case -1:	// initiate erase block operation
+#ifdef NFLASH_FAT_VERBOSE
+	printf("\neb %d %LX\n", device->dev_num, dev->write_page);
+#endif
+#ifdef NFLASH_FAT_BLOCK
+	// busy wait on NAND flash (status saved for program page operation states)
+	do {
+		status = _nf_deviceStatus(dev);
+	} while (!(0x40 & status));
+#endif
+		_nf_deviceEraseBlock(dev, dev->write_page);
+		// start erase block pages' ECC calculations while the erasure proceeds!
+		//  must calculate all program pages' ECCs when using caller's buffer
+		//  (start by advance-updating erase block's initial program page's ECCs)
+		if (_nf_updateECCs(dev->write_buffer, dev->sparebfbuf)) {
+			dev->write_state = 0;	// error, abandon this write operation
+			return -EINVAL;	// root2xmem() source or destination problem!
+		}
+		// calculate the address of the erase block's initial program page
+		dev->write_page = dev->write_page & ~((1L << dev->erasebitshift) - 1L);
+		dev->write_state = 1;
+		break;
+	default:	// perform program page operations, remaining ECCs updates
+#ifdef NFLASH_FAT_BLOCK
+	// busy wait on NAND flash (status saved for program page operation states)
+	do {
+		status = _nf_deviceStatus(dev);
+	} while (!(0x40 & status));
+#endif
+		// check for Fail status of prior erase block or program page operation
+		if (0x01 & status) {
+			dev->write_state = 0;	// error, abandon this write operation
+			return -EIO;	// prior erase block or program page operation failed!
+		}
+
+		// calculate state's page offset into main buffer, spare backfill buffer
+		pageOffset = (long) (dev->write_state - 1) << dev->pagebitshift;
+		myMainAddr = dev->write_buffer + pageOffset;
+		mySpareAddr = dev->sparebfbuf;
+		if (dev->sparebuffer != dev->sparebfbuf) {
+			// not using (and reusing) the driver's spare buffer, so adjust for
+			//  the calculated provided spare buffer
+			mySpareAddr += (pageOffset >> dev->pagebitshift) *
+			               (long) dev->sparesize;
+		}
+		// calculate page's NAND flash address
+		myWriteAddr = dev->write_page + pageOffset;
+
+#ifdef NFLASH_FAT_VERBOSE
+/*
+		nf_print_data("Driver's main", myWriteAddr, myMainAddr,
+		              1u << dev->pagebitshift);
+		nf_print_data("Driver's spare", myWriteAddr, mySpareAddr,
+		              dev->sparesize);
+		printf("\n");
+*/
+#endif
+
+#ifdef NFLASH_FAT_VERBOSE
+   	printf("\nwp %d %LX\n", device->dev_num, myWriteAddr);
+#endif
+
+#ifdef NFLASH_CANERASEBADBLOCKS
+      // *** Checks for write address out of range ***
+      if( dev->mbrtype | MBRTYPE_REMOVE  &&
+          (myWriteAddr >> dev->erasebitshift) < 0x40UL
+         )
+      {
+#ifdef NFLASH_FAT_VERBOSE
+         printf("nf_WriteContinue: bad write page arg. %08lx",
+               myWriteAddr >> dev->erasebitshift);
+#endif
+			dev->write_state = 0;	// error, abandon this write operation
+         return -EINVAL;
+      }
+#endif
+      if((unsigned long)(myWriteAddr>>dev->erasebitshift)>nf_getPageCount(dev))
+      {
+#ifdef NFLASH_VERBOSE
+         printf("nf_WriteContinue: bad write page arg. %08lx",
+               myWriteAddr >> dev->erasebitshift);
+#endif
+			dev->write_state = 0;	// error, abandon this write operation
+         return -EINVAL;
+      }
+		// (re)write this program page back into the erased block
+		_nf_deviceWritePage(dev, myMainAddr, mySpareAddr, myWriteAddr);
+
+		if (dev->write_state < dev->erasepages) {
+			// continue erase block pages' ECC calculations while writing proceeds!
+			//  must calculate all program pages' ECCs when using caller's buffer
+			//  (continue by advance-updating the next program page's ECCs)
+			myMainAddr += 1L << dev->pagebitshift;
+			if (dev->sparebuffer != dev->sparebfbuf) {
+				// not using (and reusing) the driver's spare buffer, so move on to
+				//  the next provided spare buffer
+				mySpareAddr += (long) dev->sparesize;
+			}
+			if (_nf_updateECCs(myMainAddr, mySpareAddr)) {
+				dev->write_state = 0;	// error, abandon this write operation
+				return -EINVAL;	// root2xmem() source or destination problem!
+			}
+		}
+
+		++(dev->write_state);
+	}
+#ifdef NFLASH_FAT_BLOCK
+	// check for completed writing all pages in this erase block
+	if (dev->write_state > dev->erasepages) {
+		dev->write_state = 0;
+	}
+}	// end while (dev->write_state) {
+#else
+	if (dev->write_state <= dev->erasepages) {
+		// not finished yet, waiting on a NAND flash operation to complete
+		return -EBUSY;
+	}
+
+	// finally done!
+	dev->write_state = 0;
+#endif
+	return 0;
+}
+
+
+/*** BeginHeader nf_InformStatus */
+int nf_InformStatus(mbr_dev *device, int status);
+/*** EndHeader */
+/* START_FUNCTION DESCRIPTION ********************************************
+nf_InformStatus               <NFLASH_FAT.LIB>
+
+SYNTAX: int nf_InformStatus(mbr_dev *device, int status);
+
+DESCRIPTION: Callback used by FAT filesystem code.
+
+PARAMETER1: device is a pointer to the mbr_dev structure for the device.
+
+PARAMETER2: status is the device status passed to driver from filesystem.
+            (Currently ignored.)
+
+RETURN VALUE: 0 if there is no pending write activity, or
+              the negative of a FAT filesystem error code.
+END DESCRIPTION *********************************************************/
+_nflash_fat_nodebug
+int nf_InformStatus(mbr_dev *device, int status)
+{
+	auto nf_device *dev;
+
+	dev = nf_getDevice((nf_device *) (device->driver->dev_struct),
+	                   device->dev_num);
+	if (!dev) {
+		return -EIO;
+	}
+
+	if (dev->write_state) {
+		return nf_WriteContinue(device);
+	} else {
+		return 0;
+	}
+}
+
+
+/*** BeginHeader nf_InitDriver */
+int nf_InitDriver(mbr_drvr *driver, void *device_list);
+extern  nf_device _nf_defaultDevList[_NFLASH_MAXDEVICES];
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+nf_InitDriver                 <NFLASH_FAT.LIB>
+
+SYNTAX: int nf_InitDriver(mbr_drvr *driver, void *device_list);
+
+DESCRIPTION: Initializes the NAND flash controller.
+
+PARAMETER1: driver is an empty mbr_drvr structure.  It must be initialized
+            with this function before it can be used with the FAT file
+            system.
+
+PARAMETER2: device_list, if not NULL, is a pointer to the head of a linked
+            list of nf_device structures for NAND flash devices that have
+            each already been initialized by calling nf_initDevice.  If
+            device_list is NULL, then this function attempts to initialize
+            all nand flash devices and provide a default linked list of
+            nf_device structures in order from device number 0 on up.  If
+            an initialization is unsuccessful, the particular nf_device
+            structure is not entered into the linked list.
+
+RETURN VALUE: 0 if successful, or
+              the negative of a FAT filesystem error code.
+END DESCRIPTION *********************************************************/
+nf_device _nf_defaultDevList[_NFLASH_MAXDEVICES];
+
+_nflash_fat_nodebug
+int nf_InitDriver(mbr_drvr *driver, void *device_list)
+{
+	auto int i, j;
+	auto nf_device *nfDev;
+
+	/* pointer to function able to identify the devices */
+	driver->xxx_EnumDevice = nf_EnumDevice;
+	/* pointer to function able to read a sector */
+	driver->xxx_ReadSector = nf_ReadSector;
+	/* pointer to function able to write a sector */
+	driver->xxx_WriteSector = nf_WriteSector;
+	/* pointer to function able to physically format a cylinder */
+	driver->xxx_FormatCylinder = NULL;
+	/* pointer to function for returning status of a device */
+	driver->xxx_InformStatus = nf_InformStatus;
+
+   i = 0;	// default to no devices in list
+	if (device_list) {
+		// iterate through the provided device list and set up each device's type
+		nfDev = (nf_device *) device_list;
+		while (nfDev) {
+			driver->type[i++] = nfDev->mbrtype;
+			nfDev = nfDev->next;
+		}
+	} else {
+		// NULL device list,
+		//  so provide a default device list and set up each device's type
+		for (j = 0; j < _NFLASH_MAXDEVICES; ++j) {
+			if (!nf_initDevice(&(_nf_defaultDevList[i]), j)) {
+				// successfully initialized this NAND flash device handle
+				driver->type[i] = _nf_defaultDevList[i].mbrtype;
+				if (0 == i) {
+					// link first NAND flash device handle as head of list
+					device_list = &(_nf_defaultDevList[0]);
+				} else {
+					// link remainder of NAND flash device handles into the list
+					_nf_defaultDevList[i - 1].next = &(_nf_defaultDevList[i]);
+				}
+				++i;
+			}
+		}
+	}
+
+	// set up other parameters in driver struct
+	driver->ndev = 0;
+	driver->maxdev = _NFLASH_MAXDEVICES;	// maximum nand flash devices count
+	driver->dlist = NULL;
+	driver->next = NULL;
+	driver->dev_struct = device_list;
+	if (NULL == device_list) {
+		return -ENXIO;	// no such device or address
+	} else {
+		return 0; // all linked nf_device structures must be pre-initialized!
+	}
+}
+
+/*** BeginHeader nf_XD_Detect, _nf_XD_Detect */
+long nf_XD_Detect(int debounceMode);
+#ifndef FAT_USE_UCOS_MUTEX
+#define _nf_XD_Detect  nf_XD_Detect
+#else
+long _nf_XD_Detect(int debounceMode);
+#endif
+/*** EndHeader */
+
+/* START FUNCTION_ DESCRIPTION ********************************************
+nf_XD_Detect                           <NFLASH_FAT.LIB>
+
+SYNTAX:		 long nf_XD_Detect(int debounceMode)
+
+DESCRIPTION:  This function attempts to read the XD card ID and searches
+              the internal device table for that ID.
+
+              Assumes only one XD card present.
+
+   WARNING! - This should not be called to determine if it is safe to do
+              write operations if there is a chance a removable device might
+              be pulled between calling it and the write. It is best used
+              to determine if a device is present to proceed with an
+              automount after a device has been unmounted in SW and removed.
+
+PARAMETER1:   0 - no debouncing
+              1 - busy wait for debouncing interval.
+              2 - for use if the function is to be called repeatedly,
+                  as with
+                       waitfor(rc = nf_XD_Detect(1) != -EAGAIN);
+                  until the debouncing interval is done. Function
+                  will return -EAGAIN until done.
+
+RETURN VALUE:  > 0  The ID that was found on the device and in the table
+            -EBUSY  The device was busy
+           -ENODEV  No device found
+           -EAGAIN  if debounceMode==2, not done debouncing, try again
+
+*************************************************************************/
+
+#ifdef FAT_USE_UCOS_MUTEX
+_nflash_nodebug
+long nf_XD_Detect(int debounceMode)
+{
+    auto long rc;
+
+    _fat_ucos_mutex_pend();  // Wait for semaphore
+    rc = _nf_XD_Detect(debounceMode);
+    _fat_ucos_mutex_post();  // Signal for semaphore
+    return rc;
+}
+
+_nflash_nodebug long _nf_XD_Detect(int debounceMode)
+#else
+_nflash_nodebug
+long nf_XD_Detect(int debounceMode)
+#endif
+{
+#ifndef _USER
+#define _USER 0
+#endif
+#if _USER
+	auto char gocrshadow;
+#endif
+	auto long nandID;
+   auto unsigned long t0;
+	static long rc;
+   static nf_device dev;
+   static int j, i, count, detectmode;
+
+   detectmode = 1; // might make this a parameter later
+
+   // Does pretty much what the  nf_initDevice does, except it doesn't
+   // intialize a lot of global data structures and operate on soldered on
+   // devices. It searches for the flash ID in the device table.
+   costate{
+      count = 0;
+      rc = -ENODEV;
+      if(debounceMode==2)rc = -EAGAIN;
+      if(detectmode==1){
+         for(j=0; j<2; j++) {
+            dev.cspin.port = GOCR;
+#if _USER
+            dev.cspin.shadow = NULL;
+#else
+            dev.cspin.shadow = &GOCRShadow;
+#endif
+            dev.cspin.mask = 0x01;
+            dev.baseaddress = 0x5BFC;
+            // see MBRTYPE_xxxxx macro definitions in part_defs.lib
+            dev.mbrtype = MBRTYPE_FLASH | MBRTYPE_MARKERS | MBRTYPE_REMOVE;
+
+            // set up /BUFEN output for socketed NAND /CE (enabled when low)
+#if _USER
+            _sys_direct_read(GOCR, &gocrshadow);
+            _sys_direct_write(GOCR, 0x03 | gocrshadow);
+#else
+            WrPortI(GOCR, &GOCRShadow, 0x03 | GOCRShadow);
+#endif
+
+            // set up the external I/O control register
+            i = 0x07 & (dev.baseaddress >> 13);       // index to I/O register, shadow
+            WrPortI(IB0CR + i, &IB0CRShadow - i, 0x89);  // 3WS, /CS stb, wr OK, mem bus
+
+            // set up port E output as external I/O /CS strobe
+            WrPortI(PEDR, &PEDRShadow, (1 << i) | PEDRShadow);
+            WrPortI(PEFR, &PEFRShadow, (1 << i) | PEFRShadow);
+            WrPortI(PEDDR, &PEDDRShadow, (1 << i) | PEDDRShadow);
+            // reset the NAND flash to get it into a known state
+            _nf_deviceReset(&dev);
+
+            if (0x3E & _nf_deviceStatus(&dev)) {
+               rc = -ENODEV;   // impossible device status! (bad or no response?)
+               abort;
+            }
+            if (nf_isBusyStatus(&dev)) {
+               rc = -EBUSY; // device is busy? (should not be busy this long after reset!)
+               abort;
+            }
+            nandID = _nf_deviceID(&dev);
+            // Search table
+            for(i=0; i<NFLASH_DEVTABLE_SIZE; i++){
+               if(nandID == nf_devtable[i].id_code){
+                  count++;
+                  // No waiting, caller handles debouncing
+                  if(debounceMode==0){
+                     rc = nf_devtable[i].id_code;
+                     abort;
+                  }
+                  // Busy waiting
+                  else if(debounceMode==1){
+                     if(count==1){
+                        t0 = MS_TIMER;  // start timer and busy wait
+                        while(MS_TIMER - t0 < FAT_XD_DETECT_DB_TIME);
+                     }
+                     else if(count==2){
+                        rc = nf_devtable[i].id_code;
+                        abort;
+                     }
+                     break;  // found once & busy waited, didn't find again
+                  }
+                  // Calling until finished waiting
+                  else {
+                     if(count==1) {
+                         waitfor(DelayMs(FAT_XD_DETECT_DB_TIME));
+                         break;
+                     }
+                     else if(count==2) {
+                         rc = nf_devtable[i].id_code;
+                         abort;
+                     }
+                  }
+               } // End if
+            } // End for
+         } // End outer for
+      } // End if detect mode ==
+      else  {
+         for(j=0; j<2; j++) {
+            BitWrPortI(PBDDR,&PBDDRShadow,0,0);  // Set bit 0 to input
+            if(!BitRdPortI(PBDR,0)){  // Read card detect line
+               count++;                // if low, card in
+               // No waiting, caller handles debouncing
+               if(debounceMode==0){
+                  rc = 1;
+                  abort;
+               }
+               // Busy waiting
+               else if(debounceMode==1){
+                  if(count==1){
+                     t0 = MS_TIMER;  // start timer and busy wait
+                     while(MS_TIMER - t0 < FAT_XD_DETECT_DB_TIME);
+                  }
+                  else if(count==2){
+                     rc = 1;
+                     abort;
+                  }
+                  break;  // found once & busy waited, didn't find again
+               }
+               // Calling until finished waiting
+               else {
+                  if(count==1) {
+                      waitfor(DelayMs(FAT_XD_DETECT_DB_TIME));
+                      break;
+                  }
+                  else if(count==2) {
+                      rc = 1;
+                      abort;
+                  }
+               }
+            } // End if
+         } // End outer for
+      }
+   }  // End costate
+   return rc;
+}
+
+
+/*** BeginHeader */
+#endif	// __NFLASH_FAT_LIB
+/*** EndHeader */

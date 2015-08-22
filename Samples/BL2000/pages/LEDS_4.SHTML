@@ -1,0 +1,48 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD W3 HTML//EN">
+<HTML>
+<HEAD>
+	<TITLE>BL20x0 Test Page</TITLE>
+</HEAD>
+
+<BODY bgcolor="#FFFFFF" link="#009966" vlink="#FFCC00" alink="#006666">
+
+<P>&nbsp;
+
+<!--img SRC="rabbit1.gif"-->
+<center>
+<TABLE BORDER="2" CELLSPACING="2" CELLPADDING="2">
+	<TR>
+		<TD rowspan="4" width=220>
+		<big>
+		Click a button on the right-side to toggle its
+		LED on or off.
+		<P>
+		The top-most LED is connected to the output for the
+		optional relay.
+		<P>
+		The LED's are off when the output is driven high.
+		</big>
+		</TD>
+		<TD> <img SRC="<!--#echo var="led1"-->"> </TD>
+		<TD> <A HREF="/led1tog.cgi"> <img SRC="button.gif"> </A> </TD>
+	</TR>
+	<TR>
+		<TD> <img SRC="<!--#echo var="led2"-->"> </TD>
+		<TD> <A HREF="/led2tog.cgi"> <img SRC="button.gif"> </A> </TD>
+	</TR>
+	<TR>
+		<TD> <img SRC="<!--#echo var="led3"-->"> </TD>
+		<TD> <A HREF="/led3tog.cgi"> <img SRC="button.gif"> </A> </TD>
+	</TR>
+	<TR>
+		<TD> <img SRC="<!--#echo var="led4"-->"> </TD>
+		<TD> <A HREF="/led4tog.cgi"> <img SRC="button.gif"> </A> </TD>
+	</TR>
+</TABLE>
+</center>
+
+<BR>
+See the <A HREF="/showsrc.shtml">source code</A>.
+
+</BODY>
+</HTML>

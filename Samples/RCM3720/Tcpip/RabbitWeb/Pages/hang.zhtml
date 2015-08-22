@@ -1,0 +1,71 @@
+<html>
+  <head><title> hangman </title></head>
+  <body bgcolor="white" text="#000010" link="blue" vlink="#ff00ff" link="#ffff00">
+
+    <center>
+      <font color = "#00BB00" size="+5"> Hangman </font>
+    </center>
+
+ <?z if($mode <= 0) { ?>
+    <div align=center>
+      <font size=+3 color="#336699">
+      <?z if($mode == 0) { ?>
+           <font size=+3 color="#336699"><pre><b><?z  echo($newGuess)) ?></b></pre></font>
+      <?z } ?>
+      <?z if($numUsedGuesses== 7) { ?>
+	      <p>Game Over - You Win!</p>
+      <?z } ?>
+      </font>
+    </div>
+    <br/>
+    <div align=center>
+      <img src="./hang<?z echo($currentGIF) ?>.gif" height="145" width="120">
+            <p><?z echo($prompt) ?></p>
+          <font color="#0033ff">hint : <B><?z echo($hint) ?></b></font>
+	  <TABLE>
+	   <TR>
+  	    <?z for($A=97; $A<123; $A++) { ?>
+   		<TD>
+	        <form action="./index.zhtml" method="post" >
+	    	<input type="hidden" NAME="character" VALUE="<?z echo($A) ?>">
+	    	<input type="submit" value="<?z printf("%c",$A) ?>">
+               </form>
+		</TD>
+	    <?z } ?>
+	  </TR>
+	</TABLE>
+<?z } ?>
+
+<?z if($mode==1) { ?>
+    <div align=center>
+      <font size=+3 color="#336699">
+      <p><?z echo($newGuess) ?></p>
+      </font>
+    </div>
+    <br/>
+    <div align=center>
+      <img src='./hang6.gif' height=145 width=120>
+          <p>
+            <font size=+3 color="#ff3333">
+              Game over.
+            </font>
+          </p>
+          <p>
+            <font size=+2 color="#3333cc">
+              The correct answer is <B><?z echo($hint) ?></B>.
+            </font>
+          </p>
+<?z } ?>
+      <form action="./index.zhtml" method="post" >
+      	 <input type="hidden" NAME="mode" VALUE="-1">
+       	 <input type="submit" value="Start New Game">
+     </form>
+
+    </div>
+
+  </body>
+</html>
+
+
+
+

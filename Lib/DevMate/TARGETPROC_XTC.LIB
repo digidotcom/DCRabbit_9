@@ -1,0 +1,213 @@
+/* START LIBRARY DESCRIPTION *********************************************
+TARGETPROC_XTC.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains the small part of XTC (eXtended Target
+   Communications) which is specific to the DeviceMate processor.
+
+CONFIGURATION MACROS:
+	The following macro may be defined before inclusion of this library.
+
+	TC_MAX_XTC_APPS
+	   Defaults to 6, which allows for the currently-defined set of XTC-
+	   based TC applications, namely TCP/IP, filesystem, variables,
+	   logging and email; plus 1 spare.
+
+GLOBAL VARIABLES:
+   TCXTCStateSP _xtt;
+      One instance of this structure contains all necessary state
+      information for XTC communication.  This library is thereby
+      made non-reentrant, however application code may serialize access
+      to these API functions so that the library may be used in a multi-
+      tasking environment.
+
+API FUNCTIONS:
+   The functions in this library are called internally by other libraries
+   and should not be called by end-user application code.  For this
+   reason they are not formally documented.
+
+END DESCRIPTION **********************************************************/
+ 
+/*** BeginHeader _xtt */
+#ifndef TARGETPROC_XTC_H
+#define TARGETPROC_XTC_H
+
+//#define XTC_DEBUG
+
+#ifndef __TARGETPROC_APP_LIB
+	#use "targetproc_app.lib"
+#endif
+
+#ifndef TC_XTC_H
+	#use "tc_xtc.lib"
+#endif
+
+// maximum number of TC applications which can use XTC
+#ifndef TC_MAX_XTC_APPS
+	#define TC_MAX_XTC_APPS		6
+#endif
+
+#ifdef MS_PROTO
+#define PEDReg PEDR,&PEDRShadow
+#define PEFReg PEFR,&PEFRShadow
+#define PEDDReg PEDDR,&PEDDRShadow
+#define DEVBOARD_LED0_SET(d) BitWrPortI(PEDReg, (d)?0:1, 1)
+#define DEVBOARD_LED0_ON() BitWrPortI(PEDReg, 0, 1)
+#define DEVBOARD_LED0_OFF() BitWrPortI(PEDReg, 1, 1)
+#define DEVBOARD_LED1_SET(d) BitWrPortI(PEDReg, (d)?0:1, 7)
+#define DEVBOARD_LED1_ON() BitWrPortI(PEDReg, 0, 7)
+#define DEVBOARD_LED1_OFF() BitWrPortI(PEDReg, 1, 7)
+#endif
+
+
+/*
+ * Struct to maintain SP-side XTC/TC comms state.  This is stuff
+ * which is global to all applications using XTC.
+ */
+typedef struct {
+	/*****************************************************************
+	 * Fields set up before calling targetproc_init().
+	 *****************************************************************/
+	uint8		numapps;			// Number of registered applications
+	XTCApp * apps[TC_MAX_XTC_APPS];	// Pointers to registered apps.
+
+	/*****************************************************************
+	 * Fields initialized by targetproc_init().
+	 *****************************************************************/
+	uint8		init;				// initialization flag
+} TCXTCStateSP;
+
+extern TCXTCStateSP _xtt;
+/*** EndHeader */
+
+TCXTCStateSP _xtt;			// Static instance
+
+
+/*** BeginHeader targetproc_xtc_ready */
+int targetproc_xtc_ready(XTCApp * app);
+/*** EndHeader */
+xtc_nodebug
+int targetproc_xtc_ready(XTCApp * app)
+{
+	if (!(app->aflags & (XTC_AF_READY|XTC_AF_BCASTNEG)))
+		// Not ready, but not yet trying to initialize.  Send reset.
+		xtc_reset(app);
+	
+	return app->aflags & XTC_AF_READY;
+}
+
+
+
+
+/*** BeginHeader _targetproc_xtc_init */
+void _targetproc_xtc_init();
+#funcchain __targetproc_init _targetproc_xtc_init
+/*** EndHeader */
+
+xtc_nodebug
+void _targetproc_xtc_init()
+{
+	auto int i, a;
+	auto XTCApp * app;
+
+	for (a = 0; a < _xtt.numapps; a++) {
+		app = _xtt.apps[a];
+		if (!_xtt.init) {
+			app->txbuffer =
+				xalloc((sizeof(_TCHeader) + app->txbufsize) * (long)app->numtxbufs);
+			app->rxbuffer =
+				xalloc((sizeof(_TCHeader) + app->rxbufsize) * (long)app->numrxbufs);
+		}
+		_tc_create_queue(&app->txbuffQ, app->txbuffer,
+			sizeof(_TCHeader) + app->txbufsize, app->numtxbufs);
+		_tc_create_queue(&app->rxbuffQ, app->rxbuffer,
+			sizeof(_TCHeader) + app->rxbufsize, app->numrxbufs);
+		app->rxprocessing = FARADDR_NULL;
+		app->txrdy = app->numtxbufs;
+		app->towait = NULL;
+		app->txwait = NULL;
+		// Approx twice minimum possible RTT for max size TC packets...
+		app->minrto = (uint16)((sizeof(_TCHeader)*2 + 6 + app->txbufsize + app->rxbufsize) *
+							(10240000UL / TARGETPROC_SERIAL_SPEED) >> 9);
+		app->rtt = app->minrto << 2;
+		app->sendfunc = targetproc_send;
+		app->recvbuf = targetproc_recvbuf;
+		app->aflags |= XTC_AF_SERVER;
+		app->pacing = 0;
+				
+		targetproc_registercallback(app->appno, xtc_callback);
+		for (i = 0; i < app->numrxbufs; i++)
+			targetproc_recvbuf(app->appno, sizeof(_TCHeader) + app->rxbufsize,
+				_tc_get_buffer(&app->rxbuffQ), (long)app);
+
+		// Initialize all channels
+		for (i = 0; i < app->numchans; i++)
+			xtc_init_chan(app, app->chans + i, XTC_NEGCODE_INIT);
+
+		if (_xtt.init)
+			xtc_reset(app);
+
+	}
+	
+	_xtt.init = 1;
+}
+
+
+/*** BeginHeader targetproc_xtc_register */
+// This must be called before targetproc_init(), once only for each application
+// which uses XTC.  The caller should initialize the necessary fields in the
+// XTCApp struct, including the channel array as follows:  either memset the
+// entire channel struct to zero (in which case the parameters will be used to
+// allocate suitable buffers etc.) or memset the channel to zero _except_ for
+// the rx and/or tx xbuf.  If either rx or tx xbuf has a non-zero blen field,
+// then it is assumed to be already initialized.
+// rxlen/txlen must be at least 2 greater than the MSS.
+// Returns 0 if OK, -1 if too many apps, -2/-3 if buffer size error.
+int targetproc_xtc_register(XTCApp * app, uint16 rxlen, uint16 txlen);
+/*** EndHeader */
+
+xtc_nodebug
+int targetproc_xtc_register(XTCApp * app, uint16 rxlen, uint16 txlen)
+{
+	#GLOBAL_INIT {
+		_xtt.numapps = 0;
+		_xtt.init = 0;
+#ifdef MS_PROTO
+		DEVBOARD_LED0_OFF();
+		DEVBOARD_LED1_OFF();
+		WrPortI(PEFReg, 0x00); // All normal I/O
+		WrPortI(PEDDReg, 0x82); // All inputs except bits 7,1
+#endif
+	}
+
+	if (_xtt.init)
+		// Already init, don't do it again
+		return 0;
+			
+	if (_xtt.numapps >= TC_MAX_XTC_APPS)
+		return -1;
+
+	_xtt.apps[_xtt.numapps++] = app;
+	return xtc_init_app(app, rxlen, txlen);
+}
+
+
+/*** BeginHeader _targetproc_xtc_tick */
+void _targetproc_xtc_tick();
+#funcchain __targetproc_tick _targetproc_xtc_tick
+/*** EndHeader */
+
+xtc_nodebug
+void _targetproc_xtc_tick()
+{
+	auto int a;
+
+	for (a = 0; a < _xtt.numapps; a++)
+		xtc_tick(_xtt.apps[a]);
+}
+
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

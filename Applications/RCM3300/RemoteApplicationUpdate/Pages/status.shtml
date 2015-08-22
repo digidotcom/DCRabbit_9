@@ -1,0 +1,30 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD W3 HTML//EN">
+<html>
+<head>
+   <title>Download Manager Status</title>
+</head>
+
+<body topmargin="0" leftmargin="0" marginwidth="0" marginheight="0"
+   bgcolor="#FFFFFF" fgcolor="#009900" link="#009933" vlink="#009933"
+   alink="#006666">
+
+<br><br>
+<center>
+<table border="0" width="65%" cellspacing="0" cellpadding="3">
+   <tr>
+      <th colspan="2" style="background-color:#009933;color:white">Rabbit Semiconductor Download Manager</th>
+   </tr>
+   <tr>
+      <td colspan="2" style="background-color:#CCCCCC;color:black">Current download manager status:</td>
+   </tr>
+   <tr>
+      <td colspan="2" style="background-color:#CCCCCC;color:black"><!--#echo var="gStatusFile"--></td>
+   </tr>
+   <tr>
+      <td style="background-color:#CCCCCC;color:black">&nbsp</td>
+      <td align="right" style="background-color:#CCCCCC;color:black"><a href="/">Home</a></td>
+   </tr>
+</table>
+
+</body>
+</html>

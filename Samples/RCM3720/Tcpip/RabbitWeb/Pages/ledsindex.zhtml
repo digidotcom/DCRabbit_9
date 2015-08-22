@@ -1,0 +1,18 @@
+<HTML>
+<BODY BGCOLOR="#ffffdd">
+<form action="./index.zhtml" method="post" >
+  <INPUT TYPE="hidden" name="LED01"  VALUE="0" >
+  <INPUT TYPE="checkbox" <?z if($LED01==1) { ?>checked<?z } ?>
+      NAME="LED01" VALUE="1" > LED 1 <P>
+  <INPUT TYPE="hidden" name="LED02"  VALUE="0" >
+  <INPUT TYPE="checkbox" <?z if($LED02==1) { ?>checked<?z } ?>
+      NAME="LED02" VALUE="1" > LED 2 <P>
+  <INPUT TYPE="Submit"   VALUE="Submit" >
+</form>
+<p>
+<font color="#228822" size = "5" face = "arial">
+<i>Powered by...</i><br>
+</font>
+<IMG SRC="animate.gif">
+</BODY>
+</HTML>

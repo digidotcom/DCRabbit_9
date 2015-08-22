@@ -1,0 +1,118 @@
+
+/* START LIBRARY DESCRIPTION *********************************************
+WIFI_INTERP_PINCONFIG.LIB
+   Copyright (c) 2006, Rabbit Semiconductor.
+
+DESCRIPTION:
+   This file contains customizable pin configurations for the
+   Compact Flash WiFi Interposer board (included with WiFi Add-on kit).
+
+REVISION HISTORY
+	OF  	05/09/05 	Separated from CFPRISMINTERP.LIB driver file
+                     into this new file to be distributed with standard
+                     DC.
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader  ********************************************/
+
+ /*Interposer Pin configuration Macros: The INTERPx_ prefix (with a 1 or a 2 for x)
+   refers to a particular WiFi interposer interface that the macro affects, in a possible
+   2 interposer plugin configuration.  Most developers will only be using one WiFi
+   interposer board plugin, so only the INTERP0_ macros will need to be changed, when
+   hardware modifications to the interposer board have been made by the developer.
+*/
+#ifndef INTERP0_ADDR0_PORTB_PIN //If the user hasn't defined pins for the
+										  //WiFi interposer board, we use the following
+                                // defaults.
+
+   /* The following block is for RCM3600 & RCM3700 series core modules... */
+	#if ( (( _BOARD_TYPE_ & 0xFF00) == (RCM3600A & 0xFF00)) \
+           || (( _BOARD_TYPE_ & 0xFF00) == (RCM3700A & 0xFF00)))
+
+	   #define INTERP0_ADDR0_PORTB_PIN  2   // Indicates which PB pin connects to M_A0.
+	   #define INTERP0_ADDR1_PORTB_PIN  3   // Indicates which PB pin connects to M_A1.
+	   #define INTERP0_ADDR2_PORTB_PIN  4   // Indicates which PB pin connects to M_A2.
+	   #define INTERP0_CS_PORTB_PIN     5   // Indicates which PB pin connects to M_CS.
+
+	   #define INTERP0_USE_PORTE_RD_STRB   1 //1 = Port E Read Strobe is active, 0 = not active
+	   #define INTERP0_USE_PORTE_WR_STRB   1 //1 = Port E Write Strobe is active, 0 = not active
+	   #define INTERP0_PORTE_RD_STRB       0 // Indicates which PE pin to use for Read strobe
+      												  // (Also determines base address, even if PE strobe
+                                            // is not being used).
+	   #define INTERP0_PORTE_WR_STRB       4 // Indicates which PE pin to use for Write strobe
+      												  // (Also determines base address, even if PE strobe
+                                            // is not being used).
+
+	/* The following block is for RCM3000, RCM3100, RCM3200, RCM3300 and RCM3900
+	    series core modules... */
+	#elif (_BOARD_TYPE_ & 0xFF00) == (RCM3000 & 0xFF00) || \
+	      (_BOARD_TYPE_ & 0xFF00) == (RCM3100 & 0xFF00) || \
+	      (_BOARD_TYPE_ & 0xFF00) == (RCM3200 & 0xFF00) || \
+	      (_BOARD_TYPE_ & 0xFF00) == (RCM3300A & 0xFF00) || \
+	      RCM3900_SERIES
+
+	   #define INTERP0_ADDR0_PORTB_PIN  2   //Indicates which PB pin connects to M_A0.
+	   #define INTERP0_ADDR1_PORTB_PIN  3   //Indicates which PB pin connects to M_A1.
+	   #define INTERP0_ADDR2_PORTB_PIN  4   //Indicates which PB pin connects to M_A2.
+	   #define INTERP0_CS_PORTB_PIN     7   //Indicates which PB pin connects to M_CS.
+
+	   #define INTERP0_USE_PORTE_RD_STRB   1 //1 = Port E Read Strobe is active, 0 = not active
+	   #define INTERP0_USE_PORTE_WR_STRB   0 //1 = Port E Write Strobe is active, 0 = not active
+	   #define INTERP0_PORTE_RD_STRB       5 // Indicates which PE pin to use for Read strobe
+      												  // (Also determines base address, even if PE strobe
+                                            // is not being used).
+	   #define INTERP0_PORTE_WR_STRB       0 // Indicates which PE pin to use for Write strobe
+      												  // (Also determines base address, even if PE strobe
+                                            // is not being used).
+
+   /* The following block is for RCM3400 series core modules... */
+	#elif (( _BOARD_TYPE_ & 0xFF00) == (RCM3400A & 0xFF00))
+
+	   #define INTERP0_ADDR0_PORTB_PIN  2   //Indicates which PB pin connects to M_A0
+	   #define INTERP0_ADDR1_PORTB_PIN  3   //Indicates which PB pin connects to M_A1
+	   #define INTERP0_ADDR2_PORTB_PIN  4   //Indicates which PB pin connects to M_A2
+	   #define INTERP0_CS_PORTB_PIN     7   //Indicates which PB pin connects to M_CS
+
+	   #define INTERP0_USE_PORTE_RD_STRB   1 //1 = Port E Read Strobe is active, 0 = not active.
+	   #define INTERP0_USE_PORTE_WR_STRB   0 //1 = Port E Write Strobe is active, 0 = not active.
+	   #define INTERP0_PORTE_RD_STRB       5 // Indicates which PE pin to use for Read strobe
+                                            // (Also determines base address, even if PE strobe
+                                            // is not being used).
+	   #define INTERP0_PORTE_WR_STRB       0 // Indicates which PE pin to use for Write strobe
+                                            // (Also determines base address, even if PE strobe
+                                            // is not being used).
+
+   /* The following block is for PowerCore Flex series core modules... */
+	#elif POWERCOREFLEX_SERIES
+
+	   #define INTERP0_ADDR0_PORTB_PIN  2   //Indicates which PB pin connects to M_A0
+	   #define INTERP0_ADDR1_PORTB_PIN  3   //Indicates which PB pin connects to M_A1
+	   #define INTERP0_ADDR2_PORTB_PIN  4   //Indicates which PB pin connects to M_A2
+	   #define INTERP0_CS_PORTB_PIN     7   //Indicates which PB pin connects to M_CS
+
+	   #define INTERP0_USE_PORTE_RD_STRB   1 //1 = Port E Read Strobe is active, 0 = not active.
+	   #define INTERP0_USE_PORTE_WR_STRB   1 //1 = Port E Write Strobe is active, 0 = not active.
+	   #define INTERP0_PORTE_RD_STRB       0 //Indicates which PE pin to use for Read strobe
+      												  //(Also determines base address, even if PE strobe
+                                            //is not being used).
+	   #define INTERP0_PORTE_WR_STRB       7 //Indicates which PE pin to use for Write strobe
+      												  // (Also determines base address, even if PE strobe
+                                            // is not being used).
+   #elif (( _BOARD_TYPE_ & 0xFF00) == (SMC3000 & 0xFF00) || \
+   	( _BOARD_TYPE_ & 0xFF00) == (SMC3100 & 0xFF00))
+	   #define INTERP0_ADDR0_PORTB_PIN  2   //Indicates which PB pin connects to M_A0
+	   #define INTERP0_ADDR1_PORTB_PIN  3   //Indicates which PB pin connects to M_A1
+	   #define INTERP0_ADDR2_PORTB_PIN  4   //Indicates which PB pin connects to M_A2
+	   #define INTERP0_CS_PORTB_PIN     7   //Not used for this board..
+
+	   #define INTERP0_USE_PORTE_RD_STRB   1 //1 = Port E Read Strobe is active, 0 = not active.
+	   #define INTERP0_USE_PORTE_WR_STRB   1 //1 = Port E Write Strobe is active, 0 = not active.
+	   #define INTERP0_PORTE_RD_STRB       5 // On this prototyping board, PE5 is used as M_CS.
+	   #define INTERP0_PORTE_WR_STRB       5 // On this prototyping board, PE5 is used as M_CS.
+	#else
+	   #error "Board type not supported for WiFi/Interposer usage."
+	#endif
+
+#endif //#ifndef INTERP0_ADDR0_PORTB_PIN
+
+/*** EndHeader  ********************************************/

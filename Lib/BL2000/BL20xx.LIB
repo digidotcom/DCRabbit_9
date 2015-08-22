@@ -1,0 +1,1448 @@
+/*** Beginheader */
+#ifndef __BL20XX_LIB
+#define __BL20XX_LIB
+
+#if (_BOARD_TYPE_ < 0x0800 || _BOARD_TYPE_ > 0x08FF)
+#error "BL20XX.LIB only supports BL2000 series boards."
+#endif
+
+/*** endheader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+BL20XX.LIB
+Copyright (c) 2001, Z-World
+
+DESCRIPTION:	Support for the BL20XX series controllers.
+
+SUPPORT LIBS:
+
+END DESCRIPTION **********************************************************/
+
+/*** Beginheader serMode */
+int serMode(int mode);
+
+//defaults for flow control RTS/CTS
+#define SERB_RTS_PORT PCDR
+#define SERB_RTS_SHADOW PCDRShadow
+#define SERB_RTS_BIT 2			//PC2
+#define SERB_CTS_PORT PCDR
+#define SERB_CTS_BIT 3			//PC3
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+serMode                   <BL20XX.LIB>
+
+SYNTAX:	      int serMode(int mode);
+
+DESCRIPTION:   User interface to setup up serial communication lines for
+					this board.  Call this function after serXOpen()
+
+PARAMETER1:    mode - defined serial port configuration if devices
+					are installed.
+
+   				Serial port setup:
+
+					Mode 	Port B      	PortC    		PortD
+					----  ------         -----  	      -----
+    				0		RS232 3wire		RS232 3wire   	RS485 3wire
+    				1		RS232 5wire		CTS/RTS			RS485 3wire
+
+RETURN VALUE:	0 if valid mode; 1 if not.
+
+SEE ALSO:		ser485Tx, ser485Rx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int serMode(int mode)
+{
+	auto int status;
+
+	status = 0;
+	switch (mode)
+	{
+		case 0:
+			//		Initialize Serial Ports
+			//    -----------------------
+			// 	RS232 serial port B 3 wire
+			// 	RS232 serial port C 3 wire
+			// 	RS485 serial port D 3 wire
+			//
+			// Set bits 0, 2 and 4 to the Alt function to enable serial
+			// ports B, C, and D
+			WrPortI(PCFR, &PCFRShadow, (0x15|PCFRShadow));
+			break;
+
+		case 1:
+			//		Initialize Serial Ports
+			//    -----------------------
+			// 	RS232 port B 5 wire
+			// 	RS485 port D 3 wire
+			//
+			// Set bits 0 and 4 to the Alt function to enable serial
+			// ports B and D
+			WrPortI(PCFR, &PCFRShadow, (0x11|PCFRShadow));
+
+			// Set bit 2 to change I/O pins PC2 and PC3 to the primary function
+			WrPortI(PCFR, &PCFRShadow, (~0x04&PCFRShadow));
+			BitWrPortI(PCDR, &PCDRShadow, 0, SERB_RTS_BIT);
+			break;
+
+		default:
+			// unsupported mode
+			status = 1;
+			break;
+	}
+	return (status);
+}
+
+
+/*** Beginheader ser485Tx */
+root void ser485Tx( void );
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Tx                     <BL20XX.LIB>
+
+SYNTAX:	      void ser485Tx( void );
+
+DESCRIPTION:   Sets (high) pin 3 (DE) to disable Rx and enable Tx
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		serMode, ser485Rx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+root void ser485Tx( void )
+{
+#asm
+	push	ip							;save off IP state
+	ipset	1							;set interrupt priority to level 1
+	ld		a,(PBDRShadow)			;get copy of shadow reg
+	or		40h						;set bit 6 high
+	ld		(PBDRShadow),a			;update shadow reg
+	ioi	ld	(PBDR),a				;set bit 6 high on port B
+	pop	ip							;restore IP to the previous state
+	ret
+#endasm
+}
+
+/*** Beginheader ser485Rx */
+root void ser485Rx( void );
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Rx                     <BL20XX.LIB>
+
+SYNTAX:	      void ser485Rx( void );
+
+DESCRIPTION:   Resets (low) pin 3 (DE) to enable Rx and disable Tx
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		serMode, ser485Tx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+root void ser485Rx( void )
+{
+#asm
+	push	ip							;save off IP state
+	ipset	1							;set interrupt priority to level 1
+	ld		a,(PBDRShadow)			;get copy of shadow reg
+	and	0bfh						;clear bit 6
+	ld		(PBDRShadow),a			;update shadow reg
+	ioi	ld	(PBDR),a				;set bit 6 low on port B
+	pop	ip							;restore IP to the previous state
+	ret
+#endasm
+}
+
+/*************************************************************************
+	Digital I/O Functions
+--------------------------------------------------------------------------
+	This section supports digital input and output
+
+User interface:
+
+SYNTAX:	void digOut(int channel, int value);
+DESCRIPTION:	Sets the state of a digital output.
+
+SYNTAX:	int digIn(int channel);
+DESCRIPTION:	Reads the state of a digital input.
+
+**************************************************************************/
+
+/*** BeginHeader	digOut */
+void digOut(int, int);
+
+// This MACRO indicates what type of output current drivers
+// that is installed on the controller. It basically provides
+// the proper logic level due to the hardware inversion between
+// using the sinking vs. sourcing type drivers.
+
+#define  SOURCING	0
+#define  SINKING 	1
+
+#ifndef	OUTPUT_DRIVE
+#define  OUTPUT_DRIVE 	SINKING
+#endif
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+digOut								<BL20XX.LIB>
+
+SYNTAX:			void digOut(int channel, int value);
+
+DESCRIPTION:	Sets the state of a digital output, OUT0 - OUT9.
+
+					The default setting for the function is current sinking
+					type drivers. To change from current sinking to sourcing
+					type drivers add the following two lines at the top of
+					your source code.
+
+					#undef   OUTPUT_DRIVE
+					#define  OUTPUT_DRIVE  SOURCING
+
+					The relay is driven by PA0, which is the same Rabbit 2000
+					parallel port that drives OUT0 and LED DS4. OUT0 therefore
+					works in parallel with the relay output. Z-World therefore
+					recommends that you do not use OUT0 for a digital output
+					when you are using the relay.
+
+PARAMETER1:		channel is the output channel number 0 - 9
+
+PARAMETER2:		value is the output value (0 or 1).
+
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, digIn
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void digOut(int channel, int value)
+{
+	if ((channel < 0) || (channel > 9) || (value < 0) || (value > 1)) {
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel >= 0 && channel <= 7)
+	{  // Output to a channel 0 - 7
+		if(OUTPUT_DRIVE)
+		{
+			BitWrPortI(PADR, &PADRShadow, !value, channel);
+		}
+		else
+		{
+			BitWrPortI(PADR, &PADRShadow, value, channel);
+		}
+	}
+	else
+	{  // Output to a channel 8 - 9
+		if(OUTPUT_DRIVE)
+		{
+			BitWrPortI(PEDR, &PEDRShadow, !value, (channel-8));
+		}
+		else
+		{
+			BitWrPortI(PEDR, &PEDRShadow, value, (channel-8));
+		}
+	}
+}
+
+/*** BeginHeader digIn */
+int  digIn(int);
+
+#ifndef	THRESHOLD
+#define  THRESHOLD	2.40
+#endif
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+digIn								<BL20XX.LIB>
+
+SYNTAX:			int digIn(int channel);
+
+DESCRIPTION:	Reads the state of an input channel.
+
+					Digital inputs
+					--------------
+					PE2-IN0	(input voltage -36v to +36v)
+					PE3-IN1	(input voltage -36v to +36v)
+					PE4-IN2	(input voltage -36v to +36v)
+					PE5-IN3	(input voltage -36v to +36v)
+					PE6-IN4	(input voltage -36v to +36v)
+					PE7-IN5	(input voltage -36v to +36v)
+					PB0-IN6	(input voltage -36v to +36v)
+					PB1-IN7	(input voltage -36v to +36v)
+					PB2-IN8	(input voltage -36v to +36v)
+					PB3-IN9	(input voltage -36v to +36v)
+					PB4-IN10	(input voltage -36v to +36v)
+
+
+					Pseudo digital inputs using A/D
+					-------------------------------
+					ADC_IN0 	= IN11 (input voltage -9v to +9v)
+					ADC_IN1 	= IN12 (input voltage -9v to +9v)
+					ADC_IN2 	= IN13 (input voltage -9v to +9v)
+					ADC_IN3 	= IN14 (input voltage -9v to +9v)
+					ADC_IN4 	= IN15 (input voltage 0 to +48v)
+					ADC_IN5 	= IN16 (input voltage 0 to +48v)
+					ADC_IN6 	= IN17 (input voltage 0 to +48v)
+					ADC_IN7 	= IN18 (input voltage 0 to +48v)
+					ADC_IN8 	= IN19 (input voltage 0 to +48v)
+
+					DAC_OUT0 = IN20 (input voltage 0 to +48v)
+					DAC_OUT1 = IN21 (input voltage 0 to +48v)
+					(channels IN20 & IN21 are only available on the
+					BL2010 & BL2030)
+
+					For channels IN0 - IN10 the threshold is fixed at 2.40v.
+					Anything below 2.40 volts is a logic 0 and anything higher
+					than or equal to 2.40 volts is a logic 1.
+
+					For channels IN11-IN21 the default threshold is set to
+					2.40v. The threshold voltage for these channels can be
+					changed by adding the following two lines to your
+					application program.
+
+					#undef   THRESHOLD
+					#define  THRESHOLD xx.xx
+
+					xx.xx = desired threshold voltage
+
+					Anything below the THRESHOLD value is a logic 0 and
+					anything higher than or equal to the THRESHOLD value
+					is a logic 1.
+
+PARAMETER1:		channel is the input channel number 0 - 21
+
+RETURN VALUE:	The state of the input (0 or 1).
+
+SEE ALSO:		brdInit, digOut
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int digIn(int channel)
+{
+	auto unsigned char iobit;
+	auto float voltage;
+
+	if ((channel < 0) || (channel > 21)) {
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel >= 0 && channel <= 5)
+	{
+		// Read input from a channel 0 - 5
+		iobit = channel + 2;
+		BitWrPortI(PEFR, &PEFRShadow, 0x00, iobit);
+		BitWrPortI(PEDDR, &PEDDRShadow, 0x00, iobit);
+
+		// Read channel
+		return (BitRdPortI(PEDR, iobit));
+	}
+	// Read input from a channel 7 - 10
+	else if(channel >= 7 && channel <= 10)
+	{
+		// Calculate I/O pin
+		iobit = channel - 5;
+
+		// Read channel
+		return (BitRdPortI(PBDR, iobit));
+	}
+	// Read input from channel 6
+	else if(channel == 6)
+	{
+		return (BitRdPortI(PBDR, 0));
+	}
+	else
+	{
+		voltage = anaInVolts(channel - 11);
+		if(voltage >= THRESHOLD)
+		{
+			return(1);
+		}
+		else
+		{
+			return(0);
+		}
+	}
+}
+
+/*** BeginHeader	relayOut */
+void relayOut(int, int);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+relayOut						<BL20XX.LIB>
+
+SYNTAX:			void relayOut(int relay, int value)
+
+DESCRIPTION:	Sets the state of a relay
+
+					The relay is driven by PA0, which is the same Rabbit 2000
+					parallel port that drives OUT0 and LED DS4. OUT0 therefore
+					works in parallel with the relay output. Z-World therefore
+					recommends that you do not use OUT0 for a digital output
+					when you are using the relay.
+
+PARAMETER1:		Relay to control.
+					0 = Relay 0
+
+PARAMETER2:		A value used to connect the Relay_Common contact to one of
+					the following contacts:
+
+                      Relay_Normally_Closed contact
+
+                              "OR"
+
+ 							 Relay_Normally_Open   contact
+
+					0 = Relay_Common connected to Relay_Normally_Closed contact
+					1 = Relay_Common connected to Relay_Normally_Open   contact
+
+RETURN VALUE:	None
+
+SEE ALSO:		brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void relayOut(int relay, int value)
+{
+	if ((relay < 0) || (relay > 0) || (value < 0) || (value > 1)) {
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if(relay == 0)
+	{
+		BitWrPortI(PADR, &PADRShadow, value, 0);
+	}
+}
+
+/*** BeginHeader	ledOut */
+void ledOut(int, int);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ledOut						<BL20XX.LIB>
+
+SYNTAX:			void ledOut(int led, int value)
+
+DESCRIPTION:	LED ON/OFF control
+
+					The relay is driven by PA0, which is the same Rabbit 2000
+					parallel port that drives OUT0 and LED0. OUT0 therefore
+					works in parallel with the relay output. Z-World therefore
+					recommends that you do not use OUT0 for a digital output
+					when you are using the relay. The relay and OUT0 are also
+					turned on when LED0 is turned on.
+
+PARAMETER1:		LED to control.
+						0  = OUT0_LED
+						1  = OUT1_LED
+						2  = OUT2_LED
+						3  = OUT3_LED
+						4  = BAD indicator
+
+PARAMETER2:		The value used to control the LED:
+						0 = OFF
+						1 = ON
+RETURN VALUE:	None
+
+SEE ALSO:		brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void ledOut(int led, int value)
+{
+	if ((led < 0)   || (led > 4) || (value < 0) || (value > 1))	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	switch(led)
+	{
+		case 0:
+			BitWrPortI(PADR, &PADRShadow, value, 0);
+			break;
+
+		case 1:
+			BitWrPortI(PADR, &PADRShadow, value, 1);
+			break;
+
+		case 2:
+			BitWrPortI(PADR, &PADRShadow, value, 2);
+			break;
+
+		case 3:
+			BitWrPortI(PADR, &PADRShadow, value, 3);
+			break;
+
+		case 4:
+			BitWrPortI(PBDR, &PBDRShadow, !value, 7);
+			break;
+
+		default:
+			break;
+	}
+}
+
+/*** BeginHeader ADC_CALIB_ADDR, _adcCalib */
+#define ADCHANNELS 11
+
+// offset into user block for calibration data
+#define ADC_CALIB_ADDR	(4096*GetIDBlockSize()-0x3C0)
+
+// Save the gain and offset for each channel
+extern float _adcCalib[ADCHANNELS][2];
+/*** EndHeader */
+float _adcCalib[ADCHANNELS][2];
+
+
+/*** BeginHeader anaInCalib */
+int anaInCalib(int, int, float, int, float);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInCalib						<BL20XX.LIB>
+
+SYNTAX:			void anaInCalib(int channel, int value1, float volts1,
+							int value2, float volts2)
+
+DESCRIPTION:	Calibrates the response of the ADC channel desired as a
+               linear function using the two conversion points provided.
+               Gain and offset constants are calculated and placed into
+               global table _adcInCalib.
+
+PARAMETER1:		The ADC input channel 0 - 10.
+PARAMETER2:		The first ADC value.
+PARAMETER3:		The voltage/current corresponding to the first ADC value.
+PARAMETER4:		The second ADC value.
+PARAMETER5:		The voltage/current corresponding to the second ADC value.
+
+RETURN VALUE:	0, if sucessful.
+					-1, if not able to make calibration constants.
+
+SEE ALSO:		anaIn, anaInVolts, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaInCalib(int channel, int value1, float volts1,
+									 int value2, float volts2)
+{
+	auto float gain, offset;
+
+	if( (volts1 == volts2) || (value1 == value2) ) return -1;
+
+	offset = (volts2*value1 - volts1*value2)/(volts2-volts1);
+	if (offset == value1)
+		gain = volts2/(offset-value2);
+	else
+		gain = volts1/(offset-value1);
+
+	_adcCalib[channel][0] = gain;
+	_adcCalib[channel][1] = offset;
+
+	return 0;
+}
+
+/*** BeginHeader _anaIn */
+root unsigned int _anaIn(unsigned char cmd, char len);
+#define AD_CLK		0			//AD clock, bit 0
+#define AD_SDI 	1			//data out to the AD,   bit 1
+#define AD_SDO		2			//data in from the AD,  bit 2
+#define AD_CS		7        //AD chip select
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_anaIn								<BL20XX.LIB>
+
+SYNTAX:			int _anaIn(unsigned char cmd, char len)
+
+DESCRIPTION:	Reads the voltage of an analog input channel by serial
+					clocking out an 8 bit command to the A/D device of the
+					following formats:
+
+PARAMETER1:		The command byte to be sent to the ADC chip (TLC2543 or
+					TLC1543).
+
+					TLC2543 command (12 bit A/D)
+   				----------------------------
+					D7-D4 D3-D2 D1	D0
+    				 |      |   |   |
+	 				 |      |   |   +-- Mode of operation
+	 				 |      |   |        0 Unipolar (normally used as default)
+	 				 |      |   |        1 Bipolar
+	  				 |      |   |
+    				 |      |   +------ Output data format
+    				 |      |           0 MSB first
+    				 |      |           1 LSB first (not supported by driver)
+    				 |      |
+    				 |      +---------- Output data length
+    				 |                  01 8 bits
+    				 |                  00 12 bits (normally used as default)
+    				 |                  11 16 bits (not supported by driver)
+    				 |
+   				 +----------------- Channel 0 - 10
+               			           Channel 11 = (Vref+  -  Vref-)/2
+                          			  Channel 12 = Vref-
+                          			  Channel 13 = Vref+
+                          			  Channel 14 = Software power-down
+
+   				TLC1543 command (10 bit A/D)
+   				----------------------------
+   				D7-D4  D3-D0
+    				 |      |
+	 				 |      +---------- Don't care
+	 				 |
+   				 +----------------- Channel 0 - 10
+    								        Channel 11 = (Vref+  -  Vref-)/2
+                             		  Channel 12 = Vref-
+                             		  Channel 13 = Vref+
+                             		  (No software power-down mode available)
+
+PARAMETER2:    Output data length
+                  0  = 12 bit mode (BL2000/BL2020 only)
+                  1	=  8 bit mode    "       "
+                  2  = 10 bit mode (BL2010/BL2030 only)
+
+
+RETURN VALUE:	A value corresponding to the voltage on the analog input
+					channel, which will be:
+
+					0-4095 	for 12 bit A/D conversions
+					0-1023	for 10 bit A/D conversions
+					0-255    for  8 bit A/D conversions
+
+SEE ALSO:		anaIn, anaInVolts, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+root useix unsigned int _anaIn(unsigned char cmd, unsigned char len)
+{
+	static unsigned int rawcount;
+
+//
+// This driver has been designed for TI's TLC2543 and TLC1543 A/D chips.
+// - TLC2543 using Timing for 12-Clock transfer using CS with MSB first
+// - TLC2543 using Timing for  8-Clock transfer using CS with MSB first
+// - TLC1543 using Timing for 10-Clock transfer using CS (Mode 1)
+//
+//For complete detailed timing information, please see the data sheet.
+#asm
+	push  ip							;save off IP state
+	ipset	1							;set interrupt priority to level 1
+	ld		hl,PDDRShadow			;load alt register w/addr of shadow reg
+	ld    a,(hl)					;get copy of shadow register
+	ld		bc,PDDR					;load alt register w/addr of Port D
+	ld		de,0						;initialize AD rawcount to zero
+	exx								;exchange registers
+
+	ld		de,PDDR					;load de register w/addr of Port D
+	res	AD_CLK,a	    			;clear CLK bit in register
+	ioi	ld	(de),a				;set CLK line low
+
+	res	AD_CS,a					;clear chip select bit
+	ioi	ld	(de),a				;set CS low
+	ld		l,(ix+cmd)				;load AD command
+	ex		af,af'					;save off copy of shadow register
+	;
+	; A 1.3us delay is required before reading the A/D data and 1.425us is
+	; required before clocking data into the A/D for both the TLC2543 and
+	; the TLC1543 AD converters. So the worstcase parameter tsu(CS) 1.425us
+	; is being used to cover both requirements.
+	;
+	; The delay itself meets the timing requirement, no other instruction
+	; cycles were included in the calculation so the driver could be easily
+	; maintained.
+	;
+
+	;Reg B = Desired Delay/(period * instruction cycles)
+	ld		b,7						;delay based on 22.1184MHz CLK
+.delay1:
+	djnz	.delay1					;(int)6.3 = 1.425us/(45.211ns * 5 cycles)
+										;requirement is >=1.425us so bump to 7
+   ld		a,(ix+len)  			;get A/D output length parameter
+   cp		0x00						;check for 12 bit data transfer
+   jr		z,.shift12Bit         ;
+   cp		0x02						;check for 10 bit data transfer
+   jr		z,.shift10Bit         ;
+   jr		.shift8Bit				;jump to 8 bit data transfer
+
+.shift12Bit:
+	ld		b,4						;setup for 4 MSB bits to be shifted
+	ld    iy,0x08					;counter, will rotate right 4 counts
+	jr		.shiftMSB
+
+.shift10Bit:
+	ld		b,2						;setup for 2 MSB bits to be shifted
+	ld    iy,0x02					;counter, will rotate right 2 counts
+
+.shiftMSB:
+	exx								;save off addr of shadow reg and port D
+	ioi	ld a,(bc)				;read A/D SDO data line
+	srl	a                    ;shift data from bit D2 to D0
+	srl   a
+	and   0x01	  					;check if data is one or zero
+	or		d							;OR'in previous value
+	ld    d,a						;copy results to register D
+	rr		iy							;decrement counter
+	jr		c,.bypass1				;jump if counter has reached zero
+	sla	d							;make room for the next bit
+.bypass1:
+	exx								;retrieve addr of port D
+	ex		af,af'					;retrieve copy of shadow reg
+	sla	l							;shift to next cmd bit to be written
+	jr		nc,.clrbit1				;check if cmd bit is high or low
+	set	AD_SDI,a					;set data bit high
+	ioi	ld	(de),a				;set DATA high to AD
+	jr		.clkdata1					;jump to CLK data code section
+.clrbit1:
+	res	AD_SDI,a					;set data bit low
+	ioi	ld (de),a				;set data low to AD
+.clkdata1:
+	set   AD_CLK,a					;set CLK bit high
+	ioi	ld (de),a				;CLK next SDO bit out of AD
+	res	AD_CLK,a					;set CLK bit low
+	ioi	ld (de),a				;CLK SDI data bit into AD
+	ex		af,af'					;save off copy of shadow reg
+	djnz	.shiftMSB					;loop until B register reaches zero
+
+.shift8Bit:
+	ld		b,8						;setup for 8 LSB bits to be shifted
+	ld 	iy,0x80					;counter, will rotate right 8 counts
+
+.shiftLSB:
+	exx								;save off addr of shadow reg and port D
+	ioi	ld a,(bc)				;read A/D SDO data line
+	srl	a                    ;shift data from bit D2 to D0
+	srl   a
+	and   0x01						;check if data is one or zero
+	or		e							;OR'in previous value
+	ld    e,a						;copy results to register D
+	rr 	iy							;decrement counter
+	jr		c,.bypass2				;jump if counter has reached zero
+	sla	e							;make room for the next bit
+.bypass2:
+	exx								;retrieve addr of port D
+	ex		af,af'					;retrieve copy of shadow reg
+	sla	l							;shift to next cmd bit to be written
+	jr		nc,.clrbit2				;check if cmd bit is high or low
+	set	AD_SDI,a					;set data bit high
+	ioi	ld (de),a				;set DATA high to AD
+	jr		.clkdata2					;jump to CLK data code section
+.clrbit2:
+	res	AD_SDI,a					;set data bit low
+	ioi	ld (de),a				;set data low to AD
+.clkdata2:
+	set	AD_CLK,a					;set CLK bit high
+	ioi	ld (de),a				;CLK next SDO bit out of AD
+	res	AD_CLK,a					;set CLK bit low
+	ioi	ld (de),a				;CLK SDI data bit into AD
+	ex		af,af'					;save off copy of shadow reg
+	djnz	.shiftLSB					;loop until B register reaches zero
+
+	exx								;retrieve addr of shadow reg and port D
+	ex		af,af'					;retrieve copy of shadow reg
+	set	AD_CS,a					;set AD CS bit high
+	ld		(hl),a					;update port D shadow register
+	ioi	ld (bc),a				;set AD chip select high
+	ld    (rawcount),de        ;load A/D data into rawcount variable
+	pop	ip							;restore IP to the previous state
+	;
+	; The following timing is required to meet the requirements of the A/D
+	; chips.
+	;
+	; TLC2543
+	; -------
+	;  - 12.2us is needed from the last CLK to when CS is asserted again.
+	;
+	; TLC1543
+	; -------
+	;  - 21.5us is needed from the last CLK to when CS is asserted again.
+	;
+	;  Notes: 1.The timing was derived from parameter  td(I/O-EOC)+ t(conv)
+	;         2.The delay itself meets the timing requirement, no other
+	;           instruction cycles were included in the calculation so the
+	;           driver could be easily maintained.
+	;
+	ld		a,(ix+len)				;get the A/D output data length parameter
+	cp		0x02						;check for TLC1543 (10 bit ADC)
+	jr	   z,.tlc1543				;jump to required delay for TLC1543
+
+.tlc2543:								;controller has TLC2543 12 bit ADC installed
+	ld		b,54					 	;delay based on 22.1184MHz CLK
+	jr    .delay2					;create a 12.2us delay
+
+.tlc1543:								;controller has TLC1543 10 bit ADC installed
+	ld		b,96						;delay based on 22.1184MHz CLK
+										;create a 21.7usec delay
+
+.delay2:								;delay = REG B*clk period*instruction cycles
+	djnz	.delay2					;delay = REG B*45.211ns*5 cycles
+#endasm
+
+	return(rawcount);
+}
+
+
+/*** BeginHeader anaIn */
+unsigned int anaIn(unsigned int channel);
+
+#define AD12BITS		0	//number of output bits for the TLC2543
+#define AD8BITS		1  //   "            "
+#define AD10BITS		2	//number of output bits for the TLC1543
+
+#define MSB_FIRST 	0
+#define UNIPOLAR  	0
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaIn								<BL20XX.LIB>
+
+SYNTAX:			int anaIn(unsigned int channel)
+
+DESCRIPTION:	Reads the state of an analog input channel.
+
+PARAMETER1:		The analog input channel 0 - 10 to read.
+
+RETURN VALUE:	A value corresponding to the voltage on the analog input
+					channel, which will be:
+
+					0-4095 	for 12 bit A/D conversions(BL2000,BL2020)
+					0-1023	for 10 bit A/D conversions(BL2010,BL2030)
+
+SEE ALSO:		anaInVolts, anaInCalib, _anaIn, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+unsigned int anaIn(unsigned int channel)
+{
+	auto unsigned char len, adc_cmd, bitorder,  mode;
+
+	// set number of A/D output bits depended on the version of controller
+	#ifdef ADC_12BIT
+		// ADC is 12 bit version
+		len 	  = AD12BITS;
+	#else
+		// ADC is 10 bit version
+		len     = AD10BITS;
+	#endif
+
+	// setup the A/D command
+	bitorder = MSB_FIRST;
+	mode     = UNIPOLAR;
+	adc_cmd = (channel<<4) + (len<<2) + (bitorder<<1) + mode;
+
+
+	// do a read of the A/D converter to prime A/D serial pipeline, the
+	// data is not valid until the next A/D access.
+	_anaIn(adc_cmd, len);
+
+	// read the voltage thats currently on the ADC channel
+	return(_anaIn(adc_cmd, len));
+}
+
+/*** BeginHeader anaInVolts */
+float anaInVolts(unsigned int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInVolts						<BL20XX.LIB>
+
+SYNTAX:			float anaInVolts(unsigned int channel)
+
+DESCRIPTION:	Reads the state of an analog input channel and uses
+					the previously set calibration constants to convert
+					it to volts.
+
+PARAMETER1:		The ADC input channel 0 - 10.
+
+RETURN VALUE:	A voltage value corresponding to the voltage on the
+					analog input channel.
+
+SEE ALSO:		anaIn, anaInCalib, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+float anaInVolts(unsigned int channel)
+ {
+	auto unsigned int value1;
+
+	value1 = anaIn(channel);
+	return (_adcCalib[channel][0] * (_adcCalib[channel][1] - value1));
+}
+
+
+/*** BeginHeader DAC_CALIB_ADDR, _dacCalib */
+#define DACHANNELS 2
+#define MAXDACCOUNT	4095
+#define MINDACCOUNT	0
+
+//Offset into user block for calibration data
+#define DAC_CALIB_ADDR	(4096*GetIDBlockSize()-0x400)
+
+//Array to hold the [0]=gain,[1]=offset values
+extern float _dacCalib[DACHANNELS][2];
+/*** EndHeader */
+
+float _dacCalib[DACHANNELS][2];	 //[0]=gain,[1]=offset
+
+
+/*** BeginHeader anaOutCalib */
+int anaOutCalib(int channel, int value1, float volts1,
+                             int value2, float volts2);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutCalib						<BL20XX.LIB>
+
+SYNTAX:			int anaOutCalib(int channel, int value1, float volts1,
+						             				  int value2, float volts2);
+
+DESCRIPTION:	Calibrates the response of the DAC channel desired as a
+               linear function using the two conversion points provided.
+               Gain and offset constants are calculated and placed into
+               global table _dacCalib.
+
+PARAMETER1:		The DAC output channel 0 or 1.
+
+PARAMETER2:		The first DAC value.
+
+PARAMETER3:		The voltage (volts), corresponding to the first DAC value.
+PARAMETER4:		The second DAC value.
+
+PARAMETER5:		The voltage (volts), corresponding to the second DAC value.
+
+RETURN VALUE:	0, if sucessful.
+					-1, if not able to make calibration constants.
+
+SEE ALSO:		anaOut, anaOutVolts, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaOutCalib(int channel, int value1, float volts1,
+									  int value2, float volts2)
+{
+	auto float gain, offset;
+
+	if( (volts1 == volts2) || (value1 == value2) ) return -1;
+
+	offset = (volts2*value1 - volts1*value2)/(volts2-volts1);
+	if (offset == value1)
+		gain = volts2/(offset-value2);
+	else
+		gain = volts1/(offset-value1);
+
+	_dacCalib[channel][0] = gain;
+	_dacCalib[channel][1] = offset;
+
+	return 0;
+}
+
+
+
+/*** BeginHeader anaOut */
+root void anaOut(unsigned int channel, unsigned int modecount);
+
+#define DACCLK 	0			//dac clock,  bit 0
+#define DACDATA 	1			//dac data,   bit 1
+#define DACCS0 	5			//dac chan 0 chip select, bit 5
+#define DACCS1 	6			//dac chan 1 chip select, bit 6
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOut								<BL20XX.LIB>
+
+SYNTAX:			void anaOut(unsigned int channel, unsigned int modecount)
+
+DESCRIPTION:	Sets the voltage of an analog output channel by serial
+				   clocking 16-bits to a DAC device of the following format:
+
+	D15 D14 D13	D12 D11-D0
+    |   |   |   |   |  |
+	 |   |   |   |   +--+---- Data bits, msb-lsb (0-4095)
+    |   |   |   |
+    |   |   +---+----------- Mode of operation
+    |   |                    	00 Normal Operation
+    |   |                    	01 Software Power-down, 1k to GND
+    |   |                    	10 Software Power-down, 100k to GND
+    |   |                    	11 Software Power-down, Three-state
+    |   |
+    +---+------------------- Don't care
+
+PARAMETER1:		The analog output channel to write, 0 or 1.
+
+PARAMETER2:		A value corresponding to the voltage on the analog output
+               and/or setting the mode of operation.
+
+					Mode of operation							 	modecount value
+					----------------------------				----------------
+					0  = Normal Mode  								0-4095
+					1  = Software Power Down, 1k to GND			0x1000
+					2  = Software Power Down, 100k to GND    	0x2000
+					3  = Software Power Down, Three-state    	0x3000
+
+RETURN VALUE:	None
+
+SEE ALSO:		anaOutVolts, anaOutCalib, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+root useix void anaOut(unsigned int channel, unsigned int modecount)
+{
+// At 22Mhz this routine executes at appox. 40us which meets the timing
+// reqirements of the DA converter which has a slew rate of 1V/us and a
+// max settling time of 10us (w/RL=2k; 0pF<CL<200pF). For a faster cpu
+// clock you may need to add some delay, see the AD5320 data sheet for
+// complete timing details.
+#asm
+	push	ip							;save off IP sate
+	ipset	1							;set interrupt priority to level 1
+	ld		hl,PDDRShadow			;get addr of Port D shadow register
+	ld		de,PDDR					;get addr of Port D
+	ld    a,(hl)					;get a copy of Port D shadow register
+	exx								;save off addr of shadow reg and port D
+	ld		de,PDDR					;get addr of Port D
+
+	res	DACCLK,a	    			;clear CLK bit in register
+	ioi	ld	(de),a				;set DAC CLK line
+	ex		af,af'					;save off copy of the shadow register
+
+	ld		a,(ix+channel)			;determine which DAC to access
+	cp		0
+	jr		nz,.cs1					;jump if accessing DAC1
+
+	ex		af,af'					;retrieve copy of the shadow register
+	res	DACCS0,a					;clear chip select bit
+	ioi	ld	(de),a				;set DAC0 CS low
+	jr 	.shiftMSB					;jump to start of bit shift routine
+.cs1:
+	ex		af,af'					;retrieve copy of the shadow register
+	res	DACCS1,a					;clear chip select bit
+	ioi	ld	(de),a				;set DAC1 CS low
+
+.shiftMSB:
+	ld		b,8						;setup for 8 MSB bits to be shifted
+	ld		hl,(ix+modecount)		;get DAC modecount parameter
+.loop1:
+	sla	h							;move to next cmd bit to be written
+	jr		nc,.clrbit1				;check if cmd bit is high or low
+	set	DACDATA,a				;set data bit high
+	set 	DACCLK,a					;set CLK bit high
+	ioi	ld	(de),a				;set CLK and DATA high to DAC
+	jr		.clkdata1
+.clrbit1:
+	res	DACDATA,a				;set data bit low
+	set   DACCLK,a					;set CLK bit high
+	ioi	ld (de),a				;set CLK high and data low to DAC
+.clkdata1:
+	res	DACCLK,a					;set CLK bit low
+	ioi	ld (de),a				;CLK data into DAC
+	djnz	.loop1						;loop until B register reaches zero
+
+.shiftLSB:
+	ld		b,8						;setup for 8 LSB bits to be shifted
+.loop2:
+	sla	l							;move to next cmd bit to be written
+	jr		nc,.clrbit2				;check if cmd bit is high or low
+	set	DACDATA,a				;set data bit high
+	set   DACCLK,a					;set CLK bit high
+	ioi	ld (de),a				;set CLK and DATA high to DAC
+	jr		.clkdata2
+.clrbit2:
+	res	DACDATA,a				;set data bit low
+	set	DACCLK,a					;set CLK bit high
+	ioi	ld (de),a				;set CLK high and data low to DAC
+.clkdata2:
+	res	DACCLK,a					;set CLK bit low
+	ioi	ld (de),a				;CLK data into DAC
+	djnz	.loop2						;loop until B register reaches zero
+
+	exx								;retrieve addr of shadow reg and port D
+	set	DACCS0,a					;set DAC0 CS bit high
+	set   DACCS1,a					;set DAC1 CS bit high
+	ld		(hl),a					;update Port D shadow register
+	ioi	ld (de),a				;set DAC0&DAC1 chip selects high
+	pop	ip							;restore IP to the previous state
+#endasm
+}
+
+
+/*** BeginHeader anaOutVolts */
+void anaOutVolts(unsigned int channel, float voltage);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutVolts						<BL20XX.LIB>
+
+SYNTAX:			void anaOutVolts(unsigned int channel, float voltage)
+
+DESCRIPTION:	Sets the voltage of an analog output channel by using the
+					previously set calibration constants to calculate the
+					correct data values.
+
+PARAMETER1:		The DAC output channel 0 or 1.
+
+PARAMETER2:		The voltage desired on the output channel.
+
+RETURN VALUE:	None
+
+SEE ALSO:		anaOut, anaOutCalib, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void anaOutVolts(unsigned int channel, float voltage)
+{
+	auto int rawdata;
+
+	rawdata=(int)(_dacCalib[channel][1]-(voltage / _dacCalib[channel][0]));
+	if(rawdata > MAXDACCOUNT || rawdata < MINDACCOUNT)
+	{
+		rawdata = (rawdata > MAXDACCOUNT) ? MAXDACCOUNT : 0;
+	}
+	anaOut(channel, rawdata);
+}
+
+
+/*===================================================================
+	The following functions are for reading/writing the ADC and DAC
+	calibrations constants.
+===================================================================*/
+
+/*** BeginHeader anaInEERd */
+int anaInEERd(unsigned int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInEERd					<BL20XX.LIB>
+
+SYNTAX:			int anaInEERd(unsigned int channel);
+
+DESCRIPTION:	Reads the calibration constants, gain and offset, from
+               simulated eeprom in flash, located at the top 1K of the
+               reserved UserBlock memory area. This function is non-
+               reentrant.
+
+               See the user manual for the size of the UserBlock area.
+
+PARAMETER1:		The ADC input channel.
+
+RETURN VALUE:	 0, If successful.
+					-1, invalid address or range.
+
+SEE ALSO:		anaInEEWr, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaInEERd(unsigned int channel)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	//	Calculate the offset into the user block of where the calibration
+	// constants are stored for a given A/D channel.
+	offset = ADC_CALIB_ADDR + ((&_adcCalib[channel][0] - _adcCalib[0])*4);
+
+	// read calibration constants from flash
+	status = readUserBlock( _adcCalib[channel], offset,
+									sizeof(_adcCalib[0][0])*2);
+	return(status);
+}
+
+
+/*** BeginHeader anaInEEWr */
+int anaInEEWr(unsigned int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInEEWr					<BL20XX.LIB>
+
+SYNTAX:			int anaInEEWr(unsigned int channel);
+
+DESCRIPTION:	Writes the calibration constants, gain and offset, to
+               simulated eeprom in flash, located at the top 1K of the
+               reserved UserBlock memory area. This function is non-
+               reentrant.
+
+               See the user manual for the size of the UserBlock area.
+
+PARAMETER1:		The ADC input channel.
+
+RETURN VALUE:	 0, successful write to simulated eeprom.
+					-1, invalid address or range.
+
+
+SEE ALSO:		anaInEERd,  brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaInEEWr(unsigned int channel)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	// Calculate the offset into the user block of where the calibration
+	// constants are stored for a given A/D channel.
+	offset = ADC_CALIB_ADDR + ((&_adcCalib[channel][0] - _adcCalib)*4);
+
+	// write calibration constants to flash
+	status = writeUserBlock(offset, &_adcCalib[channel][0],
+								   sizeof(_adcCalib[0][0])*2);
+	return(status);
+}
+
+/*** BeginHeader anaOutEERd */
+int anaOutEERd(unsigned int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutEERd					<BL20XX.LIB>
+
+SYNTAX:			int anaOutEERd(unsigned int channel);
+
+DESCRIPTION:	Reads the calibration constants, gain and offset, from
+               simulated eeprom in flash, located at the top 1K of the
+               reserved UserBlock memory area. This function is non-
+               reentrant.
+
+               See the user manual for the size of the UserBlock area.
+
+PARAMETER1:		The DAC output channel.
+
+RETURN VALUE:	 0, If successful.
+					-1, invalid address or range.
+
+SEE ALSO:		anaOutEEWr, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaOutEERd(unsigned int channel)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	// Calculate the offset into the user block of where the calibration
+	// constants are stored for a given DAC channel.
+	offset = DAC_CALIB_ADDR + ((&_dacCalib[channel][0] - _dacCalib[0])*4);
+
+	// read calibration constants from flash
+	status = readUserBlock( _dacCalib[channel], offset,
+									sizeof(_dacCalib[0][0])*2);
+	return(status);
+}
+
+
+/*** BeginHeader anaOutEEWr */
+int anaOutEEWr(unsigned int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutEEWr					<BL20XX.LIB>
+
+SYNTAX:			int anaOutEEWr(unsigned int channel);
+
+DESCRIPTION:	Writes the calibration constants, gain and offset, to
+               simulated eeprom in flash, located at the top 1K of the
+               reserved UserBlock memory area. This function is non-
+               reentrant.
+
+               See the user manual for the size of the UserBlock area.
+
+PARAMETER1:		The DAC output channel.
+
+RETURN VALUE:	 0, successful write to simulated eeprom.
+					-1, invalid address or range.
+
+SEE ALSO:		anaOutEERd, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaOutEEWr(unsigned int channel)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	// Calculate the offset into the user block of where the calibration
+	// constants are stored for a given DAC channel.
+	offset = DAC_CALIB_ADDR + ((&_dacCalib[channel][0] - _dacCalib)*4);
+
+	// write calibration constants to flash
+	status = writeUserBlock(offset, &_dacCalib[channel][0],
+									sizeof(_dacCalib[0][0])*2);
+	return(status);
+}
+
+//--------------------------------------------------------------------------
+//	Board Initialization
+//--------------------------------------------------------------------------
+//	This section supports board initialization.
+
+/*** BeginHeader brdInit */
+void brdInit ( void );
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+brdInit                     <BL20XX.LIB>
+
+SYNTAX:			void brdInit (void);
+
+DESCRIPTION:	Call this function at the beginning of application code.
+					1. Initializes the system I/O ports
+					2. Loads all the A/D and DAC calibration constants from
+					   flash and loads them into memory, ready for application
+					   program use.
+
+	Initializes the following system ports:
+
+	Port  IO    Function             Output State
+	----  ---   ------------------   ------------
+	PA.0	Out	OUT0/RELAY/LED_DS8	 low (output driver off)
+	PA.1	Out	OUT1/LED_DS7			 low (output driver off)
+	PA.2	Out	OUT2/LED_DS6			 low (output driver off)
+	PA.3	Out	OUT3/LED_DS5			 low (output driver off)
+	PA.4	Out	OUT4						 low (output driver off)
+	PA.5	Out	OUT5						 low (output driver off)
+	PA.6	Out	OUT6						 low (output driver off)
+	PA.7	Out	OUT7						 low (output driver off)
+
+	PB.0	In		IN6						 N/A
+	PB.1  In		CLKA                  N/A
+	PB.2	In		IN7                   N/A
+	PB.3	In		IN8                   N/A
+	PB.4	In		IN9                   N/A
+	PB.5	In		IN10                  N/A
+	PB.6	Out	RS485_EN					 low
+	PB.7	Out	UPGOOD                high
+
+	PC.0	Out	TXD RS485				 high
+	PC.1	In		RXD RS485				 N/A
+	PC.2	Out	RTS/TXC RS-232			 high
+	PC.3	In		CTS/RXC RS-232        N/A
+	PC.4	Out	TXB RS-232 			    high
+	PC.5	In		RXB RS-232 				 N/A
+	PC.6	Out	TXA TTL levels 		 high
+	PC.7	In		RXA "      "			 N/A
+
+	PD.0	Out	DAC-ADC_SK				 high
+	PD.1	Out	DAC-ADC_SDI				 high
+	PD.2	In		RTL-ADC_SDO				 N/A
+	PD.3	In 	RTL-ADC_SK				 N/A (see Note:)
+	PD.4	Out	RTL-ADC_SDI				 high
+	PD.5	Out	DAC0_CS					 high
+	PD.6	Out	DAC1_CS					 high
+	PD.7	Out	ADC_CS					 high
+
+	PE.0	Out	OUT8						 low (output driver off)
+	PE.1	Out	OUT9						 low (output driver off)
+	PE.2	In		IN0						 N/A
+	PE.3	In		IN1						 N/A
+	PE.4	In		IN2						 N/A
+	PE.5	In		IN3 						 N/A
+	PE.6	In		IN4						 N/A
+	PE.7	In		IN5						 N/A
+
+	Note: PD.3 is an output when controller type is a BL2020 or BL2030
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		digOut, digIn, serMode
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void brdInit (void)
+{
+	auto int ad_channel, dac_channel;
+
+	WrPortI(PADR, &PADRShadow, 0x00);		//Preset PortA bits to be low
+	WrPortI(SPCR, &SPCRShadow, 0x84);		//Set Port A to be all Outputs
+	WrPortI(PADR, &PADRShadow, 0x00);		//Clear all PortA bits
+
+	BitWrPortI(PBDR, &PBDRShadow, 1, 7);   //Port B configuration is fixed
+	BitWrPortI(PBDR, &PBDRShadow, 0, 6);   //Bits 0-5 inputs 6-7 outputs
+	   												//Turn-off BAD LED indicator
+	   												//Disable RS485 transmitter
+
+	serMode(0);										//Port C, initialize serial
+														//Ports B,C and D to be 3 wire
+
+	WrPortI(PDFR, &PDFRShadow, 0x00);		//Set Port D for Normal I/O
+	WrPortI(PDDCR, &PDDCRShadow, 0x00);		//Set Port D outputs to be bipolar
+
+	#ifdef ETHERNET_OPTION
+		// Set bit 2 and 3 as inputs all others to be outputs
+		WrPortI(PDDDR, &PDDDRShadow, 0xF3);
+	#else
+		// Set bit 2 as an input all others to be outputs
+		WrPortI(PDDDR, &PDDDRShadow, 0xFB);
+	#endif
+
+	#ifdef ETHERNET_OPTION
+		// Sets all outputs high except bits 2 and 3
+		WrPortI(PDDR, &PDDRShadow, (PDDRShadow|0xF3));
+	#else
+		// Sets all outputs high except bit 2
+		WrPortI(PDDR, &PDDRShadow, (PDDRShadow|0xFB));
+	#endif
+
+	WrPortI(PEDR, &PEDRShadow, 0x00);   //Preset bits 0 and 1 to be low
+	WrPortI(PEFR, &PEFRShadow, 0x00);	//Set Port E to be I/O
+	WrPortI(PEDDR, &PEDDRShadow, 0x03);	//Set Port E to be 0-1 Outputs
+													//and  2-7 Inputs
+	WrPortI(PEDR, &PEDRShadow, 0x00);   //set bits 0 and 1 low
+
+	WrPortI(PDCR, &PDCRShadow, 0x00);	//Set PDCR to be CLK'ed by PCLK/2
+	WrPortI(PECR, &PECRShadow, 0x00);	//Set PECR to be CLK'ed by PCLK/2
+
+	#ifdef DAC_OPTION
+		for(dac_channel = 0; dac_channel < DACHANNELS; dac_channel++)
+		{
+			anaOutEERd(dac_channel);
+		}
+	#endif
+
+	#ifdef ADC_OPTION
+		// Load ADC and DAC coefficients from flash into memory
+		for(ad_channel = 0; ad_channel < ADCHANNELS; ad_channel++)
+		{
+			anaInEERd(ad_channel);
+		}
+	#endif
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */
+
+

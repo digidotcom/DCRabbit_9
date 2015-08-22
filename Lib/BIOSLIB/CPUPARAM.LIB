@@ -1,0 +1,231 @@
+/*** BeginHeader  ********************************************/
+#ifndef __CPUPARAM_LIB
+#define __CPUPARAM_LIB
+/*** EndHeader ***********************************************/
+
+/* START LIBRARY DESCRIPTION *********************************
+CPUPARAM.LIB
+	Copyright (c) 2006, Rabbit Semiconductor
+
+DESCRIPTION:
+	Handles CPU-specific setup for the BIOS.
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************/
+
+
+/*** BeginHeader	_getDoublerSetting */
+xmem int _getDoublerSetting();
+/*** EndHeader */
+
+// Setting the ALWAYS_DOUBLE macro to 1 will override the default
+// cutoff frequency in the BIOS of 12.9MHz for Rabbit 2000-based
+// boards.  Note that the upper-limit cutoffs of 31.3344MHz for
+// R2000 and 52.8384MHz for R3000 will still apply (those are the
+// upper limits of the possible clock doubler settings).
+#ifndef ALWAYS_DOUBLE
+#define	ALWAYS_DOUBLE		0
+#endif
+
+char clkdblr_setting;
+
+/* START _FUNCTION DESCRIPTION **************************************************
+_getDoublerSetting						<CPUPARAMS.LIB>
+
+SYNTAX:			int _getDoublerSetting();
+
+DESCRIPTION:	This function is called by the Rabbit BIOS to
+determine the proper clock doubler setting, which is dependent
+on both the CPU and the oscillator frequency.  The clock doubler
+will ALWAYS be disabled for Rabbit 2000-based products with a
+base frequency > 31.3344MHz, and for Rabbit 3000-based products
+with a frequency > 52.8384 MHz.
+
+NOTE:  The clock doubler will be disabled for Rabbit 2000 CPUs
+if the base frequency is above 12.9MHz unless the ALWAYS_DOUBLE
+macro in CPUPARAMS.LIB is set to one.
+
+RETURN VALUE:	returns value to be loaded into GCDR for the current
+CPU and oscillator frequency.
+
+END DESCRIPTION ***************************************************************/
+
+#asm xmem nodebug
+_getDoublerSetting::
+
+#if (CLOCK_DOUBLED == 0)
+	bool	hl
+	ld		l, h				; clear return value
+	lret
+#else
+
+ #if __SEPARATE_INST_DATA__
+	xor   a
+	ldp	hl, (divider19200)	; ldp to read from separate I&D space
+	ld    a, L
+ #else
+	ld a, (divider19200)
+ #endif
+
+// Rabbit 2000-specific section
+ #if (CPU_ID_MASK(_CPU_ID_) == R2000)
+	// Rabbit 2000 products automatically have the
+	// clock doubler disabled if the base oscillator
+	// is more than 12.9MHz...
+	ld		hl, 7
+	cp		19
+	jr		c, .done
+	dec	hl
+	cp		22					; 12.9024 MHz and below
+	jr		c, .done
+  #if (ALWAYS_DOUBLE == 0)
+	ld		l, 0				; (default cutoff for > 12.9 MHz)
+  #else
+	dec	hl
+	cp		25					; 14.7456 MHz and below
+	jr		c, .done
+	dec	hl
+	cp		28					; 16.5888 MHz and below
+	jr		c, .done
+	dec	hl
+	cp		34					; 20.2752 MHz and below
+	jr		c, .done
+	dec	hl
+	cp		40					; 23.9616 MHz and below
+	jr		c, .done
+	dec	hl
+	cp		52					; 31.3344 MHz and below
+	jr		c, .done
+	dec	hl             ; disable doubler if above 31.3344 MHz
+  #endif
+.done:
+   lret
+ #endif	// R2000-specific section
+
+// Rabbit 3000-specific section
+ #if (CPU_ID_MASK(_CPU_ID_) == R3000)
+	ld		hl, 0x0F
+	cp		13					; 7.3728 MHz and below
+	jr		c, .done
+	ld		hl, 0x0D
+	cp		19					; 11.0592 MHz and below
+	jr		c, .done
+	ld		hl, 0x09
+	cp		28					; 16.5888 MHz and below
+	jr		c, .done
+	ld		hl, 0x06
+// Don't allow below 6 if Core Module has a NAND flash or an xD-Card socket
+  #if _BOARD_TYPE_ != BL2600K && _BOARD_TYPE_ != BL2600L && \
+      _BOARD_TYPE_ != BL2600M && _BOARD_TYPE_ != BL2600N && \
+      _BOARD_TYPE_ != RCM3360A && _BOARD_TYPE_ != RCM3360B && \
+      _BOARD_TYPE_ != RCM3365 && _BOARD_TYPE_ != RCM3375 && \
+      _BOARD_TYPE_ != RCM3900 && !NANDFLASH_ONBOARD
+	cp		34					; 20.2752 MHz and below
+	jr		c, .done
+	ld		hl, 0x03
+	cp		87					; 52.8384 MHz and below
+	jr		c, .done
+	ld		hl, 0x00       ; disable doubler if above 52.8384 MHz
+  #endif
+.done:
+   lret
+ #endif	// R3000-specific section
+#endif // End of clock doubler != 0
+#endasm
+
+
+/*** BeginHeader	_enableClockModulation */
+xmem int _enableClockModulation();
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION **************************************************
+_enableClockModulation						<CPUPARAMS.LIB>
+
+SYNTAX:			int _enableClockModulation();
+
+DESCRIPTION:	This function is called by the Rabbit BIOS to
+enable clock modulation if set by the macros in the BIOS.  It
+mainly consists to provide warnings if a possibly incompatible
+combination of spreader and oscillator frequency is selected.
+
+RETURN VALUE:	1 if enabled, 0 if not enabled.
+
+END DESCRIPTION ***************************************************************/
+
+#asm xmem nodebug
+_enableClockModulation::
+	bool	hl
+#if _CPU_ID_ < R2000_R3
+	ld		l, h
+	lret
+#elif ENABLE_SPREADER == 0	// spreader disabled
+	xor	a
+	ld		(MTCRShadow), a
+;	ioi	ld (MTCR), a		// normal /OE0 and /OE1 timing
+	IOWRITE_A(MTCR)
+	ld		l, h
+	lret
+#else
+
+	// set flash (/OE0) and RAM (/OE1) to toggle 1/2 clock early
+	ld		a, 0x0C
+	ld		(MTCRShadow), a
+;	ioi	ld (MTCR), a
+	IOWRITE_A(MTCR)
+
+	#if (ENABLE_SPREADER == 1)
+	xor	a							// normal spreading
+	#else
+	ld		a, 0x80					// strong spreading
+	#endif
+	ld		(GCM0RShadow), a
+;	ioi	ld (GCM0R), a		// set modulator type
+	IOWRITE_A(GCM0R)
+
+	ld		a, 0x80
+	ld		(GCM1RShadow), a
+;	ioi	ld (GCM1R), a		// enable clock modulator
+	IOWRITE_A(GCM1R)
+
+	ld		l, 0x01
+	lret
+#endif
+#endasm
+
+/*** BeginHeader	_checkCPUid */
+xmem int _checkCPUid();
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION **************************************************
+_checkCPUid						<CPUPARAMS.LIB>
+
+SYNTAX:			int _checkCPUid();
+
+DESCRIPTION:	This function is called by the Rabbit BIOS to
+determine the current BIOS was compiled for the CPU it is
+running on.
+
+RETURN VALUE:	0 if CPU matched compiled version, 1 if not.
+
+END DESCRIPTION ***************************************************************/
+
+#asm xmem nodebug
+_checkCPUid::
+;	ioi	ld a, (GCPU)
+	IOREAD_A(GCPU)
+	and	0x1F
+	cp		_CPU_ID_>>8
+	jr		nz, .mismatch
+.match:
+	bool	hl
+	ld		l, h
+	lret
+.mismatch:
+	ld		hl, 0x0001
+	lret
+#endasm
+
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

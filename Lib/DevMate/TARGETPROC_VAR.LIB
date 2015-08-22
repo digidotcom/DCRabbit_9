@@ -1,0 +1,321 @@
+/* START LIBRARY DESCRIPTION *********************************************
+TARGETPROC_VAR.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+	This library contains DeviceMate-side routines for supporting
+	variables with the target processor.  The DeviceMate can use these
+	variables with an HTTP server to support dynamic content, or a user
+	can use them in some custom programming.
+
+CONFIGURATION MACROS:
+	The following macros may be defined before inclusion of this library.
+	Note that the macro defaults are located in TC_CONF.LIB, and not this
+	library.  Instead of defining the macros in your program, you can
+	change them in TC_CONF.LIB.
+
+	TARGETPROC_VAR_BUFFERSIZE
+		Defaults to 1024.  This defines the size of a buffer in xmem that
+		holds the values of the received variables.
+
+	TARGETPROC_VAR_MAXNAME
+		Defaults to 8.  This defines the maximum length of a variable name,
+		including the null terminator.
+
+	TARGETPROC_VAR_MAXFORMAT
+		Defaults to 8.  This defines the maximum length of the printf-
+		style format specifier for a variable, including the null
+		terminator.
+
+	TARGETPROC_VAR_MAXDATA
+		Defaults to 32.  This defines the maximum length of the data
+		(or contents) for a variable.
+
+	TARGETPROC_VAR_DEBUG
+		Is not defined by default.  If defined, then some debugging
+		information will be displayed to stdout during execution.
+
+	SSPEC_MAXSPEC
+		Defaults to 10.  This macro is actually located in ZSERVER.LIB,
+		but you may want to modify it to allow more variables and files
+		(files from the DeviceMate filesystem support also take up sspec
+		entries).  You may want to change other ZSERVER.LIB macros--see
+		the TCP/IP User's Manual on ZSERVER.LIB for more information.
+
+	TARGETPROC_VAR_NUMTXBUFS
+	   Defaults to 1.  Specifies the number of target communications
+	   transmit buffers.  Set to 1 or 2; there is no real benefit to
+	   be obtained by specifying more than 2 transmit buffers.
+
+	TARGETPROC_VAR_NUMRXBUFS
+	   Defaults to 2.  Specifies the number of target communications
+	   receive buffers.  A higher number allows greater performance, at
+	   the expense of additional memory usage.
+
+	TARGETPROC_VAR_TCBUFSIZE
+	   Defaults to 133, which allows for 128-byte data packets plus the
+	   5-byte XTC header.
+
+	TARGETPROC_VAR_XTCBUFSIZE
+	   Defaults to 133.  Must be greater than or egual to
+	   TC_VAR_TCBUFSIZE-5.
+
+GLOBAL VARIABLES:
+	_VarState _varstate;
+		One instance of this structure contains all necessary state
+		information for the DeviceMate variable support.
+
+API FUNCTIONS:
+   This library is intended to operate entirely in the "background".  Its
+   functionality is provided merely by adding #use "targetproc_var.lib"
+   in the main program and ensuring that all of the DeviceMate state
+   machines are driven by periodically calling targetproc_tick(),
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#ifndef __TARGETPROC_VAR_LIB
+#define __TARGETPROC_VAR_LIB
+/*** EndHeader */
+
+/*** BeginHeader */
+#ifndef TARGETPROC_XTC_H
+	#use "targetproc_xtc.lib"
+#endif
+#use "tc_var.lib"
+#ifndef __ZSERVER_LIB
+	#use "zserver.lib"
+#endif
+
+#ifdef TARGETPROC_VAR_DEBUG
+	/* pull in the dbg string */
+	const char _tc_var_dbgmsg[] = "targetproc_var: ";
+#endif
+
+#ifdef TARGETPROC_VAR_DEBUG
+	#define var_nodebug
+#else
+	#ifdef __DC__
+		#define var_nodebug nodebug
+	#else
+		#define var_nodebug
+	#endif
+#endif
+
+#define _TC_VAR_WAIT			0
+#define _TC_VAR_READHDR		1
+#define _TC_VAR_READBEGIN	2
+#define _TC_VAR_READDATA	3
+#define _TC_VAR_RESPONDHDR	4
+#define _TC_VAR_RESPOND		5
+#define _TC_VAR_ERROR		99
+
+typedef struct {
+	XTCApp app;
+	XTCChan chans[1];
+
+	int state;
+	long varbuffer;
+	long varbuflen;
+	_TC_VarHeader header;
+	_TC_VarUpdateHeader begin;
+	_TC_VarResponse response;
+	int datalen;
+} _VarState;
+
+_VarState _varstate;
+
+/*** EndHeader */
+
+/*** BeginHeader _targetproc_var_init */
+void _targetproc_var_init(void);
+#funcchain __targetproc_xtc_init _targetproc_var_init
+/*** EndHeader */
+
+var_nodebug
+void _targetproc_var_init(void)
+{
+	auto int retval;
+	static int init;
+
+	#GLOBAL_INIT { init = 0; }
+
+	if (init == 0) {
+		_varstate.varbuffer = xalloc(TARGETPROC_VAR_BUFFERSIZE);
+		init = 1;
+	}
+
+	_varstate.varbuflen = 0;
+	sspec_removebytype(SSPEC_XMEMVAR);
+	_varstate.state = _TC_VAR_WAIT;
+
+	_varstate.app.appno = TC_TYPE_VAR;
+	_varstate.app.numchans = 1;
+	_varstate.app.chans = _varstate.chans;
+	_varstate.app.txbufsize = TARGETPROC_VAR_TCBUFSIZE;
+	_varstate.app.rxbufsize = TARGETPROC_VAR_TCBUFSIZE;
+	if(retval = targetproc_xtc_register(&_varstate.app,
+	                                    TARGETPROC_VAR_XTCBUFSIZE,
+	                                    TARGETPROC_VAR_XTCBUFSIZE)) {
+#ifdef TARGETPROC_VAR_DEBUG
+		printf("%sinit: targetproc_xtc_register failed with %d!\n",
+		       _tc_var_dbgmsg, retval);
+#endif
+		exit(TC_TYPE_VAR);
+	}
+	_varstate.app.numtxbufs = TARGETPROC_VAR_NUMTXBUFS;
+	_varstate.app.numrxbufs = TARGETPROC_VAR_NUMRXBUFS;
+	_varstate.app.aflags = XTC_AF_CONTROL;	// listen on channel 0 automatically
+	_varstate.app.tc_handler = NULL;
+	_varstate.app.reqpacing = 0;
+}
+
+/*** BeginHeader _targetproc_var_tick */
+void _targetproc_var_tick(void);
+#funcchain __targetproc_tick _targetproc_var_tick
+/*** EndHeader */
+
+var_nodebug
+void _targetproc_var_tick(void)
+{
+	auto int retval;
+	auto char buffer[TARGETPROC_VAR_MAXNAME + TARGETPROC_VAR_MAXFORMAT +
+	                 TARGETPROC_VAR_MAXDATA];
+	auto char* format;
+	auto char* data;
+	auto int varlen;
+	auto int spec;
+	
+	if (xtc_error(&_varstate.app, 0)) {
+		// Channel dropped.  Need to reset state.
+		xtc_listen(&_varstate.app, 0, NULL);	// Cannot fail
+		_varstate.state = _TC_VAR_WAIT;
+	}
+
+	switch (_varstate.state) {
+	case _TC_VAR_WAIT:
+		retval = xtc_readable(&_varstate.app, 0);
+		if (retval > 1) {
+			_varstate.state = _TC_VAR_READHDR;
+			// Fall through
+		} else {
+			break;
+		}
+
+	case _TC_VAR_READHDR:
+		retval = xtc_aread(&_varstate.app, 0, &_varstate.header,
+		                   sizeof (_TC_VarHeader));
+		if (retval > 0) {
+			// Got the header
+			if ((_varstate.header.start_byte != TC_VAR_STARTBYTE) ||
+			    (_varstate.header.packet_type != TC_VAR_UPDATE)) {
+				// Invalid start byte or packet type
+				_varstate.state = _TC_VAR_ERROR;
+				return;
+			}
+			_varstate.state = _TC_VAR_READBEGIN;
+			// Fall through
+		} else {
+			break;
+		}
+
+	case _TC_VAR_READBEGIN:
+		retval = xtc_aread(&_varstate.app, 0, &_varstate.begin,
+		                   sizeof (_TC_VarUpdateHeader));
+		if (retval > 0) {
+			// Got the header
+			_varstate.state = _TC_VAR_READDATA;
+			if ((_varstate.begin.namelen > TARGETPROC_VAR_MAXNAME) ||
+			    (_varstate.begin.formatlen > TARGETPROC_VAR_MAXFORMAT) ||
+			    (_varstate.begin.varlen > TARGETPROC_VAR_MAXDATA)) {
+				_varstate.state = _TC_VAR_ERROR;
+				return;
+			}	
+			_varstate.datalen = _varstate.begin.namelen +
+			                    _varstate.begin.formatlen +
+			                    _varstate.begin.varlen;
+			// Fall through
+		} else {
+			break;
+		}
+
+	case _TC_VAR_READDATA:
+		retval = xtc_aread(&_varstate.app, 0, buffer, _varstate.datalen);
+		if (retval > 0) {
+			// Got the data--add the variable
+#ifdef TARGETPROC_VAR_DEBUG
+			printf("Adding the variable!\n");
+#endif
+			format = buffer + _varstate.begin.namelen;
+			data = format + _varstate.begin.formatlen;
+			if ((spec = sspec_findname(buffer, _varstate.begin.servermask)) != -1) {
+				// Updating a variable
+				root2xmem(sspec_getxvaraddr(spec), data, _varstate.begin.varlen);
+			} else {
+				// Creating a variable
+				// Check the type of the variable
+				if (_varstate.begin.type == PTR16) {
+					varlen = _varstate.begin.maxvarlen;
+				} else {
+					varlen = _varstate.begin.varlen;
+				}
+				if ((_varstate.varbuflen + varlen) > TARGETPROC_VAR_BUFFERSIZE) {
+					_varstate.response.response_code = TC_VAR_RESPONSE_FULL;
+					_varstate.state = _TC_VAR_RESPOND;
+					return;
+				}
+				root2xmem(_varstate.varbuffer + _varstate.varbuflen, data, varlen);
+				retval = sspec_addxmemvar(buffer,
+				                          _varstate.varbuffer + _varstate.varbuflen,
+				                          _varstate.begin.type,
+				                          format,
+				                          _varstate.begin.servermask);
+				if (retval < 0) {
+					_varstate.response.response_code = TC_VAR_RESPONSE_FULL;
+					_varstate.state = _TC_VAR_RESPOND;
+					return;
+				} else {
+					_varstate.varbuflen += varlen;
+				}
+			}
+#ifdef TARGETPROC_VAR_DEBUG
+			printf("Got the variable!\n");
+#endif
+			_varstate.header.start_byte = TC_VAR_STARTBYTE;
+			_varstate.header.packet_type = TC_VAR_RESPONSE;
+			_varstate.response.response_code = TC_VAR_RESPONSE_OK;
+			_varstate.state = _TC_VAR_RESPONDHDR;
+			// Fall through
+		} else {
+			break;
+		}
+
+	case _TC_VAR_RESPONDHDR:
+		retval = xtc_awrite(&_varstate.app, 0, &_varstate.header,
+		                    sizeof(_TC_VarHeader));
+		if (retval > 0) {
+			_varstate.state = _TC_VAR_RESPOND;
+		} else {
+			break;
+		}
+
+	case _TC_VAR_RESPOND:
+		retval = xtc_awrite(&_varstate.app, 0, &_varstate.response,
+		                    sizeof(_TC_VarResponse));
+		if (retval > 0) {
+			_varstate.state = _TC_VAR_WAIT;
+		}
+		break;
+
+	case _TC_VAR_ERROR:
+		xtc_abort(&_varstate.app, 0);
+		_varstate.state = _TC_VAR_WAIT;
+		break;
+	}
+	
+	return;
+}
+
+/*** BeginHeader */
+#endif /*__TARGETPROC_VAR_LIB*/
+/*** EndHeader */

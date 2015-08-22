@@ -1,0 +1,2051 @@
+/*** Beginheader */
+#ifndef __OP72XX_LIB
+#define __OP72XX_LIB
+
+#if (_BOARD_TYPE_ < 0x1100 || _BOARD_TYPE_ > 0x11FF)
+#error "OP72XX.LIB only supports OP7200 series boards."
+#endif
+
+/*** endheader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+OP72XX.LIB
+Copyright (c) 2002, Z-World
+
+DESCRIPTION:	Support for the OP7200 series controllers.
+
+SUPPORT LIBS:
+
+END DESCRIPTION **********************************************************/
+
+//------------------------------------------------------------------------
+//		Driver Global Flag Section
+//------------------------------------------------------------------------
+/*** Beginheader __digConfigFlag,
+                 __brdInitFlag */
+extern int __digConfigFlag;
+extern int __brdInitFlag;
+/*** endheader */
+
+// Function execution flags
+int __digConfigFlag;
+int __brdInitFlag;
+
+//------------------------------------------------------------------------
+//		Graphic section
+//------------------------------------------------------------------------
+/*** BeginHeader loopsPer_50us, __anaPWRDelay, __InitADCpower, __InitTSpower */
+// SED1335 register addresses
+#define	OP72CR		0xE001				//	SED1335 Command Register
+#define	OP72DR		0xE000				//	SED1335 Data Register
+
+// Use Port E bit 7 for LCD Chip Select with 4 wait states
+#define LCDSTROBE			0x80
+#define LCDCSREGISTER	IB7CR
+#define LCDCSSHADOW		IB7CRShadow
+#define LCDCSCONFIG		0x88
+
+extern int __InitADCpower;
+extern int __InitTSpower;
+extern unsigned long __anaPWRDelay;
+extern int loopsPer_50us;
+
+
+// Delay routine of 50 usec per iteration
+#define WAIT_50usX(x) $\
+ld hl,(loopsPer_50us) $\
+ld de,x $\
+ld b,h $\
+ld c,l $\
+mul $\
+ld b,c $\
+LDP HL,(HL) $\
+LDP HL,(HL) $\
+LDP HL,(HL) $\
+LDP HL,(HL) $\
+ADD A,(HL) $\
+db 0x10,-11
+/*** EndHeader */
+
+int __InitADCpower;
+int __InitTSpower;
+unsigned long __anaPWRDelay;
+int loopsPer_50us;
+
+//------------------------------------------------------------------------
+//		I/O Driver Section
+//------------------------------------------------------------------------
+/*** Beginheader serMode */
+int serMode(int mode);
+
+// Set compiler switch to use serial portB on uP port D
+#define SERB_USEPORTD
+
+//defaults for RS232 handshaking RTS/CTS
+#define SERC_RTS_SHADOW PCDRShadow
+#define SERC_RTS_PORT 	PCDR  //RTS I/O control port
+#define SERC_RTS_BIT 	0		//RTS on port C, PC0
+#define SERC_CTS_PORT 	PCDR  //CTS I/O control port
+#define SERC_CTS_BIT 	1		//CTS on Port C, PC1
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+serMode						<OP72XX.LIB>
+
+SYNTAX:	      int serMode(int mode);
+
+DESCRIPTION:   User interface to setup the serial communication lines
+               on a OP7200 series controller.
+
+					This function must be called after executing the serXOpen()
+					function. Whether you are opening one or multiple serial
+					ports this function must be executed after executing the
+					last serXOpen function AND before you start using any of
+					the serial ports. This function is non-reentrant.
+
+PARAMETER1:    mode - defined serial port configuration which will be
+					initialized by the serXOpen function.
+
+   				Serial port setup:
+
+					Mode 	PortB			 Port C       Port D
+					----  -----			 ------       ------
+    				0		RS485 3wire	 RS232 3wire  RS232 3wire
+    				1		RS485 3wire	 RS232 5wire  CTS/RTS
+               2		Not Init* 	 RS232 3wire  RS232 3wire
+               3     Not Init*    RS232 5wire  CTS/RTS
+
+               * Use Modes 2 and 3 when serial port B is going to used
+                 by other libraries (i.e. Packet driver, etc...)
+
+RETURN VALUE:	0 if valid mode; 1 if not.
+
+SEE ALSO:		ser485Tx, ser485Rx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int serMode(int mode)
+{
+	auto int status;
+
+	//---------------------------------------------------------------------
+	// Initialize bits PE4 & PE5 as chip selects
+	//---------------------------------------------------------------------
+	// Initialize PE4 & PE5 and chip selects
+	WrPortI(PEFR, &PEFRShadow,   (PEFRShadow  | 0x30));
+
+	// Set bits to be outputs
+	WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow | 0x30));
+
+	// Initialize PE4 & PE5 as chip selects, with 1 wait state and writes
+	// allowed.
+	WrPortI(IB4CR, &IB4CRShadow,  0xC8);
+	WrPortI(IB5CR, &IB5CRShadow,  0xC8);
+
+	// Disable the RS485 transmitter
+	WrExtPort(0xA005, 0x00);
+
+	//---------------------------------------------------------------------
+	// Initialize serial port B to use alternate processor pins on port D
+	//---------------------------------------------------------------------
+   if(mode == 0 || mode == 1)
+   {
+   	// Enable Alt ATXB function on parallel port D
+		WrPortI(PDDR,  &PDDRShadow, (PDDRShadow | 0x10));
+		WrPortI(PDFR,  &PDFRShadow, (PDFRShadow | 0x10));
+
+		//	Set PD4 I/O direction to be an output
+		WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow | 0x10));
+
+		//	Set PD4 to be an active high/low CMOS output
+		WrPortI(PDDCR, &PDDCRShadow,(PDDCRShadow & ~0x10));
+
+		// Enable ARxB, priority 1 interrupt
+   	BitWrPortI(SBCR, &SBCRShadow, 1, 4);
+   }
+	//---------------------------------------------------------------------
+	// Set mode of operation
+	//---------------------------------------------------------------------
+	status = 0;	// by default, presume a valid mode has been supplied
+	switch (mode)
+	{
+		case 0:
+      case 2:
+			//		Serial mode 0
+			//    --------------------------
+			// 	RS232 serial port C 3 wire
+			// 	RS232 serial port D 3 wire
+
+			//
+			// Set bits 0 and 2 to enable serial Ports C and D
+			WrPortI(PCFR, &PCFRShadow, (PCFRShadow | 0x05));
+			break;
+
+		case 1:
+      case 3:
+			//		Serial mode 1
+			//    -------------------
+			// 	RS232 port C 5 wire
+			//
+			// Clear bit 0, port C to use I/O pins PC2 and PC3 as
+			// handshaking lines.
+			WrPortI(PCFR, &PCFRShadow, (PCFRShadow & ~0x01));
+			BitWrPortI(PCDR, &PCDRShadow, 0, SERC_RTS_BIT);
+			break;
+
+		default:
+			// unsupported mode
+			status = 1;
+			break;
+	}
+	return (status);
+}
+
+
+/*** Beginheader ser485Tx */
+root void ser485Tx( void );
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Tx						<OP72XX.LIB>
+
+SYNTAX:	      void ser485Tx( void );
+
+DESCRIPTION:   Enables the RS485 transmitter.
+
+					Transmitted data gets echo'ed back into the receive data
+					buffer. This echo'ed data could be used to know when to
+					disable the transmitter by using one of the following
+					methods:
+
+               a) Byte mode...disable the transmitter after the same byte
+                  that is transmitted, is detected in the receive data
+                  buffer.
+
+               b) Block data mode...disable the transmitter after the same
+                  number of bytes transmitted are detected in the receive
+                  data buffer.
+
+               The serMode function must be executed before running this
+               function. This function is non-reentrant.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		serMode, ser485Rx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+root void ser485Tx( void )
+{
+	WrExtPort(0xA005, 0x01);	// Enable RS485 transmitter
+}
+
+/*** Beginheader ser485Rx */
+root void ser485Rx( void );
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Rx						<OP72XX.LIB>
+
+SYNTAX:	      void ser485Rx( void );
+
+DESCRIPTION:  	Disables the RS485 transmitter.
+
+					This puts you in listen mode which allows you to receive
+					data from the RS485 interface.
+
+              	The serMode function must be executed before running this
+              	function. This function is non-reentrant.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		serMode, ser485Tx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+root void ser485Rx( void )
+{
+	WrExtPort(0xA005, 0x00);
+}
+
+/*************************************************************************
+	Digital I/O Functions
+	This section supports digital input and output
+**************************************************************************/
+
+/*** BeginHeader	digOutConfig, __DOUTConfig */
+void digOutConfig(char outputMode );
+extern int __DOUTConfig;
+/*** EndHeader */
+
+// Variable to hold the High-current output configuration
+int __DOUTConfig;
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+digOutConfig				<OP72XX.LIB>
+
+SYNTAX:			void digOutConfig(char outputMode);
+
+DESCRIPTION:	This functions allows the high-current outputs to be
+               configured as a sinking or sourcing type output.
+
+					Note: The brdInit function must be executed before calling
+					      this function.
+
+PARAMETER1:		outputMode is a 8 bit parameter for which each bit
+               corresponds to one of the high-current outputs.
+
+					Bit 7  = high-current output channel OUT07
+					Bit 6  = high-current output channel OUT06
+					Bit 5  = high-current output channel OUT05
+					Bit 4  = high-current output channel OUT04
+					Bit 3  = high-current output channel OUT03
+					Bit 2  = high-current output channel OUT02
+					Bit 1  = high-current output channel OUT01
+					Bit 0  = high-current output channel OUT00
+
+					To set the outputs, set the corresponding bit to one of
+					the following states:
+
+					0 = Sinking type circuit
+					1 = Sourcing type circuit
+
+
+               Example, for an application that requires:
+               ------------------------------------------
+               -  Channel 7 and 0 as sourcing type outputs.
+               -  Channels 6-2 as sinking type outputs.
+
+               Set outputMode to the following:
+               outputMode = 0x81;
+                              ^^
+                              ||
+               					||---------- Output  OUT00       = Sourcing
+               				   |			    Outputs OUT03 - 02  = Sinking
+										|
+               				   |----------- Outputs OUT06 - 04  = Sinking
+														 Output  OUT07       = Sourcing
+
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, digOut, triStateConfig, digOutTriState
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void digOutConfig(char outputMode)
+{
+	#GLOBAL_INIT {__digConfigFlag = FALSE;}
+	#GLOBAL_INIT {__brdInitFlag   = FALSE;}
+
+	if(__brdInitFlag == FALSE)
+	{
+		// the brdInit function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	// Initialize the shadow registers for the high-current outputs
+	__DOUTConfig = outputMode;
+	__digConfigFlag = TRUE;
+}
+
+
+/*** BeginHeader	digOut */
+void digOut(int, int);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digOut						<OP72XX.LIB>
+
+SYNTAX:			void digOut(int channel, int state);
+
+DESCRIPTION:	Sets the state of a digital output channel (OUT00 - OUT07).
+
+					The output channel is set to the state that is specified,
+					for example:
+
+					If the output is configured as sinking high-current driver.
+					- Set to 0 for driver to be sinking current.
+					- Set to 1 for driver to be OFF (high-impedence state).
+
+					If the output is configured as sourcing high-current driver.
+					- Set to 0 for driver to be OFF (high-impedence state).
+					- Set to 1 for driver to be sourcing current.
+
+
+               A runtime error will occur for the following conditions:
+               --------------------------------------------------------
+               1. Channel or value out of range.
+               2. The brdInit or digOutConfig functions not executed
+                  before executing the digOut function.
+               3. If trying to use a channel that is configured as a
+                  tristate output.
+
+PARAMETER1:		Digital output channel (0-7).
+PARAMETER2:		Output state (0 or 1).
+
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, digOutConfig, triStateConfig, digOutTriState
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void digOut(int channel, int value)
+{
+	auto unsigned char outputBit;
+	auto int mask;
+
+	#GLOBAL_INIT {__digConfigFlag = FALSE;}
+	#GLOBAL_INIT {__brdInitFlag   = FALSE;}
+
+	if ((channel < 0) || (channel > 7) || (value < 0) || (value > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// Check if channel is intialized as a tristate output
+	mask = 0x01 << channel;
+	if(__triStateConfig & mask)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	if(__brdInitFlag == FALSE || __digConfigFlag == FALSE)
+	{
+		// the brdInit and/or the digConfig function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   // Determine the output configuration then set per the value parameter
+	if(__DOUTConfig & mask)
+	{
+		// Output value to Sourcing type output
+		WrExtPort((0x8008+channel), value);
+	}
+	else
+	{
+		// Output value to Sinking type output
+		WrExtPort((0x8000+channel), !value);
+	}
+}
+
+/*** BeginHeader	digTriStateConfig,
+						__triStateConfig,
+                  __triStateFlag */
+void digTriStateConfig(char triState);
+extern int __triStateConfig;
+extern int __triStateFlag;
+/*** EndHeader */
+
+// Variable to hold the High-current output configuration
+int __triStateConfig;
+int __triStateFlag;
+
+/* START FUNCTION DESCRIPTION ********************************************
+digTriStateConfig				<OP72XX.LIB>
+
+SYNTAX:			void digTriStateConfig(char triState);
+
+DESCRIPTION:	This function allows a given channel to be configured
+               as a tristate type output. When a channel is configured
+					as a tristate output, then the function digOutTriState
+					can be used to control that channel.
+
+
+					A runtime error will occur for the following conditions:
+               --------------------------------------------------------
+					1. The digOut function is disabled from controlling any
+					   channel that is configured as a tristate output.
+
+					2. The brdInit function must be executed before calling
+					   this function.
+
+PARAMETER1:		triState is a 8 bit parameter for which each bit
+               corresponds to one of the high-current outputs.
+
+					Bit 7  = high-current output channel OUT07
+					Bit 6  = high-current output channel OUT06
+					Bit 5  = high-current output channel OUT05
+					Bit 4  = high-current output channel OUT04
+					Bit 3  = high-current output channel OUT03
+					Bit 2  = high-current output channel OUT02
+					Bit 1  = high-current output channel OUT01
+					Bit 0  = high-current output channel OUT00
+
+					To set the outputs, set the corresponding bit to one of
+					the following states:
+
+					0 = Tristate output operation disabled.
+					1 = TriState output operation enabled.
+
+               EXAMPLE:
+               --------
+               TriState=0x02;
+                          ^^
+                          ||
+               			  ||
+               			  ||----  Output  OUT01       = Tristate enabled
+               			  |	    Output  OUT00       = Tristate disabled
+								  |
+               			  |------ Outputs OUT07 - 04  = Tristate disabled
+
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, digOutConfig, digOut, digOutTriState
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void digTriStateConfig(char triState)
+{
+	auto int channel, mask;
+
+	#GLOBAL_INIT {__triStateFlag  = FALSE;}
+	#GLOBAL_INIT {__brdInitFlag   = FALSE;}
+	#GLOBAL_INIT {__triStateConfig = 0x00;}
+
+	if(__brdInitFlag == FALSE)
+	{
+		// the brdInit function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	// Initialize the shadow registers for the high-current outputs
+	__triStateConfig = (char) triState;
+	__triStateFlag = TRUE;
+}
+
+/*** BeginHeader	digOutTriState */
+void digOutTriState(int, int);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digOutTriState				<OP72XX.LIB>
+
+SYNTAX:			void digOutTriState(int channel, int state);
+
+DESCRIPTION:	Sets the state of a digital output channel (OUT00 - OUT07).
+					This function is intended to control a given channel as a
+					tri-state output, for example:
+
+					0 = Active low state (GND potential)
+					1 = Active High state (+K potential)
+					2 = High Impedence state.
+
+					Switching from one state to another has some software overhead,
+					which should be less than 1 usec.
+
+
+				  	A runtime error will occur for the following conditions:
+               --------------------------------------------------------
+               1. Channel or value out of range.
+               2. The brdInit or digTriStateConfig functions not executed
+                  before executing the digOutTriState function.
+               3. If trying to use a channel that is not configured as a
+                  tristate output.
+
+PARAMETER1:		Digital output channel (0-7).
+PARAMETER2:		Set to one of the following output states.
+					0 = Active low.
+					1 = Active High.
+					2 = High-Impedence state.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, digOutConfig, digOut, triStateConfig
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void digOutTriState(int channel, int value)
+{
+	auto unsigned char outputBit;
+	auto int mask;
+	auto int botTransistor, topTransistor;
+
+	#GLOBAL_INIT {__triStateFlag    = FALSE;}
+	#GLOBAL_INIT {__brdInitFlag     = FALSE;}
+
+	if ((channel < 0) || (channel > 7) || (value < 0) || (value > 2))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	mask = 0x01 << channel;
+	if(!(__triStateConfig & mask))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if(__brdInitFlag == FALSE || __triStateFlag == FALSE)
+	{
+		// the brdInit and/or the digConfig function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// Set the output to the value parameter
+	botTransistor = channel + 0x8000;
+   topTransistor = channel + 0x8008;
+
+	switch(value)
+	{
+		case 0:
+			WrExtPort(topTransistor, 0x00);
+			WrExtPort(botTransistor, 0x01);
+			break;
+
+		case 1:
+			WrExtPort(botTransistor, 0x00);
+			WrExtPort(topTransistor, 0x01);
+			break;
+
+		case 2:
+			WrExtPort(topTransistor, 0x00);
+			WrExtPort(botTransistor, 0x00);
+			break;
+	}
+}
+
+/*** BeginHeader digIn */
+int  digIn(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digIn							<OP72XX.LIB>
+
+SYNTAX:			int digIn(int channel);
+
+DESCRIPTION:	Reads the state of a digital input channel. This function
+					is non-reentrant. Digital input range:
+
+					With Analog option:
+					-------------------
+					IN00  - IN18  (input voltage range -36v to +36v)
+
+					Note: Channels IN16 - IN18 are read via the ADC chip
+					      which have an access time of approx. 100us
+
+					No Analog option:
+					-----------------
+					IN00  - IN15  (input voltage range -36v to +36v)
+
+
+					A runtime error will occur for the following conditions:
+					--------------------------------------------------------
+               1. Channel out of range.
+               2. The brdInit function needs to be executed before using
+               digIn function.
+
+PARAMETER1:		Digital input channels (0-18), w/  Analog option installed.
+					Digital input channels (0-15), w/o Analog option installed.
+
+RETURN VALUE:	The logic state of the input(0 or 1).
+
+SEE ALSO:		brdInit, digOut
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int digIn(int channel)
+{
+	auto int input_state, input_bit;
+
+	#GLOBAL_INIT{__brdInitFlag = FALSE;}
+
+	if(!__brdInitFlag)
+	{
+		// the brdInit function hasn't been executed as of yet
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	if(_BOARD_TYPE_ == OP7210)
+	{
+		// Check for proper I/O channel range w/o analog option
+		if ((channel < 0) || (channel > 15))
+		{
+			exception(-ERR_BADPARAMETER);
+			exit(-ERR_BADPARAMETER);
+		}
+	}
+	else
+	{
+		// Check for proper I/O channel range w/analog option
+		if ((channel < 0) || (channel > 18))
+		{
+			exception(-ERR_BADPARAMETER);
+			exit(-ERR_BADPARAMETER);
+		}
+	}
+
+	// Check for 1st 8 digital input channels
+	if(channel < 8)
+	{
+		input_bit = 0x01 << channel;
+		input_state = RdPortI(PADR) & input_bit;
+	}
+	// Check for 2nd 8 digital input channels
+	else if(channel >= 8 && channel <= 15)
+	{
+		input_bit = 0x01 << (channel - 8);
+		input_state = RdPortE(0x8000) & input_bit;
+	}
+	// Must be a digital input channel on the A/D chip
+	else
+	{
+		// Read ID register(check if ADC option installed)
+		input_state = _adcDriver((REGISTERMODE+RD_REG+BITS8+5), 0x00, REGISTERMODE);
+		input_bit = 0x01 << (channel - 16);
+		input_state = input_state & input_bit;
+	}
+	input_state = (input_state > 0) ? 1 : 0;
+	return(input_state);
+}
+
+
+/*** BeginHeader buzzer */
+void buzzer(int onOff);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+buzzer				<OP72XX.LIB>
+
+SYNTAX:			void buzzer(int onOff);
+
+DESCRIPTION:	Turn on the Alarm
+
+PARAMETER1:		Parameter for Buzzer control.
+
+					0  = Buzzer OFF
+					1  = Buzzer ON
+
+RETURN VALUE:	None
+
+SEE ALSO:		brdInit
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+void buzzer(int onOff)
+{
+	if(onOff)
+	{
+		WrExtPort(0xA006, 0xFF);					// Turn On Alarm
+	}
+	else
+	{
+		WrExtPort(0xA006, 0x00);					// Turn Off Alarm
+	}
+}
+
+
+/*** BeginHeader	ledOut */
+void ledOut(int led, int value);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ledOut						<OP72XX.LIB>
+
+SYNTAX:			void ledOut(int led, int value)
+
+DESCRIPTION:	LED ON/OFF control. This function is non-reentrant.
+
+					Note:
+					-----
+					Once the brdInit function executes, then the uP Bad
+					indicator is available for application program use,
+					except when using the RabbitNet bus in master mode.
+
+PARAMETER1:		LED to control.
+
+					0  = LED DS1 (uP Bad indicator)
+
+PARAMETER2:		value used to control LED (0 or 1).
+					0 = OFF
+					1 = ON
+
+RETURN VALUE:	None
+
+SEE ALSO:		brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void ledOut(int led, int value)
+{
+	if ((led < 0) || (led > 1) || (value < 0) || (value > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	if(value == 0)
+	{	// turn-off LED0
+		WrPortI(PBDR, &PBDRShadow, (PBDRShadow | 0x80));
+	}
+	else
+	{	// turn-on LED0
+		WrPortI(PBDR, &PBDRShadow, (PBDRShadow & ~0x80));
+	}
+}
+
+/*** BeginHeader _ADC_SCLK */
+useix int _ADC_SCLK(int cmd, int num_clocks);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_ADC_SCLK						<OP72XX.LIB>
+
+SYNTAX:			int _ADC_SCLK(int cmd, int num_clocks)
+
+DESCRIPTION:	Reads the voltage of an analog input channel by serial
+					clocking out an 8 bit command to the A/D device of the
+					following formats:
+
+PARAMETER1:    Command to be sent to the ADC chip.
+PARAMETER2:	   Number of clock cycles to be executed.
+
+RETURN VALUE:  Returns 8 bits of data from the ADC chip
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+useix int _ADC_SCLK(int cmd, int num_clocks)
+{
+#asm
+	push  ip							; save off IP state
+	ipset	1							; set interrupt priority to level 1
+.shiftxBits:
+	ld		b,(ix+num_clocks)		;setup for X number of CLK cycles
+	ld    h,(ix+cmd)				;load H reg with ADC command byte
+	ld    de,PEDR					;load DE with I/O portE address
+	ld    a,(PEDRShadow)       ;Load A with PortE shadow register
+	exx								;Change to alternate registers
+	ld    bc,PBDR              ;Load BC with I/O portB address
+	ld    l,0                  ;Clear LSB ADC return data register
+	exx                        ;Change back to primary registers
+
+.shiftLSB:
+	sla	h							;shift to next cmd bit to be written
+	jr		nc,.clrbit2				;check if cmd bit is high or low
+
+	set	1,a						;set data bit high
+;	ioi	ld (de),a				;set DATA high to AD
+	IOWRITE_A(de)
+	jr		.clkdata2				;jump to CLK data code section
+
+.clrbit2:
+	res	1,a						;set data bit low
+;	ioi	ld (de),a				;set data low to AD
+	IOWRITE_A(de)
+
+.clkdata2:
+	res	0,a						;set CLK bit low
+;	ioi	ld (de),a				;CLK SDI data bit into AD
+	IOWRITE_A(de)
+	set	0,a						;set CLK bit high
+;	ioi	ld (de),a				;CLK next SDO bit out of AD
+	IOWRITE_A(de)
+
+	ex    af,af'					;save-off data for PEDRShadow register
+	exx                        ;change to alternate registers
+	sla   l                    ;shift ADC data, make room for next byte
+
+;	ioi	ld a,(bc)				;read A/D SDO data line
+	IOREAD_A(bc)
+	srl	a                    ;shift data X5, shift from bit D5 to D0
+	srl   a
+	srl   a
+	srl   a
+	srl   a
+	and   0x01						;check if data is one or zero
+	or		l							;OR'in previous value
+	ld    l,a                  ;save updated ADC data
+	exx								;change back to primary register s
+	ex    af,af'               ;retrieve data for PEDRShadow register
+	djnz	.shiftLSB				;loop until B register reaches zero
+
+	;Update PEDRShadow register
+	ld    (PEDRShadow),a			;update PEDRShadow register
+
+	;Retrieve the data from the ADC chip
+	exx                        ;change to alternate registers
+	ld		h,0                  ;clear register H, L = ADC data
+	pop	ip							;restore interrupt priority
+#endasm
+	// Return ADC data in the HL register
+}
+
+/*** BeginHeader _adcDriver */
+int _adcDriver(int cmd, int regdata, int mode);
+// ADC Mode
+#define DIRECTMODE   0x80
+#define REGISTERMODE 0x00
+
+// Channels Macro's
+#define AIN0  0
+#define AIN1  1
+#define AIN2  2
+#define AIN3  3
+#define AIN4  4
+#define AIN5  5
+#define AIN6  6
+#define AIN7  7
+
+// ADC modes for user selection
+#define SE_MODE		0
+#define DIFF_MODE    1
+#define mAMP_MODE    2
+
+// ADC control bytes for mode of operation
+#define SINGLE_ENDED 0x08
+#define DIFFERENTIAL 0x00
+
+// ADC Gain
+#define GAIN_X1		0x00
+#define GAIN_X2		0x01
+#define GAIN_X4		0x02
+#define GAIN_X5		0x03
+#define GAIN_X8		0x04
+#define GAIN_X10		0x05
+#define GAIN_X16		0x06
+#define GAIN_X20		0x07
+
+// ADC Read/Write operation
+#define RD_REG       0x40
+#define WR_REG       0x00
+
+// ADC Word length
+#define BITS16       0x10
+#define BITS8        0x00
+
+// ADC Register address
+#define REG0   		0x00
+#define REG1  			0x01
+#define REG2  			0x02
+#define REG3  			0x03
+#define REG4  			0x04
+#define REG5  			0x05
+#define REG6  			0x06
+#define REG7  			0x07
+#define REG24  		0x18
+#define REG31  		0x1F
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_adcDriver						<OP72XX.LIB>
+
+SYNTAX:			int _adcDriver(int cmd, int regdata, int mode)
+
+DESCRIPTION:	ADC driver to control/access the ADS7870 ADC chip.
+
+PARAMETER1:		Command information for the ADC chip.
+PARAMETER2:		Data to be sent to the ADC chip.
+PARAMETER3:	   ADC chip access mode.
+					DIRECTMODE    - used to read AD conversion data
+					REGISTERMODE  - used to read/write control registers
+
+RETURN VALUE:	DIRECTMODE
+					----------
+					Read cycle =  A/D rawdata = 0-2047.
+
+ 					REGISTERMODE
+ 					------------
+ 					Read cycle   = Register value
+ 					Write cycle  = Data to be written to the register
+
+SEE ALSO:		brdInit, anaInCalib, anaIn, anaInVolts,  anaInmAmps,
+               anaInDiff
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int _adcDriver(int cmd, int regdata, int mode)
+{
+	auto int cycles, loop, numbits;
+	unsigned long data, result;
+	auto int cmd_save;
+
+	#GLOBAL_INIT {__brdInitFlag = FALSE;}
+
+	if(!__brdInitFlag)
+	{
+		// The brdInit function hasn't been executed as of yet
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// brdInit function will set the flag active to meet ADC power-on delay
+	if(__InitADCpower)
+	{
+		while(!((long) (MS_TIMER-__anaPWRDelay) >= 0 ));
+		__InitADCpower = 0;
+	}
+
+		// Assert CS
+	BitWrPortI(PDDR,&PDDRShadow,1,3);
+	BitWrPortI(PDDR,&PDDRShadow,0,3);
+	_ADC_SCLK(cmd,8);
+
+	// De-Select CS
+	BitWrPortI(PDDR,&PDDRShadow,1,3);
+
+	// Assert CS
+	BitWrPortI(PDDR,&PDDRShadow,1,3);
+	BitWrPortI(PDDR,&PDDRShadow,0,3);
+	if(mode == REGISTERMODE)
+		cycles = 2;
+	else
+		cycles = 3;
+	numbits = 8;
+	result  = 0;
+	cmd_save = cmd;
+	for(loop = 0; loop < cycles; loop++)
+	{
+		if(loop == 2)
+			numbits = 4;
+		else
+			numbits = 8;
+		data = _ADC_SCLK(cmd, numbits);
+		result = result << numbits;
+		result |= data;
+		cmd = regdata;
+	}
+	if(mode != DIRECTMODE)
+	{
+		result = result & 0x00FF;
+	}
+	else
+	{
+		if(cmd_save & 0x08)
+		{
+			result = result & 0x07FF;
+		}
+		else
+		{
+			result = result & 0x0FFF;
+			if(result & 0x0800)
+			{
+				result = result | 0xF000;
+			}
+		}
+	}
+	// De-Select CS
+	BitWrPortI(PDDR,&PDDRShadow,0,3);
+	return((int)result);
+}
+
+/*** BeginHeader _adcCalibSEND, _adcCalibDIFF, _adcCalibmAMP */
+#define ADCHANNELS 			8
+#define SINGLE_ENDED_CH		8
+#define DIFFERENTIAL_CH		4
+#define MILLIAMP_CH 			8
+#define NUMGAINS        	8
+#define ALL_CHANNELS       0xff
+
+#ifndef mAMP_GAINCODE
+#define mAMP_GAINCODE		GAIN_X8
+#endif
+
+#define TS_XY					2
+
+// offset into user block for calibration data
+#define CALIB_SINGLENDED   	(4096*GetIDBlockSize()-0x400)
+#define CALIB_DIFFERENTIAL 	CALIB_SINGLENDED+sizeof(_adcCalibSEND)
+#define CALIB_MILLIAMP			CALIB_DIFFERENTIAL+sizeof(_adcCalibDIFF)
+
+typedef struct
+{	float gain;
+	int offset;
+}adc_cal;
+
+extern adc_cal _adcCalibSEND[SINGLE_ENDED_CH][NUMGAINS];
+extern adc_cal _adcCalibDIFF[DIFFERENTIAL_CH][NUMGAINS];
+extern adc_cal _adcCalibmAMP[MILLIAMP_CH];
+/*** EndHeader */
+
+adc_cal _adcCalibSEND[SINGLE_ENDED_CH][NUMGAINS];
+adc_cal _adcCalibDIFF[DIFFERENTIAL_CH][NUMGAINS];
+adc_cal _adcCalibmAMP[MILLIAMP_CH];
+
+/*** BeginHeader anaInCalib */
+int anaInCalib(int channel, int opmode, int gaincode,
+               int value1, float volts1,
+					int value2, float volts2);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInCalib						<OP72XX.LIB>
+
+SYNTAX:			int anaInCalib(int channel, int opmode, int gaincode,
+                              int value1, float volts1,
+							         int value2, float volts2)
+
+DESCRIPTION:	Calibrates the response of the ADC channel desired as a
+               linear function using the two conversion points provided.
+               Gain and offset constants are calculated and placed into
+               global table _adcInCalib.
+
+PARAMETER1:		ADC channel number 0 to 7, AIN0-AIN7.
+
+ 					  CH  Single-Ended 	  Differential
+					 ----	------------   ----------------
+		 			  0	  AIN0 			 +AIN0  and  -AIN1
+					  1     AIN1
+		 			  2	  AIN2 			 +AIN2  and  -AIN3
+		 			  3	  AIN3
+		 			  4	  AIN4 			 +AIN4  and  -AIN5
+		 			  5	  AIN5
+			 		  6	  AIN6 			 +AIN6  and  -AIN7
+		 			  7	  AIN7
+
+PARAMETER2:		Mode of operation: 	SE_MODE     = 0  (Single-Ended)
+											 	DIFF_MODE   = 1  (Differential)
+											 	mAMP_MODE   = 2  (4-20ma)
+
+PARAMETER3:  	Gaincode of 0 to 7. The table below applies for both
+					Single-Ended and Differential modes:
+
+					Gaincode  Defined Macro		Actual Gain
+					--------  -------------		-----------
+		 				0 		 	GAIN_X1			(x1)
+		 				1 		 	GAIN_X2	   	(x2)
+		 				2 		 	GAIN_X4			(x4)
+		 				3 		 	GAIN_X5			(x5)
+		 				4 		 	GAIN_X8**		(x8)
+		 				5 		 	GAIN_X10			(x10)
+		 				6 		 	GAIN_X16			(x16)
+		 				7 		 	GAIN_X20			(x20)
+					=======================================
+               ** Is used for 4-20ma operation.
+
+
+PARAMETER4:		The first ADC value.
+PARAMETER5:		The voltage corresponding to the first ADC value.
+PARAMETER6:		The second ADC value.
+PARAMETER7:		The voltage corresponding to the second ADC value.
+
+RETURN VALUE:	0, if sucessful.
+					-1, if not able to make calibration constants.
+
+SEE ALSO:		brdInit, anaIn, anaInVolts, anaInmAmps, anaInDiff,
+               anaInEERd, anaInEEWr
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaInCalib(int channel, int opmode, int gaincode,
+               int value1, float volts1, int value2, float volts2)
+{
+	auto float gain, offset;
+	auto float calc_voltage;
+
+	#GLOBAL_INIT {__brdInitFlag   = FALSE;}
+
+	if(!__brdInitFlag || channel < 0 || channel > 7)
+	{
+		// The brdInit function hasn't been executed as of yet
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	if(!(opmode == SE_MODE || opmode == DIFF_MODE || opmode == mAMP_MODE))
+	{
+		// The opmode is invalid
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	if(gaincode < 0 || gaincode > 7)
+	{
+		// The gaincode parameter is out of range
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// Should use points near each end of range
+	if((volts1 == volts2) || (value1 == value2)) return -1;
+
+	offset = (volts2*value1 - volts1*value2)/(volts2-volts1);
+	if (offset == value1)
+		gain = volts2/(offset-value2);
+	else
+		gain = volts1/(offset-value1);
+
+	if(opmode == SE_MODE)
+	{
+		_adcCalibSEND[channel][gaincode].gain   = gain;
+		_adcCalibSEND[channel][gaincode].offset = (int) offset;
+	}
+	else if(opmode == mAMP_MODE)
+	{
+		_adcCalibmAMP[channel].gain   = gain;
+		_adcCalibmAMP[channel].offset = (int) offset;
+	}
+	else
+	{
+		switch(channel)
+		{
+			case 0: 	channel = 0; break;
+			case 2: 	channel = 1; break;
+			case 4: 	channel = 2; break;
+			case 6: 	channel = 3; break;
+
+			default:
+				// channel is incorrect for differential mode
+				exception(-ERR_BADPARAMETER);
+				exit(-ERR_BADPARAMETER);
+		}
+		_adcCalibDIFF[channel][gaincode].gain   = gain;
+		_adcCalibDIFF[channel][gaincode].offset = (int) offset;
+	}
+	return 0;
+}
+
+/*** BeginHeader anaIn */
+unsigned int anaIn(int channel, int opmode, int gaincode);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaIn								<OP72XX.LIB>
+
+SYNTAX:			unsigned int anaIn(int channel, int opmode, int gaincode)
+
+DESCRIPTION:	Reads the state of an analog input channel. This function
+					is non-reentrant.
+
+PARAMETER1:		ADC channel number 0 to 7, AIN0-AIN7.
+
+	  				  Ch  Single-Ended 	  Differential
+					 ----	------------   ----------------
+		 			  0	  AIN0 			 +AIN0  and  -AIN1
+					  1     AIN1
+		 			  2	  AIN2 			 +AIN2  and  -AIN3
+		 			  3	  AIN3
+		 			  4	  AIN4 			 +AIN4  and  -AIN5
+		 			  5	  AIN5
+			 		  6	  AIN6 			 +AIN6  and  -AIN7
+		 			  7	  AIN7
+
+PARAMETER2:		Mode of operation: 	SE_MODE     = 0  (Single-Ended)
+											 	DIFF_MODE   = 1  (Differential)
+											 	mAMP_MODE   = 2  (4-20ma)
+
+PARAMETER3:  	Gaincode of 0 to 7. The table below applies for both
+					Single-Ended and Differential modes:
+
+					Gaincode  Defined Macro		Actual Gain
+					--------  -------------		-----------
+		 				0 		 	GAIN_X1			(x1)
+		 				1 		 	GAIN_X2	   	(x2)
+		 				2 		 	GAIN_X4			(x4)
+		 				3 		 	GAIN_X5			(x5)
+		 				4 		 	GAIN_X8**		(x8)
+		 				5 		 	GAIN_X10			(x10)
+		 				6 		 	GAIN_X16			(x16)
+		 				7 		 	GAIN_X20			(x20)
+					=======================================
+               ** Is used for 4-20ma operation.
+
+
+RETURN VALUE:	A value corresponding to the voltage on the analog input
+					channel, which will be:
+
+					0-2047 	for 11 bit A/D conversions
+
+SEE ALSO:		anaInVolts, anaInCalib, brdInit, anaInmAmps, anaInDiff
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+unsigned int anaIn(int channel, int opmode, int gaincode)
+{
+	auto unsigned int cmd;
+
+	#GLOBAL_INIT {__brdInitFlag   = FALSE;}
+
+	if(!__brdInitFlag || channel < 0 || channel > 7)
+	{
+		// The brdInit function hasn't been executed as of yet
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	if(!(opmode == SE_MODE || opmode == DIFF_MODE || opmode == mAMP_MODE))
+	{
+		// The opmode is invalid
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	if(gaincode < 0 || gaincode > 7)
+	{
+		// The gaincode is out of range
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if(opmode == DIFF_MODE)
+	{
+		switch(channel)
+		{
+			case 0: 	channel = 0; break;
+			case 2: 	channel = 1; break;
+			case 4: 	channel = 2; break;
+			case 6: 	channel = 3; break;
+
+			default:
+				// channel is incorrect for differential mode
+				exception(-ERR_BADPARAMETER);
+				exit(-ERR_BADPARAMETER);
+		}
+
+		// Return the rawdata value from the given AD channel.
+		cmd = DIRECTMODE + DIFFERENTIAL + (gaincode<<4) + channel;
+	}
+	else 	// Opmode MUST be either single-ended or 4-20ma.
+	{
+		// Return the rawdata value from the given AD channel.
+		cmd = DIRECTMODE + SINGLE_ENDED + (gaincode<<4) + channel;
+	}
+	return(_adcDriver(cmd, 0x00, DIRECTMODE));
+}
+
+
+/*** BeginHeader anaInVolts */
+float anaInVolts(int channel, int gaincode);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInVolts						<OP72XX.LIB>
+
+SYNTAX:			float anaInVolts(int channel, int gaincode)
+
+DESCRIPTION:	Reads the state of a Single-Ended analog input channel
+               and uses the previously set calibration constants to
+               convert it to volts.
+
+PARAMETER1:		ADC channel number 0 to 7, AIN0-AIN7.
+
+	  				  Ch  Single-Ended
+					 ----	------------
+		 			  0	  AIN0
+					  1     AIN1
+		 			  2	  AIN2
+		 			  3	  AIN3
+		 			  4	  AIN4
+		 			  5	  AIN5
+			 		  6	  AIN6
+		 			  7	  AIN7
+
+PARAMETER2:  	Gaincode of 0 to 7.
+
+					Gaincode  Defined Macro		Actual Gain   Voltage Range
+					--------  -------------		-----------	 ----------------
+		 				0 		 	GAIN_X1			(x1)			   0 - 20v
+		 				1 		 	GAIN_X2	   	(x2)			   0 - 10v
+		 				2 		 	GAIN_X4			(x4)			   0 - 5v
+		 				3 		 	GAIN_X5			(x5)			   0 - 4v
+		 				4 		 	GAIN_X8			(x8)			   0 - 2.5v
+		 				5 		 	GAIN_X10			(x10)	 		   0 - 2v
+		 				6 		 	GAIN_X16			(x16)			   0 - 1.25v
+		 				7 		 	GAIN_X20			(x20)			   0 - 1v
+					==========================================================
+
+RETURN VALUE:	A voltage value corresponding to the voltage on the analog
+					input channel.
+
+SEE ALSO:		brdInit, anaInCalib, anaIn, anaInmAmps, anaInDiff
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+float anaInVolts(int channel, int gaincode)
+{
+	auto int rawdata;
+	auto float anaVolts;
+
+	#GLOBAL_INIT {__brdInitFlag = FALSE;}
+
+	if(!__brdInitFlag)
+	{
+		// The brdInit function hasn't been executed as of yet
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	if(gaincode < 0 || gaincode > 7)
+	{
+		// The gaincode is out of range
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	rawdata  = anaIn(channel, SE_MODE, gaincode);
+	rawdata  = _adcCalibSEND[channel][gaincode].offset - rawdata;
+	anaVolts = _adcCalibSEND[channel][gaincode].gain * rawdata;
+	return (anaVolts);
+}
+
+/*** BeginHeader anaInDiff */
+float anaInDiff(unsigned int channel, unsigned int gaincode);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInDiff 					<OP72XX.LIB>
+
+SYNTAX:			float anaInDiff(unsigned int channel, unsigned int gaincode)
+
+DESCRIPTION:	Reads the state of differential analog input channels and
+					uses the	previously set calibration constants to convert
+					it to	volts.
+
+PARAMETER1:		channel 0, 2, 4, or 6 as indicated by the differential
+					positive line input. See below.
+
+					==============================================
+					 Channel		Differential input lines
+					----------	-------------------------------
+						 0			+AIN0 	-AIN1
+						 2			+AIN2 	-AIN3
+						 4			+AIN4 	-AIN5
+						 6			+AIN6 	-AIN7
+					==============================================
+
+PARAMETER2:  	Gaincode of 0 to 7.
+
+					Gaincode  Defined Macro		Actual Gain   Voltage Range
+					--------  -------------		-----------	 ----------------
+		 				0 		 	GAIN_X1			(x1)			   +- 20v
+		 				1 		 	GAIN_X2	   	(x2)			   +- 10v
+		 				2 		 	GAIN_X4			(x4)			   +- 5v
+		 				3 		 	GAIN_X5			(x5)			   +- 4v
+		 				4 		 	GAIN_X8			(x8)			   +- 2.5v
+		 				5 		 	GAIN_X10			(x10)	 		   +- 2v
+		 				6 		 	GAIN_X16			(x16)			   +- 1.25v
+		 				7 		 	GAIN_X20			(x20)			   +- 1v
+					==========================================================
+
+RETURN VALUE:	A voltage value corresponding to the voltage on the analog
+					input channel.
+
+SEE ALSO:		 brdInit, anaInCalib, anaIn, anaInmAmps, anaInVolts
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+float anaInDiff(unsigned int channel, unsigned int gaincode)
+{
+	auto int rawdata;
+	auto float anaVolts;
+
+	#GLOBAL_INIT {__brdInitFlag = FALSE;}
+
+	if(!__brdInitFlag)
+	{
+		// The brdInit function hasn't been executed as of yet
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel < 0 || channel > 7)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	rawdata = anaIn(channel, DIFF_MODE, gaincode);
+	if (rawdata&0x0800)  			//check bit 12 for sign and sign extend
+		rawdata = rawdata|0xf000;
+	switch(channel)
+	{
+		case 0: 	channel = 0; break;
+		case 2: 	channel = 1; break;
+		case 4: 	channel = 2; break;
+		case 6: 	channel = 3; break;
+	}
+	rawdata  = _adcCalibDIFF[channel][gaincode].offset - rawdata;
+	anaVolts = _adcCalibDIFF[channel][gaincode].gain * rawdata;
+	return(anaVolts);
+}
+
+
+/*** BeginHeader anaInmAmps */
+float anaInmAmps(unsigned int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaInmAmps					<OP72XX.LIB>
+
+SYNTAX:			int anaInmAmps(unsigned int channel)
+
+DESCRIPTION:	Reads the state of an analog input channel and uses the
+					previously set calibration constants to convert it to
+					current.
+
+PARAMETER1:		Channel is 0 to 7, AIN0 - AIN7:
+
+					Channel	4 to 20 mA input lines
+					--------	----------------------
+		 				0			+AIN0
+		 				1			+AIN1
+						2			+AIN2
+						3			+AIN3
+						4			+AIN4
+		 				5			+AIN5
+						6			+AIN6
+						7			+AIN7
+					==================================
+
+
+RETURN VALUE:	A current value corresponding	to the current on	the analog
+					input channel of range 4.0 - 20.0 milli-amps.
+
+SEE ALSO:		 brdInit, anaInCalib, anaIn, anaInVolts, anaInDiff
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+float anaInmAmps(unsigned int channel)
+{
+	auto int rawdata;
+	auto float current;
+
+	#GLOBAL_INIT {__brdInitFlag = FALSE;}
+
+	if(!__brdInitFlag)
+	{
+		// The brdInit function hasn't been executed as of yet
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel < 0 || channel > 7)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	rawdata = anaIn(channel, SE_MODE, mAMP_GAINCODE);
+	rawdata  = _adcCalibmAMP[channel].offset - rawdata;
+	current  = _adcCalibmAMP[channel].gain * rawdata;
+	return(current);
+
+}
+
+/*===================================================================
+	The following functions are for reading/writing the ADC
+	calibrations constants.
+===================================================================*/
+
+/*** BeginHeader anaInEERd */
+int anaInEERd(int channel, int opmode, int gaincode);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInEERd					<OP72XX.LIB>
+
+SYNTAX:			int anaInEERd(int channel, int opmode, int gaincode)
+
+DESCRIPTION:	Reads the calibration constants, gain and offset, from
+               simulated eeprom in flash, located at the top 1K of the
+               reserved UserBlock memory area. This function is non-
+               reentrant.
+
+PARAMETER1:		ADC channel number or all channel value.
+
+              	  Ch  Single-Ended 	  Differential
+					 ----	------------   ----------------
+		 			  0	  AIN0 			 +AIN0  and  -AIN1
+					  1     AIN1
+		 			  2	  AIN2 			 +AIN2  and  -AIN3
+		 			  3	  AIN3
+		 			  4	  AIN4 			 +AIN4  and  -AIN5
+		 			  5	  AIN5
+			 		  6	  AIN6 			 +AIN6  and  -AIN7
+		 			  7	  AIN7
+                -1     ALL_CHANNELS  ALL_CHANNELS
+
+PARAMETER2:		Mode of operation: 	SE_MODE     = 0  (Single-Ended)
+											 	DIFF_MODE   = 1  (Differential)
+											 	mAMP_MODE   = 2  (4-20ma)
+
+PARAMETER3:  	Gaincode of 0 to 7. The table below applies to
+					Single-Ended, and Differential modes:
+
+					Gaincode  Defined Macro		Actual Gain
+					--------  -------------		-----------
+		 				0 		 	GAIN_X1			(x1)
+		 				1 		 	GAIN_X2	   	(x2)
+		 				2 		 	GAIN_X4			(x4)
+		 				3 		 	GAIN_X5			(x5)
+		 				4 		 	GAIN_X8**		(x8)
+		 				5 		 	GAIN_X10			(x10)
+		 				6 		 	GAIN_X16			(x16)
+		 				7 		 	GAIN_X20			(x20)
+					=======================================
+               ** Is used for 4-20ma operation.
+
+RETURN VALUE:	 0, If successful.
+					-1, invalid address or range.
+
+SEE ALSO:		brdInit, anaInCalib, anaInEEWr
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaInEERd(int channel, int opmode, int gaincode)
+{
+	auto int	status;
+	auto int offset;
+
+	if(opmode == SE_MODE)
+	{
+		if(channel == ALL_CHANNELS)
+		{
+			status = readUserBlock(_adcCalibSEND, CALIB_SINGLENDED,sizeof(_adcCalibSEND));
+		}
+		else
+		{
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			offset = CALIB_SINGLENDED;
+			offset += (char*)&_adcCalibSEND[channel][gaincode] - (char*)&_adcCalibSEND[0][0];
+
+			// read calibration constants from flash
+			status = readUserBlock(&_adcCalibSEND[channel][gaincode],
+			                       offset,sizeof(_adcCalibSEND[0][0]));
+		}
+	}
+	else if(opmode ==	mAMP_MODE)
+	{
+		if(channel == ALL_CHANNELS)
+		{
+			status = readUserBlock(_adcCalibmAMP, CALIB_MILLIAMP, sizeof(_adcCalibmAMP));
+		}
+		else
+		{
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			offset = CALIB_MILLIAMP;
+			offset += (char*)&_adcCalibmAMP[channel] - (char*)&_adcCalibmAMP[0];
+
+			// read calibration constants from flash
+			status = readUserBlock(&_adcCalibmAMP[channel], offset,sizeof(_adcCalibmAMP[0]));
+		}
+	}
+	else
+	{
+		switch(channel)
+		{
+			case 0: 	channel = 0; break;
+			case 2: 	channel = 1; break;
+			case 4: 	channel = 2; break;
+			case 6: 	channel = 3; break;
+			case ALL_CHANNELS: break;
+
+			default:
+				// channel is incorrect for differential mode
+				exception(-ERR_BADPARAMETER);
+				exit(-ERR_BADPARAMETER);
+		}
+		if(channel == ALL_CHANNELS)
+		{
+			status = readUserBlock(_adcCalibDIFF, CALIB_DIFFERENTIAL, sizeof(_adcCalibDIFF));
+		}
+		else
+		{
+			//	Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			offset = CALIB_DIFFERENTIAL;
+			offset += (char*)&_adcCalibDIFF[channel][gaincode] - (char*)&_adcCalibDIFF[0][0];
+			// read calibration constants from flash
+			status = readUserBlock(&_adcCalibDIFF[channel][gaincode],
+			                       offset,sizeof(_adcCalibDIFF[0][0]));
+		}
+	}
+	return(status);
+}
+
+/*** BeginHeader anaInEEWr */
+int anaInEEWr(int channel, int opmode, int gaincode);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInEEWr					<OP72XX.LIB>
+
+SYNTAX:			int anaInEEWr(int channel, int opmode, int gaincode)
+
+DESCRIPTION:	Writes the calibration constants, gain and offset, to
+               simulated eeprom in flash, located at the top 1K of the
+               reserved UserBlock memory area. This function is non-
+               reentrant.
+
+PARAMETER1:		ADC channel number or all channel value.
+
+              	  Ch  Single-Ended 	  Differential
+					 ----	------------   ----------------
+		 			  0	  AIN0 			 +AIN0  and  -AIN1
+					  1     AIN1
+		 			  2	  AIN2 			 +AIN2  and  -AIN3
+		 			  3	  AIN3
+		 			  4	  AIN4 			 +AIN4  and  -AIN5
+		 			  5	  AIN5
+			 		  6	  AIN6 			 +AIN6  and  -AIN7
+		 			  7	  AIN7
+                -1     ALL_CHANNELS  ALL_CHANNELS
+
+PARAMETER2:		Mode of operation: 	SE_MODE     = 0  (Single-Ended)
+											 	DIFF_MODE   = 1  (Differential)
+											 	mAMP_MODE   = 2  (4-20ma)
+
+PARAMETER3:  	Gaincode of 0 to 7. The table below applies to 4-20ma,
+					Single-Ended, and Differential modes:
+
+					Gaincode  Defined Macro		Actual Gain
+					--------  -------------		-----------
+		 				0 		 	GAIN_X1			(x1)
+		 				1 		 	GAIN_X2	   	(x2)
+		 				2 		 	GAIN_X4			(x4)
+		 				3 		 	GAIN_X5			(x5)
+		 				4 		 	GAIN_X8**		(x8)
+		 				5 		 	GAIN_X10			(x10)
+		 				6 		 	GAIN_X16			(x16)
+		 				7 		 	GAIN_X20			(x20)
+					=======================================
+               ** Is used for 4-20ma operation.
+
+RETURN VALUE:	 0, successful write to simulated eeprom.
+					-1, invalid address or range.
+
+
+SEE ALSO:			brdInit, anaInCalib, anaInEERd
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaInEEWr(int channel, int opmode, int gaincode)
+{
+	auto int	status;
+	auto int offset;
+
+	if(opmode == SE_MODE)
+	{
+		if(channel == ALL_CHANNELS)
+		{
+			// write calibration constants to flash
+			status = writeUserBlock(CALIB_SINGLENDED, _adcCalibSEND,sizeof(_adcCalibSEND));
+		}
+		else
+		{
+			// Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			offset = CALIB_SINGLENDED;
+			offset += (char*)&_adcCalibSEND[channel][gaincode] - (char*)&_adcCalibSEND[0][0];
+
+			// write calibration constants to flash
+			status = writeUserBlock(offset, &_adcCalibSEND[channel][gaincode],
+			                        sizeof(_adcCalibSEND[0][0]));
+		}
+	}
+	else if(opmode == mAMP_MODE)
+	{
+		if(channel == ALL_CHANNELS)
+		{
+			// write calibration constants to flash
+			status = writeUserBlock(CALIB_MILLIAMP, _adcCalibmAMP, sizeof(_adcCalibmAMP));
+		}
+		else
+		{
+			// Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			offset = CALIB_MILLIAMP;
+			offset += (char*)&_adcCalibmAMP[channel] - (char*)&_adcCalibmAMP[0];
+
+			// write calibration constants to flash
+			status = writeUserBlock(offset, &_adcCalibmAMP[channel], sizeof(_adcCalibmAMP[0]));
+		}
+	}
+	else
+	{
+		switch(channel)
+		{
+			case 0: 	channel = 0; break;
+			case 2: 	channel = 1; break;
+			case 4: 	channel = 2; break;
+			case 6: 	channel = 3; break;
+			case ALL_CHANNELS: break;
+
+			default:
+				// channel is incorrect for differential mode
+				exception(-ERR_BADPARAMETER);
+				exit(-ERR_BADPARAMETER);
+		}
+		if(channel == ALL_CHANNELS)
+		{
+			// write calibration constants to flash
+			status = writeUserBlock(CALIB_DIFFERENTIAL, _adcCalibDIFF,sizeof(_adcCalibDIFF));
+		}
+		else
+		{
+			// Calculate the offset into the user block of where the calibration
+			// constants are stored for a given A/D channel.
+			offset = CALIB_DIFFERENTIAL;
+			offset += (char*)&_adcCalibDIFF[channel][gaincode] - (char*)&_adcCalibDIFF[0][0];
+
+			// write calibration constants to flash
+			status = writeUserBlock(offset, &_adcCalibDIFF[channel][gaincode],
+			                        sizeof(_adcCalibDIFF[0][0]));
+		}
+	}
+	return(status);
+}
+
+//------------------------------------------------------------------------
+//	Board Initialization
+//------------------------------------------------------------------------
+//	This section supports board initialization.
+
+/*** BeginHeader brdInit */
+void brdInit ( void );
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+brdInit						<OP72XX.LIB>
+
+SYNTAX:			void brdInit (void);
+
+DESCRIPTION:	Call this function at the beginning of application code.
+					1.Initializes the system I/O ports.
+					2.Loads all the A/D calibration constants from flash and
+					  puts them into memory, ready for application program use.
+					3.Will turn-off uP Bad LED to indicate that the controller
+					  was successfully initialized. This only applies if the
+					  LCD/KEYPAD module is installed.
+
+				   Note: This function is non-reentrant.
+
+					*** Rabbit Ports A, B, C, D, and E Initialization ***
+
+					Port  IO   Function               I/O State
+					----  ---  ------------------   	 ------------
+					PA.0  In   Digital input,IN00     Pulled-up
+					PA.1	In	  Digital input,IN01 	 Pulled-up
+					PA.2	In	  Digital input,IN02 	 Pulled-up
+					PA.3	In	  Digital input,IN03		 Pulled-up
+					PA.4	In	  Digital input,IN04		 Pulled-up
+					PA.5	In	  Digital input,IN05		 Pulled-up
+					PA.6	In	  Digital input,IN06		 Pulled-up
+					PA.7	In	  Digital input,IN07		 Pulled-up
+
+					PB.0	In	  SS_CLK                 Pulled-up
+					PB.1  In   Not used               Pulled-up
+					PB.2	In   SS_CS                  Pulled-up
+					PB.3	In   SS_Mode                Pulled-up
+					PB.4	In   TouchScreen status     Pulled-up
+					PB.5	In   ADC_SD0                Pulled-up
+					PB.6  Out  Not Used               High
+					PB.7  Out  uP Bad Indicator       High
+
+					PC.0	Out  TXD	(RS232)				 Inactive high
+					PC.1	In	  RXD	(RS232)				 Inactive high
+					PC.2	Out  TXC	(RS232)				 Inactive high
+					PC.3	In   RXC (RS232)				 Inactive high
+					PC.4	Out  Realtek reset	    	 Initial'ed by sock_init()
+					PC.5	In	  Realtek INT0 			 Pulled-up
+					PC.6	Out  TXA		 					 Inactive high
+					PC.7	In	  RXA 						 Inactive high
+
+					PD.0	In   Realtek CLK (RCM2200)	 Initial'ed by sock_init()
+	      		 "		Out  Not used (RCM2300)		 High
+					PD.1	In   Realtek SDO (RCM2200)  Initial'ed by sock_init()
+	      		 "		Out  Not used (RCM2300) 	 High
+					PD.2	Out  Not used					 High
+					PD.3	Out  ADC Chip Select        High
+					PD.4	Out  ATXB (RS485)				 Inactive high
+					PD.5	In	  ARXB (RS485)			    Inactive high
+					PD.6	Out  Not used					 High
+					PD.7  Out  Not used					 High
+
+					PE.0 	Out  ADC_SK                 High
+					PE.1	Out  ADC_SI             	 High
+					PE.2	N/A  Realtek IORB strobe    Initial'ed by sock_init()
+	      		 "		Out  Not used (RCM2300)     High
+					PE.3	N/A  Realtek SDI line       Initial'ed by sock_init()
+	      		 "		Out  Not used (RCM2300)     High
+					PE.4  In   IO_ChipSelect0  	    High
+					PE.5	In   IO_ChipSelect1			 High
+					PE.6	N/A  Realtek IOWB strobe	 Initial'ed by sock_init()
+	      		 "		Out  Not used (RCM2300)     High
+					PE.7  Out  SED1335 Chip Select    High
+
+PARAMETER:    	None
+
+RETURN VALUE:	None
+
+SEE ALSO:		digOut, digOutConfig, triStateConfig, digOutTriState,
+               digIn, anaIn, anaInVolts, anaInmAmps, anaInDiff, anaInCalib,
+               anaInEERd, anaInEEWr, ledOut, buzzer, serMode, ser485Tx,
+               ser485Rx
+END DESCRIPTION **********************************************************/
+
+nodebug
+void brdInit (void)
+{
+	auto int ad_channel, dac_channel, cmd, gaincode;
+
+	#GLOBAL_INIT {__digConfigFlag = FALSE;}
+	#GLOBAL_INIT {__brdInitFlag   = FALSE;}
+	#GLOBAL_INIT
+	{
+		__keyInitFlag   = FALSE;
+		loopsPer_50us = (int)(19200L*32*freq_divider/1000000L)+1;
+	}
+
+
+	//---------------------------------------------------------------------
+	// Port A configuration
+	// - Initialize Port A as an input port
+	//---------------------------------------------------------------------
+	WrPortI(SPCR, &SPCRShadow, 0x80);		// set Port A to be Inputs
+
+	//---------------------------------------------------------------------
+	// Port B configuration
+	// - Port B bits PB7-PB6 are hardwired to be outputs and PB5-PB0 to
+	//   be inputs.
+	//---------------------------------------------------------------------
+	BitWrPortI(PBDR, &PBDRShadow, 1, 7);   // Turn the uP BAD LED off and
+	BitWrPortI(PBDR, &PBDRShadow, 0, 6);   // set PB6 line low for core
+	                                       // modules that have an LED
+	                                       // installed.
+	//---------------------------------------------------------------------
+	// Port C configuration
+	// - Setup I/O Port C bits PC0 - PC3 to be serial ports.
+	// - I/O bits PC4 and PC5 will be setup by the sock_init function
+	// - I/O bits PC6 and PC7 are initialized by the RabbitBIOS
+	//---------------------------------------------------------------------
+	WrPortI(PCFR, &PCFRShadow, (PCFRShadow | 0x05));
+
+	//---------------------------------------------------------------------
+	// Port D configuration
+	// - I/O bits PD0 and PD1 will be setup by the sock_init function if
+	//   using the RCM2200, otherwise they will be initialized as outputs.
+	// - Initially set I/O bits PD4 and PD5 as normal I/O, the serMode
+	//   function will re-initialize as a serail port.
+	// - I/O bits PD6 and PD7 are unused so they will be initialized as
+	//   outputs and set high.
+	// - Initialize floating pins when ethernet option is not being used.
+	//---------------------------------------------------------------------
+	// set Port D for Normal I/O
+	WrPortI(PDFR, &PDFRShadow, 0x00);
+
+	// set PD2, PD3, PD4, PD6 and PD7 I/O direction to be outputs
+	WrPortI(PDDDR, &PDDDRShadow,(PDDDRShadow | 0xDC));
+
+	// set PD2, PD3, PD4, PD6 and PD7 to be active high/low CMOS outputs
+	WrPortI(PDDCR, &PDDCRShadow,(PDDCRShadow & ~0xDC));
+
+	// set PD2, PD3, PD4, PD6 and PD7 outputs to be high
+	WrPortI(PDDR, &PDDRShadow, (PDDRShadow | 0xDC));
+
+
+	//---------------------------------------------------------------------
+	// Port E configuration
+	// - Initialize I/O bit PE0 to be an output.
+	// - Initialize I/O bit PE1 to be an output.
+	// - I/O bits PE2, PE3 and PE6 will be setup by the sock_init function
+	//   if using the RCM2200, otherwise they will be initialized as
+	//   outputs.
+	// - Initialize I/O bit PE4 as external chip select.
+	// - Initialize I/O bit PE5 as external chip select.
+	// - Initialize I/O bit PE7 as external chip select.
+	//---------------------------------------------------------------------
+	// Initially set Port E as normal I/O
+	WrPortI(PEFR, &PEFRShadow, 0x00);
+
+	//---------------------------------------------------------------------
+	// Initialize PE0 & PE1 to be an outputs
+	//---------------------------------------------------------------------
+	// Initialize as normal I/O
+	WrPortI(PEDR, &PEDRShadow, (PEDRShadow  |  0x03));
+	WrPortI(PEFR, &PEFRShadow, (PEFRShadow  & ~0x03));
+
+	// Initialize as normal I/O
+	WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow | 0x03));
+	WrPortI(PEDR, &PEDRShadow,   (PEDRShadow  | 0x03));
+
+	//---------------------------------------------------------------------
+	// Initialize bits PE4, PE5 and PE7 as chip selects
+	//---------------------------------------------------------------------
+	WrPortI(PEFR, &PEFRShadow,   (PEFRShadow  | 0xB0));
+
+	// Set bits to be outputs
+	WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow | 0xB0));
+
+	// Initialize PE4 & PE5 as chip selects with 1 wait state and
+	// writes allowed.
+	WrPortI(IB4CR, &IB4CRShadow,  0xC8);
+	WrPortI(IB5CR, &IB5CRShadow,  0xC8);
+
+	// Initialize PE7 as chip select with 3 wait states and writes allowed
+	WrPortI(IB7CR, &IB7CRShadow,  0x88);
+
+	// Set keypad scan lines high (inactive)
+	WrExtPort(0xA000, 0x00);
+	WrExtPort(0xA001, 0x00);
+	WrExtPort(0xA002, 0x00);
+	WrExtPort(0xA003, 0x00);
+
+	// Set X9015 CLK and CS high (inactive)
+	WrExtPort(0xA008,  0x00);
+	WrExtPort(0xA00A,  0x01);
+	//---------------------------------------------------------------------
+	// Initialize Port D and E to be clocked by PCLK/2
+	//---------------------------------------------------------------------
+	WrPortI(PDCR, &PDCRShadow, 0x00);	// set PDCR to be CLK'ed by PCLK/2
+	WrPortI(PECR, &PECRShadow, 0x00);	// set PECR to be CLK'ed by PCLK/2
+
+	//----------------------------------------------------------------------
+	// Load analog circuit calibration constants
+	//----------------------------------------------------------------------
+	__brdInitFlag = TRUE;
+	__InitADCpower = 0;
+	__InitTSpower  = 0;
+	#ifdef ANALOG
+		// Initialize Reference/Oscillator control register
+		cmd = REGISTERMODE + WR_REG + BITS8 + REG7;
+		_adcDriver(cmd, 0x3E, REGISTERMODE);
+
+		// Initialize ADC control register, read-back = mode 1
+		cmd = REGISTERMODE + WR_REG + BITS8 + REG3;
+		_adcDriver(cmd, 0x04, REGISTERMODE);
+
+		anaInEERd(ALL_CHANNELS, SE_MODE,   1);
+		anaInEERd(ALL_CHANNELS, DIFF_MODE, 1);
+		anaInEERd(ALL_CHANNELS, mAMP_MODE, 1);
+	#endif
+
+	#ifdef TOUCHSCREEN
+		// Initialize the TouchScreen ADC chip
+		TsCalibEERd();
+		_adcTouchScreen(0xD0);
+		_adcTouchScreen(0x90);
+	#endif
+
+	__anaPWRDelay = MS_TIMER + 500;
+	__InitADCpower = 1;
+	__InitTSpower  = 1;
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */
+
+

@@ -1,0 +1,539 @@
+/*******************
+modem.lib
+
+Module:  PPP
+Version: 2.02
+
+A set of routines for controlling an external modem through a full RS232 link.
+Default hardware is a core module using serial port C
+Pin assignments for control lines are:
+	DTR - PB6 (out)
+	RTS - PB7 (out)
+	CTS - PB0 (in)
+	DCD - PB2 (in)
+	RI  - PB3 (in)
+	DSR - PB4 (in)
+	TD - PC2 (out)
+	RD - PC3 (in)
+****************************/
+
+/*** BeginHeader */
+#ifndef __EXTMODEM_LIB
+#define __EXTMODEM_LIB
+
+#ifndef MODEM_DEBUG
+	#define MODEM_DEBUG 0
+#endif
+
+unsigned long extmodem_baudrate;		//current baud rate for communication with modem
+
+//setup flow control for port C
+#define SERC_RTS_PORT PBDR
+#define SERC_RTS_SHADOW PBDRShadow
+#define SERC_RTS_BIT 7
+#define SERC_CTS_PORT PBDR
+#define SERC_CTS_BIT 0
+
+/*** EndHeader */
+
+/*** BeginHeader ModemOpen */
+int ModemOpen(unsigned long baud);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ModemOpen                                 <MODEM.LIB>
+
+SYNTAX:			int ModemOpen(unsigned long baud);
+
+DESCRIPTION: 	Starts up communication with an external modem
+
+PARAMETER1:		The baud rate for communicating with the modem
+
+RETURN VALUE:	1 - External modem detected
+					0 - not connected to external modem
+END DESCRIPTION **********************************************************/
+
+nodebug int ModemOpen(unsigned long baud)
+{
+	extmodem_baudrate = baud;
+	//set serial line to idle
+	BitWrPortI(PCDR, &PCDRShadow, 1, 2);
+	//set DTR active
+	ModemSetDTR(1);
+	//check DSR line
+	if(ModemReady())
+	{
+		serCopen(baud);
+		serCflowcontrolOn();
+		return 1;
+	}
+	else
+	{
+		return 0;
+	}
+}
+
+/*** BeginHeader ModemInit */
+int ModemInit();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ModemInit                                 <MODEM.LIB>
+
+SYNTAX:			int ModemInit();
+
+DESCRIPTION: 	resets modem with AT, ATZ commands
+
+RETURN VALUE:	1 - success
+					0 - modem not responding
+END DESCRIPTION **********************************************************/
+
+nodebug int ModemInit()
+{
+	auto int i;
+	auto word t;
+
+	for(i = 0;i < 3;i++)
+	{
+		//force command mode
+		t = _SET_SHORT_TIMEOUT(1500);
+		while(!_CHK_SHORT_TIMEOUT(t)); //leading guard time
+		ModemSend("+++");
+		t = _SET_SHORT_TIMEOUT(1500);
+		while(!_CHK_SHORT_TIMEOUT(t)); //trailing guard time
+		ModemSend("AT\r");
+		if(ModemExpect("OK", 2000))
+		{
+			//add in small delay
+			t = _SET_SHORT_TIMEOUT(100);
+			while(!_CHK_SHORT_TIMEOUT(t));
+			ModemSend("ATZ\r");
+			if(ModemExpect("OK", 2000)) {
+				t = _SET_SHORT_TIMEOUT(100);
+				while(!_CHK_SHORT_TIMEOUT(t));
+				return 1;
+			}
+		}
+		//add in small delay
+		t = _SET_SHORT_TIMEOUT(100);
+		while(!_CHK_SHORT_TIMEOUT(t));
+	}
+	return 0;
+}
+
+
+/*** BeginHeader CofModemInit */
+scofunc int CofModemInit();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+CofModemInit                                 <MODEM.LIB>
+
+SYNTAX:			int CofModemInit();
+
+DESCRIPTION: 	resets modem with AT, ATZ commands. Yields to other tasks
+					while waiting for responses.
+
+RETURN VALUE:	1 - success
+					0 - modem not responding
+END DESCRIPTION **********************************************************/
+
+nodebug scofunc int CofModemInit()
+{
+	auto int i;
+	auto int status;
+
+	for(i = 0;i < 3;i++)
+	{
+		//force command mode
+		waitfor(DelayMs(1500));	//leading guard time
+		wfd { CofModemSend("+++"); }
+		waitfor(DelayMs(1500));
+		wfd { CofModemSend("AT\r"); }
+		wfd { status = CofModemExpect("OK", 2000); }
+		waitfor(DelayMs(100));
+		if(status)
+		{
+			wfd { CofModemSend("ATZ\r"); }
+			wfd { status = CofModemExpect("OK", 2000); }
+			if(status)
+			{
+				waitfor(DelayMs(100));
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+/*** BeginHeader ModemReady */
+int ModemReady();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ModemReady                                 <MODEM.LIB>
+
+SYNTAX:			int ModemReady();
+
+DESCRIPTION: 	Returns true if the DSR line is asserted
+
+
+RETURN VALUE:	1 - DSR line is active
+					0 - DSR inactive (nothing connected)
+END DESCRIPTION **********************************************************/
+
+nodebug int ModemReady()
+{
+	//PB1 is DSR line - active low
+	return !BitRdPortI(PBDR, 4);
+}
+
+/*** BeginHeader ModemSetDTR */
+int ModemSetDTR(int active);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ModemSetDTR                                 <MODEM.LIB>
+
+SYNTAX:			int ModemSetDTR(int active);
+
+DESCRIPTION: 	Sets the value of the DTR line
+
+PARAMETER1:		1 - DTR active (low)
+					0 - DTR inactive (high)
+
+END DESCRIPTION **********************************************************/
+
+nodebug int ModemSetDTR(int active)
+{
+	//PB6 is DTR line - active low
+	BitWrPortI(PBDR, &PBDRShadow, !active, 6);
+}
+
+/*** BeginHeader ModemConnected */
+int ModemConnected();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ModemConnected                                 <MODEM.LIB>
+
+SYNTAX:			int ModemConnected();
+
+DESCRIPTION: 	Returns true if the DCD line is asserted, meaning the modem is
+					connected to a remote carrier.
+
+RETURN VALUE:	1 - DCD line is active
+					0 - DCD inactive (nothing connected)
+END DESCRIPTION **********************************************************/
+
+nodebug int ModemConnected()
+{
+	//PB2 is DCD line - active low
+	return !BitRdPortI(PBDR, 2);
+}
+
+/*** BeginHeader ModemRinging */
+int ModemRinging();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ModemRinging                                 <MODEM.LIB>
+
+SYNTAX:			int ModemRinging();
+
+DESCRIPTION: 	Returns true if the RI line is asserted, meaning the line
+					is ringing.
+
+RETURN VALUE:	1 - RI line is active
+					0 - RI inactive (nothing connected)
+END DESCRIPTION **********************************************************/
+
+nodebug int ModemRinging()
+{
+	//PB3 is RI line - active low
+	return !BitRdPortI(PBDR, 3);
+}
+
+/*** BeginHeader ModemSend */
+void ModemSend(char *send_string);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ModemSend                                 <MODEM.LIB>
+
+SYNTAX:			void ModemSend(char *send_string);
+
+DESCRIPTION: 	Sends a string to the modem
+
+PARAMETER1:		A null terminated string to be sent to the modem
+
+END DESCRIPTION **********************************************************/
+
+nodebug void ModemSend(char *send_string)
+{
+	serCputs(send_string);
+}
+
+
+/*** BeginHeader CofModemSend */
+scofunc void CofModemSend(char *send_string);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+CofModemSend                                 <MODEM.LIB>
+
+SYNTAX:			void CofModemSend(char *send_string);
+
+DESCRIPTION: 	Sends a string to the modem. Yields to other tasks while
+					sending.
+
+PARAMETER1:		A null terminated string to be sent to the modem
+
+END DESCRIPTION **********************************************************/
+
+nodebug scofunc void CofModemSend(char *send_string)
+{
+	wfd {cof_serCputs(send_string); }
+}
+
+
+
+/*** BeginHeader ModemExpect */
+int ModemExpect(char *expect_string, unsigned long timeout);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ModemExpect                                 <MODEM.LIB>
+
+SYNTAX:			int ModemExpect(char *send_string, unsigned long timeout);
+
+DESCRIPTION: 	Listens for a specific string to be sent by the modem.
+
+PARAMETER1:		A null-terminated string to listen for.
+PARAMETER2:		The maximum wait in milliseconds for a character
+
+RETURN VALUE:	1 if the expected string was received
+					0 if a timeout occured before receiving the string
+
+END DESCRIPTION **********************************************************/
+
+nodebug int ModemExpect(char *expect_string, unsigned long timeout)
+{
+	auto int expect_length, match_position;
+	auto unsigned long t;
+	auto int received;
+
+	expect_length = strlen(expect_string);
+	match_position = 0;
+
+	while(match_position < expect_length)
+	{
+		t = _SET_TIMEOUT(timeout);
+		while((received = serCgetc()) < 0)
+		{
+			if (_CHK_TIMEOUT(t))
+				return 0;		//timed out
+		}
+		if(MODEM_DEBUG)
+		{
+			putchar(received);
+		}
+		if(received == expect_string[match_position])
+		{
+			match_position++;
+		}
+		else
+		{
+			match_position = 0; //no match, start over
+		}
+	}
+	return 1;
+}
+
+/*** BeginHeader CofModemExpect */
+scofunc int CofModemExpect(char *expect_string, unsigned long timeout);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+CofModemExpect                                 <MODEM.LIB>
+
+SYNTAX:			int CofModemExpect(char *send_string, unsigned long timeout);
+
+DESCRIPTION: 	Listens for a specific string to be sent by the modem. Yields
+					to other tasks while waiting for input.
+
+
+PARAMETER1:		A null-terminated string to listen for.
+PARAMETER2:		The maximum wait in milliseconds for a character
+
+RETURN VALUE:	1 if the expected string was received
+					0 if a timeout occured before receiving the string
+
+END DESCRIPTION **********************************************************/
+
+nodebug scofunc int CofModemExpect(char *expect_string, unsigned long timeout)
+{
+	auto int expect_length, match_position;
+	auto unsigned long t;
+	auto int received;
+
+	expect_length = strlen(expect_string);
+	match_position = 0;
+
+	while(match_position < expect_length)
+	{
+		t = _SET_TIMEOUT(timeout);
+		while((received = serCgetc()) < 0)
+		{
+			if(_CHK_TIMEOUT(t))
+				return 0;		//timed out
+			yield;
+		}
+		if(MODEM_DEBUG)
+		{
+			putchar(received); //DEBUG
+		}
+		if(received == expect_string[match_position])
+		{
+			match_position++;
+		}
+		else
+		{
+			match_position = 0; //no match, start over
+		}
+	}
+	return 1;
+}
+
+
+/*** BeginHeader ModemHangup */
+int ModemHangup();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ModemHangup                                 <MODEM.LIB>
+
+SYNTAX:		int ModemHangup();
+
+DESCRIPTION: 	Sends "ATH" and "ATZ" commands
+
+RETURN VALUE: 	1 - success
+					0 - modem not responding
+
+END DESCRIPTION **********************************************************/
+
+nodebug int ModemHangup()
+{
+	auto int i;
+	auto word t;
+
+	for(i = 0;i < 3;i++)
+	{
+		//force command mode
+		t = _SET_SHORT_TIMEOUT(1500);
+		while(!_CHK_SHORT_TIMEOUT(t)); //leading guard time
+		ModemSend("+++");
+		t = _SET_SHORT_TIMEOUT(1500);
+		while(!_CHK_SHORT_TIMEOUT(t)); //trailing guard time
+
+		ModemSend("ATH\r");
+		if(ModemExpect("OK", 5000))
+		{
+			ModemSend("ATZ\r");
+			if(ModemExpect("OK", 5000))
+			{
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+
+/*** BeginHeader CofModemHangup */
+scofunc int CofModemHangup();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+CofModemHangup                                 <MODEM.LIB>
+
+SYNTAX:		int CofModemHangup();
+
+DESCRIPTION: 	Sends "ATH" and "ATZ" commands. Yields to other tasks
+					while waiting for responses.
+
+RETURN VALUE: 	1 - success
+					0 - modem not responding
+
+END DESCRIPTION **********************************************************/
+
+nodebug scofunc int CofModemHangup()
+{
+	auto int i;
+	auto int status;
+
+	for(i = 0;i < 3;i++)
+	{
+		//force command mode
+		waitfor(DelayMs(1500));	//leading guard time
+		wfd { CofModemSend("+++"); }
+		waitfor(DelayMs(1500));
+
+		wfd { CofModemSend("ATH\r"); }
+		wfd { status = CofModemExpect("OK", 2000) }
+		if(status)
+		{
+			wfd { CofModemSend("ATZ\r"); }
+			wfd { status = CofModemExpect("OK", 2000); }
+			if(status)
+			{
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+
+/*** BeginHeader ModemClose */
+void ModemClose();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ModemClose                                 <MODEM.LIB>
+
+SYNTAX:		void ModemClose();
+
+DESCRIPTION: 	Closes the serial driver down
+
+
+END DESCRIPTION **********************************************************/
+
+nodebug void ModemClose()
+{
+	serCclose();
+}
+
+/*** BeginHeader ModemStartPPP */
+void ModemStartPPP();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ModemStartPPP                                 <MODEM.LIB>
+
+SYNTAX:		void ModemStartPPP();
+
+DESCRIPTION: 	Hands control of the serial line over to the PPP driver
+
+
+END DESCRIPTION **********************************************************/
+
+nodebug void ModemStartPPP()
+{
+	PPPinit(extmodem_baudrate);
+	PPPflowcontrolOn();
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

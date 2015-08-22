@@ -1,0 +1,4 @@
+
+reset:
+   "reset" will restore factory defaults to both
+   LED's being off.

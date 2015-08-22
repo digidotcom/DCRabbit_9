@@ -1,0 +1,650 @@
+/*****************************************************************************
+card_reader.lib
+ZWorld, 2002
+
+Note: This libarary uses the input capture hardware specific to the
+Rabbit 3000 chip. It will not work on a Rabbit 2000 product.
+
+This library reads data from card readeers that use the TTL interface with
+DATA and STROBE signals for each track. Uses input capture as a set
+of four external interrupts for the "card present" and strobe inputs
+
+Pinout for connection to card reader hardware:
+Note: Defineing the macro CR_USEPORTG changes these pins to use port G
+Rabbit	Card Reader
+PD1		/CARD PRESENT
+PD2		TRACK1 DATA
+PD3		TRACK1 STROBE
+PD4		TRACK2 DATA
+PD5		TRACK2 STROBE
+PD6		TRACK3 DATA
+PD7		TRACK3 STROBE
+
+Input Capture is configured with
+PD1 = Input Capture 1 Stop
+PD3 = Input Capture 1 Start
+PD5 = Input Capture 2 Stop
+PD7 = Input Capture 2 Start
+
+*****************************************************************************/
+
+/*** BeginHeader */
+
+/*** EndHeader */
+
+#ifndef CR_USEPORTG
+#define CR_USEPORTD
+#endif
+
+
+#if (CPU_ID_MASK(_CPU_ID_) < R3000)
+#warnt "The card reader library will only work on a Rabbit 3000 or later processor"
+#endif
+
+
+
+/*** BeginHeader CRinit */
+
+extern char cr_trackcount;
+extern char *cr_buffer_start[];
+extern char *cr_buffer_current[];
+extern char cr_buffer_size[];
+extern char cr_buffer_bytecount[];
+extern char cr_buffer_bitcount[];
+extern char cr_cardread_flag;
+
+void CRinit(int tracks);
+void cr_isr();
+
+
+char cr_debug;
+
+/*** EndHeader */
+
+char cr_trackcount; //global var for number of tracks to read
+char *cr_buffer_start[3];
+char *cr_buffer_current[3];
+char cr_buffer_size[3];
+char cr_buffer_bytecount[3];
+char cr_buffer_bitcount[3];
+char cr_cardread_flag;
+
+
+
+#asm root
+
+cr_isr_start::
+    call  cr_isr       ; 19
+    ret                 ; 8
+
+
+cr_isr::
+	 push	 af
+	 push	 bc
+	 push	 hl
+
+
+;ioi ld	 a, (ICCSR)   ;see what triggered
+	IOREAD_A(ICCSR)
+	 ld	 (cr_debug), a
+	 ld	 c, a
+	 and	 0x10			;check for card done
+	 jr	 z, cr_check_data
+	 xor	 a
+	 ld	 (cr_cardread_flag), a			;set flag to zero
+	 jr	 cr_isr_done
+
+cr_check_data:
+	 ld	 a, (cr_cardread_flag)
+	 or	 a
+	 jr	 z, cr_isr_done			;not ready to read
+#ifdef CR_USEPORTD
+;ioi ld	 a, (PDDR)
+	IOREAD_A(PDDR)
+#else
+;ioi ld	 a, (PGDR)
+	IOREAD_A(PGDR)
+#endif
+	 ld	 b, a		;hold input states in B
+	 ld	 a, c
+	 and	 0x20		;check strobe 1
+	 jr	 z, cr_check2
+	 call	 cr_strobe1
+cr_check2:
+	 ld	 a, (cr_trackcount)
+	 sub	 1
+	 jr	 z, cr_isr_done		;only one track
+	 ld	 a, c
+	 and	 0x40
+	 jr	 z, cr_check3
+	 call	 cr_strobe2
+cr_check3:
+	 ld	 a, (cr_trackcount)
+	 sub 	 2
+	 jr	 z, cr_isr_done		;only 2 tracks
+	 ld	 a, c
+	 and	 0x80
+	 jr	 z, cr_isr_done
+	 call	 cr_strobe3
+cr_isr_done:
+	 ipres
+	 pop	 hl
+	 pop	 bc
+	 pop	 af
+	 ret
+
+cr_strobe1:
+	 ld	 hl, (cr_buffer_current)
+	 ld	 a, (cr_buffer_bitcount)
+	 dec	 a
+	 jr	 nz, cr_newbit1
+	 inc	 hl
+	 ld	 (cr_buffer_current), hl		;move buffer pointer up one
+	 ld	 a, (cr_buffer_bytecount)
+	 dec	 a
+	 jr	 nz, cr_dec_count1
+	 ret									;no space left in buffer
+cr_dec_count1:
+	 ld	 (cr_buffer_bytecount), a
+	 ld	 a, 8							;reset bit count
+cr_newbit1:
+	 ld	 (cr_buffer_bitcount), a
+	 ld	 a, (hl)
+	 or	 a								;clear carry
+	 rra
+	 bit	 2, b							;read pin state(PD2 or PG2)
+	 jr	 nz, cr_reload1
+	 or	 0x80						;data low, 1 bit
+cr_reload1:
+	 ld	 (hl), a
+	 ret
+
+
+cr_strobe2:
+	 ld	 hl, (cr_buffer_current+2)
+	 ld	 a, (cr_buffer_bitcount+1)
+	 dec	 a
+	 jr	 nz, cr_newbit2
+	 inc	 hl
+	 ld	 (cr_buffer_current+2), hl		;move buffer pointer up one
+	 ld	 a, (cr_buffer_bytecount+1)
+	 dec	 a
+	 jr	 nz, cr_dec_count2
+	 ret									;no space left in buffer
+cr_dec_count2:
+	 ld	 (cr_buffer_bytecount+1), a
+	 ld	 a, 8							;reset bit count
+cr_newbit2:
+	 ld	 (cr_buffer_bitcount+1), a
+	 ld	 a, (hl)
+	 or	 a								;clear carry
+	 rra
+	 bit	 4, b							;read pin state(PD4 or PG4)
+	 jr	 nz, cr_reload2
+	 or	 0x80						;data low, 1 bit
+cr_reload2:
+	 ld	 (hl), a
+	 ret
+
+
+cr_strobe3:
+	 ld	 hl, (cr_buffer_current+4)
+	 ld	 a, (cr_buffer_bitcount+2)
+	 dec	 a
+	 jr	 nz, cr_newbit3
+	 inc	 hl
+	 ld	 (cr_buffer_current+4), hl		;move buffer pointer up one
+	 ld	 a, (cr_buffer_bytecount+2)
+	 dec	 a
+	 jr	 nz, cr_dec_count3
+	 ret									;no space left in buffer
+cr_dec_count3:
+	 ld	 (cr_buffer_bytecount+2), a
+	 ld	 a, 8							;reset bit count
+cr_newbit3:
+	 ld	 (cr_buffer_bitcount+2), a
+	 ld	 a, (hl)
+	 or	 a								;clear carry
+	 rra
+	 bit	 6, b							;read pin state(PD6 or PG6)
+	 jr	 nz, cr_reload3
+	 or	 0x80						;data low, 1 bit
+cr_reload3:
+	 ld	 (hl), a
+	 ret
+
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+CRinit                  <CARD_READER.LIB>
+
+SYNTAX:		   void CRinit(int tracks);
+
+DESCRIPTION:   Initializes the card reader ISR
+
+PARAMETER1:		tracks - The number of tracks (1 to 3) on the card reader
+						hardware
+
+END DESCRIPTION **********************************************************/
+
+
+void CRinit(int tracks)
+{
+	int i;
+
+	cr_trackcount = tracks;
+	cr_cardread_flag = 0;
+	for(i=0;i < 3;i++)
+	{
+		cr_buffer_start[i] = NULL;
+		cr_buffer_current[i] = NULL;
+	}
+
+	printf("set vector to 0x%x\n", SetVectIntern(0x1A, cr_isr));
+
+
+#ifdef CR_USEPORTD
+	//trigger on PD1(IC1 Stop), PD3(IC1 Start)
+	WrPortI(ICS1R, NULL, 0x54);
+	if(tracks > 1)
+	{
+		//trigger on PD5(IC2 Stop), PD7(IC2 Start)
+		WrPortI(ICS2R, NULL, 0x76);
+	}
+#else
+	//trigger on PG1(IC1 Stop), PG3(IC1 Start)
+	WrPortI(ICS1R, NULL, 0xDC);
+	if(tracks > 1)
+	{
+		//trigger on PG5(IC2 Stop), PG7(IC2 Start)
+		WrPortI(ICS2R, NULL, 0xFE);
+	}
+#endif
+	//PD1(card present) triggers on rising edge)
+	//PD3(STROBE1) triggers on falling edge
+	WrPortI(ICT1R, NULL, 0x09);
+	if(tracks == 1)
+	{
+		//set to trigger on channel 1 only
+		WrPortI(ICCSR, &ICCSRShadow, 0x30);
+	}
+	else
+	{
+		//strobe 2(PD5) and 3(PD7) trigger on falling edge
+		WrPortI(ICT2R, NULL, 0x0A);
+		//all IC inputs trigger interrupt
+		WrPortI(ICCSR, &ICCSRShadow, 0xF0);
+	}
+
+#ifndef CR_IPLEVEL
+	WrPortI(ICCR, &ICCRShadow, 0x01); //IP 1
+#else
+	WrPortI(ICCR, &ICCRShadow, CR_IPLEVEL);
+#endif
+
+
+}
+
+
+/*** BeginHeader CRsetBuffer */
+void CRsetBuffer(int track, char *buffer, int len);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+CRsetBuffer                  <CARD_READER.LIB>
+
+SYNTAX:		   void CRsetBuffer(int track, char *buffer, int len);
+
+DESCRIPTION:   Associates a user-suppied receive buffer with one of
+					the tracks used. Each track must have a buffer set before
+					CRstartRead is called.
+
+PARAMETER1:		track - the track number (1-3) this buffer is for
+PARAMETER2:		buffer - a byte array to hold the bits read
+PARAMETER3:		len - the size of the buffer provided
+
+END DESCRIPTION **********************************************************/
+
+void CRsetBuffer(int track, char *buffer, int len)
+{
+	cr_buffer_start[track] = buffer;
+	cr_buffer_size[track] = len;
+}
+
+/*** BeginHeader CRstartRead */
+void CRstartRead();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+CRstartRead                  <CARD_READER.LIB>
+
+SYNTAX:		   void CRstartRead();
+
+DESCRIPTION:   Prepares to read the next card swipe. The read buffers
+					can be written to by the ISR after this is called and
+					they should be considered 'in use' until CRcheckRead()
+					(see below) returns 1.
+
+END DESCRIPTION **********************************************************/
+
+void CRstartRead()
+{
+	int i;
+	for(i = 0;i < cr_trackcount;i++)
+	{
+		cr_buffer_current[i] = cr_buffer_start[i];
+		cr_buffer_bytecount[i] = cr_buffer_size[i];
+		cr_buffer_bitcount[i] = 8;
+	}
+	cr_cardread_flag = 1;	//set to read next card swipe
+}
+
+/*** BeginHeader CRcheckRead */
+int CRcheckRead();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+CRcheckRead                  <CARD_READER.LIB>
+
+SYNTAX:		   int CRcheckRead();
+
+DESCRIPTION:   Indicates if a card read has been completed. If so,
+					CRgetBuffer() (see below) should be used to determine how
+					many bits were read from each track.
+
+RETURN VALUE:	1 - read operation completed
+					0 - still waiting for read
+
+END DESCRIPTION **********************************************************/
+
+int CRcheckRead()
+{
+	if(cr_cardread_flag)
+	{
+		return 0; //still waiting for a card
+	}
+	else
+	{
+		return 1; //read a card
+	}
+}
+
+/*** BeginHeader CRgetBuffer */
+int CRgetBuffer(int track, char **track_buffer);
+int CRalphaDecode(char *bits, int len, char *result_buf);
+int CRbcdDecode(char *bits, int len, char *result_buf);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+CRgetBuffer                  <CARD_READER.LIB>
+
+SYNTAX:		   int CRgetBuffer(int track, char **track_buffer);
+
+DESCRIPTION:   After a card is read, this function returns the number
+					of bits(not bytes) read into the buffer for a track. The
+					bits are arranged in the buffer with the first bit read as
+					the LSB of the first byte. e.g.
+						byte1		byte2		  byte3    byte4
+					 01234567  01234567  01234567  01234567
+					 bbbbbbbb  bbbbbbbb  bbbbbbbb  bbb.....
+
+PARAMETER1:		track - the track to get data from
+PARAMETER2:		track_buffer - address of a char pointer variable. If this
+					is a non-null address, the pointer will be set to the
+					read buffer for the specified track.
+
+RETURN VALUE:	number of BITS read from the specified track
+
+END DESCRIPTION **********************************************************/
+
+int CRgetBuffer(int track, char **track_buffer)
+{
+
+	if(cr_buffer_start[track])
+	{
+		if(cr_buffer_bitcount[track] < 8)
+		{
+			//shift bits
+			*cr_buffer_current[track] =
+				*cr_buffer_current[track] >> (8 - cr_buffer_bitcount[track]);
+		}
+		if(track_buffer)
+		{
+			*track_buffer = cr_buffer_start[track];
+		}
+		return 8*(cr_buffer_size[track] - cr_buffer_bytecount[track]) +
+														(8 - cr_buffer_bitcount[track]);
+	}
+	else
+	{
+		return 0; //no buffer
+	}
+}
+
+//internal helper function
+//grab a set of bits(8 or less)
+//store in char, read LSB first
+//sets parity flag (even=0, odd=1)
+char bit_slice(char *bits, int pos, int len, int *parity)
+{
+	char result, mask, result_mask;
+	int i, one_count;
+
+	result = 0;
+	result_mask = 0x01;
+	one_count = 0;
+	mask = 0x01 << (pos%8);
+	for(i = pos;i < pos + len;i++)
+	{
+		if(bits[i/8] & mask)
+		{
+			result |= result_mask;
+			one_count++;
+		}
+		if(mask == 0x80)
+		{
+			mask = 0x01;
+		}
+		else
+		{
+			mask = mask << 1;
+		}
+		result_mask = result_mask << 1;
+	}
+	*parity = one_count%2;
+	return result;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+CRalphaDecode                  <CARD_READER.LIB>
+
+SYNTAX:		   int CRalphaDecode(char *bits, int len, char *result_buf);
+
+DESCRIPTION:   Attempts to decode bits read from a card into ASCII data
+					using the standard for ASCII data: 6 data + 1 parity bit
+					per character. Looks for start and end sentinel characters,
+					but does not include them in the result buffer. Checks
+					parity and LRC.
+
+PARAMETER1:		bits - array of raw bits from a card read. The read buffer
+							for a track can be uses 'as is' here.
+PARAMETER2:		len - size (in bits) of the read data
+PARAMETER3:		result_buf - a craracter array that will be filled with a
+									null-terminated string containing the decoded
+									data.
+
+RETURN VALUE:	1 - the raw data is in ASCII format, the decoded string
+						has been loaded into result_buf
+					0 - the data either has errors or is not ASCII format
+
+END DESCRIPTION **********************************************************/
+
+int CRalphaDecode(char *bits, int len, char *result_buf)
+{
+	int start_bit, bit_pos, result_pos;
+	int i, parity_flag, lrc;
+	char mask;
+	char alpha_ch;
+
+	//find the first one bit
+	start_bit = -1;
+	for(i = 0;i < len/8;i++)
+	{
+		if(bits[i])
+		{
+			start_bit = i*8;
+			mask = 0x01;
+			while((mask & bits[i]) == 0)
+			{
+				start_bit++;
+				mask = mask << 1;
+			}
+			break;
+		}
+	}
+	if(start_bit < 0)
+	{
+		return 0; //all zeros, not ANSI data
+	}
+	alpha_ch = bit_slice(bits, start_bit, 7, &parity_flag);
+	if(!parity_flag)
+	{
+		return 0; //bad parity
+	}
+	alpha_ch &= 0x3f;
+	lrc = alpha_ch;
+	alpha_ch += 0x20;
+	if(alpha_ch != '%')
+	{
+		return 0; //not ALPHA encoding start sentinel
+	}
+	bit_pos = start_bit+7;
+	result_pos = 0;
+	lrc = alpha_ch - 0x20;
+	while(bit_pos < len - 6)
+	{
+		alpha_ch = bit_slice(bits, bit_pos, 7, &parity_flag);
+		if(!parity_flag)
+		{
+			return 0; //bad parity
+		}
+		alpha_ch &= 0x3f;
+		lrc ^= alpha_ch;
+		alpha_ch += 0x20; //convert to ASCII
+		if(alpha_ch == '?')
+		{
+			//got End Sentinel
+			if(lrc == bit_slice(bits, bit_pos+7, 6, &parity_flag))
+			{
+				result_buf[result_pos] = 0; //NULL terminator
+				return 1;
+			}
+			else
+			{
+				return 0; //LRC failed
+			}
+		}
+		else
+		{
+			result_buf[result_pos] = alpha_ch;
+			result_pos++;
+			bit_pos += 7;
+		}
+	}
+	return 0; //no end sentinel found
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+CRbcdDecode                  <CARD_READER.LIB>
+
+SYNTAX:		   int CRbcdDecode(char *bits, int len, char *result_buf);
+
+DESCRIPTION:   Attempts to decode bits read from a card into BCD data
+					i.e. 4 data + 1 parity bit per digit. Looks for start and
+					end sentinel characters, but does not include them in the
+					result buffer. Field seperators are included as their ASCII
+					equivelant '='. Checks parity and LRC.
+
+PARAMETER1:		bits - array of raw bits from a card read. The read buffer
+							for a track can be uses 'as is' here.
+PARAMETER2:		len - size (in bits) of the read data
+PARAMETER3:		result_buf - a craracter array that will be filled with a
+									null-terminated string containing the decoded
+									data.
+
+RETURN VALUE:	1 - the raw data is in ASCII format, the decoded string
+						has been loaded into result_buf
+					0 - the data either has errors or is not in BCD format
+
+END DESCRIPTION **********************************************************/
+
+int CRbcdDecode(char *bits, int len, char *result_buf)
+{
+	int start_bit, bit_pos, result_pos;
+	int i, parity_flag, lrc;
+	char mask;
+	char bcd_ch;
+
+	//find the first one bit
+	start_bit = -1;
+	for(i = 0;i < len/8;i++)
+	{
+		if(bits[i])
+		{
+			start_bit = i*8;
+			mask = 0x01;
+			while((mask & bits[i]) == 0)
+			{
+				start_bit++;
+				mask = mask << 1;
+			}
+			break;
+		}
+	}
+	if(start_bit < 0)
+	{
+		return 0; //all zeros, not BCD
+	}
+	bcd_ch = bit_slice(bits, start_bit, 5, &parity_flag);
+	if(bcd_ch != 0x0B)
+	{
+		return 0; //not a BCD start
+	}
+	bit_pos = start_bit+5;
+	lrc = bcd_ch;
+	result_pos = 0;
+	while(bit_pos < len - 4)
+	{
+		bcd_ch = bit_slice(bits, bit_pos, 5, &parity_flag);
+		if(!parity_flag)
+		{
+			return 0; //bad parity
+		}
+		bcd_ch &= 0x0f; //strip parity bit
+		lrc ^= bcd_ch;
+		if(bcd_ch == 0x0F)
+		{
+			//got end sentinel
+			if(lrc == bit_slice(bits, bit_pos+5, 4, &parity_flag))
+			{
+				result_buf[result_pos] = 0; //terminate string
+				return 1;
+			}
+			else
+			{
+				return 0; //LRC failed
+			}
+		}
+		else
+		{
+			result_buf[result_pos] = '0' + bcd_ch;
+			result_pos++;
+			bit_pos += 5;
+		}
+	}
+	return 0; //did not find end sentinel
+}
+
+
+
+

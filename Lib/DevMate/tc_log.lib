@@ -1,0 +1,69 @@
+/* tc_log.lib.
+ * There must not be any executable code in this library.  It is only
+ * structure definitions for logging over XTC.  These structures
+ * (in their little-endian order) are sent over the wire.
+ */
+
+/* START LIBRARY DESCRIPTION *********************************************
+TC_LOG.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains structure and object definitions which are
+   common to the DeviceMate and target processors.  TC_LOG.LIB is
+   automatically included by DM_LOG.LIB and TARGETPROC_LOG.LIB.
+   In turn, this library includes TC_XTC.LIB since logging uses
+   XTC as the transport.
+
+PORTING NOTE:
+   For non-Rabbit target processors with an ANSI C compiler, there is
+   an equivalent .h file in the LIB\Target subdirectory.
+
+   The structures defined herein are designed to align and pack
+   the same way on most architectures.  Specifically, 16-bit values
+   always start on even offsets, and 32-bit values start on multiple-
+   of-4 offsets.  All structures' total length is a multiple of the
+   size of their largest field, avoiding padding.  This is important,
+   since the structures are sent on the wire.  The main incompatibility
+   is one of byte ordering.  On the wire, little-endian ordering is
+   used.  This is no issue for Intel-derived processors, however most
+   other processors (e.g. Motorola, Sparc, ARM, IBM mainframe (!))
+   use big-endian byte ordering.  Such processors will need to perform
+   byte-swapping on the structures defined here before transmitting
+   them.
+
+END DESCRIPTION **********************************************************/
+ 
+/*** BeginHeader */
+#ifndef TC_LOG_H
+#define TC_LOG_H
+
+#ifndef TC_XTC_H
+	#use "tc_xtc.lib"
+#endif
+
+
+
+// Log message format.  Messages are sent sequentially on the XTC
+// channel.  The start of a log message is the total message length,
+// which allows the start of the next message to be determined.
+typedef struct
+{
+	uint8		delim;	// Message delimiter.  Only needed as a "sanity check".  The
+							// four MSBs must be '1101', the 4 LSBs are reserved for
+							// future use (currently zeros).
+#define DEVMATE_LOG_DELIM	0xD0
+
+	uint8		length;	// Length of "msg", plus 3
+	uint8		facpri;	// Facility (high 5) and priority (low 3)
+	uint8		fmt;		// Format flag
+	/*
+	char		msg[115];// Message string.  Only the first (length-3) bytes
+							// of the message are actually transmitted in the stream.
+	*/
+} TCLogMsg;
+
+
+
+#endif
+/*** EndHeader */

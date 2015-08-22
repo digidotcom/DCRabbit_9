@@ -1,0 +1,373 @@
+/*** BeginHeader */
+#ifndef __PROGRAM_LIB
+#define __PROGRAM_LIB
+#ifndef _program_debug
+#define _program_debug nodebug
+#endif
+/*** EndHeader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+PROGRAM.LIB
+	Copyright (c) 1999, ZWorld.
+
+DESCRIPTION:  This library must be used when the program is compiled (as
+opposed to when the BIOS is compiled).  This would also be a
+reasonable place to put program libraries.
+
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+
+
+
+/* START FUNCTION DESCRIPTION **************************************************
+premain							<PROGRAM.LIB>
+
+SYNTAX:	void premain();
+
+DESCRIPTION:	Dynamic C first calls premain to start initialization functions
+such as VdInit.  The last thing premain should do is call main.
+
+
+RETURN VALUE:	none.
+
+SEE ALSO:		main
+END DESCRIPTION ***************************************************************/
+
+/*** BeginHeader _copysysstack */
+__lcall__ void _copysysstack();
+/*** EndHeader */
+
+#asm
+_copysysstack::
+	;; lcall function does not need to save xpc
+   ;; Normalize address from DXXX to EXXX
+   ld de, (__initial_stack)
+   ld a, d
+   and 0x0f
+   or 0xe0
+   ld d, a
+   ;; subtract 1 from XPC part of address to account for D to E adjustment
+   ld a, (__initial_stack+2)
+   dec a
+   ld xpc, a
+   ; load 19 into hl and bc (16 + 3 for call to this function)
+   or a	; clear carry
+	ld hl, 0xdfff	; 3 more than the the high stack position (accounts for return addres on stack)
+   sbc hl, sp
+	ld b, h
+   ld c, l
+   ; load the current stack (+16) into hl
+	add hl, sp
+   ; now copy
+   lddr
+   ld a, d
+   and 0x0f
+   or 0xd0
+   ld d, a
+   inc de
+   inc de
+   inc de
+   ld (__initial_stack), de
+	lret
+#endasm
+
+/*** BeginHeader __initial_stack */
+extern long __initial_stack;
+/*** EndHeader */
+
+long __initial_stack;
+
+/*** BeginHeader premain */
+root void premain(void);
+// dummy equate insures that premain is always compiled
+#asm
+dummypremain: equ premain
+#endasm
+/*** EndHeader */
+//#use serdiag.lib
+
+
+void _init_bad_interrupts(void);
+
+#ifdef DCRTCP
+	#ifndef MCOS
+		#define DEFAULTSTACKSIZE 0x1000
+	#else
+		#define DEFAULTSTACKSIZE 0x200
+	#endif
+#else
+	#ifndef MCOS
+		#define DEFAULTSTACKSIZE 0x1000
+	#else
+   	#define DEFAULTSTACKSIZE 0x200
+	#endif
+#endif
+
+_program_debug
+root
+void premain()
+{
+	/* WARNING: Local vdariables in premain should be static due
+	   to the fact that premain switches between the BIOS
+	   and program stacks. */
+
+//---------------------------------------
+// R A B B I T S Y S   U S E R - M O D E
+//---------------------------------------
+#if _USER
+	char opmode;
+   unsigned long idblkaddr;
+
+   dkInBiosStack = 0;
+	#asm
+   	bool	hl
+      ld		l,h
+   	add	hl,sp
+      ld		(dkInitStkTop),hl
+      #ifdef MCOS
+         xor   a
+         ld    (OSRunning),a
+         ld    (dkOSRunning),a
+         ld    (dkPrologCount),a
+         bool  hl
+         ld    l,h
+         ld    (OSTCBCur),hl
+         ld    (dkLastTCB),hl
+         ld    (dkDbgTCB),hl
+      #endif
+	#endasm
+	bios_intnesting = 0;
+	_sys_defineErrorHandler(_dkxexit);
+
+	_sys_io_perm_mode(SHADOWS_MODE);
+	_init_xalloc();
+
+	#pragma nowarn warnt 		 // Supress warning for missing prototype
+	_GLOBAL_INIT();             // trigger the function blocks
+
+	//register these timer variables for use with network
+	//timing macros.
+	_sys_init_mstimer(&MS_TIMER, &SEC_TIMER, &TICK_TIMER);
+
+	//get values for for previous BIOS variables
+	freq_divider = _sys_get_freq_divider();
+
+   //copy system's copy of System ID block
+   memcpy(&SysIDBlock, _sys_getidblock(&idblkaddr), sizeof(SysIDBlock));
+
+   //initialize stack allocation for user programs
+   _Init_Stacks();
+
+	__initial_stack = _Alloc_Stack(DEFAULTSTACKSIZE);
+	if(!__initial_stack) {
+		exception(-ERR_BADSTACKALLOC);
+		exit(-ERR_BADSTACKALLOC);
+	}
+	else
+	{
+   #if DK_ENABLE_DEBUGKERNEL
+   	_copysysstack();
+   #endif
+		//The top paragraph (0x10) is the boundary
+		_sys_stack_switch(__initial_stack);
+	}
+
+   //initialize virtual watchdogs
+	VdInit();
+
+	main();
+
+   // Does not return.
+   _sys_get_opmode(&opmode);
+	if(!(opmode & 0x8)) {
+      _sys_mon_rt_error(_SYS_PROGRAM_ENDED);
+   }
+
+#endif //rabbitsys user premain()
+
+//---------------------------------------
+// N O N - R A B B I T S Y S   M O D E
+//---------------------------------------
+#if __RABBITSYS==0
+	dkInBiosStack = 0;
+	#asm
+   	bool	hl
+      ld		l,h
+   	add	hl,sp
+      ld		(dkInitStkTop),hl
+      #ifdef MCOS
+         xor   a
+         ld    (OSRunning),a
+         ld    (dkOSRunning),a
+         ld    (dkPrologCount),a
+         bool  hl
+         ld    l,h
+         ld    (OSTCBCur),hl
+         ld    (dkLastTCB),hl
+         ld    (dkDbgTCB),hl
+      #endif
+	#endasm
+	bios_intnesting = 0;
+   _init_bad_interrupts();
+	_init_xalloc();
+
+	#pragma nowarn warnt 		 // Supress warning for missing prototype
+	_GLOBAL_INIT();             // trigger the function blocks
+   //initialize stack allocation for user programs
+   _Init_Stacks();
+   	__initial_stack = _Alloc_Stack(DEFAULTSTACKSIZE);
+	if(!__initial_stack) {
+		exception(-ERR_BADSTACKALLOC);
+		exit(-ERR_BADSTACKALLOC);
+	}
+	_ProgStkSwitch(__initial_stack);
+   dkInitStkTop = (int)__initial_stack;
+
+   //initialize virtual watchdogs, the secondary watchdog, and
+   //the periodic ISR.
+	VdInit();
+
+   #ifdef PORTA_AUX_IO
+      #if (CPU_ID_MASK(_CPU_ID_) < R3000)
+         #error "The AUX IO bus is only available on the R3000."
+      #endif
+
+      #asm
+         ld    a,(SPCRShadow)             ; change to the aux I/O bus
+         or    a,0x0c
+         ld    (SPCRShadow),a
+         ioi   ld    (SPCR),a
+      #endasm
+   #endif   // PORTA_AUX_IO
+
+	main();
+
+	_BiosStkSwitch();
+
+	if(!_Dealloc_Stack(__initial_stack))
+	{
+		exception(ERR_BADSTACKDEALLOC);
+		exit(ERR_BADSTACKDEALLOC);
+	}
+#endif //non-rabbitsys premain()
+}
+
+
+/*** BeginHeader _init_bad_interrupts */
+void _init_bad_interrupts(void);
+/*** EndHeader */
+// _init_bad_interrupts()
+//
+// Set all interrupt vectors NOT already set by the BIOS
+//	to default "unexpected interrupt" handler.  Note:  we
+// also skip over the periodic interrupt vector since it
+// may still be running from a previous program...
+#if !_USER
+// ld		hl,ERR
+// jp    _unexp_interrupt
+#define UEI(BASE, OFS, ERR)   push ip					$\
+										ipset 3              $\
+										ld (BASE+OFS),bc		$\
+										ld	de,ERR				$\
+										ld (BASE+OFS+1),de	$\
+                        		ld	(BASE+OFS+3),a		$\
+                        		ld	(BASE+OFS+4),hl   $\
+                              pop ip
+
+#asm
+_init_bad_interrupts::
+
+	call	_disable_peripheral_interrupts
+
+	ld		hl,SBCR
+   push	hl
+   ld		hl,SBCRShadow
+   push	hl
+   call	_disable_serial_interrupt
+   add	sp,4
+
+	ld		hl,SCCR
+   push	hl
+   ld		hl,SCCRShadow
+   push	hl
+   call	_disable_serial_interrupt
+   add	sp,4
+
+	ld		hl,SDCR
+   push	hl
+   ld		hl,SDCRShadow
+   push	hl
+   call	_disable_serial_interrupt
+   add	sp,4
+
+	ld		a, 0xC3						;jp opcode
+	ld		hl, _unexp_interrupt
+	ld		bc, 0x21						;ld hl,mn opcode
+	; skip the periodic interrupt
+   ; skip the secondary watchdoe interrupt
+	UEI(INTVEC_BASE, RST10_OFS, -ERR_UNEXPECTEDRST10)
+	; skip the RST 18h, 20h, 28h interrupts
+#if !__RABBITSYS
+	#if (_CPU_ID_ >= R3000_R1)
+	UEI(INTVEC_BASE, SYSCALL_OFS, -ERR_UNEXPECTEDSYSCALL)
+   #endif
+#endif
+	UEI(INTVEC_BASE, RST38_OFS, -ERR_UNEXPECTEDRST38)
+	UEI(INTVEC_BASE, SLAVE_OFS, -ERR_UNEXPECTEDSLAVE)
+#if !__RABBITSYS
+	#if (_CPU_ID_ >= R3000_R1)
+	UEI(INTVEC_BASE, WPV_OFS, -ERR_UNEXPECTEDWPV)
+   #endif
+#endif
+	UEI(INTVEC_BASE, TIMERA_OFS, -ERR_UNEXPECTEDTIMERA)
+	UEI(INTVEC_BASE, TIMERB_OFS, -ERR_UNEXPECTEDTIMERB)
+	; skip the serial port A interrupt
+	UEI(INTVEC_BASE, SERB_OFS, -ERR_UNEXPECTEDSERIALB)
+	UEI(INTVEC_BASE, SERC_OFS, -ERR_UNEXPECTEDSERIALC)
+	UEI(INTVEC_BASE, SERD_OFS, -ERR_UNEXPECTEDSERIALD)
+	; now do external interrupts
+	UEI(XINTVEC_BASE, EXT0_OFS, -ERR_UNEXPECTEDEXT0)
+	UEI(XINTVEC_BASE, EXT1_OFS, -ERR_UNEXPECTEDEXT1)
+
+#if (CPU_ID_MASK(_CPU_ID_) >= R3000)
+	; Rabbit 3000-specific interrupts
+	UEI(INTVEC_BASE, PWM_OFS,  -ERR_UNEXPECTEDPWM)
+#if !__RABBITSYS
+	UEI(INTVEC_BASE, SMV_OFS, -ERR_UNEXPECTEDSMV)
+#endif
+	UEI(INTVEC_BASE, QUAD_OFS, -ERR_UNEXPECTEDQUAD)
+	UEI(INTVEC_BASE, INPUTCAP_OFS, -ERR_UNEXPECTEDINPUTCAP)
+#if !__RABBITSYS
+	#if (_CPU_ID_ >= R3000_R1)
+	UEI(INTVEC_BASE, SLV_OFS, -ERR_UNEXPECTEDSSLV)
+   #endif
+#endif
+	ld		hl,SECR
+   push	hl
+   ld		hl,SECRShadow
+   push	hl
+   call	_disable_serial_interrupt
+   add	sp,4
+
+	ld		hl,SFCR
+   push	hl
+   ld		hl,SFCRShadow
+   push	hl
+   call	_disable_serial_interrupt
+   add	sp,4
+
+	ld		a, 0xC3						;jp opcode
+	ld		hl, _unexp_interrupt
+
+	UEI(INTVEC_BASE, SERE_OFS, -ERR_UNEXPECTEDSERIALE)
+	UEI(INTVEC_BASE, SERF_OFS, -ERR_UNEXPECTEDSERIALF)
+#endif
+	ret
+#endasm
+#endif //!_USER
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

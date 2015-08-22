@@ -1,0 +1,743 @@
+/* START LIBRARY DESCRIPTION *********************************************
+DM_VAR.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains target-side routines for communication with a
+   DeviceMate processor.  This API allows updating variables on the
+   DeviceMate, which is particularly useful for dynamic content on a
+   web server on the DeviceMate.
+
+PORTING NOTE:
+   For non-Rabbit target processors with an ANSI C compiler, there are
+   equivalent .c and .h files in the LIB\Target subdirectory.
+
+CONFIGURATION MACROS:
+	The following macros may be defined before inclusion of this library.
+	Note that the macro defaults are located in TC_CONF.LIB, and not this
+	library.  Instead of defining the macros in your program, you can
+	change them in TC_CONF.LIB.
+
+	DEVMATE_VAR_MAXVARS
+		Defaults to 10.  Specifies the number of variables for which the
+		target processor will keep information.  Hence, this limits the
+		number of variables that you can add.  Note that the DeviceMate may
+		not accept as many variables as specified here.  See
+		TARGETPROC_VAR.LIB for more information.
+
+	DEVMATE_VAR_MAXNAME
+		Defaults to 8.  This defines the maximum length of a variable name,
+		including the null terminator.
+
+	DEVMATE_VAR_MAXFORMAT
+		Defaults to 8.  This defines the maximum length of the printf-
+		style format specifier for a variable, including the null
+		terminator.
+
+	DEVMATE_VAR_MAXDATA
+		Defaults to 32.  This defines the maximum length of the data
+		(or contents) for a variable.
+
+	DEVMATE_VAR_DEBUG
+		Is not defined by default.  If defined, then debugging information
+		will be output as the program executes.
+
+	DEVMATE_VAR_NUMRXBUFS
+	   Defaults to 2.  Specifies the number of target communications
+	   receive buffers.  A higher number allows greater performance, at
+	   the expense of additional memory usage.
+
+	DEVMATE_VAR_NUMTXBUFS
+	   Defaults to 1.  Specifies the number of target communications
+	   transmit buffers.  Do not set higher than 2.  2 is only necessary
+	   if the highest possible speed is required.
+
+	DEVMATE_VAR_TCBUFSIZE
+		Defaults to 133, which allows for 128-byte data packets plus the
+		5-byte XTC header.
+
+	DEVMATE_VAR_XTCBUFSIZE
+		Defaults to 133.  Must be greater than or egual to
+		DEVMATE_VAR_TCBUFSIZE-5.
+
+GLOBAL VARIABLES:
+	_VarState _varstate;
+		One instance of this structure contains all necessary state
+		information for the DeviceMate variable protocol support.  Note
+		that it contains a pointer to a memory region in xmem to hold
+		variable information.
+
+API FUNCTIONS:
+	The API functions allow the user to queue adding a variable or
+	performing a variable update.  The user may also check the status
+	of a variable (for instance, to determine if the variable has been
+	added successfully).
+
+	The following API functions are available:
+		devmate_var_add
+		devmate_var_update
+		devmate_var_check_status
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#ifndef __DM_VAR_LIB
+#define __DM_VAR_LIB
+/*** EndHeader */
+
+/*** BeginHeader _varstate */
+#ifndef DEVMATE_XTC_H
+	#use "dm_xtc.lib"
+#endif
+
+#use "tc_var.lib"
+
+#define DEVMATE_VAR_STATUS_OK						0
+#define DEVMATE_VAR_STATUS_UPDATE_PENDING		1
+#define DEVMATE_VAR_STATUS_UPDATE_SENT			2
+#define DEVMATE_VAR_STATUS_ERROR_FULL			3
+#define DEVMATE_VAR_STATUS_ERROR_MISC			4
+#define DEVMATE_VAR_STATUS_BAD_VARIABLE		5
+
+typedef struct {
+	uint16 status;
+	char name[DEVMATE_VAR_MAXNAME];
+	uint16 type;
+	void* data;
+	char format[DEVMATE_VAR_MAXFORMAT];
+	uint16 maxvarlen;
+	uint16 servermask;
+} _var_info;
+
+#ifdef DEVMATE_VAR_DEBUG
+/* pull in the debug string */
+const char _devmate_var_dbgmsg[] = "devmate_var: ";
+#endif
+
+#ifdef DEVMATE_VAR_DEBUG
+	#define var_nodebug
+#else
+	#ifdef __DC__
+		#define var_nodebug nodebug
+	#else
+		#define var_nodebug
+	#endif
+#endif
+
+#define VAR_SERVER_HTTP			0x01
+#define VAR_SERVER_FTP			0x02
+#define VAR_SERVER_USER			0x04
+
+#define VAR_UINT8					 1
+#define VAR_INT16					 2
+#define VAR_STRING				 3
+#define VAR_INT32					 4
+#define VAR_FLOAT32				 5
+
+typedef struct {
+	XTCApp app;
+	XTCChan chans[1];
+
+	int state;
+	faraddr_t table;
+	int total;
+	int update_pending;
+	int update_sent;
+	int rr;	// Holds the round-robin position
+#ifdef TC_LOCKING
+	TC_LOCKTYPE lock;
+#endif
+} _VarState;
+
+#define _TC_VAR_MAKEREADY			0
+#define _TC_VAR_OPENING				1
+#define _TC_VAR_READY				2
+#define _TC_VAR_SENDING_HDR		3
+#define _TC_VAR_SENDING				4
+#define _TC_VAR_GETRESPONSE_HDR	5
+#define _TC_VAR_GETRESPONSE		6
+#define _TC_VAR_ERROR				99
+
+extern _VarState _varstate;
+
+/*** EndHeader */
+
+_VarState _varstate;
+
+/*** BeginHeader _devmate_var_init */
+void _devmate_var_init(void);
+#funcchain __devmate_xtc_init _devmate_var_init
+/*** EndHeader */
+
+var_nodebug
+void _devmate_var_init(void)
+{
+	auto int retval;
+	static int init;
+
+	#GLOBAL_INIT { init = 0; }
+
+	if (init == 0) {
+		_varstate.table = xalloc(DEVMATE_VAR_MAXVARS * sizeof(_var_info));
+#ifdef TC_LOCKING
+		/* Get a lock */
+		_varstate.lock = TC_CREATELOCK();
+#endif
+		init = 1;
+	}
+	
+	_varstate.app.appno = TC_TYPE_VAR;
+	_varstate.app.numchans = 1;
+	_varstate.app.chans = _varstate.chans;
+	_varstate.app.txbufsize = DEVMATE_VAR_TCBUFSIZE;
+	_varstate.app.rxbufsize = DEVMATE_VAR_TCBUFSIZE;
+	if (retval = devmate_xtc_register(&_varstate.app, DEVMATE_VAR_XTCBUFSIZE,
+	                                  DEVMATE_VAR_XTCBUFSIZE)) {
+#ifdef DEVMATE_VAR_DEBUG
+		printf("%sinit: devmate_xtc_register failed with %d!\n", _devmate_var_dbgmsg,
+		       retval);
+#endif
+		exit (TC_TYPE_VAR);
+	}
+	_varstate.app.numtxbufs = DEVMATE_VAR_NUMTXBUFS;
+	_varstate.app.numrxbufs = DEVMATE_VAR_NUMRXBUFS;
+	_varstate.app.aflags = XTC_AF_CONTROL;	// listen on channel 0 automatically
+	_varstate.app.tc_handler = NULL;
+	_varstate.app.reqpacing = 0;
+
+	_varstate.state = _TC_VAR_MAKEREADY;
+	_varstate.total = 0;
+	_varstate.update_pending = 0;
+	_varstate.update_sent = 0;
+	_varstate.rr = 0;
+}
+
+/*** BeginHeader devmate_var_add */
+int devmate_var_add(char* name, void* variable, uint16 type, char* format,
+                    uint16 maxvarlen, uint16 servermask);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_var_add                  <DM_VAR.LIB>
+
+SYNTAX: int devmate_var_add(char* name, void* variable, uint16 type,
+                            char* format, uint16 maxvarlen, uint16 flags)
+
+KEYWORDS:      DeviceMate
+
+DESCRIPTION:   Add a variable entry to be sent to the DeviceMate.  The
+					variable is queued for transmission to the DeviceMate.
+					The status of the addition can be checked with
+					devmate_var_check_status().
+
+PARAMETER1:		Name by which you wish to reference the variable
+PARAMETER2:		Address of the variable's contents
+PARAMETER3:		Type of the variable (VAR_UINT8, VAR_INT16, VAR_INT32,
+               VAR_FLOAT32, or VAR_STRING)
+PARAMETER4:		printf-style format specifier, which will be used to
+					display the variable in web pages
+PARAMETER5:		Maximum length of the variable's contents.  Only necessary
+					for PTR16-type variables (otherwise, maxvarlen is ignored)
+PARAMETER6:		Flags for this variable.  This can be SERVER_HTTP if this
+					variable is intended for web page display.
+
+RETURN VALUE:  0 if the variable addition request was successfully queued
+					1 if an error occurred (for instance, name too long, too
+					  many variables, etc.)
+
+SEE ALSO:      devmate_var_update, devmate_var_check_status
+
+END DESCRIPTION **********************************************************/
+
+var_nodebug
+int devmate_var_add(char* name, void* variable, uint16 type, char* format,
+                    uint16 maxvarlen, uint16 servermask)
+{
+	auto _var_info var;
+	auto int index;
+
+	TC_LOCK(_varstate.lock);
+
+	// Check for errors
+	if ((strlen(name) >= DEVMATE_VAR_MAXNAME) ||
+	    (strlen(format) >= DEVMATE_VAR_MAXFORMAT) ||
+	    (_varstate.total >= DEVMATE_VAR_MAXVARS)) {
+		TC_UNLOCK(_varstate.lock);
+		return (1);
+	}
+
+	// Find the entry
+	index = _devmate_var_find(name);
+	if (index >= 0) {
+		TC_UNLOCK(_varstate.lock);
+		return (1);
+	}
+
+	// Create the variable structure
+	strcpy(var.name, name);
+	var.data = variable;
+	var.type = type;
+	strcpy(var.format, format);
+	var.maxvarlen = maxvarlen;
+	var.servermask = servermask;
+	var.status = DEVMATE_VAR_STATUS_UPDATE_PENDING;
+
+	// Copy the variable structure to the xmem table
+	root2xmem(_varstate.table + (_varstate.total * sizeof(_var_info)), &var,
+	          sizeof(_var_info));
+
+	// Update meta-information
+	_varstate.total++;
+	_varstate.update_pending++;
+
+	TC_UNLOCK(_varstate.lock);
+	return (0);
+}
+
+/*** BeginHeader _devmate_var_find */
+int _devmate_var_find(char* name);
+/*** EndHeader */
+
+var_nodebug
+int _devmate_var_find(char* name)
+{
+	auto int i;
+	char tempname[TC_VAR_MAXNAME];
+	auto faraddr_t addr;
+
+	addr = _varstate.table + sizeof(uint16);
+	for (i = 0; i < _varstate.total; i++) {
+		xmem2root(tempname, addr, DEVMATE_VAR_MAXNAME);
+		if (strncmp(name, tempname, DEVMATE_VAR_MAXNAME) == 0) {
+			return (i);
+		}
+		addr += sizeof(_var_info);
+	}
+	return (-1);
+}
+
+/*** BeginHeader _devmate_var_check_status */
+int _devmate_var_check_status(int index);
+/*** EndHeader */
+
+var_nodebug
+int _devmate_var_check_status(int index)
+{
+	auto faraddr_t addr;
+	auto uint16 status;
+
+	addr = _varstate.table + (index * sizeof(_var_info));
+	xmem2root(&status, addr, sizeof(uint16));
+	return (status);
+}
+
+/*** BeginHeader _devmate_var_change_status */
+void _devmate_var_change_status(int index, uint16 status);
+/*** EndHeader */
+
+var_nodebug
+void _devmate_var_change_status(int index, uint16 status)
+{
+	auto faraddr_t addr;
+
+	addr = _varstate.table + (index * sizeof(_var_info));
+	root2xmem(addr, &status, sizeof(uint16));
+}
+
+/*** BeginHeader devmate_var_update */
+int devmate_var_update(char* name);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_var_update               <DM_VAR.LIB>
+
+SYNTAX: int devmate_var_update(char* name)
+
+KEYWORDS:      DeviceMate
+
+DESCRIPTION:	Cause an update for the given variable's value to be sent
+					to the DeviceMate.  Note that the update is not done
+					immediately, but is queued for later delivery.
+					devmate_var_check_status() can be used to check the status
+					of the update.
+
+PARAMETER1:		Name of the variable to update
+
+RETURN VALUE:  0 if the variable addition request was successfully queued
+					1 if an error occurred (for instance, no such variable)
+
+SEE ALSO:      devmate_var_add, devmate_var_check_status
+
+END DESCRIPTION **********************************************************/
+
+var_nodebug
+int devmate_var_update(char* name)
+{
+	auto int index;
+	auto uint16 status;
+
+	TC_LOCK(_varstate.lock);
+
+	// Find the entry
+	index = _devmate_var_find(name);
+	if (index < 0) {
+		TC_UNLOCK(_varstate.lock);
+		return (1);
+	}
+
+	// Update the status
+	status = _devmate_var_check_status(index);
+	if ((status != DEVMATE_VAR_STATUS_UPDATE_PENDING) &&
+	    (status != DEVMATE_VAR_STATUS_UPDATE_SENT)) {
+		_devmate_var_change_status(index, DEVMATE_VAR_STATUS_UPDATE_PENDING);
+		_varstate.update_pending++;
+	}
+
+	TC_UNLOCK(_varstate.lock);
+	return (0);
+}
+
+/*** BeginHeader devmate_var_check_status */
+uint16 devmate_var_check_status(char* name);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_var_check_status         <DM_VAR.LIB>
+
+SYNTAX: uint16 devmate_var_check_status(char* name)
+
+KEYWORDS:      DeviceMate
+
+DESCRIPTION:	Check the status of a variable.  This function can be used
+					to find out if an operation has completed successfully.
+
+PARAMETER1:		Name of the variable on which to check status
+
+RETURN VALUE:  DEVMATE_VAR_STATUS_OK -- There are no operations pending
+						on the given variable, and no errors on the previous
+						operation.
+					DEVMATE_VAR_STATUS_UPDATE_PENDING -- An update is pending
+						but has not yet been sent to the DeviceMate.
+					DEVMATE_VAR_STATUS_UPDATE_SENT -- An update has been sent
+						to the DeviceMate, but no reply has been received.
+					DEVMATE_VAR_STATUS_ERROR_FULL -- The last operation on
+						this variable failed because the DeviceMate has no
+						more room for another variable.
+					DEVMATE_VAR_STATUS_ERROR_MISC -- The last operation
+						failed for a miscellaneous reason (possibly due to a
+						communications problem).
+					DEVMATE_VAR_STATUS_BAD_VARIABLE -- The given variable
+						does not exist.
+
+SEE ALSO:      devmate_var_add, devmate_var_update
+
+END DESCRIPTION **********************************************************/
+
+var_nodebug
+uint16 devmate_var_check_status(char* name)
+{
+	auto int index;
+	auto uint16 status;
+
+	if (strlen(name) >= DEVMATE_VAR_MAXNAME) {
+		return (DEVMATE_VAR_STATUS_BAD_VARIABLE);
+	}
+
+	TC_LOCK(_varstate.lock);
+	index = _devmate_var_find(name);
+	if (index < 0) {
+		TC_UNLOCK(_varstate.lock);
+		return (DEVMATE_VAR_STATUS_BAD_VARIABLE);
+	}
+	status = _devmate_var_check_status(index);
+	TC_UNLOCK(_varstate.lock);
+	return (status);
+}
+
+/*** BeginHeader _devmate_var_find_next_update */
+int _devmate_var_find_next_update(void);
+/*** EndHeader */
+
+var_nodebug
+int _devmate_var_find_next_update(void)
+{
+	auto int i;
+	auto uint16 status;
+	auto int index;
+
+	if (_varstate.update_pending == 0) {
+		return (-1);
+	}
+	for (i = 0; i < _varstate.total; i++) {
+		index = (_varstate.rr + i) % _varstate.total;
+		status = _devmate_var_check_status(index);
+		if (status == DEVMATE_VAR_STATUS_UPDATE_PENDING) {
+			return (index);
+		}
+	}
+	// Error!  There were updates, so we should have hit one...
+#ifdef DEVMATE_VAR_DEBUG
+	printf("No variables to update found, although _varstate.update_pending != 0\n");
+#endif
+	return (-2);
+}
+
+/*** BeginHeader _devmate_var_tick */
+void _devmate_var_tick(void);
+#funcchain __devmate_tick _devmate_var_tick
+/*** EndHeader */
+
+var_nodebug
+void _devmate_var_tick(void)
+{
+	auto int index;
+	auto int retval;
+	auto _var_info var;
+	auto _TC_VarHeader varhdr;
+	auto _TC_VarUpdate varpkt;
+	auto _TC_VarResponse response;
+	auto void* addr;
+#ifdef TC_BIG_ENDIAN
+	auto uint16 namelen_save;
+	auto uint16 formatlen_save;
+	auto uint16 varlen_save;
+	static const uint8 pkt_swaps[] = { 0,1, 2,3, 4,5, 6,7, 8,9, 10,11 };
+	static const uint8 long_swaps[] = { 0,3, 1,2 };
+#endif		
+
+	TC_LOCK(_varstate.lock);
+
+	switch (_varstate.state) {
+	case _TC_VAR_MAKEREADY:
+#ifdef DEVMATE_VAR_DEBUG
+		printf("_TC_VAR_MAKEREADY\n");
+#endif
+		retval = devmate_xtc_ready(&_varstate.app);
+		if (!retval) {
+			TC_UNLOCK(_varstate.lock);
+			return;
+		}
+		if (retval < 0) {
+			TC_UNLOCK(_varstate.lock);
+			return;
+		}
+		_varstate.state = _TC_VAR_OPENING;
+		if (xtc_closed(&_varstate.app, 0)) {
+			retval = xtc_open(&_varstate.app, 0);
+			if (retval < 0) {
+				TC_UNLOCK(_varstate.lock);
+				return;
+			}
+		}
+		// fall through
+
+	case _TC_VAR_OPENING:
+#ifdef DEVMATE_VAR_DEBUG
+		printf("_TC_VAR_OPENING\n");
+#endif
+		if (xtc_error(&_varstate.app, 0)) {
+			_varstate.state = _TC_VAR_MAKEREADY;
+			TC_UNLOCK(_varstate.lock);
+			return;
+		}
+		if (!xtc_estab(&_varstate.app, 0)) {
+			TC_UNLOCK(_varstate.lock);
+			return;	// keep waiting for control channel
+		}
+		_varstate.state = _TC_VAR_READY;
+		// fall through
+
+	case _TC_VAR_READY:
+#ifdef DEVMATE_VAR_DEBUG
+		printf("_TC_VAR_READY\n");
+#endif
+		index = _devmate_var_find_next_update();
+		if (index < 0) {
+			// No updates to apply
+			TC_UNLOCK(_varstate.lock);
+			return;
+		}
+		_varstate.rr = index;
+		_varstate.state = _TC_VAR_SENDING_HDR;
+		// fall through
+
+	case _TC_VAR_SENDING_HDR:
+#ifdef DEVMATE_VAR_DEBUG
+		printf("_TC_VAR_SENDING_HDR\n");
+#endif
+		if ((xtc_writable(&_varstate.app, 0) - 1) <= sizeof(_TC_VarHeader)) {
+			TC_UNLOCK(_varstate.lock);
+			return;
+		}
+		varhdr.start_byte = TC_VAR_STARTBYTE;
+		varhdr.packet_type = TC_VAR_UPDATE;
+		retval = xtc_awrite(&_varstate.app, 0, &varhdr, sizeof(_TC_VarHeader));
+		if (retval == 0) {
+			// Couldn't write--try again
+			TC_UNLOCK(_varstate.lock);
+			return;
+		} else if (retval < 0) {
+			_varstate.state = _TC_VAR_MAKEREADY;
+			TC_UNLOCK(_varstate.lock);
+			return;
+		}
+		_varstate.state = _TC_VAR_SENDING;
+		// fall through
+
+	case _TC_VAR_SENDING:
+#ifdef DEVMATE_VAR_DEBUG
+		printf("_TC_VAR_SENDING\n");
+#endif
+		if ((xtc_writable(&_varstate.app, 0) - 1) <= sizeof(_TC_VarUpdate)) {
+			TC_UNLOCK(_varstate.lock);
+			return;
+		}
+		xmem2root(&var, _varstate.table + (_varstate.rr * sizeof(_var_info)),
+		          sizeof(_var_info));
+		// Construct the packet
+		varpkt.type = var.type;
+		varpkt.namelen = strlen(var.name) + 1;
+		varpkt.formatlen = strlen(var.format) + 1;
+		switch (var.type) {
+		case VAR_STRING:
+			varpkt.varlen = strlen(var.data) + 1;
+			if (varpkt.varlen > DEVMATE_VAR_MAXDATA) {
+				_devmate_var_change_status(_varstate.rr,
+				                           DEVMATE_VAR_STATUS_ERROR_MISC);
+				_varstate.update_pending--;
+				_varstate.state = _TC_VAR_READY;
+				TC_UNLOCK(_varstate.lock);
+				return;
+			}
+			break;
+		case VAR_UINT8:
+			varpkt.varlen = 1;
+			break;
+		case VAR_INT16:
+			varpkt.varlen = 2;
+			break;
+		case VAR_INT32:
+		case VAR_FLOAT32:
+			varpkt.varlen = 4;
+			break;
+		}
+		varpkt.maxvarlen = var.maxvarlen;
+		varpkt.servermask = var.servermask;
+		memcpy(varpkt.data, var.name, varpkt.namelen);
+		memcpy(varpkt.data + varpkt.namelen, var.format, varpkt.formatlen);
+		addr = varpkt.data + varpkt.namelen + varpkt.formatlen;
+		memcpy(addr, var.data, varpkt.varlen);
+#ifdef TC_BIG_ENDIAN
+		namelen_save = varpkt.namelen;
+		formatlen_save = varpkt.formatlen;
+		varlen_save = varpkt.varlen;
+		_tc_reorder((uint8 *)&varpkt, sizeof(pkt_swaps), pkt_swaps);
+		switch (var.type) {
+		case VAR_INT16:
+			*(uint16 *)addr = *(uint16 *)addr << 8 | ((*(uint16 *)addr >> 8) & 0x00ff);
+			break;
+		case VAR_INT32:
+		case VAR_FLOAT32:
+			_tc_reorder((uint8 *)addr, sizeof(long_swaps), long_swaps);
+			break;
+		}
+		retval = xtc_awrite(&_varstate.app, 0, &varpkt,
+		                    (6 * sizeof(uint16)) + namelen_save +
+		                    formatlen_save + varlen_save);
+#else		
+		retval = xtc_awrite(&_varstate.app, 0, &varpkt,
+		                    (6 * sizeof(uint16)) + varpkt.namelen +
+		                    varpkt.formatlen + varpkt.varlen);
+#endif
+		if (retval == 0) {
+			// Couldn't write--try again
+			TC_UNLOCK(_varstate.lock);
+			return;
+		} else if (retval < 0) {
+			_varstate.state = _TC_VAR_MAKEREADY;
+			TC_UNLOCK(_varstate.lock);
+			return;
+		}
+		// Successfully sent update
+		_devmate_var_change_status(_varstate.rr, DEVMATE_VAR_STATUS_UPDATE_SENT);
+		_varstate.update_pending--;
+		_varstate.update_sent++;
+		_varstate.state = _TC_VAR_GETRESPONSE_HDR;
+		// Fall through...
+
+	case _TC_VAR_GETRESPONSE_HDR:
+#ifdef DEVMATE_VAR_DEBUG
+		printf("_TC_VAR_GETRESPONSE_HDR\n");
+#endif
+		retval = xtc_aread(&_varstate.app, 0, &varhdr, sizeof(_TC_VarHeader));
+		if (retval == 0) {
+			// Couldn't read--try again
+			TC_UNLOCK(_varstate.lock);
+			return;
+		} else if (retval < 0) {
+			_devmate_var_change_status(_varstate.rr,
+			                           DEVMATE_VAR_STATUS_UPDATE_PENDING);
+			_varstate.state = _TC_VAR_MAKEREADY;
+			TC_UNLOCK(_varstate.lock);
+			return;
+		} else if ((varhdr.start_byte != TC_VAR_STARTBYTE) ||
+		           (varhdr.packet_type != TC_VAR_RESPONSE)) {
+			_devmate_var_change_status(_varstate.rr,
+			                           DEVMATE_VAR_STATUS_UPDATE_PENDING);
+			_varstate.state = _TC_VAR_ERROR;
+			TC_UNLOCK(_varstate.lock);
+			return;
+		}
+		_varstate.state = _TC_VAR_GETRESPONSE;
+		// Fall through...
+
+	case _TC_VAR_GETRESPONSE:
+#ifdef DEVMATE_VAR_DEBUG
+		printf("_TC_VAR_GETRESPONSE\n");
+#endif
+		retval = xtc_aread(&_varstate.app, 0, &response,
+		                   sizeof(_TC_VarResponse));
+		if (retval == 0) {
+			// Couldn't read--try again
+			TC_UNLOCK(_varstate.lock);
+			return;
+		} else if (retval < 0) {
+			_devmate_var_change_status(_varstate.rr,
+			                           DEVMATE_VAR_STATUS_UPDATE_PENDING);
+			_varstate.state = _TC_VAR_MAKEREADY;
+			TC_UNLOCK(_varstate.lock);
+			return;
+		}
+#ifdef TC_BIG_ENDIAN
+		response.response_code = response.response_code << 8 |
+		                         response.response_code >> 8;
+#endif
+		if (response.response_code == TC_VAR_RESPONSE_OK) {
+			_devmate_var_change_status(_varstate.rr, DEVMATE_VAR_STATUS_OK);
+		} else if (response.response_code == TC_VAR_RESPONSE_FULL) {
+			_devmate_var_change_status(_varstate.rr,
+			                           DEVMATE_VAR_STATUS_ERROR_FULL);
+		} else {
+			_devmate_var_change_status(_varstate.rr,
+			                           DEVMATE_VAR_STATUS_ERROR_MISC);
+		}
+		_varstate.update_sent--;
+		_varstate.rr = (_varstate.rr + 1) % _varstate.total;
+		_varstate.state = _TC_VAR_READY;
+		TC_UNLOCK(_varstate.lock);
+		return;
+
+	case _TC_VAR_ERROR:
+#ifdef DEVMATE_VAR_DEBUG
+		printf("_TC_VAR_ERROR\n");
+#endif
+		xtc_abort(&_varstate.app, 0);
+		_varstate.state = _TC_VAR_MAKEREADY;
+		TC_UNLOCK(_varstate.lock);
+		return;
+	}
+}
+
+/*** BeginHeader */
+#endif /* __DM_VAR_LIB */
+/*** EndHeader */

@@ -1,0 +1,13 @@
+
+set:
+   Usage: "set <variable> <value>"
+The following variables can be set with this command:
+ip		- The IP address of the device (ie: w.x.y.z)
+netmask		- The netmask for the device (ie: 255.255.255.0)
+gateway		- The gateway for the device (eg: w.x.y.z)
+hostname	- The hostname of the device
+nameserver	- The nameserver for the device (ie: w.x.y.z)
+mail		- See "help set mail" for all options
+passphrase	- The passphrase used to authenticate over the network
+param		- The parameter (e.g., baud rate, port number, or channel)
+		  of the current console I/O stream

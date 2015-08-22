@@ -1,0 +1,823 @@
+/*** BeginHeader */
+#ifndef _rk_mem_debug
+	#ifdef _RK_MEM_DEBUG
+	#define _rk_mem_debug debug
+	#else
+	#define _rk_mem_debug nodebug
+	#endif
+#endif
+/*** EndHeader */
+
+/*** BeginHeader **************************************************************/
+// 'type' parameter for _xalloc():
+#define XALLOC_ANY	0		// Return any type of RAM
+#define XALLOC_BB		1		// Return only battery-backed (2nd RAM, RCM3200 only)
+#define XALLOC_NOTBB	2		// Return only non-BB RAM.
+#define XALLOC_MAYBBB 3		// Return non-BB RAM first, and only return BB RAM if no non-BB RAM remains.
+
+typedef struct {
+	void *sbreak;  // points to pointer of the top of system heap (allocates down)
+	void *limit;  	// points to the line past which _rk_ubreak cannot grow
+   void *next;    // points to the next root allocation region.
+   char flags;		// marks memory as BB or not BB, possibly also user or system?
+	char chksum;  	// simple checksum of the two above to check heap integrity
+}	_rk_rbreak_t;
+
+typedef struct {
+	long sbreak;  	// points to pointer of the top of system heap (allocates down)
+	long limit;  	// points to the line past which _rk_ubreak cannot grow
+   long next;    	// points to the next region
+   char flags;		// marks memory as BB or not BB, possibly also user or system?
+	char chksum;  	// simple checksum of the two above to check heap integrity
+}	_rk_xbreak_t;
+
+/*** EndHeader */
+
+/*** BeginHeader _rk_sbreak, _rk_ubreak,  _rk_alloc_calc_chksum ***************/
+
+
+extern xmem char _rk_alloc_calc_chksum(void *, int num);
+
+#if _SYSTEM
+extern _rk_rbreak_t *_rk_sbreak;
+#endif
+extern _rk_rbreak_t *_rk_ubreak;
+
+/*** EndHeader ****************************************************************/
+
+#if _SYSTEM
+_rk_rbreak_t *_rk_sbreak;
+#endif
+_rk_rbreak_t *_rk_ubreak;
+
+/* iy must contain current value of _rk_sbreak
+; checksum is calculated and placed into iy
+; at exit A contains the checksum
+; destroys a and hl
+*/
+_rk_mem_debug
+xmem char _rk_alloc_calc_chksum(void *p, int num) {
+#asm
+	ld hl, (sp+@sp+num)
+   ld b, l
+   dec b ;; don't include checksum in calc
+   xor a
+	ld hl, (sp+@sp+p)
+.loop:
+   add a, (hl)
+   inc hl
+   djnz .loop
+   cpl
+   bool hl
+   ld l, a
+#endasm
+
+
+}
+
+/*** BeginHeader _rs_xalloc_init **********************************************/
+_system void _rs_xalloc_init(_sys_mem_origin_t *orgtbl, uint16 orgtblsize);
+#if FLASH_COMPILE  || FAST_RAM_COMPILE
+   #define _RS_USER_XALLOC_START 0x80000
+   #define _RS_XALLOC_START 0
+   #define _RS_XALLOC_END 0x100000      // must be even
+#else
+   #define _RS_XALLOC_START 0x00000
+   #define _RS_XALLOC_END 0x80000      // must be even
+#endif
+/*** EndHeader ****************************************************************/
+
+_rk_mem_debug
+_system void _rs_xalloc_init(_sys_mem_origin_t *orgtbl, uint16 orgtblsize) {
+	_SYS_CALL_VARS
+   auto long left_marker, right_marker;
+   auto long next_xsbreak_paddr;
+   auto int i;
+   auto _rk_xbreak_t xsbreak;
+   auto long available_bytes;
+	auto _sys_mem_origin_t * current_origin;
+	auto long memstart;
+
+// Ensure that the allocations are aligned on an even boundary.
+#if sizeof(_rk_xbreak_t)&1
+	// size is odd
+	#define _RK_XBREAK_T_ADJ (sizeof(_rk_xbreak_t)+1)
+#else
+	// size is even
+	#define _RK_XBREAK_T_ADJ sizeof(_rk_xbreak_t)
+#endif
+
+#if __RABBITSYS
+	_RK_CHK_POINTER(orgtbl)
+#endif
+
+   // skip origin table entries that are not in RAM
+   // Ensure user is always initialized to zero.
+   right_marker = _RS_XALLOC_END;
+   next_xsbreak_paddr = 0L;
+   i = orgtblsize - 1;
+	memstart = _RS_XALLOC_START;
+	#if _SYSTEM
+   	if (!_sys_vars.is_system)
+		{
+			memstart = _RS_USER_XALLOC_START;
+		}
+	#endif
+
+   // This algorithm works by moving a marker from the end of ram to the
+   // beginning, analyzing origins along the way.
+
+   // Legend:
+   //  Addresses grow ->
+   //   - = unused; * = used; | = boundary
+
+   // Origins growing may be represented thus:
+   //  paddr
+   //    |**********|------|
+
+   //  ->|          |<-        usedbytes
+   //  ->|                 |<- totalbytes
+
+   // Likewise for origins growing down:
+   //        paddr
+   //   |------|**********|
+
+   //        ->|          |<- usedbytes
+   // ->|                 |<- totalbytes
+
+	do {
+   	current_origin = &orgtbl[i];
+
+      // Calculate the end of the current origin.
+      left_marker =
+         current_origin->paddr + current_origin->usedbytes;
+
+      // Ensure that we don't xalloc beyond our user boundaries.
+      if (left_marker < memstart )
+		{
+      	break;
+      }
+
+      available_bytes = right_marker - left_marker;
+      if (available_bytes > _RK_XBREAK_T_ADJ) {
+      	// We've determined that there is enough space to write the
+         // memory information structure and still have allocatable space.
+
+         // Calculate the fields for the record we will write to the
+         // current region this loop is analyzing.
+
+         // Legend:
+         // limit: physical address of beginning of allocatable space.
+         // sbreak: physical addres of end of allocatable space.
+         //   Think like this: [limit, sbreak)
+         // next: physical address of the next xalloc region record.
+         // flags: Information about the origin under this record.
+         //   I don't know why that's necessary for this structure.
+         // chksum: Checksum for error checking.
+         xsbreak.limit = left_marker + _RK_XBREAK_T_ADJ;
+         xsbreak.sbreak = left_marker + available_bytes;
+         xsbreak.next = next_xsbreak_paddr;
+         xsbreak.flags = current_origin->flags;
+         xsbreak.chksum = _rk_alloc_calc_chksum(&xsbreak, sizeof(xsbreak));
+
+         // Write the xalloc region record:
+         root2xmem(left_marker, &xsbreak, sizeof(xsbreak));
+        	next_xsbreak_paddr = left_marker;
+      }
+
+      if (current_origin->type == RVARORG) {
+         // Since ralloc is responsible for allocating root data, we
+         // skip this space.
+         right_marker = left_marker - current_origin->totalbytes;
+      }
+      else {
+         // This code will work for upward or downward growing origins.
+         right_marker = left_marker - current_origin->usedbytes;
+      }
+
+      --i;
+   } while (i >= 0);
+
+   // This is a global variable indicating the physical location of the first
+   // xalloc region record.
+#if _SYSTEM
+   if (_sys_vars.is_system) {
+	   _rk_xsbreak = next_xsbreak_paddr;
+   }
+#endif
+   _rk_xubreak = next_xsbreak_paddr;
+
+#ifdef USER_XALLOC_DEBUG
+   xalloc_stats(next_xsbreak_paddr);
+#endif
+}
+
+/*** BeginHeader _rs_alloc_init ***********************/
+extern _system int  _rs_alloc_init();
+extern void* _rk_ulimit;
+/*** EndHeader ****************************************************************/
+
+
+/* START _FUNCTION DESCRIPTION **************************************************
+_rs_alloc_init						<MEM.LIB>
+
+SYNTAX:		int _rs_alloc_init(_sys_mem_origin_t*)
+
+
+DESCRIPTION:	This function is called by the system start-up code to
+determine system root memory allocation for _rs_ralloc and _sys_ralloc.
+The _sys_mem_origin_t is a table generated by the compiler
+
+PARAMETER1: orgtbl - Pointer to compiler generated origin table.
+
+ALSO SEE: _rs_ralloc
+
+RETURN VALUE:  0 - success.
+					-ENOMEM - if no memory is available.
+
+END DESCRIPTION ***************************************************************/
+_rk_mem_debug
+_system int _rs_alloc_init(_sys_mem_origin_t *orgtbl, uint16 orgtblsize) {
+	_SYS_CALL_VARS
+   auto unsigned i, msize, bsize;
+   auto _rk_rbreak_t *mbreak;
+	auto _sys_mem_origin_t *pe;
+
+#if __RABBITSYS
+   _RK_CHK_POINTER(orgtbl)
+#endif
+	_rk_ubreak = NULL;
+   bsize = 0;
+   i = orgtblsize;
+   pe = orgtbl;
+	do {
+   	if(pe->type == RVARORG) {
+			msize = (int)(pe->totalbytes - pe->usedbytes);
+         if(msize > sizeof(_rk_rbreak_t)) {
+	      	mbreak = (_rk_rbreak_t*)(pe->laddr - msize);
+	      	mbreak->sbreak = (void *)(pe->laddr - 1);
+	         mbreak->limit = mbreak + sizeof(_rk_rbreak_t);
+            mbreak->flags = pe->flags;
+            // Keep largest allocation at the front of list (others don't matter so much).
+	         if(bsize == 0 || (msize > bsize && mbreak->flags & XALLOC_NOTBB)) {
+		         bsize = msize;
+               mbreak->next = _rk_ubreak;
+	            _rk_ubreak = mbreak;
+            }
+            else {
+            	mbreak->next = _rk_ubreak->next;
+               _rk_ubreak->next = mbreak;
+            }
+			   mbreak->chksum = _rk_alloc_calc_chksum(mbreak, sizeof(_rk_rbreak_t));
+         }
+      }
+      pe++;
+   } while(--i);
+
+	if(_rk_ubreak) {
+   	#if _SYSTEM
+   	if(_sys_vars.is_system) {
+      	_rk_sbreak = _rk_ubreak;
+      }
+      #endif
+   	return 0;
+   }
+   return -ENOMEM;		// allocation failed, no RVARORG regions found
+}
+
+
+/*** BeginHeader _rs_ralloc ***************************************************/
+extern _system void *_rs_ralloc(int sz);
+/*** EndHeader ****************************************************************/
+
+/* START _FUNCTION DESCRIPTION **************************************************
+_rs_alloc_init						<MEM.LIB>
+
+SYNTAX:		 void *_rs_ralloc(int sz)
+
+DESCRIPTION:	This function allocates memory from the system root memory
+"heap". Memory returned is not intended to be deallocated (there is no free).
+
+PARAMETER1: sz - The amount of root memory to allocate.
+
+ALSO SEE: _rs_alloc_init
+
+RETURN VALUE:  Pointer to allocated memory.
+					NULL pointer on failure.
+
+END DESCRIPTION ***************************************************************/
+
+_rk_mem_debug
+_system void *_rs_ralloc(int sz) {
+	_SYS_CALL_VARS
+   auto _rk_rbreak_t *mbreak, *next;
+
+	#if __RABBITSYS
+	mbreak = _rk_ubreak;
+ 	if(_sys_vars.is_system) {
+      	mbreak = _rk_sbreak;
+   }
+   #else
+   	mbreak = _rk_ubreak;
+	#endif
+
+   while((unsigned)(mbreak->sbreak) - (unsigned)(mbreak->limit) < sz) {
+	   if(mbreak->chksum != _rk_alloc_calc_chksum(mbreak, sizeof(_rk_rbreak_t))) {
+      	goto _fail;
+      }
+   	mbreak = mbreak->next;
+      if(!mbreak) return mbreak;
+   }
+	mbreak->sbreak = (void*)((unsigned)(mbreak->sbreak) - sz);
+   mbreak->chksum = _rk_alloc_calc_chksum(mbreak, sizeof(_rk_rbreak_t));
+   return mbreak->sbreak;
+// Something has gone horribly wrong with the allocation. Structure doesn't
+// checksum.
+_fail:
+	exception(-ERR_BADXALLOC);
+	exit(-ERR_BADXALLOC);
+}
+
+/*** BeginHeader _rs_xalloc, _rk_xsbreak, _rk_xubreak *************************/
+extern _system long _rs_xalloc(long *, word, word);
+
+#if _SYSTEM
+extern long _rk_xsbreak;
+#endif
+extern long _rk_xubreak;
+
+/*** EndHeader ****************************************************************/
+
+#if _SYSTEM
+long _rk_xsbreak;
+#endif
+long _rk_xubreak;
+
+_rk_mem_debug
+_system long _rs_xalloc(long * szp, word alignm, word type)
+{
+	_SYS_CALL_VARS
+	auto int i;
+   auto long mask, next;
+   auto long sz, base;
+   auto _rk_xbreak_t xsbreak;
+
+#if __RABBITSYS
+   _RK_CHK_POINTER(szp)
+#endif
+
+   sz = *szp;
+
+   #ifdef _XALLOC_DEBUG
+   	_rk_printf("B %X\n", *szp);
+   #endif
+   if (!alignm) {
+   	alignm = 1;
+   }
+  	mask = ~0L << alignm;
+
+	if (sz < 0)		// this value should fail (rounds up to 0x0000)
+   	goto _fail;
+   if (sz == 0)
+   	return 0L;	// Allocating zero always works, and returns addres zero.
+   if(!type) type = XALLOC_MAYBBB;
+  	i = XALLOC_NOTBB;
+	do {
+	   base = 0L;
+	   xsbreak.next = _rk_xubreak;
+	   #if _SYSTEM
+	      if(_sys_vars.is_system) {
+	         xsbreak.next = _rk_xsbreak;
+	      }
+	   #endif
+	   do {
+      	next = xsbreak.next;
+	      xmem2root(&xsbreak, xsbreak.next, sizeof(_rk_xbreak_t));
+
+	      if(xsbreak.chksum != _rk_alloc_calc_chksum(&xsbreak, sizeof(_rk_xbreak_t)))
+	         goto _fail;
+	      //      xsbreak.flags
+	      base = xsbreak.sbreak - sz & mask;
+			if(xsbreak.flags & i & type && base >= xsbreak.limit) {
+            *szp = xsbreak.sbreak - base;
+				xsbreak.sbreak = base;
+				xsbreak.chksum = _rk_alloc_calc_chksum(&xsbreak, sizeof(_rk_xbreak_t));
+			   root2xmem(next, &xsbreak, sizeof(_rk_xbreak_t));
+			   #ifdef _XALLOC_DEBUG
+			   	_rk_printf("E %X %X\n", base, *szp);
+			   #endif
+			   return base;
+         }
+	   } while(xsbreak.next);
+	} while(--i);
+_fail:
+#asm
+	EXCEPTION(-ERR_BADXALLOC)
+#endasm
+	exit(-ERR_BADXALLOC);
+}
+
+
+/*** BeginHeader _rs_xrelease */
+extern _system void _rs_xrelease(long addr, long sz);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+xrelease                         <STACK.LIB>
+
+SYNTAX: void xrelease(long addr, long sz);
+
+DESCRIPTION: Release a block of memory previously obtained by xalloc() or
+by xavail() with a non-null parameter.  xrelease() may only be called to
+free the most recent block obtained.  It is NOT a general-purpose
+malloc/free type dynamic memory allocator.  Calls to xalloc()/xrelease()
+must be nested in first-allocated/last-released order, similar to the
+execution stack.  The addr parameter must be the return value from
+xalloc().  If not, then a runtime exception will occur.  The sz parameter
+must also be equal to the actual allocated size, however this is not
+checked.  The actual allocated size may be larger than the requested
+size (because of alignment overhead).  The actual size may be obtained by
+calling _xalloc() rather than xalloc().  For this reason, it is recommended
+that your application consistently uses _xalloc() rather than xalloc()
+if you intend to use this function.
+
+PARAMETER1: addr: Address of storage previously obtained by _xalloc().
+PARAMETER2: sz: Size of storage previously returned by _xalloc().  Size must
+be even or the function will cause an exception.
+
+KEYWORDS: xalloc
+
+SEE ALSO: xalloc, _xalloc, xavail, _xavail, xalloc_stats
+END DESCRIPTION **********************************************************/
+
+_rk_mem_debug
+_system void _rs_xrelease(long addr, long sz)
+{
+	_SYS_CALL_VARS
+  	auto int i;
+   auto long next;
+   auto _rk_xbreak_t xsbreak;
+
+   #if __RABBITSYS
+	_RK_XCHK_POINTER(addr)
+	#endif
+	if(sz & 1) goto _fail;
+
+   xsbreak.next = _rk_xubreak;
+	#if _SYSTEM
+	if(_sys_vars.is_system) {
+	   xsbreak.next = _rk_xsbreak;
+   }
+   #endif
+
+	while(xsbreak.next) {
+   	next = xsbreak.next;
+      xmem2root(&xsbreak, xsbreak.next, sizeof(_rk_xbreak_t));
+		if(xsbreak.sbreak == addr) {
+      	xsbreak.sbreak += sz;
+		   xsbreak.chksum = _rk_alloc_calc_chksum(&xsbreak, sizeof(_rk_xbreak_t));
+	      root2xmem(next, &xsbreak, sizeof(_rk_xbreak_t));
+			return;
+      }
+	}
+_fail:
+	exception(-ERR_BADXALLOC);
+	exit(-ERR_BADXALLOC);
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+_xavail                         <STACK.LIB>
+
+SYNTAX: long _xavail(long * addr_ptr, word align, word type);
+
+DESCRIPTION: Returns the maximum length of memory that may be successfully
+obtained by an immediate call to _xalloc(), and optionally allocates that
+amount.  The 'align' and 'type' parameters are the same as would be
+presented to _xalloc().
+
+PARAMETER1: addr_ptr: Address of a longword, in root data memory, to store
+the address of the block.  If this pointer is NULL, then the block is not
+allocated.  Otherwise, the block is allocated as if by a call to _xalloc().
+PARAMETER2: align: alignment of returned block, as per _xalloc().
+PARAMETER3: type: type of memory, as per _xalloc().
+
+RETURN VALUE: The size of the largest free block available.  If this is zero,
+then *addr_ptr will not be changed.
+
+KEYWORDS: xalloc
+
+SEE ALSO: xalloc, _xalloc, xavail, xrelease, xalloc_stats
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader _rs_xavail **************************************************/
+extern _system long _rs_xavail(long * addr_ptr, word alignm, word type);
+#define _xavail _rs_xavail
+/*** EndHeader ***************************************************************/
+
+_rk_mem_debug
+_system long _rs_xavail(long * addr_ptr, word alignm, word type)
+{
+	_SYS_CALL_VARS
+  	auto int i;
+   auto long mask;
+   auto long sz, maxsz;
+   auto _rk_xbreak_t xsbreak;
+#if __RABBITSYS
+	if (addr_ptr != NULL)
+   	_RK_CHK_POINTER(addr_ptr)
+#endif
+   sz = maxsz = 0;
+
+   if (!alignm) {
+   	alignm = 1;
+   }
+  	mask = ~0L << alignm;
+
+   if(!type) type = XALLOC_MAYBBB;
+
+  	i = XALLOC_NOTBB;
+	do {
+	   xsbreak.next = _rk_xubreak;
+	   #if _SYSTEM
+	   if(_sys_vars.is_system) {
+	      xsbreak.next = _rk_xsbreak;
+	   }
+	   #endif
+	   do {
+	      xmem2root(&xsbreak, xsbreak.next, sizeof(_rk_xbreak_t));
+         // Check integrity of structure
+	      if(xsbreak.chksum != _rk_alloc_calc_chksum(&xsbreak, sizeof(_rk_xbreak_t)))
+	         goto _fail;
+	      //      xsbreak.flags
+	      sz = xsbreak.sbreak - (xsbreak.limit + ~mask & mask);
+			if(xsbreak.flags & i & type && sz > maxsz) {
+         	maxsz = sz;
+         }
+	   } while(xsbreak.next);
+	} while(--i);
+
+	if (addr_ptr && maxsz > 0)
+		*addr_ptr = _rs_xalloc(&maxsz, alignm, type);
+	return maxsz;
+_fail:
+	exception(-ERR_BADXALLOC);
+	exit(-ERR_BADXALLOC);
+}
+
+
+/*** BeginHeader _ralloc_stats ************************************************/
+void _ralloc_stats(_rk_rbreak_t *_rkbreak);
+/*** EndHeader ****************************************************************/
+
+#if __RABBITSYS==0
+	#define _rk_printf printf
+#endif
+
+
+void _ralloc_stats(_rk_rbreak_t *_rkbreak) {
+
+   _rk_printf("Available ralloc() regions for %x:\n\n", _rkbreak);
+
+   _rk_printf("Data struct Limit(Low)  Current(Hi) Avail       \n");
+   _rk_printf("----------  ----------  ----------  ----------  \n");
+
+#if __RABBITSYS==0
+   _rk_printf("%10u  %10u  %10u  %10u  %10u\n",
+			  	 _rkbreak->limit,
+				 (unsigned)_rkbreak + sizeof(_rkbreak),
+			  	 _rkbreak->sbreak,
+             (unsigned)_rkbreak - (unsigned)_rkbreak->limit + sizeof(_rkbreak),
+  				 (unsigned)_rkbreak->sbreak - (unsigned)_rkbreak->limit
+	         );
+#endif
+	while(_rkbreak) {
+	   _rk_printf("    0x%x      0x%x      0x%x      0x%x      %s\n\n",
+	             _rkbreak,
+	             (unsigned)_rkbreak->limit,
+	             _rkbreak->sbreak,
+	             (unsigned)_rkbreak->sbreak - (unsigned)_rkbreak->limit,
+	             _rkbreak->flags & XALLOC_BB ? "BB RAM" : "normal"
+	            );
+	   _rkbreak = _rkbreak->next;
+   }
+}
+
+
+//#undef _xxalloc
+//_rk_xbreak_t _rk_xsbreak;
+
+/******************************************************************************
+// IDEA: Write algorithm that initializes on start-up
+******************************************************************************/
+
+
+/* _START FUNCTION DESCRIPTION ********************************************
+_init_xalloc                         <STACK.LIB>
+
+SYNTAX: void _init_xalloc();
+
+DESCRIPTION: Initializes data structure with physical addresses that
+xalloc() may use to allocate memory.  _init_alloc() is normally called
+by premain and must be called before calling xalloc(), _Init_Stack(), and
+_Alloc_Stack().
+
+_init_xalloc() uses the _orgtable structure generated by the compiler
+to calculate what regions of physical memory are free for xalloc use.
+The Dynamic C compiler creates entries in the _orgtable for each
+origin directive that uses memory.  Note that the compiler merges some
+regions into one when they are contiguous.
+
+WARNING: This function is normally called from premain.
+Do not call this function from main because it will clobber
+data allocated by stack allocation in premain!
+
+RETURN VALUE: None.
+
+KEYWORDS: xalloc, _Init_Stack, _Alloc_Stack, premain
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader _init_xalloc */
+void _init_xalloc();
+/*** EndHeader */
+
+_rk_mem_debug
+void _init_xalloc()
+{
+	char *p;
+   #ifdef _RK_MEM_DEBUG
+   	long msize;
+	#endif
+
+   if (_rs_alloc_init(_orgtable, _orgtablesize) == -ENOMEM)
+   {
+      exception(-ENOMEM);
+      exit(-ENOMEM);
+   }
+   #ifdef _RK_MEM_DEBUG
+   _ralloc_stats(_rk_ubreak);
+   p = _rs_ralloc(10);
+   _ralloc_stats(_rk_ubreak);
+   p = _rs_ralloc(30);
+   _ralloc_stats(_rk_ubreak);
+   p = _rs_ralloc(0x200);
+   _ralloc_stats(_rk_ubreak);
+   #endif
+
+   _rs_xalloc_init(_orgtable, _orgtablesize);
+   #ifdef _RK_MEM_DEBUG
+   msize= 0x1000;
+   xalloc_stats(_rk_xubreak);
+   msize = _rs_xalloc(&msize, 1, XALLOC_MAYBBB);
+   xalloc_stats(_rk_xubreak);
+   #endif
+}
+
+
+
+/*** BeginHeader xalloc_stats */
+xmem void xalloc_stats(long xpointer);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+xalloc_stats                    <XMEM.LIB>
+
+SYNTAX: void xalloc_stats(long xpointer)
+
+DESCRIPTION:   Prints a table of available xalloc() regions to the
+               stdout window.  This function is for debugging and
+               educational purposes.  It should not be called in a
+               production program.
+
+PARAMETER1:    address of the data structure _rk_xbreak_t.  Must not be 0.
+
+SEE ALSO:		xalloc, _xalloc, xavail, _xavail, xrelease
+
+END DESCRIPTION **********************************************************/
+_rk_mem_debug
+xmem void xalloc_stats(long xpointer)
+{
+	auto long next;
+   auto _rk_xbreak_t xsbreak;
+   auto int i;
+
+	#if __RABBITSYS==0
+	if(0 == xpointer) {
+		printf("Error - must pass location of _rk_xbreak_t data structure.\n");
+		return;
+	}
+
+   	printf("Available xalloc() regions:\n\n");
+
+   	printf("Low addr    High addr   Current     Avail       Type\n");
+   	printf("----------  ----------  ----------  ----------  -------\n");
+   	next = xpointer;
+	#endif
+	#if _SYSTEM
+	   next = xpointer;
+	#endif
+   while(next) {
+		#if _SYSTEM
+      	_rk_printf("0x%X\n", next);
+		#endif
+      xmem2root(&xsbreak, next, sizeof(_rk_xbreak_t));
+
+		#if _SYSTEM
+      	// next contains the location of the data structure
+      	// it is located at the bottom of the region
+      	_rk_printf("0x%X  0x%X  0x%X  %s\n",
+      	       xsbreak.limit,
+      	       xsbreak.sbreak,
+      	       xsbreak.sbreak - xsbreak.limit,
+	             xsbreak.flags & XALLOC_BB ? "BB RAM" : "normal"
+      	      );
+		#endif
+		#if __RABBITSYS==0
+		//               1         2         3         4         5         6
+		//      12345678901234567890123456789012345678901234567890123456789012345
+			//      Low addr    High addr   Current     Size        Avail       Type
+		//      ----------  ----------  ----------  ----------  ----------  -------
+      printf("%10lX  %10lX  %10lX  %10lX  %s\n",
+             next + sizeof(_rk_xbreak_t),
+             xsbreak.sbreak,
+             xsbreak.sbreak,
+             xsbreak.sbreak - xsbreak.limit,
+             xsbreak.flags & XALLOC_BB ? "BB RAM" : "normal"
+            );
+		#endif
+      next = xsbreak.next;
+   }
+}
+
+/*** BeginHeader orgtable_stats */
+xmem void orgtable_stats(_sys_mem_origin_t _orgtable[], int _orgtablesize);
+/*** EndHeader */
+
+void _printorgtype(char type);
+
+_rk_mem_debug
+void orgtable_stats(_sys_mem_origin_t _orgtable[], int _orgtablesize) {
+	int i;
+
+	#if __RABBITSYS==0
+	//      123456789012345678901234567890
+	printf("Type\tPhys\tLogical\tUsed\tTotal\n");
+	#endif
+	for(i = 0; i < _orgtablesize; i++) {
+	   _printorgtype(_orgtable[i].type);
+		#if __RABBITSYS
+      _rk_printf("%X\t", _orgtable[i].paddr);
+      _rk_printf("%x\t", _orgtable[i].laddr);
+      _rk_printf("%X\t", _orgtable[i].usedbytes);
+      _rk_printf("%X\t", _orgtable[i].totalbytes);
+      _rk_printf("\n");
+		#else
+      printf("%lX\t", _orgtable[i].paddr);
+      printf("%x\t", _orgtable[i].laddr);
+      printf("%lX\t", _orgtable[i].usedbytes);
+      printf("%lX\t", _orgtable[i].totalbytes);
+      printf("\n");
+		#endif
+   }
+}
+
+_rk_mem_debug
+void _printorgtype(char type) {
+	char *s;
+	switch(type) {
+   case UNKNOWN_ORG:
+   	s = "UNKNOWN_ORG";
+   	break;
+   case RCODORG:
+      s = "RCODORG";
+   	break;
+   case XCODORG:
+      s = "XCODORG";
+   	break;
+   case WCODORG:
+      s = "WCODORG";
+   	break;
+   case RVARORG:
+      s = "RVARORG";
+   	break;
+   case XVARORG:
+      s = "XVARORG";
+   	break;
+	case WVARORG:
+      s = "WVARORG";
+   	break;
+   case RCONORG:
+      s = "RCONORG";
+   	break;
+   case RESVORG:
+      s = "RESVORG";
+   	break;
+   }
+	#if __RABBITSYS
+   _rk_printf("%s\t", s);
+	#else
+	printf("%s\t",s);
+	#endif
+}
+
+

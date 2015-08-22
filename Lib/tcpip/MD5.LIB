@@ -1,0 +1,891 @@
+/*** BeginHeader */
+#ifndef __MD5_LIB
+#define __MD5_LIB
+
+#if __RABBITSYS==0
+	#ifndef __md5def
+	   #define __md5def
+	   #define md5_init                    _rs_md5_init
+	   #define md5_append                  _rs_md5_append
+	   #define md5_finish                  _rs_md5_finish
+	#endif
+#endif
+/*
+  ==== Recoding of MD5 algorithm in Rabbit assembler code. ====
+  --> Modification of original source.  Core routine optimized
+  --> to run about 6.5 times faster than original.  Also correctly
+  --> handle append segments of 8k or greater.
+  --> The code is also 10k smaller than original C implementation,
+  --> now under 2.9kB.
+  --> Benchmark speed for 8kB block is about 55kB/sec on 22MHz Rabbit.
+
+  This code implements the MD5 Algorithm defined in RFC 1321.
+  It is derived directly from the text of the RFC and not from the
+  reference implementation.
+
+	The following software is derived from software originally written
+	by Aladdin Enterprises. The copyright notice for the original code is
+	below:
+
+  Copyright (C) 1999 Aladdin Enterprises.  All rights reserved.
+
+  This software is provided 'as-is', without any express or implied
+  warranty.  In no event will the authors be held liable for any damages
+  arising from the use of this software.
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software
+     in a product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
+
+  L. Peter Deutsch
+  ghost@aladdin.com
+
+*/
+
+#memmap xmem
+
+typedef unsigned long md5_long; /* 32-bit word */
+typedef char md5_byte_t;
+
+/* Define the state of the MD5 Algorithm. */
+typedef struct md5_state_s {
+    md5_long count[2];		/* 0  message length in bits, lsw first */
+    md5_long abcd[4];		/* 8  digest buffer */
+    md5_long work[4];		/* 24 temp values of above regs */
+    byte buf[64];				/* 40 accumulate block */
+} md5_state_t;
+
+/*** EndHeader */
+
+/*** BeginHeader md5_round1, md5_round2, md5_round3, md5_round4 */
+
+  // These are not C-callable functions!
+
+  /* Each "round" function (actually, 1/4 round) does 4 operations on cyclic permutation
+     of (IX).  On entry, IX points to working register set (4 x 32-bit values; a,b,c,d)
+     IY points to current "random" table entry.  (SP+52+5) is offset of zeroth element in
+     input data.  On return, IY is incremented to next table entry.
+     Other registers are used for temporary results: BCDE is current long operand.
+  */
+
+xmem void md5_round1(void);
+xmem void md5_round2(void);
+xmem void md5_round3(void);
+xmem void md5_round4(void);
+
+#define MD5_S		52
+#define MD5_SO	MD5_S+5
+/*** EndHeader */
+
+// MD5_ST: store BCDE at (IX+x)
+#define MD5_ST(x) \
+	ex		de,hl $ \
+	ld		(ix+x),hl $ \
+	ld		h,b $ \
+	ld		L,c $ \
+	ld		(ix+x+2),hl
+
+// MD5_ADD: add (reg+x) to BCDE.  reg is IX, IY or SP.
+#define MD5_ADD(reg, x) \
+	ld		hl,(reg+x) $ \
+	add	hl,de $ \
+	ex		de,hl $ \
+	ld		hl,(reg+x+2) $ \
+	adc	hl,bc $ \
+	ld		b,h $ \
+	ld		c,L
+
+// MD5_ROL*: rotate BCDE left by 1,-1,8,16,24
+#define MD5_ROL \
+	ld		a,b $ rla $ rl de $ rl c $ rl b
+
+#define MD5_ROR \
+	ld		a,e $ rra $ rr b $ rr c $ rr de
+
+#define MD5_ROL8 \
+	ld		a,b $ ld b,c $ ld c,d $ ld d,e $ ld e,a
+
+#define MD5_ROL16 \
+	ex		de,hl $ ld e,c $ ld d,b $ ld c,L $ ld b,h
+
+#define MD5_ROL24 \
+	ld		a,e $ ld e,d $ ld d,c $ ld c,b $ ld b,a
+
+// MD5_*_MSB|LSB: x, y, z parameters are offsets (multiple of 4) from IX, of the longword value.
+// Result returned in BCDE.
+#define MD5_F(x,y,z) \
+	ld		hl,(ix+x) $ \
+	ld		de,0xFFFF $ \
+	ex		de,hl $ \
+	or		a $ \
+	sbc	hl,de $ \
+	ex		de,hl $ \
+	ld		hl,(ix+z) $ \
+	and	hl,de $ \
+	ex		de',hl $ \
+	ld		hl,(ix+y) $ \
+	ex		de,hl $ \
+	ld		hl,(ix+x) $ \
+	and	hl,de $ \
+	ex		de,hl $ \
+	ex		de',hl $ \
+	or		hl,de
+#define MD5_F_LSB(x,y,z) MD5_F(x,y,z) $ ex de,hl
+#define MD5_F_MSB(x,y,z) MD5_F(x+2,y+2,z+2) $ ld b,h $ ld c,L
+
+#define MD5_G_LSB(x,y,z) MD5_F_LSB(z,x,y)
+#define MD5_G_MSB(x,y,z) MD5_F_MSB(z,x,y)
+
+#define MD5_H_LSB(x,y,z) \
+	ld		hl,(ix+x) $ \
+	ex		de,hl $ \
+	ld		hl,(ix+y) $ \
+	ld		a,h $ \
+	xor	d $ \
+	ld		d,a $ \
+	ld		a,L $ \
+	xor	e $ \
+	ld		hl,(ix+z) $ \
+	xor	L $ \
+	ld		e,a $ \
+	ld		a,d $ \
+	xor	h $ \
+	ld		d,a
+#define MD5_H_MSB(x,y,z) \
+	ld		hl,(ix+x+2) $ \
+	ex		de,hl $ \
+	ld		hl,(ix+y+2) $ \
+	ld		a,h $ \
+	xor	d $ \
+	ld		d,a $ \
+	ld		a,L $ \
+	xor	e $ \
+	ld		hl,(ix+z+2) $ \
+	xor	L $ \
+	ld		c,a $ \
+	ld		a,d $ \
+	xor	h $ \
+	ld		b,a
+
+#define MD5_I_LSB(x,y,z) \
+	ld		hl,(ix+z) $ \
+	ld		de,0xFFFF $ \
+	ex		de,hl $ \
+	or		a $ \
+	sbc	hl,de $ \
+	ex		de,hl $ \
+	ld		hl,(ix+x) $ \
+	or		hl,de $ \
+	ex		de,hl $ \
+	ld		hl,(ix+y) $ \
+	ld		a,L $ \
+	xor	e $ \
+	ld		e,a $ \
+	ld		a,h $ \
+	xor	d $ \
+	ld		d,a
+#define MD5_I_MSB(x,y,z) MD5_I_LSB(x+2,y+2,z+2) $ ld b,d $ ld c,e
+
+
+	/* Round 1. */
+	/* Let [abcd k s i] denote the operation
+	   a = b + ((a + F(b,c,d) + X[k] + T[i]) <<< s).
+      where F(x, y, z) = x & y | ~x & z
+      Rotations are (left) 7, 12, 17, 22
+      Indices are 0, 1, 2, 3  */
+
+#asm xmem
+md5_round1::
+	MD5_F_MSB(4,8,12)
+	MD5_F_LSB(4,8,12)
+	MD5_ADD(ix, 0)
+	MD5_ADD(sp, MD5_SO+0)
+	MD5_ADD(iy, 0)
+	MD5_ROL8
+	MD5_ROR				; RL 7
+	MD5_ADD(ix, 4)
+	MD5_ST(0)
+
+	MD5_F_MSB(0,4,8)
+	MD5_F_LSB(0,4,8)
+	MD5_ADD(ix, 12)
+	MD5_ADD(sp, MD5_SO+4)
+	MD5_ADD(iy, 4)
+	MD5_ROL8
+	MD5_ROL
+	MD5_ROL
+	MD5_ROL
+	MD5_ROL				; RL 12
+	MD5_ADD(ix, 0)
+	MD5_ST(12)
+
+	MD5_F_MSB(12,0,4)
+	MD5_F_LSB(12,0,4)
+	MD5_ADD(ix, 8)
+	MD5_ADD(sp, MD5_SO+8)
+	MD5_ADD(iy, 8)
+	MD5_ROL16
+	MD5_ROL				; RL 17
+	MD5_ADD(ix, 12)
+	MD5_ST(8)
+
+	MD5_F_MSB(8,12,0)
+	MD5_F_LSB(8,12,0)
+	MD5_ADD(ix, 4)
+	MD5_ADD(sp, MD5_SO+12)
+	MD5_ADD(iy, 12)
+	MD5_ROL24
+	MD5_ROR
+	MD5_ROR				; RL 22
+	MD5_ADD(ix, 8)
+	MD5_ST(4)
+
+	ex		de,hl
+	ld		de,16
+	add	iy,de
+	ex		de,hl
+	lret
+#endasm
+
+	/* Round 2. */
+	/* Let [abcd k s i] denote the operation
+	   a = b + ((a + G(b,c,d) + X[k] + T[i]) <<< s).
+	   where G(x, y, z) = x & z | y & ~z
+      Rotations are (left) 5, 9, 14, 20
+      Indices are 0, 5, 10, 15  */
+
+#asm xmem
+md5_round2::
+	MD5_G_MSB(4,8,12)
+	MD5_G_LSB(4,8,12)
+	MD5_ADD(ix, 0)
+	MD5_ADD(sp, MD5_SO+0)
+	MD5_ADD(iy, 0)
+	MD5_ROL8
+	MD5_ROR
+	MD5_ROR
+	MD5_ROR				; RL 5
+	MD5_ADD(ix, 4)
+	MD5_ST(0)
+
+	MD5_G_MSB(0,4,8)
+	MD5_G_LSB(0,4,8)
+	MD5_ADD(ix, 12)
+	MD5_ADD(sp, MD5_SO+20)
+	MD5_ADD(iy, 4)
+	MD5_ROL8
+	MD5_ROL				; RL 9
+	MD5_ADD(ix, 0)
+	MD5_ST(12)
+
+	MD5_G_MSB(12,0,4)
+	MD5_G_LSB(12,0,4)
+	MD5_ADD(ix, 8)
+	MD5_ADD(sp, MD5_SO+40)
+	MD5_ADD(iy, 8)
+	MD5_ROL16
+	MD5_ROR
+	MD5_ROR				; RL 14
+	MD5_ADD(ix, 12)
+	MD5_ST(8)
+
+	MD5_G_MSB(8,12,0)
+	MD5_G_LSB(8,12,0)
+	MD5_ADD(ix, 4)
+	MD5_ADD(sp, MD5_SO+60)
+	MD5_ADD(iy, 12)
+	MD5_ROL16
+	MD5_ROL
+	MD5_ROL
+	MD5_ROL
+	MD5_ROL				; RL 20
+	MD5_ADD(ix, 8)
+	MD5_ST(4)
+
+	ex		de,hl
+	ld		de,16
+	add	iy,de
+	ex		de,hl
+	lret
+#endasm
+
+	/* Round 3. */
+	/* Let [abcd k s t] denote the operation
+	   a = b + ((a + H(b,c,d) + X[k] + T[i]) <<< s).
+	   where H(x,y,z) = x ^ y ^ z
+      Rotations are (left) 4, 11, 16, 23
+      Indices are 0, 3, 6, 9  */
+
+#asm xmem
+md5_round3::
+	MD5_H_MSB(4,8,12)
+	MD5_H_LSB(4,8,12)
+	MD5_ADD(ix, 0)
+	MD5_ADD(sp, MD5_SO+0)
+	MD5_ADD(iy, 0)
+	MD5_ROL
+	MD5_ROL
+	MD5_ROL
+	MD5_ROL				; RL 4
+	MD5_ADD(ix, 4)
+	MD5_ST(0)
+
+	MD5_H_MSB(0,4,8)
+	MD5_H_LSB(0,4,8)
+	MD5_ADD(ix, 12)
+	MD5_ADD(sp, MD5_SO+12)
+	MD5_ADD(iy, 4)
+	MD5_ROL8
+	MD5_ROL
+	MD5_ROL
+	MD5_ROL				; RL 11
+	MD5_ADD(ix, 0)
+	MD5_ST(12)
+
+	MD5_H_MSB(12,0,4)
+	MD5_H_LSB(12,0,4)
+	MD5_ADD(ix, 8)
+	MD5_ADD(sp, MD5_SO+24)
+	MD5_ADD(iy, 8)
+	MD5_ROL16			; RL 16
+	MD5_ADD(ix, 12)
+	MD5_ST(8)
+
+	MD5_H_MSB(8,12,0)
+	MD5_H_LSB(8,12,0)
+	MD5_ADD(ix, 4)
+	MD5_ADD(sp, MD5_SO+36)
+	MD5_ADD(iy, 12)
+	MD5_ROL24
+	MD5_ROR				; RL 23
+	MD5_ADD(ix, 8)
+	MD5_ST(4)
+
+	ex		de,hl
+	ld		de,16
+	add	iy,de
+	ex		de,hl
+	lret
+#endasm
+
+	/* Round 4. */
+	/* Let [abcd k s t] denote the operation
+	   a = b + ((a + I(b,c,d) + X[k] + T[i]) <<< s).
+	   where I(x,y,z) = y ^ (x | ~z)
+      Rotations are (left) 6, 10, 15, 21
+      Indices are 0, 7, 14, 5  */
+
+#asm xmem
+md5_round4::
+	MD5_I_MSB(4,8,12)
+	MD5_I_LSB(4,8,12)
+	MD5_ADD(ix, 0)
+	MD5_ADD(sp, MD5_SO+0)
+	MD5_ADD(iy, 0)
+	MD5_ROL8
+	MD5_ROR
+	MD5_ROR				; RL 6
+	MD5_ADD(ix, 4)
+	MD5_ST(0)
+
+	MD5_I_MSB(0,4,8)
+	MD5_I_LSB(0,4,8)
+	MD5_ADD(ix, 12)
+	MD5_ADD(sp, MD5_SO+28)
+	MD5_ADD(iy, 4)
+	MD5_ROL8
+	MD5_ROL
+	MD5_ROL				; RL 10
+	MD5_ADD(ix, 0)
+	MD5_ST(12)
+
+	MD5_I_MSB(12,0,4)
+	MD5_I_LSB(12,0,4)
+	MD5_ADD(ix, 8)
+	MD5_ADD(sp, MD5_SO+56)
+	MD5_ADD(iy, 8)
+	MD5_ROL16
+	MD5_ROR				; RL 15
+	MD5_ADD(ix, 12)
+	MD5_ST(8)
+
+	MD5_I_MSB(8,12,0)
+	MD5_I_LSB(8,12,0)
+	MD5_ADD(ix, 4)
+	MD5_ADD(sp, MD5_SO+20)
+	MD5_ADD(iy, 12)
+	MD5_ROL24
+	MD5_ROR
+	MD5_ROR
+	MD5_ROR				; RL 21
+	MD5_ADD(ix, 8)
+	MD5_ST(4)
+
+	ex		de,hl
+	ld		de,16
+	add	iy,de
+	ex		de,hl
+	lret
+#endasm
+
+/*** BeginHeader md5_process */
+
+xmem void md5_process(md5_state_t *pms, byte *data  /* [64] */ );
+
+/*** EndHeader */
+
+#define T1 0xd76aa478
+#define T2 0xe8c7b756
+#define T3 0x242070db
+#define T4 0xc1bdceee
+#define T5 0xf57c0faf
+#define T6 0x4787c62a
+#define T7 0xa8304613
+#define T8 0xfd469501
+#define T9 0x698098d8
+#define T10 0x8b44f7af
+#define T11 0xffff5bb1
+#define T12 0x895cd7be
+#define T13 0x6b901122
+#define T14 0xfd987193
+#define T15 0xa679438e
+#define T16 0x49b40821
+#define T17 0xf61e2562
+#define T18 0xc040b340
+#define T19 0x265e5a51
+#define T20 0xe9b6c7aa
+#define T21 0xd62f105d
+#define T22 0x02441453
+#define T23 0xd8a1e681
+#define T24 0xe7d3fbc8
+#define T25 0x21e1cde6
+#define T26 0xc33707d6
+#define T27 0xf4d50d87
+#define T28 0x455a14ed
+#define T29 0xa9e3e905
+#define T30 0xfcefa3f8
+#define T31 0x676f02d9
+#define T32 0x8d2a4c8a
+#define T33 0xfffa3942
+#define T34 0x8771f681
+#define T35 0x6d9d6122
+#define T36 0xfde5380c
+#define T37 0xa4beea44
+#define T38 0x4bdecfa9
+#define T39 0xf6bb4b60
+#define T40 0xbebfbc70
+#define T41 0x289b7ec6
+#define T42 0xeaa127fa
+#define T43 0xd4ef3085
+#define T44 0x04881d05
+#define T45 0xd9d4d039
+#define T46 0xe6db99e5
+#define T47 0x1fa27cf8
+#define T48 0xc4ac5665
+#define T49 0xf4292244
+#define T50 0x432aff97
+#define T51 0xab9423a7
+#define T52 0xfc93a039
+#define T53 0x655b59c3
+#define T54 0x8f0ccc92
+#define T55 0xffeff47d
+#define T56 0x85845dd1
+#define T57 0x6fa87e4f
+#define T58 0xfe2ce6e0
+#define T59 0xa3014314
+#define T60 0x4e0811a1
+#define T61 0xf7537e82
+#define T62 0xbd3af235
+#define T63 0x2ad7d2bb
+#define T64 0xeb86d391
+
+static const md5_long md5_ttab[64] =
+{ T1, T2, T3, T4, T5, T6, T7, T8,
+  T9, T10,T11,T12,T13,T14,T15,T16,
+  T17,T18,T19,T20,T21,T22,T23,T24,
+  T25,T26,T27,T28,T29,T30,T31,T32,
+  T33,T34,T35,T36,T37,T38,T39,T40,
+  T41,T42,T43,T44,T45,T46,T47,T48,
+  T49,T50,T51,T52,T53,T54,T55,T56,
+  T57,T58,T59,T60,T61,T62,T63,T64
+};
+
+nodebug xmem void md5_process(md5_state_t *pms, byte *data)
+{
+	auto md5_long X[31];
+
+	memcpy(X, data, 64);
+	memcpy(X+16, data, 60);	// Duplicate part of input data to avoid modulo operations
+	memcpy(pms->work, pms->abcd, 16);
+
+#asm
+   push	ix
+	ld		hl,(sp+@sp+2+pms)
+	ld		de,24
+	add	hl,de						; Point to work (ABCD) registers
+	ld		ix,hl						; IX points there (constant for this routine)
+
+	; Do round 1
+	ld		iy,md5_ttab			; IY points to "random" coefficients (inc by 64 for each round)
+
+	; Dirty trick: The called function accesses the values in the X array (input data) by offsetting
+	; from SP.  The caller (this fn) adjusts SP so that the callee accesses the desired first element
+	; of X using offset (5+52) = MD5_SO.  The 5 counts the lcall return address and pushed IX.  The 52 makes sure
+	; we never have to set SP higher than it currently is, to avoid trashing X!
+
+	ld		hl,-MD5_S
+	add	hl,sp
+	ld		sp,hl						; X[0]
+	lcall	md5_round1
+	add	sp,16						; X[4]
+	lcall	md5_round1
+	add	sp,16						; X[8]
+	lcall	md5_round1
+	add	sp,16						; X[16]
+	lcall	md5_round1
+
+
+	; Do round 2
+	ld		hl,-48+4
+	add	hl,sp
+	ld		sp,hl						; X[1]
+	lcall	md5_round2
+	add	sp,16						; X[5]
+	lcall	md5_round2
+	add	sp,16						; X[9]
+	lcall	md5_round2
+	add	sp,16						; X[13]
+	lcall	md5_round2
+
+	ld		hl,-48+16
+	add	hl,sp
+	ld		sp,hl						; X[5]
+	lcall	md5_round3
+	ld		hl,-16
+	add	hl,sp						; X[1]
+	ld		sp,hl
+	lcall	md5_round3
+	add	sp,48						; X[13]
+	lcall	md5_round3
+	ld		hl,-16
+	add	hl,sp
+	ld		sp,hl						; X[9]
+	lcall	md5_round3
+
+	ld		hl,-9*4
+	add	hl,sp
+	ld		sp,hl						; X[0]
+	lcall	md5_round4
+	add	sp,48						; X[12]
+	lcall	md5_round4
+	ld		hl,-16
+	add	hl,sp
+	ld		sp,hl						; X[8]
+	lcall	md5_round4
+	ld		hl,-16
+	add	hl,sp
+	ld		sp,hl						; X[4]
+	lcall	md5_round4
+
+	add	sp,MD5_S-16			; Set back to normal stack frame
+
+	pop	ix
+#endasm
+
+	/* Then perform the following additions. (That is increment each
+	 * of the four registers by the value it had before this block
+	 * was started.) */
+	pms->abcd[0] += pms->work[0];
+	pms->abcd[1] += pms->work[1];
+	pms->abcd[2] += pms->work[2];
+	pms->abcd[3] += pms->work[3];
+}
+
+/*** BeginHeader _rs_md5_init */
+_system void _rs_md5_init(md5_state_t *pms);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+md5_init	                    <MD5.LIB>
+
+SYNTAX: 			void md5_init(md5_state_t *pms);
+
+DESCRIPTION:   Initilize the MD5 hash process. Initial values are
+               generated, and this structure will identify a particular
+               transaction in all subsequent calls to the md5 library.
+
+               The typical sequence of calls for hashing a large amount
+               of data are:
+
+                 auto md5_state_t  mstate;
+                 auto byte          result[16];
+
+                 md5_init(&mstate);
+                 while (<more data>)
+                   md5_append(&mstate, data, data_length);
+                 md5_finish(&mstate, result);
+
+PARAMETER1:		A md5_state_t structure, that is user provided.
+
+SEE ALSO:		md5_append, md5_finish
+
+END DESCRIPTION **********************************************************/
+
+_system nodebug void _rs_md5_init(md5_state_t *pms)
+{
+	_SYS_CALL_VARS
+
+   _RK_CHK_POINTER_RANGE(pms, sizeof(pms))
+	pms->count[0] = pms->count[1] = 0;
+	pms->abcd[0] = 0x67452301;
+	pms->abcd[1] = 0xefcdab89;
+	pms->abcd[2] = 0x98badcfe;
+	pms->abcd[3] = 0x10325476;
+}
+
+/*** BeginHeader _rs_md5_append */
+_system void _rs_md5_append(md5_state_t *pms, byte *data, word nbytes);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+md5_append	                    <MD5.LIB>
+
+SYNTAX: void md5_append(md5_state_t *pms, char *data, word nbytes);
+
+DESCRIPTION:   This function will take a buffer and compute the MD5
+					hash of it, combined with the hash of all previous data
+					passed to it. This function can be called several times,
+					to generate the hash of a large amount of data.
+
+PARAMETER1:		The md5 id structure, as passed to md5_init.
+PARAMETER2:		The buffer to add to the hash.
+PARAMETER3:		Number of bytes in the buffer to add to the hash (0-
+               32768 inclusive).  Lengths greater than 32768 are
+               invalid, and the results are undefined.
+
+SEE ALSO:		md5_init, md5_finish
+
+END DESCRIPTION **********************************************************/
+
+_system nodebug void _rs_md5_append(md5_state_t *pms, byte *data, word nbytes)
+{
+	_SYS_CALL_VARS
+
+	auto byte *p;
+	auto word left;
+	auto word offset;
+	auto md5_long nbits;
+	auto word copy;
+
+   _RK_CHK_POINTER_RANGE(pms, sizeof(pms))
+
+	p = data;
+	left = nbytes;
+	offset = (word)(pms->count[0] >> 3) & 63;
+	nbits = (md5_long)nbytes << 3;
+
+	if (!nbytes || nbytes > 32768)
+		return;
+
+	/* Update the message length. */
+	pms->count[0] += nbits;
+	if (pms->count[0] < nbits)
+		pms->count[1]++;
+
+	/* Process an initial partial block. */
+	if (offset) {
+		copy = (offset + nbytes > 64 ? 64 - offset : nbytes);
+
+		memcpy(pms->buf + offset, p, copy);
+		if (offset + copy < 64)
+			return;
+		p += copy;
+		left -= copy;
+		md5_process(pms, pms->buf);
+	}
+
+	/* Process full blocks. */
+	for (; left >= 64; p += 64, left -= 64)
+		md5_process(pms, p);
+
+	/* Process a final partial block. */
+	if (left)
+		memcpy(pms->buf, p, left);
+}
+
+/*** BeginHeader _rs_md5_finish */
+_system void _rs_md5_finish(md5_state_t *pms, byte digest[16]);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+md5_finish	                    <MD5.LIB>
+
+SYNTAX: 			void md5_finish(md5_state_t *pms, char digest[16])
+
+DESCRIPTION:   After md5_append has been called one or more times, this
+					finish function can be called to return the computed
+					MD5 hash of the data.
+
+PARAMETER1:		The md5 id structure, as passed to md5_init.
+PARAMETER2:		The buffer to store the resulting MD5 hash into.
+
+SEE ALSO:		md5_init, md5_append
+
+END DESCRIPTION **********************************************************/
+
+_system nodebug void _rs_md5_finish(md5_state_t *pms, byte digest[16])
+{
+	_SYS_CALL_VARS
+	static const byte pad[64] = {
+		0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+	};
+	auto byte data[8];
+	auto int i;
+
+	_RK_CHK_POINTER_RANGE(pms, sizeof(pms))
+   _RK_CHK_POINTER_RANGE(digest, sizeof(digest))
+
+	/* Save the length before padding. */
+	memcpy(data, pms->count, 8);
+	/* Pad to 56 bytes mod 64. */
+	_rs_md5_append(pms, pad, (word)((55 - (pms->count[0] >> 3)) & 63) + 1);
+	/* Append the length. */
+	_rs_md5_append(pms, data, 8);
+	memcpy(digest, pms->abcd, 16);
+}
+
+/*** BeginHeader hmac_md5 */
+
+void hmac_md5(unsigned char*, unsigned int, unsigned char*, unsigned int, unsigned char*);
+/*** EndHeader */
+
+/*
+** Function: hmac_md5
+** modified version from RFC 2104
+*/
+
+void
+hmac_md5(
+	unsigned char*	text,		/* pointer to data stream */
+	unsigned int	text_len,	/* length of data stream */
+	unsigned char*	key,		/* pointer to authentication key */
+	unsigned int	key_len,	/* length of authentication key */
+	unsigned char	digest[16])		/* caller digest to be filled in */
+{
+	md5_state_t context;
+	unsigned char k_ipad[64];    /* inner padding - key XORd with ipad */
+	unsigned char k_opad[64];    /* outer padding - key XORd with opad */
+	unsigned char tk[16];
+	int i;
+
+	/* if key is longer than 64 bytes reset it to key=MD5(key) */
+	if (key_len > 64) {
+		_rs_md5_init(&context);
+		_rs_md5_append(&context, key, key_len);
+		_rs_md5_finish(&context, tk);
+
+		key = tk;
+		key_len = 16;
+	}
+
+	/*
+	 * the HMAC_MD5 transform looks like:
+	 *
+	 * MD5(K XOR opad, MD5(K XOR ipad, text))
+	 *
+	 * where K is an n byte key
+	 * ipad is the byte 0x36 repeated 64 times
+	 * opad is the byte 0x5c repeated 64 times
+	 * and text is the data being protected
+	 */
+
+	/* XOR key with ipad and opad values */
+	for (i=0; i<64; i++) {
+		if (i < key_len) {
+	      k_ipad[i] = key[i] ^ 0x36;
+	      k_opad[i] = key[i] ^ 0x5c;
+		} else {
+			k_ipad[i] = 0x36;
+			k_opad[i] = 0x5c;
+		}
+	}
+	/*
+	 * perform inner MD5
+	 */
+	_rs_md5_init(&context);                   /* init context for 1st pass */
+	_rs_md5_append(&context, k_ipad, 64);     /* start with inner pad */
+	_rs_md5_append(&context, text, text_len); /* then text of datagram */
+	_rs_md5_finish(&context, digest);         /* finish up 1st pass */
+	/*
+	 * perform outer MD5
+	 */
+	_rs_md5_init(&context);                   /* init context for 2nd pass */
+	_rs_md5_append(&context, k_opad, 64);     /* start with outer pad */
+	_rs_md5_append(&context, digest, 16);     /* then results of 1st hash */
+	_rs_md5_finish(&context, digest);         /* finish up 2nd pass */
+}
+
+
+/*    M    M  DDDD   SSSSS
+ *    MM  MM  D   D  S
+ *    M MM M  D   D   SSS
+ *    M    M  DR  D  	 S
+ *    M    M  DDDD   SSSS
+ *
+ MD5.LIB */
+
+/*** BeginHeader md5_init */
+_stub void md5_init(md5_state_t *pms);
+/*** EndHeader */
+
+_stub void md5_init(md5_state_t *pms)
+{
+   #asm
+   	ld hl,_SYS_NET_INTERFACE
+      ld bc,_SYS_NET_MD5_INIT
+      syscall
+   #endasm
+}
+
+/*** BeginHeader md5_append */
+_stub void md5_append(md5_state_t *pms, byte *data, word nbytes);
+/*** EndHeader */
+
+_stub void md5_append(md5_state_t *pms, byte *data, word nbytes)
+{
+   #asm
+   	ld hl,_SYS_NET_INTERFACE
+      ld bc,_SYS_NET_MD5_APPEND
+      syscall
+   #endasm
+}
+
+/*** BeginHeader md5_finish */
+_stub void md5_finish(md5_state_t *pms, byte digest[16]);
+/*** EndHeader */
+
+_stub void md5_finish(md5_state_t *pms, byte digest[16])
+{
+   #asm
+   	ld hl,_SYS_NET_INTERFACE
+      ld bc,_SYS_NET_MD5_FINISH
+      syscall
+   #endasm
+
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */
+

@@ -1,0 +1,731 @@
+/*** Beginheader */
+#ifndef __RCM33XX_LIB
+#define __RCM33XX_LIB
+
+#if (_BOARD_TYPE_ & 0xFF00) != (RCM3300A & 0xFF00) && \
+    _BOARD_TYPE_ != RCM3309 && _BOARD_TYPE_ != RCM3319
+#error "RCM33XX.LIB only supports RCM3300 series boards."
+#endif
+
+/*** endheader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+RCM33XX.LIB
+
+DESCRIPTION:	This is a sample library only.
+
+					Use with RCM3300 series controllers and prototyping boards.
+					Add or modify functions to suit your applications.
+
+SUPPORT LIBRARIES:  This library uses the following libraries:
+
+#use "lcd122key7.lib"      // LCD/Keypad
+#use "rn_cfg_rcm33.lib"  	// RabbitNet Configuration
+
+REVISION HISTORY:
+30-Apr-04	pel	PE2 changed to input high in brdInit().
+10-Oct-03	pel	Initial creation.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+///////
+// The following macros are used with LCD/Keypad Modules and values
+// default here according to the prototyping board. They must be defined
+// before using graphic libraries.
+// Make modifications as necessary to match your application.
+///////
+
+///////
+// change strobe register here to match your application
+// LCD wait state calculation:
+// #ws = tcyc/tclk - 0.5 =
+//     = (160nsec)/(1/44.23684Mhz) - .5 = 6.5779, therefore 7 wait states
+///////
+#define LCDCSREGISTER	IB6CR				// Use Port E bit 6 for LCD strobe
+#define LCDCSSHADOW		IB6CRShadow		// define shadow register
+#define LCDCSCONFIG		0x78				// set for 6 waits, I/O (rd and wr) data strobe, allow writes
+#define LCDSTROBE			0x40				// bit 6 mask
+
+#define KEYCSREGISTER	IB6CR				// Use Port E bit 6 for keypad strobe
+#define KEYCSSHADOW		IB6CRShadow		// define shadow register
+#define KEYCSCONFIG		0x78				// set for 6 waits, I/O (rd and wr) data strobe, allow writes
+#define KEYSTROBE			0x40				// bit 6 mask
+
+///////
+// change base address here to match above strobe address
+///////
+#define LCDBASEADDR		0xC000			// A15, A14, A13 = 6 for IB6CR I/O address
+#define KEYBASEADDR		0xC000			// A15, A14, A13 = 6 for IB6CR I/O address
+/*** EndHeader */
+
+/*** Beginheader __brdinitflag, __digoutshadow, __ledshadow */
+
+extern int __brdinitflag;
+extern char __digoutshadow;
+extern char __ledshadow;
+
+/*** endheader */
+
+// Function execution flags
+int __brdinitflag;				//Board init function flag
+char __digoutshadow;
+char __ledshadow;
+
+
+/*** BeginHeader ledmask */
+
+extern const char ledmask[8];
+
+/*** EndHeader */
+
+const char ledmask[8] = {0x00,0x00,0x00,0x08,0x04,0x02,0x01,0x10};
+
+
+/*** BeginHeader ledOut */
+
+void ledOut(int led, int value);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ledOut						<RCM33XX.LIB>
+
+SYNTAX:			void ledOut(int led, int value);
+
+DESCRIPTION:	Controls LED's on the protoboard and core module.
+					This function is non-reentrant.
+
+					A runtime error will occur if brdInit() has not been
+					called first.
+
+PARAMETER1:		LED to control.
+						0	= Red User LED on core
+						3  = DS3 on protoboard
+						4  = DS4 on protoboard
+						5  = DS5 on protoboard
+						6  = DS6 on protoboard
+
+PARAMETER2:		value used to control LED.
+						0 = OFF
+						1 = ON
+
+RETURN VALUE:	None
+
+SEE ALSO: 	brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void ledOut(int led, int value)
+{
+	#GLOBAL_INIT {__brdinitflag = FALSE;}
+
+	if	(__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (led == 0)
+   {
+   	BitWrPortI(PDDR, &PDDRShadow, !value, 0);
+   }
+   else
+   {
+		if (value)
+   	{
+   		WrPortE(0xE000, &__ledshadow, ledmask[led] | __ledshadow);	//turn on leds
+	   }
+   	else
+	   {
+   		WrPortE(0xE000, &__ledshadow, (~ledmask[led]) & __ledshadow);	//turn off leds
+	   }
+   }
+}
+
+/*** BeginHeader	relayOut */
+
+void relayOut(int relay, int value);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+relayOut						<RCM33XX.LIB>
+
+SYNTAX:			void relayOut(int relay, int value);
+
+DESCRIPTION:   Sets relay common contact to a desired position. Default
+					position is set to normally closed contacts.
+					This function is non-reentrant.
+
+					A runtime error will occur if brdInit() has not been
+					called first.
+
+PARAMETER1:		0 = the one relay.
+
+PARAMETER2:		A value used to connect the relay Common contact to one of
+					the following contacts:
+
+					0  =	Normally closed positions, NC1 and NC2
+					1  =	Normally open positions, NO1 and NO2
+
+RETURN VALUE:	0 if successful;
+					-1 if normal power source unavailable.
+
+SEE ALSO:
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void relayOut(int relay, int value)
+{
+
+	#GLOBAL_INIT {__brdinitflag = FALSE;}
+
+	if	(__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (value)
+   {
+   	WrPortE(0xE000, &__ledshadow, ledmask[7] | __ledshadow);		//NO contact
+   }
+   else
+   {
+   	WrPortE(0xE000, &__ledshadow, (~ledmask[7]) & __ledshadow);	//NC contact
+   }
+
+}
+
+
+/*** BeginHeader switchIn */
+
+int switchIn(int swin);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+switchIn                      <RCM33XX.LIB>
+
+SYNTAX:  int switchIn(int swin);
+
+DESCRIPTION:  Read state of  selected switch input.  This function is not
+              reentrant.
+
+              A runtime error will occur if brdInit() has not been called
+              first or if the swin parameter is invalid.
+
+PARAMETER1:  Switch input to read, either 2 (S2) or 3 (S3).
+
+RETURN VALUE:  State of the switch input; 1=open, 0=closed.
+
+SEE ALSO:  brdInit
+END DESCRIPTION *********************************************************/
+
+nodebug
+int switchIn(int swin)
+{
+	#GLOBAL_INIT {__brdinitflag = FALSE;}
+
+	if	(__brdinitflag == FALSE || (2 != swin && 3 != swin))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (swin==2)
+   {
+   	return BitRdPortI(PGDR, 0);	//read PG0 for S2
+   }
+
+	if (swin==3)
+   {
+   	return BitRdPortI(PGDR, 1);	//read PG1 for S3
+   }
+}
+
+/*** BeginHeader ser485Tx */
+
+void ser485Tx( void );
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Tx						<LP35XX.LIB>
+
+SYNTAX:	      void ser485Tx( void );
+
+DESCRIPTION:   Enables the RS485 transmitter.
+
+					Transmitted data is echoed back into the receive data
+					buffer. The echoed data may be used as an indictator for
+					disabling the transmitter by using one of the following
+					methods:
+
+               a) Byte mode...disable the transmitter after the same byte
+                  that is transmitted, is detected in the receive data
+                  buffer.
+
+               b) Block data mode...disable the transmitter after the same
+                  number of bytes transmitted are detected in the receive
+                  data buffer.
+
+              	serXopen() function must be executed before running
+              	this function. This function is non-reentrant.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		ser485Rx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void ser485Tx( void )
+{
+#asm
+	push	ip							;save off IP state
+	ipset	1							;set interrupt priority to level 1
+	ld		a,(PDDRShadow)			;get copy of shadow reg
+	set	7,a						;set bit 7
+	ioi	ld	(PDDR),a				;set PD7 high
+	ld		(PDDRShadow),a			;update shadow reg
+	pop	ip							;restore IP to the previous state
+#endasm
+}
+
+/*** BeginHeader ser485Rx */
+
+void ser485Rx( void );
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Rx						<LP35XX.LIB>
+
+SYNTAX:	      void ser485Rx( void );
+
+DESCRIPTION:  	Disables the RS485 transmitter.
+
+					This puts the device in listen mode which allows to receive	data
+					from the RS485 interface.
+
+              	serXopen() function must be executed before running
+              	this function. This function is non-reentrant.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		ser485Tx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void ser485Rx( void )
+{
+#asm
+	push	ip							;save off IP state
+	ipset	1							;set interrupt priority to level 1
+	ld		a,(PDDRShadow)			;get copy of shadow reg
+	res	7,a						;clear bit 7
+	ioi	ld	(PDDR),a				;set PF5 low
+	ld		(PDDRShadow),a			;update shadow reg
+	pop	ip							;restore IP to the previous state
+#endasm
+}
+
+
+/*** BeginHeader digIn */
+
+int digIn(int channel);
+extern const char diginmask[8];
+
+/*** EndHeader */
+const char diginmask[8] = {0,1,4,5,0,1,2,3};
+
+/* START FUNCTION DESCRIPTION ********************************************
+digIn							<RCM33XX.LIB>
+
+SYNTAX:			int digIn(int channel);
+
+DESCRIPTION: 	Reads the input state of inputs on J5 and J6
+					on the protoboard.  Do not use this function if you
+               configure these pins for alternate use after brdInit()
+               is called.
+
+					A runtime error will occur if brdInit() has not been
+					called first or if the channel parameter is invalid.
+
+PARAMETER1:    channel is input selection as follows:
+
+	7			6			5			4			3			2			1			0
+   =====		=====		=====		=====		=====		=====		=====		=====
+   QD2A 		QD2B	 	QD1A	 	QD1B	 	IN3		IN2		IN1		IN0
+
+RETURN VALUE:	The logic state of the input (0 or 1).
+
+SEE ALSO:		brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int digIn(int channel)
+{
+	#GLOBAL_INIT { __brdinitflag = FALSE; }
+
+	if	(__brdinitflag == FALSE || 0 > channel || sizeof(diginmask) <= channel)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel >= 4)
+		return BitRdPortI(PFDR, diginmask[channel]);
+	else
+		return BitRdPortI(PEDR, diginmask[channel]);
+}
+
+
+/*** BeginHeader digOut */
+
+void digOut(int channel, int value);
+extern const char digoutmask[8];
+
+/*** EndHeader */
+
+const char digoutmask[8] = {0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80};
+
+/* START FUNCTION DESCRIPTION ********************************************
+digOut							<RCM33XX.LIB>
+
+SYNTAX:			void digOut(int channel, int value);
+
+DESCRIPTION: 	Writes a value to an output channel on J10 on the
+					protoboard.  Do not use this function if you
+               configure these pins for motor drives.
+
+					A runtime error will occur if brdInit() has not been
+					called first or if the channel parameter is invalid.
+
+PARAMETER1:    channel is 0 to 7 for OUT00 to OUT07.
+
+PARAMETER2:		value is 0 or 1 to output.
+
+RETURN VALUE:	None
+
+SEE ALSO:		brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void digOut(int channel, int value)
+{
+	#GLOBAL_INIT { __brdinitflag = FALSE; }
+
+	if	(__brdinitflag == FALSE || 0 > channel || sizeof(digoutmask) <= channel)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (value)
+	{
+		WrPortE(0x6000, &__digoutshadow, digoutmask[channel] | __digoutshadow);
+	}
+	else
+	{
+		WrPortE(0x6000, &__digoutshadow, (~digoutmask[channel]) & __digoutshadow);
+	}
+}
+
+
+/*** BeginHeader brdInit */
+
+void brdInit();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+brdInit						<RCM33XX.LIB>
+
+SYNTAX:			void brdInit (void);
+
+DESCRIPTION:	This function initializes parallel ports A through G for	use
+					with the RCM3300 series controllers and prototyping board.
+
+					This function is intended for demonstration purposes only
+					and can be modified for your applications.
+
+DESCRIPTION:	Call this function at the beginning of application code
+					to initialize the controller's I/O ports.
+
+	Summary of initialization
+	-------------------------
+  	1. All I/O port pins are configured for protoboard operation.
+	2. Unused configurable I/O are tied inputs or outputs set.
+   3. Auxiliary I/O bus is enabled.
+	4. Display/keypad interface is disabled.
+	5. RS485 is not enabled.
+	6. RS232 is not enabled.
+  	7. LED's are off.
+  	8. Ethernet select is disabled.
+  	9. Serial flash select is disabled.
+  10. Motor control is disabled.
+  11. RabbitNet SPI interface is disabled.
+  12. Relay is set to normally closed positions.
+
+PARAMETER:    	None
+
+RETURN VALUE:	None
+
+
+		Port	Function I/O State         		Functions
+		====	======== =====================  	==========================
+	// PA0	Databus	High	DS6 off				KDI, Motor, DS6
+	// PA1	Databus	High	DS5 off				KDI, Motor, DS5
+	// PA2	Databus	High	DS4 off				KDI, Motor, DS4
+	// PA3	Databus	High	DS3 off				KDI, Motor, DS3
+	// PA4	Databus	High	Relay off			KDI, Motor, Relay
+	// PA5	Databus	High	Active bus	 		KDI, Motor
+	// PA6	Databus	High	Active bus	 		KDI, Motor
+	// PA7	Databus	High	Active bus	 		KDI, Motor
+	// PB0	Input		High	Disabled state		Core SF CLK, xD-Card Detect
+	// PB1	Input		High	Bios set state		Program port CLK
+	// PB2	Addrbus	High	Active bus	 		KDI
+	// PB3	Addrbus	High	Active bus	 		KDI
+	// PB4	Addrbus	High	Active bus	 		KDI
+	// PB5	Addrbus	High	Active bus	 		KDI
+	// PB6	Addrbus	High	Active bus	 		--
+	// PB7	Addrbus	High	Active bus	 		--
+	// PC0	Output	High	Disabled state		SPI, Proto Board SF
+	// PC1	Input		High	Disabled state		SPI, Proto Board SF
+	// PC2	Output	High	485 disabled		485
+	// PC3	Input		High	485 disabled  		485
+	// PC4	Output	High	SF disabled       Core SF
+	// PC5	Input		High	SF disabled       Core SF
+	// PC6	Output	High	Bios set state		--
+	// PC7	Input		High	Bios set state		--
+	// PD0	Output	High	User LED off		Core LED
+	// PD1	Output	High	SF selct disabled	Core SF select
+	// PD2	Output	Low	SPI disabled		SPI, Proto Board SF
+	// PD3	Output	High	SPI CS disabled	SPI, Proto Board SF
+	// PD4	Input		High	Disabled state		Proto Board SF
+	// PD5	Input		High	Disabled state		Proto Board SF
+	// PD6	Input		High	Disabled state		Proto Board SF
+	// PD7	Output	Low	485 tx disabled	485
+	// PE0	Input		High	IN0					IN0
+	// PE1	Input		High	IN1					IN1
+	// PE2	Input		High	Disabled state		Ethernet AEN
+	// PE3	Output	Low	OutA CP disabled	OutA CP
+	// PE4	Input		High	IN2					IN2
+	// PE5	Input		High	IN3					IN3
+	// PE6	Output	High	KDI disabled		KDI
+	// PE7	Output	High	OutB CP disabled	OutB CP
+	// PF0	Input		High	Disabled state		SPI, Proto Board SF, QD1B
+	// PF1	Input		High	Input state			QD1A
+	// PF2	Input		High	Input state			QD2B
+	// PF3	Input		High	Input state			QD2A
+	// PF4	Output	Low	Motor 1 disabled	Motor1
+	// PF5	Output	Low	Motor 2 disabled	Motor2
+	// PF6	Output	Low	Motor 3 disabled	Motor3
+	// PF7	Output	Low	Motor 4 disabled	Motor4
+	// PG0	Input		High	S1						S1
+	// PG1	Input		High	S2						S2
+	// PG2	Input		High	232 disabled		232
+	// PG3	Input		High	232 disabled		232
+	// PG4	Output	High	OutA EN disabled	OutA EN
+	// PG5	Output	High	OutB EN disabled	OutB EN
+	// PG6	Input		High	232 disabled		232
+	// PG7	Input		High	232 disabled		232
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void brdInit()
+{
+	#GLOBAL_INIT {__brdinitflag  = FALSE;}
+	#GLOBAL_INIT {__digoutshadow  = 0x00;}
+	#GLOBAL_INIT {__ledshadow  = 0x00;}
+
+	__brdinitflag = TRUE;
+
+ 	//--------------------------------------------------------------------
+	// Port C configuration
+	//
+	//	Port	Function I/O State         		Functions
+	//	====	======== =====================	==========================
+	// PC0	Output	High	Disabled state		SPI, SF/Modem, J7
+	// PC1	Input		High	Disabled state		SPI, SF/Modem, J7
+	// PC2	Output	High	485 disabled		485, J7
+	// PC3	Input		High	485 disabled  		485, J7
+	// PC4	Output	High	SF disabled       Core SF
+	// PC5	Input		High	SF disabled       Core SF
+	// PC6	Output	High	Bios set state		J7
+	// PC7	Input		High	Bios set state		J7
+	//---------------------------------------------------------------------
+	WrPortI(PCFR, &PCFRShadow, PCFRShadow&0xEA);		//clear bit 4,2,0 to normal function
+																	//bits 5,3,1 normally inputs
+	WrPortI(PCDR, &PCDRShadow, PCDRShadow|0x15);		//set bits 4,2,0 high
+
+	//---------------------------------------------------------------------
+	// Port D configuration
+	//
+	//	Port	Function I/O State         		Functions
+	//	====	======== =====================	==========================
+	// PD0	Output	High	User LED off		Core LED
+	// PD1	Output	High	SF selct disabled	Core SF select
+	// PD2	Output	Low	SPI disabled		SPI, SF/Modem, J7
+	// PD3	Output	High	SPI CS disabled	SPI, SF/Modem, J7
+	// PD4	Input		High	Disabled state		SF/Modem,J7
+	// PD5	Input		High	Disabled state		SF/Modem,J7
+	// PD6	Input		High	Disabled state		SF/Modem,J7
+	// PD7	Output	Low	485 tx disabled	485,J7
+	//---------------------------------------------------------------------
+	WrPortI(PDCR, &PDCRShadow, 0x00);		//clear all bits to pclk/2
+	WrPortI(PDFR, &PDFRShadow, 0x00);		//clear all bits to normal function
+	WrPortI(PDDCR, &PDDCRShadow, 0x00);		//clear all bits to drive high and low
+	WrPortI(PDDR, &PDDRShadow, 0x0b);		//set bits 3,1,0 high
+	WrPortI(PDDDR, &PDDDRShadow, 0x8f);		//set bits 7,3,2,1,0 to output, rest inputs
+
+	//---------------------------------------------------------------------
+	// Port E configuration
+	//
+	//	Port	Function I/O State         		Functions
+	//	====	======== =====================	==========================
+	// PE0	Input		High	IN0					IN0,J6
+	// PE1	Input		High	IN1					IN1,J6
+	// PE2	Input		High	Disabled state		Ethernet AEN
+	// PE3	Output	Low	OutA CP disabled	OutA CP, J6
+	// PE4	Input		High	IN2					IN2,J6
+	// PE5	Input		High	IN3					IN3,J6
+	// PE6	Output	High	KDI disabled		KDI,J6
+	// PE7	Output	High	OutB CP disabled	OutB CP, J6
+	//---------------------------------------------------------------------
+	WrPortI(PECR, &PECRShadow, 0x00);		//clear all bits to pclk/2
+#if _USER
+	WrPortI(PEFR, &PEFRShadow, 0x05);		//protect ethernet bits
+#else
+	WrPortI(PEFR, &PEFRShadow, 0x00);		//clear all bits to normal function
+#endif
+	WrPortI(PEDR, &PEDRShadow, 0xc0);		//set bits 7,6 output high
+	WrPortI(PEDDR, &PEDDRShadow, 0xc8);		//set bits 7,6,3 to output, rest inputs
+
+	//---------------------------------------------------------------------
+	// Port F configuration
+	//
+	//	Port	Function I/O State         		Functions
+	//	====	======== =====================	==========================
+	// PF0	Input		High	Disabled state		SPI,SF/Mdm,QD1B,J7
+	// PF1	Input		High	Input state			QD1A,J7
+	// PF2	Input		High	Input state			QD2B,J7
+	// PF3	Input		High	Input state			QD2A,J7
+	// PF4	Output	Low	Motor 1 disabled	Motor1,J6
+	// PF5	Output	Low	Motor 2 disabled	Motor2,J6
+	// PF6	Output	Low	Motor 3 disabled	Motor3,J6
+	// PF7	Output	Low	Motor 4 disabled	Motor4,J6
+	//---------------------------------------------------------------------
+	WrPortI(PFCR, &PFCRShadow, 0x00);		//clear all bits for pclk/2
+	WrPortI(PFFR, &PFFRShadow, 0x00);		//clear all bits for normal function
+	WrPortI(PFDR, &PFDRShadow, 0x0f);		//set bits 7,6,5,4 output low
+	WrPortI(PFDDR, &PFDDRShadow, 0xf0);		//set bits 7,6,5,4 to output
+
+
+	//---------------------------------------------------------------------
+	// Port G configuration
+	//
+	//	Port	Function I/O State         		Functions
+	//	====	======== =====================	==========================
+	// PG0	Input		High	S1						S1,J7
+	// PG1	Input		High	S2						S2,J7
+	// PG2	Input		High	232 disabled		232, J7
+	// PG3	Input		High	232 disabled		232, J7
+	// PG4	Output	High	OutA EN disabled	OutA EN,J6
+	// PG5	Output	High	OutB EN disabled	OutB EN,J6
+	// PG6	Input		High	232 disabled		232, J6
+	// PG7	Input		High	232 disabled		232, J6
+	//---------------------------------------------------------------------
+	WrPortI(PGCR, &PGCRShadow, 0x00);		//clear all bits for pclk/2
+#if _USER
+	WrPortI(PGFR, &PGFRShadow, 0x44);      //protect TXE and TXF
+	WrPortI(PGDDR, &PGDDRShadow, 0x74);    //set bits 6,5,4,2 to output, clear rest to input
+#else
+	WrPortI(PGFR, &PGFRShadow, 0x00);		//clear all bits for normal function
+	WrPortI(PGDDR, &PGDDRShadow, 0x30);		//set bits 5,4 to output, clear rest to input
+#endif
+	WrPortI(PGDCR, &PGDCRShadow, 0x00);		//clear all bits to drive output
+	WrPortI(PGDR, &PGDRShadow, 0x30);		//set bit 5,4 high
+
+	//---------------------------------------------------------------------
+	// Port B configuration
+	//
+	//	Port	Function I/O State         		Functions
+	//	====	======== =====================	==========================
+	// PB0	Input		High	Disabled state		Core SF CLK, Card detect on RCM336XX
+	// PB1	Input		High	Bios set state		Program port CLK
+	// PB2	Addrbus	High	Active bus	 		KDI, J6
+	// PB3	Addrbus	High	Active bus	 		KDI, J6
+	// PB4	Addrbus	High	Active bus	 		KDI, J6
+	// PB5	Addrbus	High	Active bus	 		KDI, J6
+	// PB6	Addrbus	High	Active bus	 		J6
+	// PB7	Addrbus	High	Active bus	 		J6
+	//---------------------------------------------------------------------
+	WrPortI(PBDR, &PBDRShadow, PBDRShadow|0xfc);		//set all bits high, except bit 1,0
+	WrPortI(PBDDR, &PBDDRShadow, PBDDRShadow|0xfc);	//set all bits to output, except bit 1,0
+
+	//---------------------------------------------------------------------
+	// Port A configuration
+	//
+	//	Port	Function I/O State         		Functions
+	//	====	======== =====================	==========================
+	// PA0	Databus	High	DS6 off				KDI, Motor, DS6, J7
+	// PA1	Databus	High	DS5 off				KDI, Motor, DS5, J7
+	// PA2	Databus	High	DS4 off				KDI, Motor, DS4, J7
+	// PA3	Databus	High	DS3 off				KDI, Motor, DS3, J7
+	// PA4	Databus	High	Relay off			KDI, Motor, Relay, J7
+	// PA5	Databus	High	Active bus	 		KDI, Motor, J7
+	// PA6	Databus	High	Active bus	 		KDI, Motor, J7
+	// PA7	Databus	High	Active bus	 		KDI, Motor, J7
+	//---------------------------------------------------------------------
+//	WrPortI(PADR, &PADRShadow, 0xff);		//set to output all high
+   #if _USER
+   _sys_setauxio(1);
+   #else
+   WrPortI(SPCR, &SPCRShadow, 0x8c);		//Enables Auxiliary i/o bus
+   #endif
+
+	//---------------------------------------------------------------------
+   // Enable external I/O bus for lcd/keypad and motor/digital output access
+   //
+	// PG4	Output	Low	OutA EN enabled	OutA EN,J6
+	// PG5	Output	Low	OutB EN enabled	OutB EN,J6
+	//---------------------------------------------------------------------
+   // enable external lcd/keypad access
+   BitWrPortI(PEFR, &PEFRShadow, 1, 7);	//set PE7 to external i/o
+   WrPortI(IB7CR, &IB7CRShadow, 0x78);    //set external select active high
+  	BitWrPortI(PGDR, &PGDRShadow, 0, 5);	//enable device select
+   WrPortE(0xE000, NULL, __ledshadow);    //turn off leds and open relay
+
+   // enable external motor/digital output access
+	BitWrPortI(PEFR, &PEFRShadow, 1, 3);	//set PE3 to external i/o
+   WrPortI(IB3CR, &IB3CRShadow, 0x78);    //set external select active high
+  	BitWrPortI(PGDR, &PGDRShadow, 0, 4);   //enable device select
+   WrPortE(0x6000, NULL, __digoutshadow); //set outputs to low
+
+
+}
+
+/*** Beginheader */
+
+#use "lcd122key7.lib"      // LCD/Keypad
+#use "rn_cfg_rcm33.lib"  	// RabbitNet Configuration
+
+/*** endheader */
+
+/*** Beginheader */
+#endif
+/*** endheader */

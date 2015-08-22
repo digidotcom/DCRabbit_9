@@ -1,0 +1,257 @@
+/*
+ *    rabbitflex_sbc40_header.lib
+ *    Copyright (C) Rabbit Semiconductor. All rights reserved.
+ *
+ *    This library contains data structures needed for information on the
+ *    RabbitFLEX SBC40 I/O.
+ *
+ */
+
+/*** BeginHeader */
+
+/*
+ * The following structure represents a pin on the RabbitFLEX SBC40 board.
+ */
+typedef struct {
+   unsigned int type;    // Type of circuit on this pin
+   char *name;           // User-defined name for this pin
+   unsigned int rd_addr; // External I/O read address for this pin
+                         // (Flex reads a nibble at a time)
+                         // Also used as input capture select (0-1) for
+                         // analog in
+   unsigned int wr_addr; // External I/O write address for this pin
+                         // (Flex writes a single bit at a time)
+                         // Also used as analog channel (0-1) for analog out
+   char pin_pos;         // Position within the header for this pin (0-7)
+   char polarity;        // Polarity (circuit-defined option)
+   void *more;           // Pointer to more constant information about this pin
+   void *ramdata;        // Pointer to variable (RAM-based) information about
+                         // this pin
+} Flex_IOPin;
+
+/*
+ * The following enumerated values represent different types of pins on a
+ * RabbitFLEX SBC board, and are used in the Flex_IOPin structure.
+ */
+enum {
+   FLEX_PINTYPE_DIGIN,
+   FLEX_PINTYPE_DIGOUT,
+   FLEX_PINTYPE_DIGINOUT,
+   FLEX_PINTYPE_PUSHPULL,
+   FLEX_PINTYPE_ANAIN,
+   FLEX_PINTYPE_ANAOUT,
+   FLEX_PINTYPE_ANAIN_AMPS,
+   FLEX_PINTYPE_RS232_D,
+   FLEX_PINTYPE_RS232_E,
+   FLEX_PINTYPE_RS232_F,
+   FLEX_PINTYPE_RS232_FD,
+   FLEX_PINTYPE_RS232_FE,
+   FLEX_PINTYPE_RESET,
+   FLEX_PINTYPE_INTERRUPT,
+   FLEX_PINTYPE_ENCODER_INPUT,
+   FLEX_PINTYPE_PWM,
+   FLEX_PINTYPE_RS485,
+   FLEX_PINTYPE_RABBITNET
+};
+
+/*
+ * The following macros define the components that are used to calculate a
+ * read and write address for digital I/O.
+ */
+
+#define FLEX_ADDR_RD_BASE				0x8000  	// Base address for a read
+#define FLEX_ADDR_RD_LOW_OFFSET		0x0000  	// Offset for reading low nibble
+#define FLEX_ADDR_RD_HIGH_OFFSET		0x0001  	// Offset for reading high nibble
+#define FLEX_ADDR_WR_BASE				0xe000  	// Base address for a write
+#define FLEX_ADDR_CONNECTOR1_OFFSET	0x0010	// Offset for connector 1
+#define FLEX_ADDR_CONNECTOR2_OFFSET	0x0012	// Offset for connector 2
+#define FLEX_ADDR_CONNECTOR3_OFFSET	0x0014	// Offset for connector 3
+#define FLEX_ADDR_CONNECTOR4_OFFSET	0x0016	// Offset for connector 4
+#define FLEX_ADDR_CONNECTOR5_OFFSET	0x0018	// Offset for connector 5
+#define FLEX_ADDR_CONNECTOR6_OFFSET	0x0000	// Offset for connector 6
+#define FLEX_ADDR_CONNECTOR7_OFFSET	0x0000	// Offset for connector 7
+
+/*
+ * The following address is read from to deassert the chip select lines
+ * due to external I/O address bus latching last state.
+ */
+
+#define FLEX_ADDR_CS_DEASSERT			0x80ff
+
+/*
+ * This structure holds the shadow value that is used for digital I/O pins.
+ */
+typedef struct {
+   char shadow;
+} Flex_RAM_DigIO;
+
+// Defines the number of analog in channels on this board.
+#define MAX_ADCHANNELS 16
+
+// Defines the number of analog out channels on this board.
+#define MAX_DACHANNELS 2
+
+// Defines the maximum and minimum DAC channel counts
+#define FLEX_MAX_DAC_COUNT	1024
+#define FLEX_MIN_DAC_COUNT	0
+
+// Define the PWM base frequency
+#ifndef PWM_CNTRL_FREQ
+	#define PWM_CNTRL_FREQ 10000uL
+#endif
+
+// Define options for DAC channels (passed to pwm_set)
+#ifndef FLEX_DAC0_CNTRL
+	#define FLEX_DAC0_CNTRL PWM_SPREAD
+#endif
+
+#ifndef FLEX_DAC1_CNTRL
+	#define FLEX_DAC1_CNTRL PWM_SPREAD
+#endif
+
+/*
+ * This structure holds the data that is necessary for analog in processing
+ * for each pin.
+ */
+typedef struct {
+   int value;     // Current raw value
+   float alpha;   // Weight (0.0 - 1.0) to give the latest raw value in discount
+                  // average
+   int history;   // Discount-averaged value
+} Flex_RAM_AnaIn;
+
+/*
+ * This macro is used to mark the end of a Flex IO pin group.
+ */
+#define FLEX_GROUP_END NULL
+
+/*
+ * Define the error condition for analog in functions.
+ */
+#define FLEX_ANAIN_ERROR (0xffffffffuL)
+
+/*
+ * LCD Data Structures
+ */
+
+/*
+ * This structure is stored in RAM and maintains the current column and row
+ * position of the LCD cursor, as well as the current contrast setting.
+ */
+typedef struct {
+   unsigned int col;
+   unsigned int row;
+   char contrast;
+} Flex_LCDInfo;
+
+/*
+ * Determines some configuration of the given LCD display, such as number of
+ * rows and columns, addresses of the first character in each row, etc.
+ */
+typedef struct {
+	char num_cols;				// Number of columns on the display
+	char num_rows;				// Number of rows on the display
+	char row_addresses[4];	// Starting address of each row (up to 4 rows)
+	float anaout_contrast_min;	// Minimum voltage for contrast control
+	float anaout_contrast_max; // Maximum voltage for contrast control
+	int pwm_contrast_min;		// Minimum duty cycle for contrast control
+	int pwm_contrast_max;		// Maximum duty cycle for contrast control
+   char def_contrast; 		// Default scaled value for contrast control (0-255)
+} Flex_LCDConf;
+
+/*
+ * Flex_LCD contains the list of pins for a display, some contrast voltage
+ * information, and a reference to the current cursor position.
+ */
+typedef struct {
+   Flex_IOPin *contrast; 	// Contrast voltage; must be an analog out or PWM.
+              					// If NULL, then there is no contrast control.
+   Flex_IOPin *rs;       	// Instruction/Register Select (low = control,
+              					// high = data)
+   Flex_IOPin *rw;       	// Read/Write LCD Registers (low = write, high = read)
+   Flex_IOPin *cs;       	// Chip Select (active high)
+   Flex_IOPin *data[5];  	// Data lines (4-bit)
+   Flex_IOPin *backlight;	// Backlight control.
+              					// If NULL, then there is no backlight control.
+   Flex_LCDInfo *info; 		// Current info about the display (cursor position,
+   								// contrast setting)
+	Flex_LCDConf def_conf;	// Default LCD configuration
+	Flex_LCDConf *conf;   	// Current LCD configuration
+} Flex_LCD;
+
+/*
+ * Cursor modes
+ */
+#define	DISP_CUROFF		0x00				//	Cursor Off
+#define	DISP_CURON		0x02				//	Cursor On
+#define	DISP_CURBLINK	0x03				//	Cursor Blink
+
+/*
+ * Keypad data structures
+ */
+
+/*
+ * Holds the configuration information for each raw keycode.  It also maintains
+ * some state information about each raw keycode.
+ */
+typedef struct {
+   // User Defined Key Configuration
+   char cRaw;      // Raw Key Code Index
+   char cPress;    // Key Press Code (0 = Unused)
+   char cRelease;  // Key Release Code (0 = Unused)
+   char cCntHold;  // Hold Ticks (0 = No Repeat)
+   char cSpdLo;    // Low Speed Repeat Ticks
+   char cCntLo;    // Low Speed Hold Ticks (0 = Slow Only)
+   char cSpdHi;    // High Speed Repeat Ticks
+
+   // State Info for Key Repeating
+   char cSpeed;    // Repeat Speed
+   char cRepeat;   // Repeat Down Counter
+   char cCount;    // Hold Down Counter
+   char cState;    // Key Decode State
+                      // 0 = Button is Up
+                      // 1 = Button is Down & Holding
+                      // 2 = Button in Low Speed Repeat
+                      // 3 = Button in High Speed Repeat
+} Flex_KeypadCodes;
+
+/*
+ * Manages the processed keycodes in a queue
+ */
+struct _Flex_KeypadQueue {
+   unsigned bufsize;  // Buffer size
+   char *pLo;         // Low buffer address
+   char *pHi;         // High buffer address
+   char *pIn;         // In pointer
+   char *pOut;        // Out pointer
+};
+
+/*
+ * Manages a queue, as well as the callback functions for key presses and
+ * releases.
+ */
+#define __FLEX_MAX_RAWFIFO 8	// Maximum number of rows in rawfifo
+typedef struct {
+   struct _Flex_KeypadQueue queue; // Queue management structure
+   char queuebuffer[16];           // Buffer area for the queue
+   unsigned rawfifo[3][__FLEX_MAX_RAWFIFO];	// FIFO for raw keycodes
+   void (*press_cb)();             // Key press callback function (or NULL)
+   void (*release_cb)();           // Key release callback function (or NULL)
+} Flex_KeypadData;
+
+/*
+ * Used for constant data structures to store all information about a keypad,
+ * such as the group of output and input drivers, number of pins in the output
+ * and input groups, the keymap, and the key queue.
+ */
+typedef struct {
+   Flex_IOPin **outs;			// Group of output drivers
+   Flex_IOPin **ins;      		// Group of input drivers
+   char num_outs;					// Number of output drivers
+   char num_ins;					// Number of input drivers
+   Flex_KeypadCodes *codes;	// Array to hold keycodes for this keypad
+   Flex_KeypadData *data;		// Queue management for the received keycodes
+} Flex_Keypad;
+
+/*** EndHeader */
+

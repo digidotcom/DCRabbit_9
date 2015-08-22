@@ -1,0 +1,626 @@
+/* START LIBRARY DESCRIPTION *********************************************
+board_types.h
+	Copyright (c) 2006, Rabbit Semiconductor.
+
+DESCRIPTION:   Definition of board types. Includes board type macro
+					definitions and board-specific initializations. This
+					file is intended to be included at the top of the BIOS,
+					and should only contain board-specific initalizations.
+
+NOTES:		1) Most of the initialization macros are defined with a
+				   default value in the macro defaults section. Board-
+				   specific initializations #undef any of these macros that
+				   need to be changed. This way, board-specific changes do
+				   not affect the BIOS or code for other boards. In special
+				   cases, board-specific macros may be created, if none of
+				   the existing macros is sufficient.
+				2) Only macros that are defined by the compiler, or defined
+					in this file should be used for the board-specific
+					initializations below.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+
+#ifndef _BOARD_TYPE_
+// Note that this is a handy place to force the _BOARD_TYPE_ macro value to suit
+//  a custom designed target board that doesn't yet have an ID Block installed.
+// Also note that for a target with no ID Block installed the _BOARD_TYPE_ macro
+//  value can be forced on a per project basis by adding into the Project
+//  Options' Defines box "_BOARD_TYPE_=0xXXXX" (without the quotes, ensuring
+//  that there are no spaces within the macro definition, and where XXXX is
+//  replaced with the desired hexadecimal value).
+#warns "No ID Block found on the target; defining _BOARD_TYPE_ to be a BL1810."
+#define _BOARD_TYPE_ BL1810
+#endif
+
+// product codes
+#define	BL1810	0x0100		// 14MHz Jackrabbit, 128KFlash, 128K SRAM
+#define	BL1800	0x0101		// 29MHz Jackrabbit, 256KFlash, 128K SRAM
+#define	BL1820	0x0102		// 14MHz Jackrabbit, 128KFlash, 128K SRAM, no battery
+#define	BL1805	0x0103		// 29MHz Jackrabbit, 256KFlash, 512K SRAM
+#define	RCM2020	0x0200		// 18MHz Core Module
+#define	RCM2010	0x0201		// 25MHz Core Module, 128k SRAM
+#define	RCM2000	0x0202		// 25MHz Core Module, 512k SRAM
+#define	OP6600	0x0300		// 18MHz Serial Display, no Ethernet
+#define	RTDK		0x0301		// 18MHz TCP/IP Toolkit
+#define	OP6700	0x0302		// 18MHz Serial Display + Ethernet
+#define  SR9110   0x0501		// 18MHz Smart Star
+#define  SR9100   0x0502		// 25Mhz Smart Star
+#define	EG2000	0x0600		// 22MHz Ether Gate, two ethernet ports
+#define	RABLINK	0x0601		// 22MHz RabbitLink
+#define	EG2100	0x0601		// 22MHz RabbitLink
+#define	EG2020	0x0602		// 22MHz Ether Gate, one ethernet port
+#define	EG2110A	0x0603		// 22MHz RabbitLink, 3 Volts
+#define 	RCM2100  0x0700		// 22MHz Ethernet Core Module, ethernet, 512K Flash, 512K SRAM
+#define 	RCM2110  0x0701		// 22MHz Ethernet Core Module, ethernet, 256K Flash, 128K SRAM
+#define 	RCM2120  0x0702		// 22MHz Advanced Core Module, 512K Flash, 512K SRAM
+#define 	RCM2130  0x0703		// 22MHz Advanced Core Module, 256K Flash, 128K SRAM
+#define 	RCM2115  0x0704		// 22MHz Ethernet Core Module, ethernet, 256K Flash, 128K SRAM
+
+#define	BL2000	0x0800		// 22MHz 12 bit A/D, DAC,    Digital I/O, Ethernet
+#define	BL2010	0x0801		// 22MHz 10 bit A/D, no DAC, Digital I/O, Ethernet
+#define	BL2020	0x0802		// 22MHz 12 bit A/D, DAC,    Digital I/O, no Ethernet
+#define	BL2030	0x0803		// 22MHz 10 bit A/D, no DAC, Digital I/O, no Ethernet
+#define 	BL2040   0x0804		// 22MHz Digital I/O, no analog, no Ethernet
+#define	BL2010B	0x0805		// 22MHz 512K SRAM, 12 bit A/D, no DAC, Digital I/O, Ethernet
+#define	BL2000B	0x0806		// 22MHz 512/512K, 12 bit A/D, DAC, Digital I/O, Ethernet
+
+#define	RCM2200	0x0900		// 22MHz Micro Ethernet Core, 256K Flash, 128K SRAM
+#define	RCM2210	0x0900		// 22MHz Micro Ethernet Core, 256K Flash, 128K SRAM, no RJ45
+#define	RCM2260A	0x0901		// 22MHz RCM2260 Micro Ethernet Core 2x256 Flash, 512K SRAM, no RJ45
+#define	RCM2300	0x0A00		// 22MHz Micro Core
+
+#define 	BL2100	0x0B00		// 22MHz Mini-E, RCM2200 ethernet, analog I/O
+#define 	BL2110	0x0B01		// 22MHz Mini-E, RCM2200 ethernet, no analog I/O
+#define 	BL2120	0x0B02		// 22MHz Mini-E, RCM2300 no ethernet, analog I/O
+#define 	BL2130	0x0B03		// 22MHz Mini-E, RCM2300 no ethernet, no analog I/O
+#define  BL2105	0x0B04		// 22MHz Mini-E, RCM2250 ethernet, analog I/O
+#define  BL2115	0x0B05		// 22MHz Mini-E, RCM2250 ethernet, no analog I/O
+#define 	BL2101	0x0B06		// 22MHz Mini-E, RCM2200 ethernet, 0-10V analog I/O
+#define 	BL2121	0x0B07		// 22MHz Mini-E, RCM2300 no ethernet, 0-10V analog I/O
+#define 	BL2111	0x0B08		// 22MHz Mini-E, RCM2250 ethernet, 0-10V analog I/O
+
+#define 	SR9150 	0x0C00		// 22MHz SmartStar CPU, ethernet
+#define 	SR9160 	0x0C01		// 22MHz SmartStar CPU, no ethernet
+#define  OP6800	0x0D00		// 22MHz MiniCom, RCM2200 ethernet
+#define  OP6810	0x0D01		// 22MHz MiniCom, RCM2300 no ethernet
+#define  OP6805	0x0D02		// 22MHz MiniCom, RCM2250 ethernet
+#define	RCM2250	0x0E00		// 22MHz Micro Ethernet Core, 512KB RAM, 2x256KB flash
+#define	RCM3000	0x0F00		// 29MHz R3000 Ethernet Core, 512K Flash and SRAM
+#define	RCM3010	0x0F01		// 29MHz R3000 Ethernet Core, 256K Flash, 128K SRAM
+#define	RCM3100	0x1000		// 29MHz R3000 Core, 512K Flash and SRAM
+#define	RCM3110	0x1001		// 29MHz R3000 Core, 256K Flash, 128K SRAM
+#define  OP7200	0x1100		// 22MHz RCM2200 Ethernet, DI/O, ADC, RabbitNet, Touchscreen
+#define  OP7210	0x1101		// 22MHz RCM2200 Ethernet, DI/O, ADC, RabbitNet
+#define  OP7200B	0x1102		// 22MHz RCM2250 Ethernet, DI/O, ADC, RabbitNet, Touchscreen
+#define  OP7210B	0x1103		// 22MHz RCM2250 Ethernet, DI/O, ADC, RabbitNet
+#define	LP3500	0x1200		// 7.3728MHz R3000 Low-Power, 512K Flash, 512K SRAM, ADC, Relay
+#define	LP3510	0x1201		// 7.3728MHz R3000 Low-Power, 256K Flash, 128K SRAM
+
+#define	RCM3200	0x1300		// 44.24MHz R3000, 100BaseT, 512K Flash, 256K SRAM + 512K FSRAM
+#define	RCM3210A	0x1301		// 29.29MHz R3000, 100BaseT, 256K Flash, 128K SRAM
+#define	RCM3220A	0x1302		// 44.24MHz R3000, 512K Flash, 256K SRAM + 512K FSRAM
+
+#define	RCM3300A	0x1400		// RCM3300, 44MHz, 10/100BaseT, 512K Flash,
+										//   512K SRAM, 512K FSRAM, 8Mb serial flash
+#define	RCM3350A	0x1401		// RCM3350, 44MHz, 10/100BaseT, 512K Flash,
+										//   512K SRAM, 512K FSRAM, 16Mb serial flash
+#define	RCM3310A	0x1402		// RCM3310, 44MHz, 10/100BaseT, 512K Flash,
+										//   512K SRAM, 512K FSRAM, 4Mb serial flash
+#define	RCM3360A	0x1403		// RCM3360, 44MHz, 10/100BaseT, 512K Flash,
+										//   512K SRAM, 512K FSRAM, 16Mb nand flash+socket
+#define	RCM3370A	0x1404		// RCM3370, 44MHz, 10/100BaseT, 512K Flash,
+										//   512K SRAM, 512K FSRAM, nand flash socket
+#define	RCM3360B	0x1405		// RCM3360, 44MHz, 10/100BaseT, 512K Flash,
+										//   512K SRAM, 512K FSRAM, 16Mb nand flash
+#define	RCM3365	0x1406		// RCM3365, 44MHz, 10/100BaseT Asix variant, 512K Flash,
+										// 512K SFRAM, 16MB nand flash+XD socket
+#define	RCM3375	0x1407		// RCM3375, 44MHz, 10/100BaseT Asix variant, 512K Flash,
+										// 512K SFRAM, XD socket
+#define	RCM3305	0x1408		// RCM3305, 44MHz, 10/100BaseT, 512K Flash,
+										//   512K SRAM, 512K FSRAM, 8Mb serial flash
+#define	RCM3315	0x1409		// RCM3315, 44MHz, 10/100BaseT, 512K Flash,
+										//   512K SRAM, 512K FSRAM, 4Mb serial flash
+
+#define 	BL2500A	0x1500		// Rabbitnet, RCM3010 (29MHz,256K/128K, ethernet)
+#define 	BL2510A	0x1501		// Rabbitnet, RCM3110 (29MHz,256K/128K)
+#define 	BL2500B	0x1502		// Rabbitnet, RCM3000 (29MHz,2x256K/512K, ethernet)
+#define 	BL2510B	0x1503		// Rabbitnet, RCM3100 (29MHz,2x256K/512K)
+#define 	BL2500C	0x1504		// Rabbitnet, RCM3200 (44MHz,512K/512K+512K, 100BaseT ethernet)
+
+#define	RCM3400A	0x1600		// 29MHz, Microcore with analog, 512K flash, 512K SRAM
+#define	RCM3410X	0x1601		// reserved (formerly 29MHz, Microcore with analog, 256K/256k)
+#define	RCM3420A	0x1602		// 22MHz, Microcore with analog, 512K flash, 256K SRAM
+#define	RCM3420B	0x1603		// 22MHz, Microcore, 512K flash, 256K SRAM
+#define	RCM3450	0x1604		// 29MHz, Microcore with enhanced analog, 512K flash, 512K SRAM
+#define	RCM3410A	0x1610		// 29MHz, Microcore with analog, 256K flash, 256K SRAM
+
+#define	BL2600A	0x1700		// BL2600 (RCM3200) 44MHz, 100BaseT, 512K Flash, 256K SRAM, 512K FSRAM
+#define	BL2600B	0x1701		// BL2600 (RCM3000) 29MHz, Ethernet, 2x256K Flash, 512K SRAM
+#define	BL2610A	0x1702		// BL2610 (RCM3100) 29MHz, 2x256K Flash, 512K SRAM
+#define	BL2600D	0x1703		// Reserved
+#define	BL2600C	0x1704		// BL2600 (RCM3010) 29MHz, Ethernet, 256K Flash, 128K SRAM
+#define	BL2610B	0x1705		// BL2610 (RCM3110) 29MHz, 256K Flash, 128K SRAM
+#define	BL2600K	0x170A		// Reserved
+#define	BL2600L	0x170B		// Reserved
+#define  BL2600M  0x170C 		// BL2600 44.2368 512 512 ASIX 3000A RCM3365, 512 FSRAM, 16 Mb Nand
+										// Flash, xD Connector
+#define  BL2600N  0x170D 		// BL2600 44.2368 512 512 ASIX 3000A RCM3375, 512 FSRAM, xD Connector
+
+#define	EM1500A	0x1800		// Ethernet Modem, RCM3200
+
+#define 	RN1100A	0x1900		// RabbitNet RN1100 Digital I/O board
+#define 	RN1200A	0x1A00		// RabbitNet RN1200 Analog-to-Digital board
+#define  RN1300A	0x1B00		// Rabbitnet RN1300 Digital-to-Analog board
+#define  RN1500A	0x1C00		// Rabbitnet RN1500 Display/Keypad Module
+
+#define	RCM3600A 0x1E00		// RCM3600 TinyCore 22MHz, 512K flash, 512K SRAM
+#define	RCM3610A 0x1E01		// RCM3610 TinyCore 22MHz, 256K flash, 128K SRAM
+#define	RCM3600LP 0x1E02		// Reserved
+#define	RCM3660	0x1E03		// Reserved
+#define	RCM3600H 0x1E20		// RCM3600 Hobby 22MHz, 512K flash, 512K SRAM
+#define	RCM3610H 0x1E21		// RCM3610 Hobby 22MHz, 256K flash, 128K SRAM
+
+#define	RCM3700A 0x1F00		// RCM3700 Ethernet TinyCore 22MHz, 512K flash,
+										//  512K SRAM, 1Mb sflash
+#define	RCM3710A 0x1F01		// RCM3710 Ethernet TinyCore 22MHz, 256K flash,
+										//  128K SRAM, 1Mb sflash
+#define	RCM3720A 0x1F02		// RCM3720 Ethernet TinyCore 22MHz, 512K flash,
+										//  256K SRAM, 1Mb sflash
+#define	RCM3700LP 0x1F03		// Reserved
+#define	RCM3750  0x1F04		// RCM3750 10/100BaseT TinyCore 22MHz, 512K flash,
+										//  512K SRAM, 1Mb sflash
+#define	RCM3760  0x1F05	   // RCM3760 10/100BaseT TinyCore 22MHz, 512K flash,
+										//  512K SRAM, 1Mb sflash, 3.3V
+#define	RCM3700H 0x1F20 		// RCM3700 Hobby Ethernet 22MHz, 512K flash,
+										//  512K SRAM, 1Mb sflash
+#define	RCM3710H 0x1F21 		// RCM3710 Hobby Ethernet 22MHz, 256K flash,
+										//  128K SRAM, 1Mb sflash
+#define	RCM3720H 0x1F22		// RCM3720 Hobby Ethernet 22MHz, 512K flash,
+										//  256K SRAM, 1Mb sflash
+
+#define	RN1600A	0x2000		// Rabbitnet RN1600 Keypad/Displya Interface Card
+#define	RN1400A	0x2100		// Rabbitnet RN1400 Relay Card
+
+#define	RCM3800	0x2300		// RCM3800 Power Core board series, options vary
+#define 	RCM3810	0x2301		// RCM3810 Power Core board series, options vary
+#define	RCM3800A	RCM3800     // RCM3800 Power Core board series, options vary
+#define	POWERCOREFLEX RCM3800 // PowerCore FLEX board series, options vary
+#define 	RCM3800_SERIES			((_BOARD_TYPE_ & 0xFF00) == RCM3800)
+#define 	POWERCOREFLEX_SERIES	RCM3800_SERIES
+
+#define	RABBITFLEX_SBC40		0x2400	// RabbitFLEX SBC40 board
+#define  RABBITFLEX_SBC40_SERIES (_BOARD_TYPE_ == RABBITFLEX_SBC40)
+
+#define SMC30000	0x2500	// Varies
+#define SMC31000	0x2600	// Varies
+
+#define RCM3209	0x2D20	// RCM3200 replacement, 44MHz R3000, 10/100BaseT,
+               	      	//  512K Flash, 256K SRAM + 512K FSRAM
+#define RCM3229	0x2D21	// RCM3220 replacement, 44MHz R3000, 10/100BaseT,
+               	      	//  512K Flash, 256K SRAM + 512K FSRAM
+#define RCM3309	0x2D30	// RCM3305 replacement, 44MHz R3000, 10/100BaseT,
+               	      	//  512K Flash, 512K SRAM + 512K FSRAM, 8M sflash
+#define RCM3319	0x2D31	// RCM3315 replacement, 44MHz R3000, 10/100BaseT,
+               	      	//  512K Flash, 512K SRAM + 512K FSRAM, 4M sflash
+#define RCM3900	0x2D00	// RCM3365 replacement, 44MHz R3000, 10/100BaseT,
+               	      	//  512K Flash, 512K SRAM + 512K FSRAM, 32M nflash,
+               	      	//  SD socket
+#define RCM3910	0x2D01	// RCM3375 replacement, 44MHz R3000, 10/100BaseT,
+               	      	//  512K Flash, 512K SRAM + 512K FSRAM, SD socket
+#define RCM3900_SERIES ((_BOARD_TYPE_ & 0xFF00) == (RCM3900 & 0xFF00))
+
+//*********************************************************************
+//***** Memory Device Configuration Defaults and Options **************
+//*********************************************************************
+
+#define CS0OE0			 	0x00	// CS0/OE0/WE0
+#define CS0OE1				0x04	// CS0/OE1/WE1
+#define CS1OE0			 	0x01	// CS1/OE0/WE0
+#define CS1OE1				0x05	// CS1/OE1/WE1
+#define CS2OE0				0x02	// CS2/OE0/WE0
+#define CS2OE1			 	0x06	// CS2/OE1/WE1
+
+#define WSTATES0 0xC0
+#define WSTATES1 0x80
+#define WSTATES2 0x40
+#define WSTATES4 0x00
+
+#define _MBC_CS_MASK       0x0F
+#define _MBC_WS_MASK       0xC0
+
+#define _DF_SIZE_MASK		0xFF000000
+#define _DF_TYPE_MASK		0x00FF0000
+#define _DF_SUB_MASK 		0x0000FFFF
+#define _DF_TYPE_SER			((_DC_DFLASH0_ & _DF_TYPE_MASK) == 0x00010000)
+#define _DF_TYPE_NAND		((_DC_DFLASH0_ & _DF_TYPE_MASK) == 0x00020000)
+
+#ifndef _DC_MD0_
+#define _DC_MD0_				1				// unknown, assume present
+#define _DC_MD0_ID_			0				// unknown
+#define _DC_MD0_TYPE_		0				// unknown
+#define _DC_MD0_SIZE_ 		_FLASH_SIZE_
+#define _DC_MD0_SECNUM_		0 				// unknown
+#define _DC_MD0_SECSIZE_	0 				// unknown
+#define _DC_MD0_SPEED_		0				// unknown
+#define _DC_MD0_MBC_       CS0OE0|WSTATES1
+#endif
+
+#ifndef _DC_MD1_
+#define _DC_MD1_				0				// unknown, assume absent
+#define _DC_MD1_ID_			0				// unknown
+#define _DC_MD1_TYPE_		0				// unknown
+#define _DC_MD1_SIZE_ 		0
+#define _DC_MD1_SECNUM_		0 				// unknown
+#define _DC_MD1_SECSIZE_	0 				// unknown
+#define _DC_MD1_SPEED_		0				// unknown
+#define _DC_MD1_MBC_       CS2OE0|WSTATES1
+#endif
+
+#ifndef _DC_MD2_
+#define _DC_MD2_				1				// unknown, assume present
+#define _DC_MD2_ID_			0				// unknown
+#define _DC_MD2_TYPE_		0				// unknown
+#define _DC_MD2_SIZE_ 		_RAM_SIZE_
+#define _DC_MD2_SECNUM_		0 				// unknown
+#define _DC_MD2_SECSIZE_	0 				// unknown
+#define _DC_MD2_SPEED_		0				// unknown
+#define _DC_MD2_MBC_       CS1OE1|WSTATES2
+#endif
+
+#ifndef _DC_MD3_
+#define _DC_MD3_				0				// unknown, assume absent
+#endif
+
+#ifndef _DC_DFLASH0_
+#define _DC_DFLASH0_ 		0L
+#endif
+
+#ifndef _DC_BRD_OPT0_
+#define _DC_BRD_OPT0_		0L				// unknown, assume absent
+#endif
+
+//***** End of Memory Device Configuration Defaults and Options *******
+
+//*********************************************************************
+//***** _DC_BRD_OPT0_ bitmask definitions *****************************
+//*********************************************************************
+
+#define BRDOPT0_NANDFLASHMASK		0x00000010L
+
+//***** End of _DC_BRD_OPT0_ bitmask definitions **********************
+
+//*********************************************************************
+//***** Board-specific initializations ********************************
+//*********************************************************************
+
+//***** RCM3200 and similar boards' specifics *************************
+
+#ifdef _FAST_RAM_
+	#if ((_BOARD_TYPE_ != RCM3200) && (_BOARD_TYPE_ != RCM3220A) \
+	     && (_BOARD_TYPE_ != BL2500C) && (_BOARD_TYPE_ != EM1500A) \
+        && ((_BOARD_TYPE_ < RCM3300A) || (_BOARD_TYPE_ > (RCM3300A+0x00FF))) \
+        && (_BOARD_TYPE_ != BL2600A) && (_BOARD_TYPE_ != BL2600D) \
+        && (_BOARD_TYPE_ != BL2600M) && (_BOARD_TYPE_ != BL2600N) \
+        && (_BOARD_TYPE_ != BL2600K) && (_BOARD_TYPE_ != BL2600L)) \
+        && !RCM3900_SERIES
+		// For now, only allow FAST_RAM_COMPILE for RCM3200 and similar boards
+		// Check to make sure 3800 or Flex SBC series board actually has 2 ram devices.
+		#if (((_DC_MD3_==0) && (RCM3800_SERIES || RABBITFLEX_SBC40_SERIES)) \
+		     || !(RCM3800_SERIES || RABBITFLEX_SBC40_SERIES))
+		#fatal "Compile mode 'Code and BIOS in flash, run in RAM' not supported for this board."
+		#endif
+	#endif
+#endif // End of _FAST_RAM_ check
+
+// Large #if block to check fast ram capable boards
+#if ((_BOARD_TYPE_ == RCM3200) || (_BOARD_TYPE_ == RCM3220A) \
+     || (_BOARD_TYPE_ == BL2500C) || (_BOARD_TYPE_ == EM1500A) \
+     || ((_BOARD_TYPE_ >= RCM3300A) && (_BOARD_TYPE_ <= (RCM3300A+0x00FF))) \
+     || RCM3800_SERIES || RABBITFLEX_SBC40_SERIES \
+     || (_BOARD_TYPE_ == BL2600A) || (_BOARD_TYPE_ == BL2600D) \
+     || (_BOARD_TYPE_ == BL2600M) || (_BOARD_TYPE_ == BL2600N) \
+     || (_BOARD_TYPE_ == BL2600K) || (_BOARD_TYPE_ == BL2600L)) \
+     || RCM3900_SERIES
+	#ifdef _RAM_
+	   #if (!(RCM3800_SERIES || RABBITFLEX_SBC40_SERIES) || (_DC_MD3_==1))
+	      #error "Compile to RAM option programs the battery-backed RAM on CS1 and destroys any persistent data stored there."
+	      #fatal "Comment out this error if you still want to run off the ram on CS1."
+	   #endif
+	#endif
+
+	#ifdef _FLASH_
+	   #if (!(RCM3800_SERIES || RABBITFLEX_SBC40_SERIES) || (_DC_MD3_==1))
+	      #warns "For optimal performance on this board, use the \"Code and BIOS in flash, run in ram\" compiler option."
+	      #warns "Comment out these warnings if you still want to run directly out of flash."
+	   #endif
+	#endif
+
+	#if (RCM3800_SERIES || RABBITFLEX_SBC40_SERIES)
+	   #ifdef _DC_3800OPT0_
+	      #define CLOCK_DOUBLED      ((_DC_3800OPT0_ &  0x100) >> 8)
+	   #else
+	      #define CLOCK_DOUBLED      0
+	   #endif
+	#endif
+
+	// We have a RAM on CS2
+	#ifndef _RAM_
+	   #if RCM3800_SERIES || RABBITFLEX_SBC40_SERIES
+	      #if _RAM_SIZE_ != _DC_MD2_SIZE_
+	         #undef _RAM_SIZE_
+	         #define _RAM_SIZE_         _DC_MD2_SIZE_  // larger, 512K RAM on CS2
+	      #endif
+
+	      #if _RAM_SIZE_ > 0x80
+	         #undef _RAM_SIZE_
+	         #define _RAM_SIZE_ 0x80
+	      #endif
+
+	      #define CS_RAM             _DC_MD2_MBC_ & _MBC_CS_MASK   // CS2/OE1/WE1
+	      #define RAM_WSTATES        _DC_MD2_MBC_ & _MBC_WS_MASK
+	      #define FLASH_WSTATES      _DC_MD0_MBC_ & _MBC_WS_MASK
+	      // Double if defined, otherwise do not double (as idblock is missing or bad).
+	      #if _DC_MD3_
+	         #define RAM2_SIZE          0x40  // Define the size of the RAM on CS1
+	                                          // Should be _DC_MD2_SIZE_, but 512K
+	                                          // is not yet supported.
+	         #define CS_RAM2            _DC_MD3_MBC_ & _MBC_CS_MASK   // CS2/OE1/WE1
+	         #define RAM2_WSTATES       _DC_MD3_MBC_ & _MBC_WS_MASK
+	         #define RUN_IN_RAM_CS      0x2   // Our main program will be running in the
+	                                          // RAM on CS2, so tell the BIOS that we
+	                                          // are running on CS2
+
+	         #undef  MB2CR_INVRT_A18          // We do not want to invert A18 on MB2CR
+	         #define MB2CR_INVRT_A18    0     // since we are mapping the 256K SRAM
+	                                          // to bank 2
+
+	         #define FLASH_FS_OFFS      0x80  // The flash file system is placed at the
+	                                          // top of flash, and the end of xmem is an
+	                                          // offset from the beginning of the device.
+	                                          // Adding this offset to the end of xmem value
+	                                          // corrects for the mapping of the flash.
+	         // we only actually map the battery backed /CS1 RAM in FAST_RAM_COMPILE mode!
+	         #ifdef _FAST_RAM_
+	         #define RAM2_START 0x80
+	         #endif
+	      #endif
+
+	   #else // fast ram boards other than RCM3800
+	      #ifndef CS_RAM
+	          #define CS_RAM         0x06  // CS2/OE1/WE1
+	      #endif
+	      #define CS_RAM2            0x05  // CS1/OE1/WE1
+
+	      #undef _RAM_SIZE_
+	      #define _RAM_SIZE_         0x80  // larger, 512K RAM on CS2
+
+	      #ifndef NUM_RAM_WAITST
+	          #define NUM_RAM_WAITST 0     // Set wait states for the fast RAM
+	      #endif
+	      #ifndef NUM_FLASH_WAITST
+	          #define NUM_FLASH_WAITST   1
+	      #endif
+	      #ifndef NUM_RAM2_WAITST
+	          #define NUM_RAM2_WAITST    1     // Set wait states for the battery backed RAM
+	      #endif
+
+	      //*** BOARD-SPECIFIC MACROS ***
+	      #define RAM2_SIZE 0x40           // Define the size of the RAM on CS1
+	                                       // For the RCM3200, _RAM_SIZE_ contains
+	                                       // the size of the RAM on CS2
+	      #define RUN_IN_RAM_CS      0x2   // Our main program will be running in the
+	                                       // RAM on CS2, so tell the BIOS that we
+	                                       // are running on CS2
+
+	      #undef  MB2CR_INVRT_A18          // We do not want to invert A18 on MB2CR
+	      #define MB2CR_INVRT_A18    0     // since we are mapping the 256K SRAM
+	                                       // to bank 2
+	      #define FLASH_FS_OFFS      0x80  // The flash file system is placed at the
+	                                       // top of flash, and the end of xmem is an
+	                                       // offset from the beginning of the device.
+	                                       // Adding this offset to the end of xmem value
+	                                       // corrects for the mapping of the flash.
+	      // we only actually map the battery backed /CS1 RAM in FAST_RAM_COMPILE mode!
+	      #ifdef _FAST_RAM_
+	      #define RAM2_START 0x80
+	      #endif
+	   #endif
+	// *** End of FLASH and Fast RAM mode compile configuration ***
+	#else // When running in RAM mode, compile to CS1
+
+	   #define RUN_IN_RAM_CS      0x1   // Our main program will be running in the
+	                                    // RAM on CS1, so tell the BIOS that we
+	                                    // are running on CS1
+
+	   #if RCM3800_SERIES || RABBITFLEX_SBC40_SERIES
+	      #define FLASH_WSTATES      _DC_MD0_MBC_ & _MBC_WS_MASK
+
+	      // Check for extra ram, if present use it to compile to ram
+	      #if _DC_MD3_
+	         #define CS_RAM             _DC_MD3_MBC_ & _MBC_CS_MASK  // CS1/OE1/WE1
+	         #define RAM_WSTATES        _DC_MD3_MBC_ & _MBC_WS_MASK  // Set wait states for running in /CS1 RAM
+	         #if _RAM_SIZE_ != _DC_MD3_SIZE_
+	            #undef _RAM_SIZE_
+	            #define _RAM_SIZE_         _DC_MD3_SIZE_  // larger, 512K RAM on CS2
+	         #endif
+	      // Otherwise use primary RAM.
+	      #else
+	         #define CS_RAM             _DC_MD2_MBC_ & _MBC_CS_MASK  // CS1/OE1/WE1
+	         #define RAM_WSTATES        _DC_MD2_MBC_ & _MBC_WS_MASK  // Set wait states for running in /CS1 RAM
+	         #if _RAM_SIZE_ != _DC_MD2_SIZE_
+	            #undef _RAM_SIZE_
+	            #define _RAM_SIZE_         _DC_MD2_SIZE_  // larger, 512K RAM on CS2
+	         #endif
+	      #endif
+
+	   #else
+	      #define CS_RAM             0x05  // CS1/OE1/WE1
+	      #define NUM_RAM_WAITST     1     // Set wait states for running in /CS1 RAM
+	      #define NUM_FLASH_WAITST   1
+	   #endif
+
+	#endif
+// *** End of RAM mode compile configuration ***
+#else
+	// We're not fast RAM compatible
+#endif
+// *** End of RCM3200 and similar boards' specific initializations ***
+
+// *** Built-in vs. external serial/nand mass storage flash board specifics ***
+
+#if (_BOARD_TYPE_ & 0xFF00) == (RCM3300A & 0xFF00) || \
+    (_BOARD_TYPE_ & 0xFF00) == (RCM3700A & 0xFF00) || \
+    RCM3800_SERIES || RABBITFLEX_SBC40_SERIES || _BOARD_TYPE_ == BL2600D || \
+    _BOARD_TYPE_ == BL2600K || _BOARD_TYPE_ == BL2600L || \
+    _BOARD_TYPE_ == BL2600M || _BOARD_TYPE_ == BL2600N || \
+    _BOARD_TYPE_ == RCM3309 || _BOARD_TYPE_ == RCM3319 || \
+    _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910 || \
+    (_DC_BRD_OPT0_ & BRDOPT0_NANDFLASHMASK)	// w/ NAND
+	#if _BOARD_TYPE_ == RCM3360A || _BOARD_TYPE_ == RCM3360B || \
+	    _BOARD_TYPE_ == RCM3370A || \
+	    _BOARD_TYPE_ == RCM3365 || _BOARD_TYPE_ == RCM3375 || \
+	    _BOARD_TYPE_ == RCM3900 || _BOARD_TYPE_ == RCM3910 || \
+	    _BOARD_TYPE_ == BL2600K || _BOARD_TYPE_ == BL2600L || \
+	    _BOARD_TYPE_ == BL2600M || _BOARD_TYPE_ == BL2600N || \
+	    (_DC_BRD_OPT0_ & BRDOPT0_NANDFLASHMASK)	// w/ NAND
+	#define __BT__FAT_MAXBUFS	128	// Default maximum number of FAT buffers for
+												//  boards with built-in nand flash.
+   #else
+	#define __BT__FAT_MAXBUFS	8	// Default maximum number of FAT buffers for
+											//  boards with built-in serial flash.
+	#endif
+#else
+	#define __BT__FAT_MAXBUFS	0	// Default maximum number of FAT buffers for
+										 	//  boards without built-in mass storage flash.
+#endif
+
+// *** End of serial/nand mass storage flash board-specific initializations ***
+
+
+//*********************************************************************
+//***** Macro defaults ************************************************
+//*********************************************************************
+
+#define	RAMONLYBIOS		0			// Set this to one if you have a board with
+											// a RAM installed on CS0/WE0/OE0 and no
+											// flash installed.  You will also need to
+											// compile to RAM, and copy the file
+											// RAMONLYCOLDLOAD.BIN to COLDLOAD.BIN and
+											// RAMONLYPILOT.BIN to PILOT.BIN.
+
+
+//***** Starting 4k page for RAM physical addresses *******************
+#ifdef _FLASH_
+	// Compiling to Flash
+	#define RAM_START       0x80     // RAM normally starts at 0x80000
+#else // _RAM_ || _FAST_RAM_
+	// Running in RAM
+	#define RAM_START       0x0      //	RAM starts at 00000 if compiling to RAM
+#endif
+
+//***** NAND flash onboard ********************************************
+#ifdef _DC_BRD_OPT0_
+   #if (_DC_BRD_OPT0_ & BRDOPT0_NANDFLASHMASK) != 0
+      #define NANDFLASH_ONBOARD 1
+   #else
+      #define NANDFLASH_ONBOARD 0
+   #endif
+#endif
+
+#ifndef NUM_RAM_WAITST
+   #define NUM_RAM_WAITST   0
+#endif
+#ifndef NUM_FLASH_WAITST
+   #define NUM_FLASH_WAITST 0
+#endif
+#ifndef NUM_RAM2_WAITST
+	#define NUM_RAM2_WAITST	 0
+#endif
+
+//***** Chip selects/write enables for the memory devices *************
+
+// The chip select macros are defined such that the CS for each memory
+// device is invisible to the BIOS and user programs. The execution RAM
+// (RAM which the code runs in) is defined by the macro RUN_IN_RAM_CS,
+// which is set to the CS of the RAM device in which the primary execution
+// is to take place. This is specifically for the RAM_COMPILE and
+// FAST_RAM_COMPILE compile modes. If a board has a second RAM	attached, it
+// must be defined in the board-specific initialization section.
+
+#if (RAMONLYBIOS == 1)
+	#ifndef CS_RAM
+		#define CS_RAM			0x00	  	// CS0/OE0/WE0
+	#endif
+#else
+	#ifndef CS_FLASH
+		#define CS_FLASH		0x00    	// CS0/OE0/WE0
+	#endif
+	#ifndef CS_RAM
+		#define CS_RAM			0x05	  	// CS1/OE1/WE1
+	#endif
+#endif
+
+#ifndef CS_FLASH2
+	#define CS_FLASH2			0x02    	// CS2/OE0/WE0
+#endif
+
+#ifndef RUN_IN_RAM_CS
+	#define RUN_IN_RAM_CS	0x1		// This is set to 0, 1, or 2
+												// based on the chip select of
+												// the memory the main program
+												// is to run in. By default, the
+												// RAM is on CS1
+#endif
+
+#ifndef FLASH_FS_OFFS					// This value is used to calculate
+#define FLASH_FS_OFFS		0x0		// the end of xmem in flash. This
+#endif										// is the absolute offset of the flash
+												// device in physical memory from address 0.
+												// Change this value if the flash filesystem
+												// is to be used, and the flash is mapped to
+												// any quadrant other than MB0CR.
+
+// Maps second half of RAM to bank 2 if only one RAM
+#ifdef _FAST_RAM_
+#if (RUN_IN_RAM_CS != 0x2)
+#ifndef MB2CR_INVRT_A18
+	#define MB2CR_INVRT_A18  1
+#endif
+#endif
+#endif
+
+#ifndef MB0CR_INVRT_A18
+	#define MB0CR_INVRT_A18  0
+#endif
+
+#ifndef MB1CR_INVRT_A18
+	#define MB1CR_INVRT_A18  0
+#endif
+
+#ifndef MB2CR_INVRT_A18
+	#define MB2CR_INVRT_A18  0
+#endif
+
+#ifndef MB3CR_INVRT_A18
+	#define MB3CR_INVRT_A18  0
+#endif
+
+#ifndef MB0CR_INVRT_A19
+	#define MB0CR_INVRT_A19  0
+#endif
+
+#ifndef MB1CR_INVRT_A19
+	#define MB1CR_INVRT_A19  0
+#endif
+
+#ifndef MB2CR_INVRT_A19
+	#define MB2CR_INVRT_A19  0
+#endif
+
+#ifndef MB3CR_INVRT_A19
+	#define MB3CR_INVRT_A19  0
+#endif
+
+/*** EndHeader */

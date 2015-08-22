@@ -1,0 +1,491 @@
+/* dm_log.lib
+ * Contains target-side logging subsystem.  Target calls these routines to
+ * get the DeviceMate to add log messages.
+ * Uses the XTC (eXtended Target Communications) layer.
+ */
+
+/* START LIBRARY DESCRIPTION *********************************************
+DM_LOG.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains target-side routines for communication with a
+   DeviceMate processor.  This API allows logging functionality.
+
+PORTING NOTE:
+   For non-Rabbit target processors with an ANSI C compiler, there are
+   equivalent .c and .h files in the LIB\Target subdirectory.
+
+CONFIGURATION MACROS:
+	The following macros may be defined before inclusion of this library.
+
+	DEVMATE_LOG_TCBUFSIZE
+	   Defaults to 133, which allows for 128-byte data packets plus the
+	   5-byte XTC header.
+
+	DEVMATE_LOG_XTCBUFSIZE
+	   Defaults to 256.  Must be greater than or equal to the larger of
+	   DEVMATE_LOG_TCBUFSIZE-5 or 128.
+
+	DEVMATE_LOG_NUMRXBUF
+	   Defaults to 1.  Logging mostly transmits, so there is no real need
+	   for a larger number of receive buffers.
+
+	DEVMATE_LOG_NUMTXBUF
+	   Defaults to 1.  Specifies the number of target communications
+	   transmit buffers.  Do not set higher than 2.  2 is only necessary
+	   if the highest possible speed is required.
+
+	DEVMATE_LOG_DEBUG
+		Defaults to not defined.  If defined, then Dynamic C debugging is
+		turned on for all functions herein.
+
+GLOBAL VARIABLES:
+
+   TCLogState _tclog;
+      One instance of this structure contains all necessary state
+      information for logging communication.  This library is thereby
+      made non-reentrant, however application code may serialize access
+      to these API functions so that the library may be used in a multi-
+      tasking environment.
+
+API FUNCTIONS:
+   See individual function description for details.  None of the
+   functions in this library are "blocking" i.e. they all set some
+   internal state, but return immediately (possibly without actually
+   accomplishing their intended goal).  Thus, it may be necessary
+   to call the same function multiple times in order to complete the
+   action.  Such functions are noted as such in their individual
+   descriptions.
+
+   Initialize connection to DeviceMate:
+   	int devmate_log_init()
+   	int devmate_log_status()
+   Set local filtering options
+      uint16 devmate_log_setpriorityfilter()
+      uint32 devmate_log_setfacilityfilter()
+   Write message
+      int devmate_log_put()
+
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader _tclog */
+#ifndef DEVMATE_LOG_H
+#define DEVMATE_LOG_H
+
+#ifndef DEVMATE_XTC_H
+	#use "dm_xtc.lib"
+#endif
+
+#ifndef TC_LOG_H
+	#use "tc_log.lib"
+#endif
+
+#ifdef DEVMATE_LOG_DEBUG
+	#define log_nodebug
+#else
+	#ifndef __DC__
+		#define log_nodebug
+	#else
+		#define log_nodebug nodebug
+	#endif
+#endif
+
+
+
+/*
+ * Struct to maintain overall logging comms state
+ */
+typedef struct {
+	XTCApp		app;			// XTC application stuff
+	XTCChan		chans[1];	// XTC channels for control
+	uint8			state;		// Logging communications state
+#define TCLOG_NOTREADY	0		// Initial state (wait for devmate_log_init() call)
+#define TCLOG_MAKERDY	1		// Waiting for peer to become ready
+#define TCLOG_ERROR		2		// Error readying
+#define TCLOG_OPENING	3		// Opening control channel
+#define TCLOG_READY		4		// Control channel OK
+#define TCLOG_OK			5		// All OK, can now send messages.
+	uint8			pri_filter;	// 1 bits indicate message locally filtered (prevent),
+									// based on priority.
+	uint32		fac_filter;	// As above, except based on message facility.
+	int initrq;
+	
+#ifdef TC_LOCKING
+	TC_LOCKTYPE lock;
+#endif
+} TCLogState;
+
+extern TCLogState _tclog;			// Static instance
+/*** EndHeader */
+
+TCLogState _tclog;
+
+
+/*** BeginHeader devmate_log_status */
+int devmate_log_status(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_log_status                <DM_LOG.LIB>
+
+SYNTAX: int devmate_log_status(void)
+
+KEYWORDS:      DeviceMate log
+
+DESCRIPTION:   Test communication link to the DeviceMate.  The link
+               status indicates whether logging functions can be accessed
+               on the DeviceMate.
+
+RETURN VALUE:  0: the link is currently being established
+               1: the link is successfully established
+               -1: an error has occurred.  Call devmate_log_init()
+                 to re-establish the link.  An error typically occurs
+                 because there is either no DeviceMate, or because the
+                 DeviceMate is not configured for logging support.
+
+SEE ALSO:      devmate_log_init
+
+END DESCRIPTION **********************************************************/
+
+log_nodebug
+int devmate_log_status(void)
+{
+	if (_tclog.state == TCLOG_ERROR)
+		return -1;
+	else if (_tclog.state != TCLOG_OK)
+		return 0;
+	else
+		return 1;
+}
+
+/*** BeginHeader devmate_log_init */
+int devmate_log_init(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_log_init                <DM_LOG.LIB>
+
+SYNTAX: int devmate_log_init(void)
+
+KEYWORDS:      DeviceMate log
+
+DESCRIPTION:   Establish communication link to the DeviceMate.  If a link
+               is already established, then it is re-established.
+
+RETURN VALUE:  1.
+
+SEE ALSO:      devmate_log_status
+
+END DESCRIPTION **********************************************************/
+
+log_nodebug
+int devmate_log_init(void)
+{
+	TC_LOCK(_tclog.lock);
+	
+	switch (_tclog.state) {
+	case TCLOG_ERROR:
+		// This call is error acknowledgment
+		_tclog.state = TCLOG_NOTREADY;
+		break;
+	case TCLOG_OK:
+		// reinit; abort control channel
+		xtc_abort(&_tclog.app, 0);
+		_tclog.state = TCLOG_MAKERDY;
+		break;
+	}
+
+	_tclog.initrq = 1;
+	
+	TC_UNLOCK(_tclog.lock);
+	
+	return 1;
+}
+
+/*** BeginHeader devmate_log_setpriorityfilter */
+uint8 devmate_log_setpriorityfilter(uint8 filter_allow, uint8 filter_prevent);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_log_setpriorityfilter                <DM_LOG.LIB>
+
+SYNTAX: uint8 devmate_log_setpriorityfilter(uint8 filter_allow,
+                                            uint8 filter_prevent)
+
+KEYWORDS:      DeviceMate log
+
+DESCRIPTION:   Set local log message filtering, based on message
+               priority.  The parameters are bit masks.  If bit
+               0 (the LSB) is set, this corresponds to priority
+               0 (highest priority); bit 7 corresponds to the
+               lowest priority (7).  For example
+                 devmate_log_setpriorityfilter(1<<3, 1<<5)
+               allows priority 3 and prevents priority 5.  Other
+               priorities are left in their previous state.
+               Initially, all priorities are allowed.
+               
+PARAMETER1:    Each bit set to '1' allows the corresponding priority
+               messages to be sent.
+PARAMETER2:    Each bit set to '1' prevents the corresponding priority
+               messages from being sent.  If the same bit is set in
+               both parameters, then the message is prevented.
+
+RETURN VALUE:  The previous "allow" mask.
+
+END DESCRIPTION **********************************************************/
+
+log_nodebug
+uint8 devmate_log_setpriorityfilter(uint8 filter_allow, uint8 filter_prevent)
+{
+	uint8 r;
+
+	r = ~_tclog.pri_filter;
+	_tclog.pri_filter &= ~filter_allow;
+	_tclog.pri_filter |= filter_prevent;
+	return r;
+}
+
+
+/*** BeginHeader devmate_log_setfacilityfilter */
+uint32 devmate_log_setfacilityfilter(uint32 filter_allow, uint32 filter_prevent);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_log_setfacilityfilter                <DM_LOG.LIB>
+
+SYNTAX: uint32 devmate_log_setfacilityfilter(uint32 filter_allow,
+                                             uint32 filter_prevent)
+
+KEYWORDS:      DeviceMate log
+
+DESCRIPTION:   Set local log message filtering, based on message
+               facility.  The parameters are bit masks.  If bit
+               0 (the LSB) is set, this corresponds to facility
+               0; bit 31 corresponds to facility 31.  For example
+                 devmate_log_setfacilityfilter(1<<1, 1<<9)
+               allows facility 1 and prevents facility 9.  Other
+               facilities are left in their previous state.
+               Initially, all facilities are allowed.
+               
+PARAMETER1:    Each bit set to '1' allows the corresponding facility
+               messages to be sent.
+PARAMETER2:    Each bit set to '1' prevents the corresponding facility
+               messages from being sent.  If the same bit is set in
+               both parameters, then the message is prevented.
+
+RETURN VALUE:  The previous "allow" mask.
+
+END DESCRIPTION **********************************************************/
+
+log_nodebug
+uint32 devmate_log_setfacilityfilter(uint32 filter_allow, uint32 filter_prevent)
+{
+	uint32 r;
+
+	r = ~_tclog.fac_filter;
+	_tclog.fac_filter &= ~filter_allow;
+	_tclog.fac_filter |= filter_prevent;
+	return r;
+}
+
+
+/*** BeginHeader devmate_log_put */
+int devmate_log_put(uint16 ffp, char * data, int length);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_log_put                <DM_LOG.LIB>
+
+SYNTAX: int devmate_log_put(uint16 ffp, char * data, int length)
+
+KEYWORDS:      DeviceMate log
+
+DESCRIPTION:   Write a log message.  "data" points to the binary
+               data to send, of specified "length".  Note that if the
+               message is filtered, then the return code is zero i.e.
+               indistinguishable from "successfully buffered".
+               Example:
+                 devmate_log_put(7, "Hello log", 9)
+               writes "Hello log" as a priority 7 message to facility
+               0.  The format is also 0 (ascii string).  Note that the
+               null terminator need not be included, since the log
+               basically treats all data as binary.  If the length
+               was given as '10' in the above example then the null
+               terminator would be included in the log, however this
+               would waste one byte of space.
+
+               Priority codes are not defined, however you may wish
+               to use the standard "syslog" encoding as follows:
+                 0: Emergency; 1: Alert; 2: Critical; 3: Error;
+                 4: Warning; 5: Notice; 6: Informational; 7: Debug.
+
+               The facility number is decoded by the DeviceMate into
+               the appropriate actual destination - see
+               filesystem\log.lib for details.  Unless configured
+               otherwise, facility 0 goes to the filesystem; 1 goes
+               to "stdout" (for debugging); 2 goes to both FS and
+               stdout.  Other facilities are discarded unless
+               specifically configured.
+                        
+PARAMETER1:    Format, facility and priority coded as a 16-bit word:
+                 bits 0-2: priority (0-7)
+                 bits 3-7: facility (0-31)
+                 bits 8-15:format (0 for ascii string; others user-
+                   defined).
+PARAMETER2:    Pointer to the first byte of log message.
+PARAMETER3:    Length of log message.  This must be less than or equal to
+               115.
+
+RETURN VALUE:  -1: an error occurred; logging not available.
+               -2: message too long (more than 115 chars).
+               0: message buffered for sending (or filtered out).
+               1: message could not be buffered.  Retry the same message
+                 later if desired.
+
+END DESCRIPTION **********************************************************/
+
+log_nodebug
+int devmate_log_put(uint16 ffp, char * data, int length)
+{
+	auto int rc;
+	auto TCLogMsg lm;
+
+	if (length > 115 || length < 0)
+		return -2;
+	devmate_tick();
+	if (_tclog.state != TCLOG_OK)
+		return -1;
+	if (_tclog.pri_filter & 1<<(ffp&7))
+		return 0;
+	if (_tclog.fac_filter & 1L<<(ffp>>3 & 31))
+		return 0;
+		
+	rc = xtc_writable(&_tclog.app, 0);
+	if (rc < 0) {
+		xtc_abort(&_tclog.app, 0);
+		_tclog.state = TCLOG_ERROR;
+		return -1;
+	}
+	if (rc < length + 5)
+		return 1;
+	lm.delim = DEVMATE_LOG_DELIM;
+	lm.length = length + 3;
+	lm.facpri = (uint8)ffp;
+	lm.fmt = (uint8)(ffp >> 8);
+	xtc_write(&_tclog.app, 0, &lm, 4);
+	xtc_write(&_tclog.app, 0, data, length);
+	return 0;
+}
+
+
+
+/*** BeginHeader _devmate_log_init */
+void _devmate_log_init(void);
+#funcchain __devmate_xtc_init _devmate_log_init
+/*** EndHeader */
+
+log_nodebug
+void _devmate_log_init(void)
+{
+	auto int rc;
+	static int linit;
+	
+#GLOBAL_INIT { linit = 0; }
+	
+	if (!linit) {
+#ifdef TC_LOCKING
+	/* Get a lock */
+		_tclog.lock = TC_CREATELOCK();
+#endif
+		_tclog.pri_filter = 0;
+		_tclog.fac_filter = 0;
+	}
+	_tclog.app.appno = TC_TYPE_LOG;
+	_tclog.app.numchans = 1;
+	_tclog.app.chans = _tclog.chans;
+	_tclog.app.txbufsize = DEVMATE_LOG_TCBUFSIZE;
+	_tclog.app.rxbufsize = 64;
+	if (rc = devmate_xtc_register(&_tclog.app, 64, DEVMATE_LOG_XTCBUFSIZE)) {
+#ifdef DEVMATE_LOG_DEBUG
+		printf("devmate_log_init: devmate_xtc_register failed %d\n", rc);
+#endif
+		exit(TC_TYPE_LOG);
+	}
+	_tclog.app.numrxbufs = DEVMATE_LOG_NUMRXBUF;
+	_tclog.app.numtxbufs = DEVMATE_LOG_NUMTXBUF;
+	_tclog.app.aflags = 0;
+	_tclog.app.tc_handler = NULL;
+	_tclog.app.reqpacing = 0;
+	_tclog.state = TCLOG_NOTREADY;
+	linit = 1;
+}
+
+
+/*** BeginHeader _devmate_log_tick */
+void _devmate_log_tick(void);
+#funcchain __devmate_tick _devmate_log_tick
+/*** EndHeader */
+
+log_nodebug
+void _devmate_log_tick(void)
+{
+	auto int rc;
+	
+	TC_LOCK(_tclog.lock);
+	
+	// Action the global logging state machine
+	switch (_tclog.state) {
+	case TCLOG_ERROR:
+		goto __DM_unlock;
+	case TCLOG_NOTREADY:
+		if (!_tclog.initrq)
+			goto __DM_unlock;		// Nothing to do
+		_tclog.state = TCLOG_MAKERDY;
+		// fall thru
+	case TCLOG_MAKERDY:
+		rc = devmate_xtc_ready(&_tclog.app);
+		if (!rc)
+			goto __DM_unlock;
+		if (rc < 0)
+			goto __DM_abort_all;
+		_tclog.state = TCLOG_OPENING;
+		if (xtc_closed(&_tclog.app, 0)) {
+			rc = xtc_open(&_tclog.app, 0);
+			if (rc < 0)
+				goto __DM_abort_all;
+		}
+		// fall thru
+	case TCLOG_OPENING:
+		if (xtc_error(&_tclog.app, 0))
+			goto __DM_abort_all;
+		if (!xtc_estab(&_tclog.app, 0))
+			goto __DM_unlock;	// keep waiting for control channel
+		_tclog.state = TCLOG_READY;
+		// fall thru
+	case TCLOG_READY:
+		if (!_tclog.initrq)
+			break;		// Ready, but no init request.
+		_tclog.state = TCLOG_OK;
+		// fall thru
+	case TCLOG_OK:
+		if (xtc_error(&_tclog.app, 0))
+			goto __DM_abort_all;
+		break;
+	}
+		
+__DM_unlock:
+	TC_UNLOCK(_tclog.lock);
+	return;
+
+__DM_abort_all:
+	_tclog.state = TCLOG_ERROR;
+	goto __DM_unlock;
+}
+
+
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

@@ -1,0 +1,1194 @@
+/*
+ *    pktdrv.lib
+ *    Copyright (C) Z-World, Inc. All rights reserved.
+ *
+ *    Tasks:
+ *       add function headers for routines
+ *       take a look at where mswait and tickwait are used
+ *          for eliminating blocking.
+ *       document the packet driver interface for other chips
+ *
+ * Change History:
+ *  2005-05-09  SJH  Simplified to use single xmem buffers.  Also incorporated
+ *                   R4000 optimizations.
+ */
+
+/*** BeginHeader  */
+#ifndef PKTDRV_H
+#define PKTDRV_H
+
+#ifdef PKTDRV_DEBUG
+	#define _pktdrv_debug debug
+#else
+	#define _pktdrv_debug nodebug
+#endif
+
+#ifndef __POOL
+	#use "pool.lib"
+#endif
+
+#ifndef PKT_POOL_IPSET
+	#define PKT_POOL_IPSET	1
+#endif
+
+
+
+// Now we bring in all the packet drivers.
+// *CUSTOM*
+//   For new libraries, add an analogous #use statement
+#ifdef DMAETH_PKTDRV_LIB
+	#use DMAETH_PKTDRV_LIB
+#endif
+#ifdef RT_PKTDRV_LIB
+	#use RT_PKTDRV_LIB
+#endif
+#ifdef ASIX_PKTDRV_LIB
+	#use ASIX_PKTDRV_LIB
+#endif
+#ifdef SMSC_PKTDRV_LIB
+	#use SMSC_PKTDRV_LIB
+#endif
+#ifdef CFPRISM_PKTDRV_LIB
+	#use CFPRISM_PKTDRV_LIB
+#endif
+#ifdef PPP_PKTDRV_LIB
+	#use PPP_PKTDRV_LIB
+#endif
+#ifdef CUSTOM_PKTDRV_LIB
+	#use CUSTOM_PKTDRV_LIB
+#endif
+// Finally, for old time's sake
+#ifdef PKTDRV
+	#use PKTDRV
+#endif
+
+
+// Sort out the number of instances and types of ethernet-type drivers
+// *CUSTOM*
+//   For new libraries, add an analogous #define USING_XXX 0 statement
+#ifndef USING_DMAETH
+	#define USING_DMAETH	0
+#endif
+#ifndef USING_REALTEK
+	#define USING_REALTEK	0
+#endif
+#ifndef USING_ASIX
+	#define USING_ASIX	0
+#endif
+#ifndef USING_SMSC
+	#define USING_SMSC	0
+#endif
+#ifndef USING_CFPRISM
+	#define USING_CFPRISM	0
+#endif
+#ifndef USING_CUSTOM
+	#define USING_CUSTOM	0
+#endif
+
+// *CUSTOM*
+//   For new libraries, add USING_XXX to the summation
+//#define USING_ETHERNET (USING_DMAETH+USING_REALTEK+USING_ASIX+USING_SMSC+USING_CFPRISM+USING_CUSTOM)
+#if (USING_ETHERNET > 2)
+	// We only support up to 2 ethernet-type interfaces.
+   #warns "Total ethernet drivers exceeds 2.  Only the first 2 can be supported"
+	#undef USING_ETHERNET
+   #define USING_ETHERNET	2
+#endif
+
+//WIFI -- (new style) WiFi/Interposer  drivers
+#ifdef WIFI_PKTDRV
+   #use WIFI_PKTDRV
+#endif
+
+#ifndef USING_PRISM2
+	#define USING_PRISM2 0
+#endif
+
+//#define USING_WIFI USING_PRISM2
+
+// Check that a WiFi packet driver has been included
+#ifndef WIFI_PKTDRV
+	#if (USE_WIFI > 0)
+		#warns "No WiFi packet driver included.  Define WIFI_PKTDRV to the WiFi packet driver library."
+	#endif
+#endif
+
+#if (USING_WIFI > 2)
+	// We only support up to 2 wifi interposer interfaces.
+   #warns "Total WiFi/Interposer drivers exceeds 2.  Only the first 2 can be supported"
+	#undef USING_WIFI
+   #define USING_WIFI	2
+#endif
+//WIFI -- end new style wifi/Interposer configuration
+
+#ifndef USING_PPP_SERIAL
+	#define USING_PPP_SERIAL 0
+#endif
+
+#ifndef USING_VSPD
+	#define USING_VSPD 0
+#endif
+
+#ifndef USING_PPPOE
+	#define USING_PPPOE 0
+#else
+	#if USING_PPPOE > USING_ETHERNET
+   	// Cannot have more PPPoE's than ethernets
+   	#undef USING_PPPOE
+      #define USING_PPPOE USING_ETHERNET
+   #endif
+#endif
+
+#if USING_PPP_SERIAL || USING_VSPD
+	#use "serlink.lib"
+#endif
+
+#if USING_PPPOE
+	#use "pppoe.lib"
+#endif
+
+
+
+/*** EndHeader */
+
+/*** BeginHeader 	tickwait, mswait */
+root void tickwait(unsigned short);
+root void mswait(unsigned short);
+/*** EndHeader */
+
+#asm nodebug
+; true ms is so close to ticks (1/1024s) that we alias the twain.
+mswait::
+tickwait::						; Delay loops necessary for reset/etc.
+	inc	hl						; Add 1 to parm to account for rounding down.
+	ld		de,(TICK_TIMER)
+	add	hl,de
+	ex		de,hl					; DE = exit time
+_pd_tickwloop:
+	ld		hl,(TICK_TIMER)
+	or		a
+	sbc	hl,de
+	add	hl,hl					; Check MSB of (current time - expiry time)
+	jr		c,_pd_tickwloop	; If -ve, keep waiting
+	ret
+#endasm
+
+
+/*** BeginHeader _rk_pd_getaddress, _rk_pd_getaddresslen */
+
+/* START FUNCTION DESCRIPTION ********************************************
+pd_getaddress                    <PKTDRV.LIB>
+
+SYNTAX:			void pd_getaddress(int iface, void* buffer);
+
+KEYWORDS:		tcpip, packetdriver
+
+DESCRIPTION: 	This function copies the hardware address into the
+					buffer.
+
+               For ethernet interfaces, this is the 6-byte MAC address
+               which is currently in use for that interface.
+
+               For PPP interfaces, there is no effective hardware
+               address, so no bytes are returned.
+
+               You should use the pd_getaddresslen() function to
+               determine the length of the hardware address.  Currently,
+               it is either 6 or 0, but future devices may have
+               different lengths.
+
+PARAMETER1:    iface		which interface (IF_ETH0, IF_PPP0 etc.)
+PARAMETER2:    buffer	buffer to copy address into.  This must be
+                 at least the number of chars specified by
+                 pd_getaddresslen() for this interface.
+
+RETURN VALUE:  none
+
+SEE ALSO:      pd_getaddresslen
+
+END DESCRIPTION **********************************************************/
+/* START FUNCTION DESCRIPTION ********************************************
+pd_getaddresslen                    <PKTDRV.LIB>
+
+SYNTAX:			int pd_getaddresslen(int iface);
+
+KEYWORDS:		tcpip, packetdriver
+
+DESCRIPTION: 	This function returns the length of the hardware address
+					for the specified interface.  Currently,
+               it is either 6 or 0, but future devices may have
+               different lengths.
+
+PARAMETER1:    iface		which interface (IF_ETH0, IF_PPP0 etc.)
+
+RETURN VALUE:  Number of bytes in hardware address: usually 6 for
+               ethernet, 0 for PPP, 6 for PPPoE.
+
+SEE ALSO:      pd_getaddress
+
+END DESCRIPTION **********************************************************/
+
+void _rk_pd_getaddress(int iface, void* buffer);
+int _rk_pd_getaddresslen(int iface);
+/*** EndHeader */
+
+/* ***************************************************************************
+/*	Ethernet
+/* **************************************************************************/
+
+// This is also called from pkt_init() in IP.LIB
+_pktdrv_debug
+void _rk_pd_getaddress(int iface, void* buffer)
+{
+	auto IFTEntry * i;
+   auto char * p;
+
+   i = _if_tab + iface;
+	i->ncd->ioctl(i->state, PD_GETHWA, &p);
+   memcpy(buffer, p, i->ncd->sizeof_hwa);
+}
+
+_pktdrv_debug
+int _rk_pd_getaddresslen(int iface)
+{
+	auto IFTEntry * i;
+
+   i = _if_tab + iface;
+	return i->ncd->sizeof_hwa;
+}
+
+/*** BeginHeader _rk_pd_sethwaddr */
+int _rk_pd_sethwaddr(int iface, char* hwa);
+/*** EndHeader */
+_pktdrv_debug int _rk_pd_sethwaddr(int iface, char* hwa)
+{
+	auto IFTEntry * i;
+
+   i = _if_tab + iface;
+   return i->ncd->ioctl(i->state, PD_SETHWA, hwa);
+}
+
+
+/*** BeginHeader _rk_pd_powerdown */
+int _rk_pd_powerdown(int iface);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+pd_powerdown                     <PKTDRV.LIB>
+
+SYNTAX: int pd_powerdown(int iface);
+
+KEYWORDS:		ethernet, pktdrv, sleepy, powersave
+
+DESCRIPTION:	Powerdown the interface hardware, by turning off as many
+					services as possible. When the NIC is in powerdown
+					mode, it is very important to _NOT_ call any
+					TCP/IP, ethernet, etc. functions, as they will
+					obviously fail, and the results will be undefined.
+					pd_powerup() should be the very next network
+					function called, to re-enable the NIC.
+
+PARAMETER1: 	The interface to powerdown. Currently, only some ethernet
+               chipsets are applicable (IF_ETH0).  If the interface
+               does not support this function, then it will be ignored.
+
+RETURN VALUE:	0 on success, non-0 on error
+
+SEE ALSO:      pd_powerup
+
+END DESCRIPTION **********************************************************/
+_pktdrv_debug int _rk_pd_powerdown(int iface)
+{
+	auto IFTEntry * i;
+
+   i = _if_tab + iface;
+   return i->ncd->ioctl(i->state, PD_POWER, 0);
+}
+
+/*** BeginHeader _rk_pd_powerup */
+int _rk_pd_powerup(int iface);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+pd_powerup	                     <PKTDRV.LIB>
+
+SYNTAX: int pd_powerup(int iface);
+
+KEYWORDS:		ethernet, pktdrv, sleepy, powersave
+
+DESCRIPTION:	Powerup the interface, undoing the sleepy-mode
+					changes made by pd_powerdown. This function
+					will BLOCK for 10ms, to let the chip startup.
+					After this function has returned success,
+					any ethernet or TCP/IP function may be called
+					again.
+
+PARAMETER1: 	The interface to powerup e.g. IF_ETH0.
+
+RETURN VALUE:	0 on success, non-0 on error
+
+SEE ALSO:      pd_powerdown
+
+END DESCRIPTION **********************************************************/
+_pktdrv_debug int _rk_pd_powerup(int iface)
+{
+	auto IFTEntry * i;
+
+   i = _if_tab + iface;
+   return i->ncd->ioctl(i->state, PD_POWER, 1);
+}
+
+/*** BeginHeader _rk_pd_havelink */
+int _rk_pd_havelink(int iface);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+pd_havelink                     <PKTDRV.LIB>
+
+SYNTAX: int pd_havelink(int iface);
+
+KEYWORDS:		ethernet, pktdrv
+
+DESCRIPTION:	Determins if the physical-layer link is established
+					for the specified interface.
+
+PARAMETER1: 	The interface to check e.g. IF_ETH0
+
+RETURN VALUE:	non-0 if the link is established, or
+					0 if the there is no link.
+
+END DESCRIPTION **********************************************************/
+_pktdrv_debug int _rk_pd_havelink(int iface)
+{
+	auto IFTEntry * i;
+
+   i = _if_tab + iface;
+   return i->ncd->ioctl(i->state, PD_HAVELINK);
+}
+
+
+/*** BeginHeader _rk_pd_addmulticast */
+int _rk_pd_addmulticast(int iface, char* EthAddress, int* slot);
+/*** EndHeader */
+#ifndef USE_MULTICAST
+	#warns "pd_addmulticast() does nothing unless you #define USE_MULTICAST (or #use igmp.lib)"
+#endif
+_pktdrv_debug int _rk_pd_addmulticast(int iface, char* EthAddress, int* slot)
+{
+	auto IFTEntry * i;
+
+   i = _if_tab + iface;
+   return i->ncd->ioctl(i->state, PD_ADDMULTICAST, EthAddress, slot);
+}
+
+/*** BeginHeader _rk_pd_removemulticast */
+int _rk_pd_removemulticast(int iface, char* EthAddress);
+/*** EndHeader */
+#ifndef USE_MULTICAST
+	#warns "pd_removemulticast() does nothing unless you #define USE_MULTICAST (or #use igmp.lib)"
+#endif
+_pktdrv_debug int _rk_pd_removemulticast(int iface, char* EthAddress)
+{
+	auto IFTEntry * i;
+
+   i = _if_tab + iface;
+   return i->ncd->ioctl(i->state, PD_REMOVEMULTICAST, EthAddress);
+}
+
+
+/*** BeginHeader _rk_prt_nicreg */
+void _rk_prt_nicreg(int iface);
+/*** EndHeader */
+
+/* ****************************************************************************/
+/*
+ *		This function can be used for debugging the hardware driver.
+ *    It prints out a formatted list of the NIC's registers
+ *		and their contents, and possibly other information.
+ *    If not in debugging mode, nothing will print.
+ *
+ */
+
+_pktdrv_debug void _rk_prt_nicreg(int iface)
+{
+	auto IFTEntry * i;
+
+   i = _if_tab + iface;
+   if (i->ncd->prtregs)
+   	i->ncd->prtregs(i->state);
+}
+
+/*** BeginHeader _rk_pd_setauxio */
+int _rk_pd_setauxio (int iface, int on);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+pd_setauxio																	 <PKTDRV.LIB>
+
+Syntax:			int _rk_pd_setauxio (int iface, int on)
+
+Description:	allow the nic to perform any adjustments needed
+ when turning the auxilliary I/O port on or off.
+
+Parameter1:		network interface
+Parameter2:		aux. I/O on/off indicator.  1 = on, 0 = off.
+
+Return Value:	non-zero
+END DESCRIPTION **********************************************************/
+_pktdrv_debug int _rk_pd_setauxio (int iface, int on)
+{
+	auto IFTEntry * i;
+
+   i = _if_tab + iface;
+   if (i->ncd->ioctl)
+	{
+   	i->ncd->ioctl(i->state,PD_ASIX_SETAUXIO, on);
+	}
+}
+
+/*** BeginHeader _pb_reserve, _pb_finish, _pb_free,
+		_pb_root2buf, _pb_xmem2buf, _pb_ioe2buf, _pb_buf2root, _pb_buf2xmem */
+// These are all asm functions.  Do not call from C.
+xmem ll_prefix * _pb_reserve(word n);	// Initial reservation of buffer for Tx or Rx.  Allocates n bytes
+													// (0 <= n <= 1536) xmem buffers.  Since buffers are fixed size,
+                                       // the parameter is currently ignored, and a full MTU buffer is
+                                       // allocated.
+xmem ll_prefix * _pb_resv_send(ll_Gather * g);
+													// As above, but reserve for sending.  Application buffers in g are
+                                       // copied to xmem buffers if needed.
+xmem void _pb_finish(ll_prefix * LL, byte iface, word offset); // Finish up a buffer, ready for
+													// packet driver to process.  Write interface and length of
+                                       // link-layer header.
+xmem void _pb_free(ll_prefix * LL);		// Return buffers to pool.
+xmem void _pb_root2buf(ll_prefix * LL, void * data, word len);	// Root mem to xmem buffer
+xmem void _pb_xmem2buf(ll_prefix * LL, long data, word len);	// Xmem mem to xmem buffer
+xmem void _pb_ioe2buf(ll_prefix * LL, void * ioaddr, word len);	// External I/O to xmem buffer
+xmem void _pb_buf2root(ll_prefix * LL, void * data, word len, word offset);	// Xmem buffer to root mem
+xmem void _pb_buf2xmem(ll_prefix * LL, long data, word len, word offset);	// Xmem buffer to xmem mem
+
+
+#ifdef PKTDRV_DEBUG
+	// In debugging mode, call parm checking versions
+   #define pktdrv_palloc	pktdrv_palloc_debug
+   #define pktdrv_pfree		pktdrv_pfree_debug
+   xmem void pktdrv_palloc_debug(void);
+   xmem void pktdrv_pfree_debug(void);
+#else
+   #define pktdrv_palloc	palloc_fast
+   #define pktdrv_pfree		pfree_fast
+#endif
+
+
+#ifdef USING_DMAETH
+	// DMAETH calls from ISR code, thus requires push/pop of IP
+	#define _PKTDRV_ENTER_CRITICAL  push ip $ ipset PKT_POOL_IPSET
+	#define _PKTDRV_EXIT_CRITICAL  pop ip
+#else
+	// Otherwise, calls are all from IP 0 code.
+	#define _PKTDRV_ENTER_CRITICAL  ipset PKT_POOL_IPSET
+	#define _PKTDRV_EXIT_CRITICAL  ipres
+#endif
+
+/*** EndHeader */
+
+#ifdef PKTDRV_DEBUG
+nodebug
+ll_prefix * _pktdrv_alloclist[ETH_MAXBUFS];
+xmem int pktdrv_c_pfree_debug(Pool_t * p, ll_prefix * e)
+{
+	auto word i;
+	// pfree checker function
+	//printf("*** free %04X\n", e);
+	if (p != &root_pbuf_pool) {
+   	printf("PKTDRV: not freeing from packet pool!\n");
+      //exit(191);
+      return 1;
+   }
+   for (i = 0; i < ETH_MAXBUFS; ++i)
+		if (_pktdrv_alloclist[i] == e) {
+      	_pktdrv_alloclist[i] = NULL;
+         break;
+      }
+   if (i == ETH_MAXBUFS) {
+   	printf("PKTDRV: freeing unallocated element %04X!\n", e);
+      //exit(192);
+      return 1;
+   }
+   return 0;
+}
+nodebug
+xmem void pktdrv_c_palloc_debug(Pool_t * p, ll_prefix * e)
+{
+	// palloc checker function.  Actually, just remembers elements in a table.
+	auto word i;
+
+   #GLOBAL_INIT { memset(_pktdrv_alloclist, 0, sizeof(_pktdrv_alloclist)); }
+   for (i = 0; i < ETH_MAXBUFS; ++i)
+   	if (!_pktdrv_alloclist[i]) {
+      	_pktdrv_alloclist[i] = e;
+         break;
+      }
+	//printf("*** alloc %04X\n", e);
+}
+
+#asm xmem nodebug
+pktdrv_palloc_debug::
+	push	hl
+   push	de
+   push	af
+   ld		hl,ix
+   ld		de,root_pbuf_pool
+   or		a
+   sbc	hl,de
+   jr		nz,.pad_error
+   pop	af
+   pop	de
+   pop	hl
+	lcall	palloc_fast
+   jr		nc,.pad_check
+   lret
+.pad_check:
+   ; Check the result
+	push	iy
+   exx
+   ex		af,af'
+   push	af
+   push	bc
+   push	de
+   push	hl
+   ex		af,af'
+   exx
+   push	af
+   push	bc
+   push	de
+   push	hl		; This is the returned value
+   push	ix		; parm 1 of interest
+   lcall pktdrv_c_palloc_debug		; Call the checker (written in C)
+   pop	ix
+   pop	hl
+   pop	de
+   pop	bc
+   pop	af
+   exx
+   ex		af,af'
+   pop	hl
+   pop	de
+   pop	bc
+   pop	af
+   ex		af,af'
+   exx
+   pop	iy
+   lret
+.pad_error:
+	nop			; put breakpoint here (don't continue!)
+   c		exit(190);
+
+
+pktdrv_pfree_debug::
+	push	iy
+   exx
+   ex		af,af'
+   push	af
+   push	bc
+   push	de
+   push	hl
+   ex		af,af'
+   exx
+   push	af
+   push	bc
+   push	hl
+   push	de		; parm 2 of interest
+   push	ix		; parm 1 of interest
+   lcall pktdrv_c_pfree_debug		; Call the checker (written in C)
+   bool	hl
+   jr		nz,.nofree
+   pop	ix
+   pop	de
+   pop	hl
+   pop	bc
+   pop	af
+   exx
+   ex		af,af'
+   pop	hl
+   pop	de
+   pop	bc
+   pop	af
+   ex		af,af'
+   exx
+   pop	iy
+	ljp	pfree_fast
+.nofree:
+   pop	ix
+   pop	de
+   pop	hl
+   pop	bc
+   pop	af
+   exx
+   ex		af,af'
+   pop	hl
+   pop	de
+   pop	bc
+   pop	af
+   ex		af,af'
+   exx
+   pop	iy
+	lret
+
+#endasm
+#endif
+
+
+#asm xmem
+
+; Initial reservation of packet buffer.
+; On exit:
+;   BC contains desired length (currently ignored).
+;   IY points to allocated ll_prefix.
+;   Cy flag set if no buffer available (in which case IY is undefined).
+;   A,HL,BC,DE,IX,AF',DE' trashed.
+; Note: IPSET issued to protect critical section.
+_pb_reserve::
+   ld		ix,root_pbuf_pool
+	_PKTDRV_ENTER_CRITICAL
+   lcall	pktdrv_palloc
+   _PKTDRV_EXIT_CRITICAL
+   jp		c,.ex0
+	ld		iy,hl			; iy points to root ll_prefix
+   bool	hl
+   ld		l,h
+   ld		(iy+[_llp_]+ll_flags),hl	; Zero out flags and interface
+   ld		(iy+[_llp_]+chksum_flags),hl	; Zero out checksum flags
+   ld		(iy+[_llp_]+data1+3),h	; Zero out MSB of data pointer fields: this indicates unallocated.
+   ld		(iy+[_llp_]+data2+3),h
+   ld		(iy+[_llp_]+data3+3),h
+   ld		(iy+[_llp_]+len1),hl		; Zero out length and remaining length fields
+   ld		(iy+[_llp_]+len2),hl
+   ld		(iy+[_llp_]+len3),hl
+   ld		(iy+[_llp_]+rlen1),hl
+   ld		(iy+[_llp_]+rlen2),hl
+   ld		(iy+[_llp_]+rlen3),hl
+_pb_resv:				; Internal entry point, for when root buf already allocated
+	; Now get the xmem buffers
+#ifdef __R4KASM
+	push	px
+   push	py
+   push	pz
+#endif
+   ld		ix,xmem_pbuf_pool
+	_PKTDRV_ENTER_CRITICAL
+   lcall	pxalloc_fast
+	_PKTDRV_EXIT_CRITICAL
+   jp		c,_pb_free
+#ifdef __R4KASM
+	; In R4k mode, we use the segmented form of the address as a data accumulator pointer
+   ld		(iy+[_llp_]+seg1),bcde
+	set	7,b
+   ld		(iy+[_llp_]+data1),bcde
+#else
+   ld		h,b
+   ld		l,c
+   set	7,h		; Mark this buffer as belonging to pool
+   ld		(iy+[_llp_]+data1+2),hl
+   ld		a,L
+   ex		de,hl
+   ld		(iy+[_llp_]+data1),hl
+   _LIN2SEG
+   ld		(iy+[_llp_]+seg1),hl		; Store segmented address form
+   ld		(iy+[_llp_]+seg1+2),a
+#endif
+   ld		hl,(ix+[__pool__]+elsize)
+   ld		(iy+[_llp_]+rlen1),hl	; and remaining space in this buffer
+   or		a		; Clear cy flag to indicate obtained.
+.ex0:
+#ifdef __R4KASM
+	pop	pz
+   pop	py
+   pop	px
+#endif
+   lret
+
+
+; Initial reservation of packet buffer, for a transmit operation.  This is
+; similar to _pb_reserve.  On entry:
+;   HL points to ll_Gather struct.  This describes up to 1 root and 2 xmem buffers,
+;     plus an indicator of whether to copy the data, plus the interface number.
+;     There must be at least 1 byte in the packet!
+; On exit:
+;   IY points to allocated ll_prefix.
+;   Cy flag set if no buffer available (in which case IY is undefined).
+;   all others trashed.
+; Note: IPSET 1 issued to protect critical section.
+_pb_resv_send::
+	push	hl	  			; Preserve ll_Gather pointer
+   lcall	_pb_reserve	; Get buffers (ll_prefix + xmem)
+   pop	hl				; get ll_Gather back in HL
+   jr		c,.ex0		; Return if no buffers available
+   ld		(iy+[_llp_]+ll_flags),LL_OUTBUF	; Mark as output buffer
+   ld		ix,hl			; ll_Gather in IX
+   ld		a,(hl)		; get interface number
+   ld		(iy+[_llp_]+iface),a
+   inc	hl
+   ld		a,(hl)		; get flags field from ll_Gather
+
+   ; Total up the lengths of blocks
+	ld		hl,(ix+[_llg_]+len3)
+   ex		de,hl
+   ld		hl,(ix+[_llg_]+len2)
+   add	hl,de
+   ex		de,hl
+   ld		hl,(ix+[_llg_]+len1)
+   add	hl,de
+   ld		(iy+[_llp_]+len),hl	; Save total length
+
+   and	LLG_STAT_MASK	; Work out which parts do not need to be copied
+   ; We directly support the following combinations.  Others are treated as 'all copy'.
+   cp		LLG_STAT_DATA2|LLG_STAT_DATA3
+   jr		z,.tcpcopy		; TCP-style: copy only the header (data1)
+   cp		LLG_STAT_DATA3
+   jr		z,.udpcopy		; UDP-style: copy header (data1) and data2.
+   ; Else assume copy everything...
+   ; Perform the data copy.
+   ; IX addresses the ll_Gather (data source), IY is the ll_prefix (xmem buffers).
+.getxmem:
+   ld		hl,(ix+[_llg_]+len1)
+   ld		b,h
+   ld		c,L
+   bool	hl
+   jr		z,.skipd1
+   ld		hl,(ix+[_llg_]+data1)
+   lcall	_pb_root2buf
+.skipd1:
+   ld		hl,(ix+[_llg_]+len2)
+   ld		b,h
+   ld		c,L
+   bool	hl
+   jr		z,.skipd2
+   ld		hl,(ix+[_llg_]+data2)
+   ld		a,(ix+[_llg_]+data2+2)
+   lcall	_pb_xmem2buf
+.skipd2:
+   ld		hl,(ix+[_llg_]+len3)
+   ld		b,h
+   ld		c,L
+   bool	hl
+   jr		z,.skipd3
+   ld		hl,(ix+[_llg_]+data3)
+   ld		a,(ix+[_llg_]+data3+2)
+   lcall	_pb_xmem2buf
+
+.skipd3:
+
+   or		a
+   ; Return (Cy clear).
+	lret
+.tcpcopy:
+	; Only first area needs to be copied, and it must fit in a single 512-byte area
+   ; Set the other 2 areas as static pointers
+   ld		hl,(ix+[_llg_]+len2)
+   ld		(iy+[_llp_]+len2),hl
+   ld		hl,(ix+[_llg_]+data2)
+   ld		(iy+[_llp_]+data2),hl
+   ld		hl,(ix+[_llg_]+data2+2)
+   res	7,h
+   ld		(iy+[_llp_]+data2+2),hl
+
+   ld		hl,(ix+[_llg_]+len3)
+   ld		(iy+[_llp_]+len3),hl
+   ld		hl,(ix+[_llg_]+data3)
+   ld		(iy+[_llp_]+data3),hl
+   ld		hl,(ix+[_llg_]+data3+2)
+   res	7,h
+   ld		(iy+[_llp_]+data3+2),hl
+
+   ; Zero out the llg.len2/3 fields so .getxmem processing doesn't re-copy
+   bool	hl
+   ld		l,h
+   ld		(ix+[_llg_]+len2),hl
+   ld		(ix+[_llg_]+len3),hl
+
+   ld		hl,(ix+[_llg_]+len1)
+	jr		.getxmem
+
+.udpcopy:
+   ld		hl,(ix+[_llg_]+len3)
+   ld		(iy+[_llp_]+len3),hl
+   ld		hl,(ix+[_llg_]+data3)
+   ld		(iy+[_llp_]+data3),hl
+   ld		hl,(ix+[_llg_]+data3+2)
+   res	7,h
+   ld		(iy+[_llp_]+data3+2),hl
+
+   ; Zero out the llg.len3 field so .getxmem processing doesn't re-copy
+   bool	hl
+   ld		l,h
+   ld		(ix+[_llg_]+len3),hl
+
+   ld		hl,(ix+[_llg_]+len1)
+   ex		de,hl
+   ld		hl,(ix+[_llg_]+len2)
+   add	hl,de
+   jp		.getxmem
+
+
+; These functions have radically different implementations for Rabbit 4000.  In this case,
+; there is no need to use segmented addressing modes.  Direct physical copy is available.
+#ifdef __R4KASM
+; Copy from root memory to xmem buffer
+; On entry:
+;   IY points to ll_prefix, as returned by _pb_reserve()
+;   BC contains number of bytes to copy (at least 1)
+;   HL contains root source address
+; On exit:  IX,IY,AF' preserved, others trashed
+_pb_root2buf::
+	ldl	px,hl
+	jr		.cont04
+
+; Copy from xmem memory to xmem buffer
+; On entry:
+;   IY points to ll_prefix, as returned by _pb_reserve()
+;   BC contains number of bytes to copy (at least 1)
+;   AHL contains xmem (physical) source address
+; On exit:  IX,IY,AF',PW-PZ preserved, others trashed
+; NOTE: it is assumed that the data will fit!
+_pb_xmem2buf::
+	ex		jk,hl
+   clr	hl
+   ld		l,a
+   ex		jk,hl
+   ld		px,jkhl		; PX is source address
+.cont04:
+   ld		hl,(iy+[_llp_]+rlen1)
+   or		a
+   sbc	hl,bc
+   ld		(iy+[_llp_]+rlen1),hl
+   ld		hl,(iy+[_llp_]+len1)
+   add	hl,bc
+   ld		(iy+[_llp_]+len1),hl
+   ld		jkhl,(iy+[_llp_]+seg1)
+   ld		py,jkhl
+   copy
+   ld		jkhl,py
+   ld		(iy+[_llp_]+seg1),jkhl
+	lret
+
+; Copy from external I/O address to xmem buffer
+; On entry:
+;   IY points to root buffer (ll_prefix, as returned by _pb_reserve())
+;   BC contains number of bytes to copy
+;   HL contains extern I/O source address
+; This is very similar to the above function.
+_pb_ioe2buf::
+	ex		de,hl
+   ld		hl,(iy+[_llp_]+rlen1)
+   or		a
+   sbc	hl,bc
+   ld		(iy+[_llp_]+rlen1),hl
+   ld		hl,(iy+[_llp_]+len1)
+   add	hl,bc
+   ld		(iy+[_llp_]+len1),hl
+   ld		jkhl,(iy+[_llp_]+data1)
+   ld		py,jkhl
+.ioeloop:
+   ioe   ld a,(de)
+   ld		(py+hl),a
+   inc	hl
+   dwjnz .ioeloop
+	lret
+
+
+
+; Copy from xmem buffer to root data area
+; On entry:
+;  IY points to ll_prefix
+;  DE points to root destination area
+;  BC contains number of bytes to copy (must be non-zero)
+;  HL contains offset from start of packet, to start copying from.
+_pb_buf2root::
+	ldl	py,de
+   ex		de,hl
+   jr		.cont_05
+
+; Copy from xmem buffer to xmem data area
+; On entry:
+;  IY points to ll_prefix
+;  ADE points to xmem destination area (physical addr)
+;  BC contains number of bytes to copy (must be non-zero)
+;  HL contains offset from start of packet, to start copying from.
+_pb_buf2xmem::
+	ex		de,hl
+   ex		jk,hl
+   clr	hl
+   ld		l,a
+   ex		jk,hl
+   ld		py,jkhl
+.cont_05:
+	ld		jkhl,(iy+[_llp_]+data1)   ; Get buffer base addr
+   ld		px,jkhl
+   ld		px,px+de			; add in offset
+   copy
+   lret
+
+
+
+#else
+; Copy from xmem memory to xmem buffer
+; On entry:
+;   IY points to root buffer (ll_prefix, as returned by _pb_reserve())
+;   BC contains number of bytes to copy (at least 1)
+;   AHL contains xmem source address (24 lsbs)
+; On exit:  IX,IY preserved, others trashed
+; NOTE: it is assumed that the data will fit!
+; Since it is faster in general to copy the source data to a root buffer, then
+; copy that buffer to xmem, a stack area (same size as BC) is used as a transfer buffer.
+_pb_xmem2buf::
+	ex		de,hl
+	ld		hl,0
+   or		a
+   sbc	hl,bc
+   add	hl,sp
+   ld		sp,hl	; Make transfer buffer on stack
+   ex		de,hl	; Now DE has stack buffer, AHL has source addr.
+	_LIN2SEG		; Convert AHL to segmented form
+	ld		bc',bc	; Save length
+   ld		de',de	; Save transfer buffer addr
+   _XMEM_MVC	; Move data to stack buffer
+   exx
+	ex		de,hl	; Transfer buffer is now root source address (HL)
+   push	bc		; Save length
+   lcall	_pb_root2buf	; Move to xmem buffer
+	pop	hl
+   add	hl,sp			; Restore original SP
+   ld		sp,hl
+   lret
+
+
+; Copy from root memory to xmem buffer
+; On entry:
+;   IY points to ll_prefix, as returned by _pb_reserve()
+;   BC contains number of bytes to copy (at least 1)
+;   HL contains root source address
+; On exit:  IX,IY,AF' preserved, others trashed
+; NOTE: it is assumed that the data will fit!
+_pb_root2buf::
+   ex		de',hl		; Save source addr in DE'
+   ld		hl,(iy+[_llp_]+rlen1)	; Remaining len in buffer
+   or		a
+   sbc	hl,bc
+   ld		(iy+[_llp_]+rlen1),hl
+   ld		hl,(iy+[_llp_]+len1)
+   add	hl,bc
+   ld		(iy+[_llp_]+len1),hl		; Increment the byte count for this buffer
+   ld		hl,(iy+[_llp_]+seg1)
+   ld		a,(iy+[_llp_]+seg1+2)
+   ex		de,hl							; A/DE is segmented dest addr
+   ex		de',hl						; Get source addr in HL
+   _XMEM_MVC							; Move the data
+   ex		de,hl							; Updated dest addr
+   ld		(iy+[_llp_]+seg1),hl		; Save it back
+   lret
+
+; Copy from external I/O address to xmem buffer
+; On entry:
+;   IY points to root buffer (ll_prefix, as returned by _pb_reserve())
+;   BC contains number of bytes to copy
+;   HL contains extern I/O source address
+; This is very similar to the above function.
+_pb_ioe2buf::
+   ex		de',hl		; Save source addr in DE'
+   ld		hl,(iy+[_llp_]+rlen1)	; Remaining len in buffer
+   or		a
+   sbc	hl,bc
+   ld		(iy+[_llp_]+rlen1),hl
+   ld		hl,(iy+[_llp_]+len1)
+   add	hl,bc
+   ld		(iy+[_llp_]+len1),hl		; Increment the byte count for this buffer
+   ld		hl,(iy+[_llp_]+seg1)
+   ld		a,(iy+[_llp_]+seg1+2)
+   ex		de,hl							; A/DE is segmented dest addr
+   ex		de',hl						; Get source addr (external I/O) in HL
+   _XMEM_MVC_IOE2MEM					; Move the data
+   ex		de,hl							; Updated dest addr
+   ld		(iy+[_llp_]+seg1),hl		; Save it back
+	lret
+
+
+
+; Copy from xmem buffer to root data area
+; On entry:
+;  IY points to ll_prefix
+;  DE points to root destination area
+;  BC contains number of bytes to copy (must be non-zero)
+;  HL contains offset from start of packet, to start copying from.
+_pb_buf2root::
+	push	de
+   ex		de,hl		; Save offset in DE
+	ld		hl,(iy+[_llp_]+data1)   ; Get buffer base addr
+   ld		a,(iy+[_llp_]+data1+2)	; 24-bit linear
+   _LIN2SEG
+	add	hl,de		; Point to required start in buffer
+   pop	de
+   _XMEM_MVC			; Copy BC bytes
+	lret
+
+
+
+; Copy from xmem buffer to xmem data area
+; On entry:
+;  IY points to ll_prefix
+;  ADE points to xmem destination area (24 lsbs)
+;  BC contains number of bytes to copy (must be non-zero)
+;  HL contains offset from start of packet, to start copying from.
+; Since xmem->root->xmem is faster than general xmem->xmem, we allocate BC bytes
+; on the stack as a temporary transfer buffer.
+_pb_buf2xmem::
+	ex		af,af'	; Save dest MSBs
+   ld		bc',bc
+   exx
+	bool	hl
+   ld		l,h
+   sbc	hl,bc
+   add	hl,sp
+   ld		sp,hl	; Make transfer buffer on stack
+   exx
+   push	de		; Save dest LSBs
+   push	bc		; Save length
+   ex		de,hl'	; DE is the transfer buffer (SP+4 now)
+   lcall	_pb_buf2root
+   pop	bc			; Restore length
+   ld		hl',bc	; Save it again
+   pop	hl			; Restore xmem dest addr LSBs
+   ex		af,af'
+   _LIN2SEG
+   ex		de,hl		; Xmem dest is now in ADE (segmented)
+	bool	hl
+   ld		l,h
+   add	hl,sp		; HL points to transfer buffer (source)
+	_XMEM_MVC		; Do the transfer
+	exx
+   ; HL is transfer buffer length
+   add	hl,sp
+   ld		sp,hl
+	lret
+
+#endif // __R4KASM
+
+
+
+; Finish up a buffer, ready for ip.lib processing (in pkt_received()).
+; This includes setting the ll_flags, iface, seq (timestamp) and offset fields
+; in the ll_prefix.  Also, the ll_prefix is temporarily removed then re-allocated
+; in the root pool: this causes it to be linked at the end of the allocated chain
+; and works provided that interrupts are disabled.  Linking in this manner causes
+; the order of packets to be correct with regards to arrival completion time.
+; On entry:
+;  IY points to root buffer (ll_prefix, as returned by _pb_reserve())
+;  H contains interface number
+;  L contains flag settings (LL_BROADCAST etc.)
+;  E contains offset from end of ll_prefix to start of IP header i.e. the length of the
+;     link-layer header.  PPP-based drivers should set this to zero.
+;  BC contains packet length
+; On exit:
+;	BC,DE,HL,IX trashed, others preserved
+_pb_finish::
+	ld		(iy+[_llp_]+ll_flags),hl
+	ld		(iy+[_llp_]+net_offs),e
+	ld		(iy+[_llp_]+net_offs+1),0
+ioi ld	(RTC0R),a
+ioi ld	hl,(RTC0R)	; Get timestamp.  We ignore the small probability of a mis-read due to ripple carry
+	ld		(iy+[_llp_]+seq),hl
+   ld		h,b
+   ld		l,c
+	ld		(iy+[_llp_]+len),hl
+	ld		ix,root_pbuf_pool
+   ld		hl,iy
+   ex		de,hl
+	_PKTDRV_ENTER_CRITICAL
+   ;lcall	pktdrv_pfree
+   ;lcall	pktdrv_palloc		; Guaranteed to return same element as just freed, since no interrupts.
+   ; Use following function (more efficient and safer)...
+   lcall pputlast_fast
+	_PKTDRV_EXIT_CRITICAL
+	lret
+
+
+
+
+; Return buffers to the buffer pool, after the packet has finished being processed.
+; On entry:
+;  IY points to root buffer (ll_prefix, as returned by _pb_reserve())
+; On exit:
+;  AF, BC, DE, HL, IX trashed
+;  Sets Cy flag.
+; Note: IPSET 1 issued to protect critical section.
+_pb_free::
+   ld		ix,xmem_pbuf_pool
+   ld		hl,(iy+[_llp_]+data1+2)
+   bit	7,h
+   jr		z,.next1		; Skip free if buffer does not belong in xmem pool
+	ld		b,h
+   ld		c,L
+   ld		hl,(iy+[_llp_]+data1)
+   ex		de,hl
+	_PKTDRV_ENTER_CRITICAL
+   lcall	pxfree_fast
+	_PKTDRV_EXIT_CRITICAL
+.next1:
+   ld		hl,(iy+[_llp_]+data2+2)
+   bit	7,h
+   jr		z,.next2
+	ld		b,h
+   ld		c,L
+   ld		hl,(iy+[_llp_]+data2)
+   ex		de,hl
+	_PKTDRV_ENTER_CRITICAL
+   lcall	pxfree_fast
+	_PKTDRV_EXIT_CRITICAL
+.next2:
+   ld		hl,(iy+[_llp_]+data3+2)
+   bit	7,h
+   jr		z,.next3
+	ld		b,h
+   ld		c,L
+   ld		hl,(iy+[_llp_]+data3)
+   ex		de,hl
+	_PKTDRV_ENTER_CRITICAL
+   lcall	pxfree_fast
+	_PKTDRV_EXIT_CRITICAL
+.next3:
+	ld		ix,root_pbuf_pool
+   ld		hl,iy
+   ex		de,hl
+	_PKTDRV_ENTER_CRITICAL
+   lcall	pktdrv_pfree
+	_PKTDRV_EXIT_CRITICAL
+   scf
+   lret
+
+
+#endasm
+
+/*** BeginHeader pd_calc_crc */
+unsigned long pd_calc_crc(char byte, unsigned long current_crc);
+/*** EndHeader */
+
+nodebug
+unsigned long pd_calc_crc(char byte, unsigned long current_crc)
+{
+	auto char ah;
+	auto int i;
+	auto int topbit;
+
+	ah = 0;
+	for (i = 0; i < 8; i++) {
+		topbit = (current_crc & 0x80000000) != 0;
+		current_crc <<= 1;
+		ah = ((ah << 1) | topbit) ^ byte;
+		if (ah & 1) {
+			current_crc ^= 0x04C11DB7;
+		}
+		ah >>= 1;
+		byte >>= 1;
+	}
+	return current_crc;
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

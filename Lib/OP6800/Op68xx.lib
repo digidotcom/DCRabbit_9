@@ -1,0 +1,729 @@
+/*** Beginheader */
+#ifndef __OP6800_LIB
+#define __OP6800_LIB
+
+#if (_BOARD_TYPE_ < 0x0D00 || _BOARD_TYPE_ > 0x0DFF)
+#error "OP68XX.LIB only supports OP6800 series boards."
+#endif
+/*** Endheader */
+
+
+/* START LIBRARY DESCRIPTION *********************************************
+OP68XX.LIB
+Copyright (c) 2001, Z-World
+
+DESCRIPTION:	Support for the OP6800 series controllers.
+
+SUPPORT LIBS:
+
+REVISION HISTORY:
+
+	09/12/02	pel	Additional support for LCD/Keypad.
+
+END DESCRIPTION **********************************************************/
+
+//------------------------------------------------------------------------
+//		Graphic section
+//------------------------------------------------------------------------
+/*** BeginHeader */
+// LCD Register addresses
+#define LCDBASEADDR		0xE000
+
+#define LCDMREADSTATUS	0xE002
+#define LCDMWRITEINSTR	0xE000
+
+#define LCDSREADSTATUS	0xE006
+#define LCDSWRITEINSTR	0xE004
+
+#define LCDMREADDATA		0xE003
+#define LCDMWRITEDATA	0xE001
+
+#define LCDSREADDATA		0xE007
+#define LCDSWRITEDATA	0xE005
+
+// Backlight
+#define LCDBACKLIGHT		0xE00B
+
+// LCD LED
+#define LCDLEDADDR		0xE00B
+#define LCDLEDREG			0xE008
+
+// Use Port E bit 7 for LCD strobe
+#define LCDSTROBE			0x80
+#define LCDCSREGISTER	IB7CR
+#define LCDCSSHADOW		IB7CRShadow
+#define LCDCSCONFIG		0x78
+
+// Use Port E bit 7 for keypad strobe
+// (Look the same as above, however for some designs these MACRO's will
+// be different)
+#define KEYADDR			0xE00A
+#define KEYSTROBE			0x80
+#define KEYCSREGISTER	IB7CR
+#define KEYCSSHADOW		IB7CRShadow
+#define KEYCSCONFIG		0x78
+/*** EndHeader */
+
+
+/*** Beginheader LEDShadow */
+extern char LEDShadow;
+/*** endheader */
+
+// Shadow register for external LED's
+char LEDShadow;
+
+//------------------------------------------------------------------------
+//		I/O Driver Section
+//------------------------------------------------------------------------
+/*** Beginheader serMode */
+int serMode(int mode);
+
+// Set compiler switch to use serial portB on uP port D
+#define SERB_USEPORTD
+
+//defaults for RS232 handshaking RTS/CTS
+#define SERB_RTS_SHADOW PCDRShadow
+#define SERB_RTS_PORT 	PCDR  //RTS I/O control port
+#define SERB_RTS_BIT 	2		//RTS on port C, PC2
+#define SERB_CTS_PORT 	PCDR  //CTS I/O control port
+#define SERB_CTS_BIT 	3		//CTS on Port C, PC3
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+serMode						<OP68XX.LIB>
+
+SYNTAX:	      int serMode(int mode);
+
+DESCRIPTION:   User interface to setup the serial communication lines
+               on a OP6800 series controller.
+
+					This function must be called after executing the serXOpen()
+					function. Whether you are opening one or multiple serial
+					ports this function must be executed after executing the
+					last serXOpen function AND before you start using any of
+					the serial ports. This function is non-reentrant.
+
+PARAMETER1:    mode - defined serial port configuration.
+
+   				Serial port setup:
+
+					Mode 	Port B      	PortC    		PortD
+					----  ------         -----  	      -----
+    				0		RS232 3wire   	RS232 3wire 	RS485 3wire
+    				1		RS232 5wire		CTS/RTS			RS485 3wire
+
+RETURN VALUE:	0 if valid mode; 1 if not.
+
+SEE ALSO:		ser485Tx, ser485Rx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int serMode(int mode)
+{
+	auto int status;
+
+	//---------------------------------------------------------------------
+	// Initialize serial port B to use alternate processor pins on port D
+	//---------------------------------------------------------------------
+	// Enable Alt ATXB function on parallel port D
+	WrPortI(PDDR,  &PDDRShadow, (PDDRShadow | 0x10));
+	WrPortI(PDFR,  &PDFRShadow, (PDFRShadow | 0x10));
+
+	//	Set PD4 I/O direction to be an output
+	WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow | 0x10));
+
+	//	Set PD4 to be an active high/low CMOS output
+	WrPortI(PDDCR, &PDDCRShadow,(PDDCRShadow & ~0x10));
+
+   BitWrPortI(SBCR, &SBCRShadow, 1, 4);  //	enable ARxB, priority 1
+
+   // Initialize the status flag to be a valid mode
+   status = 0;
+	//---------------------------------------------------------------------
+	// Set mode of operation
+	//---------------------------------------------------------------------
+	switch (mode)
+	{
+		case 0:
+			//		Serial mode 0
+			//    --------------------------
+			// 	RS232 serial port B 3 wire
+			// 	RS232 serial port C 3 wire
+			//		RS485 serial port D 3 wire
+			//
+			// Set bits 0 and 2 to enable serial Ports C and D
+			WrPortI(PCFR, &PCFRShadow, (PCFRShadow | 0x05));
+			break;
+
+		case 1:
+			//		Serial mode 1
+			//    -------------------
+			// 	RS232 port B 5 wire
+			//    RS485 port D 3 wire
+			//
+			// Clear bit 2, port C to use I/O pins PC2 and PC3 as
+			// handshaking lines.
+			WrPortI(PCFR, &PCFRShadow, (PCFRShadow & ~0x04));
+			BitWrPortI(PCDR, &PCDRShadow, 0, SERB_RTS_BIT);
+			break;
+
+		default:
+			// unsupported mode
+			status = 1;
+			break;
+	}
+	return (status);
+}
+
+
+/*** Beginheader ser485Tx */
+root void ser485Tx( void );
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Tx						<OP68XX.LIB>
+
+SYNTAX:	      void ser485Tx( void );
+
+DESCRIPTION:   Enables the RS485 transmitter.
+
+					Transmitted data gets echo'ed back into the receive data
+					buffer. This echo'ed data could be used to know when to
+					disable the transmitter by using one of the following
+					methods:
+
+               a) Byte mode...disable the transmitter after the same byte
+                  that is transmitted, is detected in the receive data
+                  buffer.
+
+               b) Block data mode...disable the transmitter after the same
+                  number of bytes transmitted, are detected in the receive
+                  data buffer.
+
+               The serMode function must be executed before running this
+               function. This function is non-reentrant.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		serMode, ser485Rx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+root void ser485Tx( void )
+{
+#asm
+	push	ip							;save off IP state
+	ipset	1							;set interrupt priority to level 1
+	ld		a,(PEDRShadow)			;get copy of shadow reg
+	or		0x01						;set bit 0 high
+	ld		(PEDRShadow),a			;update shadow reg
+;	ioi	ld	(PEDR),a				;set PE0 high
+ 	IOWRITE_A(PEDR)
+	pop	ip							;restore IP to the previous state
+	ret
+#endasm
+}
+
+/*** Beginheader ser485Rx */
+root void ser485Rx( void );
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Rx						<OP68XX.LIB>
+
+SYNTAX:	      void ser485Rx( void );
+
+DESCRIPTION:  	Disables the RS485 transmitter.
+
+					This puts you in listen mode which allows you to receive
+					data from the RS485 interface.
+
+              	Note: The serMode function must be executed before running
+              	this function. This function is non-reentrant.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		serMode, ser485Tx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+root void ser485Rx( void )
+{
+#asm
+	push	ip							;save off IP state
+	ipset	1							;set interrupt priority to level 1
+	ld		a,(PEDRShadow)			;get copy of shadow reg
+	and	0xfe						;clear bit 0
+	ld		(PEDRShadow),a			;update shadow reg
+;	ioi	ld	(PEDR),a				;set PE0 low
+	IOWRITE_A(PEDR)
+	pop	ip							;restore IP to the previous state
+	ret
+#endasm
+}
+
+/*************************************************************************
+	Digital I/O Functions
+	This section supports digital input and output
+**************************************************************************/
+/*** BeginHeader	digOut */
+void digOut(int, int);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digOut						<OP68XX.LIB>
+
+SYNTAX:			void digOut(int channel, int value);
+
+DESCRIPTION:	Sets the state of a digital output (OUT00 - OUT10). This
+					function is non-reentrant.
+
+					The LED's and the digital outputs(OUT00-OUT06) are driven
+					by the same driver chip, Z-World therefore recommends that
+					you do not use ledOut or digOut to control the same LED
+					or digital channel in a given application program.
+
+					OUT00 (same as LED DS1)
+					OUT01 (same as LED DS2)
+					OUT02 (same as LED DS3)
+					OUT03 (same as LED DS4)
+					OUT04 (same as LED DS5)
+					OUT05 (same as LED DS6)
+					OUT06 (same as LED DS7)
+
+					Note: A runtime error will occur if the channel or value
+					parameter is out of range.
+
+PARAMETER1:		Digital output channel (0-10).
+PARAMETER2:		Output logic value (0 or 1).
+
+RETURN VALUE:	None.
+
+SEE ALSO:		brdInit, digIn
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void digOut(int channel, int value)
+{
+	auto unsigned char outputBit;
+
+	// check if the board has been customized, if so bypass error checking
+	if ((channel < 0) || (channel > 10) || (value < 0) || (value > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if(channel < 7)
+	{
+		outputBit = 0x01 << channel;
+		if(value != 0)
+		{	// set the output channel specified to a logic low
+			WrPortE(0xE00B, &LEDShadow, (LEDShadow & ~outputBit));
+		}
+		else
+		{	// set the output channel specified to a logic high
+			WrPortE(0xE00B, &LEDShadow, (LEDShadow | outputBit));
+		}
+	}
+	else if(channel == 7)
+	{
+		if(value != 0)
+		{	// set the output channel specified to a logic low
+			WrPortI(PDDR, &PDDRShadow, (PDDRShadow & ~0x08));
+		}
+		else
+		{	// set the output channel specified to a logic high
+			WrPortI(PDDR, &PDDRShadow, (PDDRShadow | 0x08));
+		}
+	}
+	else if(channel == 8)
+	{
+		if(value != 0)
+		{	// set the output channel specified to a logic low
+			WrPortI(PEDR, &PEDRShadow, (PEDRShadow & ~0x02));
+		}
+		else
+		{	// set the output channel specified to a logic high
+			WrPortI(PEDR, &PEDRShadow, (PEDRShadow | 0x02));
+		}
+	}
+	else if(channel == 9)
+	{
+		if(value != 0)
+		{	// set the output channel specified to a logic low
+			WrPortI(PEDR, &PEDRShadow, (PEDRShadow & ~0x10));
+		}
+		else
+		{	// set the output channel specified to a logic high
+			WrPortI(PEDR, &PEDRShadow, (PEDRShadow | 0x10));
+		}
+	}
+	else if(channel == 10)
+	{
+		if(value != 0)
+		{	// set the output channel specified to a logic low
+			WrPortI(PEDR, &PEDRShadow, (PEDRShadow & ~0x20));
+		}
+		else
+		{	// set the output channel specified to a logic high
+			WrPortI(PEDR, &PEDRShadow, (PEDRShadow | 0x20));
+		}
+	}
+}
+
+/*** BeginHeader digIn */
+int  digIn(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digIn							<OP68XX.LIB>
+
+SYNTAX:			int digIn(int channel);
+
+DESCRIPTION:	Reads the state of a digital input channel. This function
+					is non-reentrant.
+
+					Digital inputs
+					--------------
+					IN00 - IN07  (input voltage range -36v to +36v)
+					IN08 - IN12  (input voltage range -25v to +25v)
+
+					Note: A runtime error will occur if the channel parameter
+					is out of range.
+
+PARAMETER1:		Digital input channel (0-12).
+
+RETURN VALUE:	The logic state of the input(0 or 1).
+
+SEE ALSO:		brdInit, digOut
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int digIn(int channel)
+{
+	auto int input_state, input_bit;
+
+	if ((channel < 0) || (channel > 12))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	if(channel < 8)
+	{
+		input_bit = 0x01 << channel;
+		input_state = RdPortI(PADR);
+		input_state = input_state & input_bit;
+	}
+	else if(channel == 8)
+	{
+		input_state = (RdPortI(PBDR) & 0x01);
+	}
+	else if(channel == 9)
+	{
+		input_state = (RdPortI(PBDR) & 0x04);
+	}
+
+	else if(channel == 10)
+	{
+		input_state = (RdPortI(PBDR) & 0x08);
+	}
+
+	else if(channel == 11)
+	{
+		input_state = (RdPortI(PBDR) & 0x10);
+	}
+	else
+	{
+		input_state = (RdExtPort(0xE00A) & 0x80);
+	}
+	input_state = (input_state > 0) ? 1 : 0;
+	return(input_state);
+}
+
+/*** BeginHeader	ledOut */
+void ledOut(int led, int value);
+
+#define dispLedOut ledOut
+#define dispInit()  {glInit();	keyInit();}
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ledOut						<OP68XX.LIB>
+
+SYNTAX:			void ledOut(int led, int value)
+
+DESCRIPTION:	LED ON/OFF control. This function is non-reentrant.
+
+					The LED's and the digital outputs(OUT00-OUT06) are driven
+					by the same driver chip, Z-World therefore recommends that
+					you do not use ledOut or digOut to control the same LED
+					or digital channel in a given application program.
+
+					Note: A runtime error will occur if the led or value
+					parameter is out of range.
+
+PARAMETER1:		LED to control.
+
+					0  = LED DS1	(same as Digital Output OUT00)
+					1  = LED DS2	(same as Digital Output OUT01)
+					2  = LED DS3	(same as Digital Output OUT02)
+					3  = LED DS4	(same as Digital Output OUT03)
+					4  = LED DS5	(same as Digital Output OUT04)
+					5  = LED DS6	(same as Digital Output OUT05)
+					6  = LED DS7	(same as Digital Output OUT06)
+
+
+PARAMETER2:		value used to control LED (0 or 1).
+					0 = OFF
+					1 = ON
+
+RETURN VALUE:	None
+
+SEE ALSO:		brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void ledOut(int led, int value)
+{
+	auto unsigned char outputBit;
+
+	// Initialize LED shadow register
+	#GLOBAL_INIT {LEDShadow = 0x00;}
+
+	if ((led < 0) || (led > 7) || (value < 0) || (value > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+	outputBit = 0x01 << led;
+	if(value == 0)
+	{	// turn-on the specified LED
+		WrPortE(0xE00B, &LEDShadow, (LEDShadow & ~outputBit));
+	}
+	else
+	{	// turn-off the specified LED
+		WrPortE(0xE00B, &LEDShadow, (LEDShadow | outputBit));
+	}
+}
+
+//------------------------------------------------------------------------
+//	Board Initialization
+//------------------------------------------------------------------------
+//	This section supports board initialization.
+
+/*** BeginHeader brdInit */
+void brdInit ( void );
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+brdInit						<OP68XX.LIB>
+
+SYNTAX:			void brdInit (void);
+
+DESCRIPTION:	Call this function at the beginning of application code
+					to initializes the controllers I/O ports.
+
+				   Note: This function is non-reentrant.
+
+					*** Rabbit Ports A, B, C, D, and E Initialization ***
+
+					Port  IO   Function               I/O State
+					----  ---  ------------------   	 ------------
+					PA.0  In   Digital input,IN00     Pulled-up
+					PA.1	In	  Digital input,IN01 	 Pulled-up
+					PA.2	In	  Digital input,IN02 	 Pulled-up
+					PA.3	In	  Digital input,IN03		 Pulled-up
+					PA.4	In	  Digital input,IN04		 Pulled-up
+					PA.5	In	  Digital input,IN05		 Pulled-up
+					PA.6	In	  Digital input,IN06		 Pulled-up
+					PA.7	In	  Digital input,IN07		 Pulled-up
+
+					PB.0	In	  Digital input,IN08		 Pulled-up
+					PB.1  In   Not used					 Pulled-up
+					PB.2	In	  Digital input,IN09		 Pulled-up
+					PB.3	In	  Digital input,IN10		 Pulled-up
+					PB.4	In	  Digital input,IN11		 Pulled-up
+					PB.5	In	  Connected to PB7       Driven by PB7
+					PB.6  Out  Not used               Low
+					PB.7  Out  Connected to PB5		 Low
+
+					PC.0	Out  ATXB (RS232)				 Inactive high
+					PC.1	In	  ARXB (RS232)			 	 Inactive high
+					PC.2	Out  TXC  (RS232)				 Inactive high
+					PC.3	In   RXC  (RS232)				 Inactive high
+					PC.4	Out  Realtek reset	    	 Initial'ed by sock_init()
+					PC.5	In	  Realtek INT0 			 Pulled-up
+					PC.6	Out  TXA		 					 Inactive high
+					PC.7	In	  RXA 						 Pulled-up
+
+					PD.0	In   Realtek CLK (RCM2200)	 Initial'ed by sock_init()
+	      		 "		Out  Not used (RCM2300)		 Low
+					PD.1	In   Realtek SDO (RCM2200)  Initial'ed by sock_init()
+	      		 "		Out  Not used (RCM2300) 	 Low
+					PD.2	Out  Not used					 Low
+					PD.3	Out  Digital Output(OUT07)	 Low, Output Driver OFF
+					PD.4	Out  ATXB (RS485)				 Inactive high
+					PD.5	In	  ARXB (RS485)			    Inactive high
+					PD.6	Out  Not used					 Low
+					PD.7  Out  Not used					 Low
+
+					PE.0 	Out  RS485 Control			 Low (Tx Disabled)
+					PE.1	Out  Digital Output(OUT08)	 Output Driver OFF
+					PE.2	N/A  Realtek IORB strobe    Initial'ed by sock_init()
+	      		 "		Out  Not used (RCM2300)     Low
+					PE.3	N/A  Realtek SDI line       Initial'ed by sock_init()
+	      		 "		Out  Not used (RCM2300)     Low
+					PE.4  Out  Digital Output(OUT09)	 Output Driver OFF
+					PE.5	Out  Digital Output(OUT10)	 Output Driver OFF
+					PE.6	N/A  Realtek IOWB strobe	 Initial'ed by sock_init()
+	      		 "		Out  Not used (RCM2300)     Low
+					PE.7  Out  LCD_KEYPAD strobe      High
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		digOut, digIn, serMode, ledOut
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void brdInit (void)
+{
+
+	//---------------------------------------------------------------------
+	// Port A configuration
+	// - Set the entire port to be all inputs lines.
+	//---------------------------------------------------------------------
+	WrPortI(SPCR, &SPCRShadow, 0x80);		// Set Port A to be all Inputs
+
+	//---------------------------------------------------------------------
+	// Port B configuration
+	// - Port B bits PB7-PB6 are hardwired to be outputs and PB5-PB0 to
+	//   be inputs.
+	//---------------------------------------------------------------------
+	BitWrPortI(PBDR, &PBDRShadow, 0, 7);   // Set PB7 line to be low
+	BitWrPortI(PBDR, &PBDRShadow, 0, 6);   // Set PB6 line low...if the LED
+	                                       // is installed.
+	//---------------------------------------------------------------------
+	// Port C configuration
+	// - Setup I/O Port C bits PC0 - PC3 to be serial ports.
+	// - I/O bits PC4 and PC5 will be setup by the sock_init function
+	//---------------------------------------------------------------------
+	WrPortI(PCFR, &PCFRShadow, (PCFRShadow | 0x05));
+
+	//---------------------------------------------------------------------
+	// Port D configuration
+	// - I/O bits PD0 and PD1 will be setup by the sock_init function if
+	//   using the RCM2200, otherwise they will be initialized as outputs.
+	//---------------------------------------------------------------------
+
+	// Preset PD7, PD6, PD3 and PD2 bits in register low
+	WrPortI(PDDR, &PDDRShadow, (PDDRShadow & ~0xCC));
+
+	// Set PD7, PD6, PD3 and PD2 bits be outputs
+	WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow | 0xCC));
+
+	// Set PD7, PD6, PD3 and PD2 bits to be active high/low CMOS outputs
+	WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0xCC));
+
+	// Initialize PD7, PD6, PD3 and PD2 as normal I/O
+	WrPortI(PDFR, &PDFRShadow, (PDFRShadow & ~0xCC));
+
+	// Set PD7, PD6, PD3 and PD2 signal lines low
+	WrPortI(PDDR, &PDDRShadow, (PDDRShadow & ~0xCC));
+
+	if(_BOARD_TYPE_ == OP6810)
+	{
+		// set PD0 and PD1 as normal I/O pins
+		WrPortI(PDFR,  &PDFRShadow, (PDFRShadow &~0x03));
+
+		// set PD0 and PD1 to be high/low CMOS outputs
+		WrPortI(PDDCR, &PDDCRShadow,(PDDCRShadow&~0x03));
+
+		// set PD0 and PD1 to be output bits
+		WrPortI(PDDDR, &PDDDRShadow,(PDDDRShadow| 0x03));
+
+		// set PD0 and PD1 signal lines low
+		WrPortI(PDDR,  &PDDRShadow, (PDDRShadow &~0x03));
+	}
+
+	//---------------------------------------------------------------------
+	// Port E configuration
+	// - Initialize I/O bits PE0 and PE7 as external strobes
+	// - Initialize I/O bit PE1 as an output line
+	// - I/O bits PE2, PE3 and PE6 will be setup by the sock_init function
+	//   if using the OP6800, otherwise they will be initialized as
+	//   outputs.
+	// - Initialize I/O bits PE4 and PE5 to be inputs
+	//---------------------------------------------------------------------
+
+	// Initialize Port E bit7 to be a normal I/O pin
+	WrPortI(PEFR, &PEFRShadow, (PEFRShadow|LCDSTROBE));
+
+	// Initialize Port E bit7 to be an output pin
+	WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow|LCDSTROBE));
+
+	// Initialize Port E bit7 to be a chip select.
+	// Set to be a I/O Read and Write strobe with 7 wait states.
+	// and writes allowed.
+
+	WrPortI(LCDCSREGISTER, &LCDCSSHADOW, LCDCSCONFIG);
+
+	// Turn-off all LEDS and LCD backlight
+	WrPortE(0xE00B, &LEDShadow, 0x00);
+
+	// Enable LED control register
+	WrPortE(0xE008, NULL, 0x00);
+
+	// Set bits PE5, PE4, PE1 and PE0 low in the register
+	WrPortI(PEDR, &PEDRShadow,   (PEDRShadow  & ~0x33));
+
+	// Initialize as normal I/O
+	WrPortI(PEFR, &PEFRShadow,   (PEFRShadow  & ~0x33));
+
+	// initialize pins to be outputs
+	WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow | 0x33));
+
+	// Set bits PE5, PE4, PE1 and PE0 signal lines low
+	WrPortI(PEDR, &PEDRShadow,   (PEDRShadow  & ~0x33));
+	//---------------------------------------------------------------------
+	// Initialize floating I/O pins when ethernet is not being used
+	//---------------------------------------------------------------------
+	if(_BOARD_TYPE_ == OP6810)
+	{
+		// set PE2, PE3 and PE6 as normal I/O bits
+		WrPortI(PEFR, &PEFRShadow,  (PEFRShadow &~0x4c));
+
+		// set PE2, PE3 and PE6 as outputs
+		WrPortI(PEDDR,&PEDDRShadow, (PEDDRShadow| 0x4c));
+
+		// set PE2, PE3 and PE6 bits low
+		WrPortI(PEDR, &PEDRShadow,  (PEDRShadow &~0x4c));
+	}
+
+	//---------------------------------------------------------------------
+	// Initialize Port D and E to be clocked by PCLK/2
+	//---------------------------------------------------------------------
+	WrPortI(PDCR, &PDCRShadow, 0x00);	// set PDCR to be CLK'ed by PCLK/2
+	WrPortI(PECR, &PECRShadow, 0x00);	// set PECR to be CLK'ed by PCLK/2
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */
+
+

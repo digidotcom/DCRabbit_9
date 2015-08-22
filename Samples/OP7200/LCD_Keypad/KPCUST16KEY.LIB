@@ -1,0 +1,1174 @@
+/* START LIBRARY DESCRIPTION *********************************************
+
+Copyright (tm) Zworld 2002 
+
+Set of library functions for use with  9 key keypad controllers.
+
+END LIBRARY DESCRIPTION **************************************************/
+
+
+
+
+/*** BeginHeader */
+#ifndef	__KPCUSTKEYPAD_LIB
+	#define __KPCUSTKEYPAD_LIB
+	#use "terminal12.lib"
+	#use "terminal9.lib"
+/*** EndHeader */
+
+/*** BeginHeader GlkData, Glkey, GlkX, GlkY,GlkBzr, GlkBzrDur, GlkXrefresh,
+					  GlkXcache, GlkChar,GlkEnable, Glk10x12, Glk14x16,
+					  GlkErrMsg, GlkErrMsgLen */
+					  
+#define	GLK_MSG_SIZE	100
+#define	GLK_TOP			2
+#define	GLK_RIGHT		4
+#define	GLK_BOTTOM		4
+#define	GLK_LEFT			2
+#define	GLK_FRAME_WIDTH	20
+#define	GLK_FRAME_HEIGHT	15
+#define	GLK_OUTLINE			35,6,253,230		
+#define	GLK_HEADING			40,11,240,40	
+#define	GLK_ENTRY			40,51,240,50
+#define	GLK_ESC			12
+#define	GLK_CLR			13
+#define	GLK_DEL			14
+#define	GLK_MIN			11
+#define	GLK_DOT			10
+#define	GLK_RET			15
+#define	GLK_ERRMSG_RANGE 0
+
+typedef struct
+{
+	int	xStart;
+	int	yStart;
+	int	xSize;
+	int	ySize;
+	fontInfo *font;
+	char	DispStr[4];
+} _GlkData;
+
+extern const Key	KeypadCfg[9];
+extern Key  KeyStore[9];
+extern const _GlkData	GlkData[16];
+extern const int 			Glkey[4][4];
+extern const char 		GlkChar[];
+extern const char	* const GlkErrMsg[];
+extern int	GlkX;
+extern int  GlkY;
+extern int	GlkBzr;
+extern int  GlkBzrDur;
+extern  int  GlkEnable;
+extern unsigned long GlkXrefresh;
+extern unsigned long GlkXcache;
+extern fontInfo Glk10x12;
+extern fontInfo Glk14x16;
+extern unsigned long GlkErrMsgLen;
+/*** EndHeader */
+
+const char * const GlkErrMsg [] =
+{
+	"VALUE OUT\nOF RANGE",""
+};
+const _GlkData	GlkData[16] =
+{
+	{ 40,197,60,32,&Glk14x16,"0"  },
+	{ 40,165,60,32,&Glk14x16,"1"  },
+	{100,165,60,32,&Glk14x16,"2"  },
+	{160,165,60,32,&Glk14x16,"3"  },
+	{ 40,133,60,32,&Glk14x16,"4"  },
+	{100,133,60,32,&Glk14x16,"5"  },
+	{160,133,60,32,&Glk14x16,"6"  },
+	{ 40,101,60,32,&Glk14x16,"7"  },
+	{100,101,60,32,&Glk14x16,"8"  },
+	{160,101,60,32,&Glk14x16,"9"  },
+	{100,197,60,32,&Glk14x16,"."  },
+	{160,197,60,32,&Glk14x16,"-"  },
+	{220,101,60,32,&Glk10x12,"ESC"},
+	{220,133,60,32,&Glk10x12,"CLR"},
+	{220,165,60,32,&Glk10x12,"DEL"},
+	{220,197,60,32,&Glk10x12,"RET"}
+};
+
+const	int	Glkey[4][4] =
+{
+	{7,8, 9, 12},
+	{4,5, 6, 13},
+	{1,2, 3, 14},
+	{0,10,11,15}
+};
+const char 		GlkChar[] =
+{
+	'0','1','2','3','4','5','6','7','8','9','.','-'
+};
+const Key	KeypadCfg[9] =				// keypad key Config Data
+{
+	{  0,'B',0, 0, 0,  0, 0,0,0,0,0},					
+	{  1,'+',0, 0, 0,  0, 0,0,0,0,0},
+	{  2,'U',0, 100, 100,  10, 10,0,0,0,0},
+	{  3,'-',0, 0, 0,  0, 0,0,0,0,0},
+	{  4,'S',0, 0, 0,  0, 0,0,0,0,0},
+	{  5,'L',0, 100, 100,  10, 10,0,0,0,0},
+	{  6,'E',0, 0, 0,  0, 0,0,0,0,0},
+	{  7,'R',0, 100, 100,  10, 10,0,0,0,0},
+	{  8,'D',0, 100, 100,  10, 10,0,0,0,0}
+};
+
+Key  KeyStore[9];			// storage holder for current keyConfig data
+int	GlkX;
+int  	GlkY;
+int	GlkBzr;
+int  	GlkBzrDur;
+int   GlkEnable;
+unsigned long GlkXrefresh;
+unsigned long GlkXcache;
+fontInfo Glk10x12;
+fontInfo Glk14x16;
+unsigned long GlkErrMsgLen;
+/*** BeginHeader GlkFrameNw, GlkFrameNe, GlkFrameSw, GlkFrameSe */
+
+extern unsigned long GlkFrameNw;
+extern unsigned long GlkFrameNe;
+extern unsigned long GlkFrameSw;
+extern unsigned long GlkFrameSe;
+
+/*** EndHeader */
+
+/*
+Automatic output from Font Converter
+bitmap file is nwbutt.bmp.
+Oval North West button corner
+
+bfSize = 122
+horizontal size is 20 pixels.
+vertical size is 15 pixels.
+*/
+xdata GlkFrameNw {
+'\x03','\xff','\xff',
+'\x0f','\xff','\xff',
+'\x1c','\x00','\x00',
+'\x30','\x00','\x00',
+'\x60','\x00','\x00',
+'\x60','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00'
+}; /* end of char *bitMap */
+
+/*
+Automatic output from Font Converter
+bitmap file is nebutt.bmp.
+Oval North East button corner
+bfSize = 122
+horizontal size is 20 pixels.
+vertical size is 15 pixels.
+*/
+xdata GlkFrameNe {
+'\xff','\xfc','\x00',
+'\xff','\xff','\x00',
+'\x00','\x07','\x80',
+'\x00','\x03','\xc0',
+'\x00','\x01','\xe0',
+'\x00','\x01','\xe0',
+'\x00','\x01','\xf0',
+'\x00','\x00','\xf0',
+'\x00','\x00','\xf0',
+'\x00','\x00','\xf0',
+'\x00','\x00','\xf0',
+'\x00','\x00','\xf0',
+'\x00','\x00','\xf0',
+'\x00','\x00','\xf0',
+'\x00','\x00','\xf0'
+}; /* end of char *bitMap */
+
+/*
+Automatic output from Font Converter
+bitmap file is swbutt.bmp.
+Oval South West button corner
+
+bfSize = 122
+horizontal size is 20 pixels.
+vertical size is 15 pixels.
+*/
+xdata GlkFrameSw {
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xc0','\x00','\x00',
+'\xe0','\x00','\x00',
+'\x70','\x00','\x00',
+'\x7e','\x00','\x00',
+'\x3f','\xff','\xf0',
+'\x1f','\xff','\xf0',
+'\x0f','\xff','\xf0',
+'\x03','\xff','\xf0'
+}; /* end of char *bitMap */
+
+/*
+Automatic output from Font Converter
+bitmap file is sebutt.bmp.
+Oval South East button corner
+
+bfSize = 122
+horizontal size is 20 pixels.
+vertical size is 15 pixels.
+*/
+xdata GlkFrameSe {
+'\x00','\x00','\xf0',
+'\x00','\x00','\xf0',
+'\x00','\x00','\xf0',
+'\x00','\x00','\xf0',
+'\x00','\x00','\xf0',
+'\x00','\x00','\xf0',
+'\x00','\x00','\xf0',
+'\x00','\x00','\xf0',
+'\x00','\x01','\xf0',
+'\x00','\x01','\xe0',
+'\x00','\x07','\xe0',
+'\xff','\xff','\xc0',
+'\xff','\xff','\x80',
+'\xff','\xff','\x00',
+'\xff','\xfc','\x00'
+}; /* end of char *bitMap */
+
+
+/*** BeginHeader glkeypadInit */
+int	glkeypadInit(int BuzzerOnOff);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+glkeypadInit				<KPCUSTKEYPAD.LIB>
+
+SYNTAX:			int	glkeypadInit(int BuzzerOnOff);
+
+DESCRIPTION:	Blank a region of the LCD.
+
+								
+PARAMETER1:		Turn The Buzzer on or off.
+
+RETURN VALUE:	1 when completed.
+
+
+SEE ALSO:		glkClearRegion, glkDisplayText, glkMsgBox, glkDisplayVKP,
+					glkCtrlVKP, glkeyGet, glkGetInt, glkGetFloat, glkGetLong,
+					glkGetString.
+
+END  DESCRIPTION *********************************************************/
+
+int	glkeypadInit(int BuzzerOnOff)
+{
+	glXFontInit ( &Glk14x16,14,16,0x20,0x7E,Terminal12 );
+	glXFontInit ( &Glk10x12,10,12,0x20,0x7E,Terminal9 );
+	GlkX = GlkY = 0;
+	GlkXrefresh = xalloc (9600);
+	GlkXcache   = xalloc (9600);
+	GlkEnable = 0;
+	GlkBzr = BuzzerOnOff;
+	return 1;
+}
+/*** BeginHeader glkClearRegion */
+int   glkClearRegion(int xStart, int yStart, int xSize, int ySize);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+glkClearRegion				<GLVKEYPAD9.LIB>
+
+SYNTAX:			int   glkClearRegion(int xStart, int yStart,
+												int xSize, int ySize);
+
+DESCRIPTION:	Blank a region of the LCD.
+
+								
+PARAMETER1:		Starting Horizontal Pixel position.
+PARAMETER2:		Starting Vertical Pixel positiion.
+PARAMETER3:		Width of the Region pixels.
+PARAMETER4:		Height of Region in pixels.
+
+
+RETURN VALUE:	1 when completed.
+
+
+END  DESCRIPTION *********************************************************/
+
+nodebug
+int   glkClearRegion(int xStart, int yStart, int xSize, int ySize)
+{
+	auto int brush;
+	brush = glGetBrushType();
+	glSetBrushType(PIXWHITE);
+	glBlock(xStart,yStart,xSize,ySize);
+	glSetBrushType(PIXBLACK);
+	return brush;
+}
+
+/*** BeginHeader glkDisplayText */
+int  glkDisplayText(	int xStart, int yStart, int xSize,		
+							int ySize, fontInfo *pInfo, char *Text);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+glkDisplayText				<KPCUSTKEYPAD.LIB>
+
+SYNTAX:			int  glkDisplayText(	int xStart, int yStart,
+												int xSize, int ySize,
+												fontInfo *pInfo, char *Text);
+
+DESCRIPTION:	Displays a Text on the LCD. The Text will be
+					automatically centered both horizontally and
+					vertically. '\n' within the text will give you the
+					capability of multiline text.
+					for example;
+					"Hello\nFrom\nZworld\nEngineering"
+					will produce
+			
+				  	   Hello
+				  	   from	  	
+				     Zworld  	
+				   Engineering   
+								
+
+PARAMETER1:		Starting Horizontal Pixel position.
+PARAMETER2:		Starting Vertical Pixel positiion.
+PARAMETER3:		Width of Display area pixels.
+PARAMETER4:		Height of Display area in pixels.
+PARAMETER5:		Font descriptor.
+PARAMETER6:		Text to be displayed.
+
+RETURN VALUE:	1 when completed.
+
+
+END  DESCRIPTION *********************************************************/
+
+nodebug
+int  glkDisplayText(	int xStart, int yStart, int xSize,		
+							int ySize,fontInfo *pInfo, char *Text)
+{
+	static int curX,curY;
+	static int newX,newY;
+	static int maxX,maxY;
+	static char newT[GLK_MSG_SIZE];
+	static int index, state, lenY;
+	#GLOBAL_INIT {state = 0;}
+	switch (state)
+	{
+		case 0:
+			maxX = (xSize - 8) / pInfo ->pixWidth;
+			maxY = (ySize - 8) / pInfo ->pixHeight;
+			index = 0;
+			newX = 0 ;
+			newY = 0;
+			lenY = 0;
+			state = 1;
+			break;
+		case 1:
+			if ( (Text[index] == '\n') || ((index - newX) == maxX))
+			{
+				lenY++;
+				newX = index;
+			}
+			if (index >= strlen(Text))
+			{
+				if (index == 0) state = 4;
+				else 	state++;
+			}
+			else	index++;
+			break;
+		case 2:
+			index = 0;
+			newX = 0;
+			curY = (yStart  + ( ySize / 2)) -
+					 (((lenY+1) * (pInfo -> pixHeight)) /2) ;
+			state++;
+			break;
+		case 3:
+			if ( (Text[index] == '\n')  || (index == strlen(Text)) || ((index - newX) == maxX))
+			{
+				curX = (xStart  + ( xSize / 2)) -
+						 (( (index - newX) * pInfo ->pixWidth)/2);
+				memcpy(newT,Text + newX,index - newX);
+				if (Text[index] == '\n')
+				{
+					newT[index - newX ] = '\0';
+					index++;
+				}
+				else
+				{
+					newT[index - newX ] = '\0';
+				}
+				newX = index;
+				glPrintf(curX,curY + (newY * pInfo -> pixHeight),pInfo,newT);
+				newY++;
+			}
+			if (index < strlen(Text)  && newY < maxY)
+			{
+				index++;
+			}
+			else
+			{
+				state = 4;
+			}
+			break;
+		case 4:
+			state = 0;
+			return 1;
+			break;
+	}
+	return 0;		
+}
+
+/*** BeginHeader glkMsgBox */
+int	glkMsgBox(int xStart, int yStart, int xSize,	int ySize, 	
+					 fontInfo *pInfo, char *Text, int Frame, int Invert );
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+glkMsgBox				<GLTOUCHSCREEN.LIB>
+
+SYNTAX:			int	glkMsgBox(int xStart, int yStart, int xSize,
+											int ySize, fontInfo *pInfo,
+											char *Text, int Frame, int Invert);
+
+DESCRIPTION:	Displays a Message (Text box) on the LCD. It can be
+					square or oval framed, and Inverted.  The Text will
+					be automatically centered both horizontally and
+					vertically. '\n' within the text will give you the
+					capability of multiline text.
+					for example;
+					"Hello\nFrom\nZworld\nEngineering"
+   					will produce
+					
+					---------------
+				  |	 Hello		|
+				  |	  from	  	|
+				  |	 Zworld  	|
+				  |  Engineering  |
+					---------------
+PARAMETER1:		Starting Horizontal Pixel position.
+PARAMETER2:		Starting Vertical Pixel positiion.
+PARAMETER3:		Width of Box pixels.
+PARAMETER4:		Height of box in pixels.
+PARAMETER5:		Font descriptor.
+PARAMETER6:		Text to be displayed.
+PARAMETER7:		Frame type (1 = Oval, 0 = squared).
+PARAMETER8:		Invert selection (0 = normal display, 1 = inverted display.
+
+RETURN VALUE:	1 when completed.
+
+END  DESCRIPTION *********************************************************/
+
+nodebug
+int	glkMsgBox(int xStart, int yStart, int xSize,	int ySize, 	
+					 fontInfo *pInfo, char *Text, int Frame, int Invert)
+{
+	static int brush;
+	glBuffLock();
+	brush = glkClearRegion(xStart,yStart,xSize,ySize);  
+	glSetBrushType(PIXBLACK);								
+	glBlock(xStart,yStart,xSize,GLK_TOP);			
+	glBlock(xStart+ xSize- GLK_RIGHT,yStart,GLK_RIGHT,ySize ); 
+	glBlock(xStart,yStart+ySize - GLK_BOTTOM,xSize,GLK_BOTTOM);
+	glBlock(xStart,yStart,GLK_LEFT,ySize);			
+	
+	if (Frame)	
+	{
+		glXPutBitmap(	xStart,yStart,GLK_FRAME_WIDTH,			
+							GLK_FRAME_HEIGHT,GlkFrameNw);				
+		glXPutBitmap(	xStart + xSize - GLK_FRAME_WIDTH,yStart, 
+							GLK_FRAME_WIDTH,GLK_FRAME_HEIGHT,GlkFrameNe); 
+		glXPutBitmap(	xStart ,yStart + ySize - GLK_FRAME_HEIGHT,
+							GLK_FRAME_WIDTH,GLK_FRAME_HEIGHT,GlkFrameSw);
+		glXPutBitmap(	xStart + xSize - GLK_FRAME_WIDTH ,
+							yStart + ySize - GLK_FRAME_HEIGHT,GLK_FRAME_WIDTH,
+							GLK_FRAME_HEIGHT,GlkFrameSe);
+	}
+	while (!glkDisplayText(xStart,yStart,xSize,ySize,pInfo,Text));  
+	if (Invert)			
+	{
+		glSetBrushType(PIXXOR);						
+		glBlock(xStart,yStart,xSize,ySize);    
+		glSetBrushType(PIXBLACK);					
+	}
+	glSetBrushType(brush);							
+	glBuffUnlock();									
+	return 1;
+}
+
+/*** BeginHeader glkDisplayKey */
+int	glkDisplayKey (int GlkID);
+/*** EndHeader */
+int	glkDisplayKey (int GlkID)
+{
+
+	glkMsgBox(GlkData[GlkID].xStart,GlkData[GlkID].yStart,
+				 GlkData[GlkID].xSize,GlkData[GlkID].ySize,
+				 GlkData[GlkID].font,GlkData[GlkID].DispStr,
+				 1,0);
+	return 1;
+}
+/*** BeginHeader glkDisplayVKP */
+int  glkDisplayVKP (fontInfo *pHeading,char *Heading);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+glkDisplayVKP				<KPCUSTKEYPAD.LIB>
+
+SYNTAX:			int  glkDisplayVKP (fontInfo *pHeading,char *Heading);
+
+DESCRIPTION:	Displays the Virtual keypad.  This function is called
+					by one of the glkGetx functions for data entry.
+								
+PARAMETER1:		Font descriptor for Heading.
+PARAMETER2:		The Heading
+
+RETURN VALUE:	1 when completed.
+
+SEE ALSO:		glkGetInt, glkGetLong, glkGetFloat, glkGetString
+END  DESCRIPTION *********************************************************/
+
+int  glkDisplayVKP (fontInfo *pHeading,char *Heading)
+{
+	static int state,refreshEnable,index,loop;
+	#GLOBAL_INIT {state = 0;refreshEnable = 0;index = 0;}
+
+	
+	switch (state)
+	{
+		case 0:
+			memcpy (KeyStore,asKey,sizeof(Key) * 9);
+			memcpy (asKey,KeypadCfg,sizeof(Key) * 9);
+			index = 0;
+			glXGetBitmap(0,0,320,240,GlkXrefresh);
+			GlkEnable = 1;
+			glBuffLock();
+			glBlankScreen();
+			if (refreshEnable)
+			{
+				glXPutBitmap(0,0,320,240,GlkXcache);
+				state = 2;
+			}
+			else
+			{
+				glkMsgBox(GLK_OUTLINE,pHeading,"",1,0);
+				state++;
+			}
+			break;
+		case 1:
+			if (index < 16 )
+			{
+				glkDisplayKey(index);
+				index++;
+			}
+			else
+			{
+				state++;
+				glXGetBitmap(0,0,320,240,GlkXcache);
+			}
+			
+			break;
+		case 2:
+			glkMsgBox(GLK_HEADING,pHeading,Heading,1,0);
+			glkMsgBox(GLK_ENTRY,pHeading,"",1,0);
+			glBuffUnlock();
+			refreshEnable = 1;
+			state = 0;
+			return 1;
+			break;
+	}	
+	return 0;
+}
+
+/*** BeginHeader glkClearVKP */
+int glkClearVKP ();
+/*** EndHeader */
+
+int glkClearVKP ()
+{
+	int loop;
+	glBuffLock();
+	glBlankScreen();
+	memcpy (asKey,KeyStore,sizeof(Key) * 9);
+	glXPutBitmap(0,0,320,240,GlkXrefresh);
+	GlkEnable = 0;
+	glBuffUnlock();
+	return 1;
+
+}
+
+
+/*** BeginHeader glkCtrlVKP */
+int	glkCtrlVKP (fontInfo *pfont, byte Digits, char *Result);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+glkCtrlVKP					<KPCUSTKEYPAD.LIB>
+
+SYNTAX:			int	glkCtrlVKP (fontInfo *pfont, byte Digits,
+											char *Result);
+
+DESCRIPTION:	Controls the Virtual keypad.  This function is called
+					by one of the glkGetx functions for data entry.
+								
+PARAMETER1:		Font descriptor for the Entry box.
+PARAMETER2:		Maximum digits accepted
+PARAMETER3:    Pointer to store the result in.
+
+RETURN VALUE:	1 when completed.
+
+SEE ALSO:		glkGetInt, glkGetLong, glkGetFloat, glkGetString
+END  DESCRIPTION *********************************************************/
+
+
+int	glkCtrlVKP (fontInfo *pfont, byte Digits, char *Result)
+{
+	static int state,key,dotChk,index;
+	static char bldStr[GLK_MSG_SIZE];
+	#GLOBAL_INIT {state = 0;}
+	switch (state)
+	{
+		case 0:
+			sprintf(bldStr,"");
+			dotChk = 0;
+			index = 0;
+			key = -1;
+			state++;
+			break;
+		case 1:
+			if ( (key = glkeyGet()) > -1) state++;
+			break;
+		case 2:
+			switch (key)
+			{
+				case GLK_ESC:
+					state = 0;
+					return -1;
+					break;
+				case GLK_CLR:
+					glkMsgBox(GLK_ENTRY,pfont,"",1,0);
+					state = 0;
+					break;
+				case GLK_DEL:
+					if (index > 0)
+					{	
+					
+						index--;
+						if (bldStr[index] == '.')dotChk = 0;
+						bldStr[index] = '\0';
+						glkMsgBox(GLK_ENTRY,pfont,bldStr,1,0);
+					}
+					state = 1;
+					break;
+				case GLK_RET:
+					bldStr[index] = '\0';
+					sprintf(Result,"%s",bldStr);
+					state = 0;
+					return 1;
+					break;
+				default:
+					if (index < Digits)
+					{
+						bldStr[index] = GlkChar[key];
+						index++;
+						bldStr[index] = '\0';
+						glkMsgBox(GLK_ENTRY,pfont,bldStr,1,0);
+					}
+					state = 1;
+					break;
+			}
+				
+	}			
+	return 0;
+}
+
+/*** BeginHeader glkeyGet */
+int 	glkeyGet(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+glkeyGet						<KPCUSTKEYPAD.LIB>
+
+SYNTAX:			int 	glkeyGet(void);
+
+DESCRIPTION:	This is the worker function for retrieving keypresses from
+					the virtual keypad.  This function is controlled by
+					the glkCtrlVKP function.
+								
+RETURN VALUE:	The KeyID number that was pressed.
+
+SEE ALSO:		glkGetInt, glkGetLong, glkGetFloat, glkGetString, glkCrtlVKP
+END  DESCRIPTION *********************************************************/
+
+
+int 	glkeyGet(void)
+{
+	static int state,key;
+	#GLOBAL_INIT {state = 0;key = -1;}
+	keyProcess();
+	switch (state)
+	{
+		case 0:
+			glSetBrushType(PIXXOR);
+			glBlock(GlkData[Glkey[GlkY][GlkX]].xStart,
+					 GlkData[Glkey[GlkY][GlkX]].yStart,
+					 GlkData[Glkey[GlkY][GlkX]].xSize,
+					 GlkData[Glkey[GlkY][GlkX]].ySize);
+			state++;
+			glSetBrushType(PIXBLACK);
+			buzzer(0);
+			break;
+						 
+		case 1:
+				if ( ( key = keyGet() ) > 0)
+				{
+					glSetBrushType(PIXXOR);
+					glBlock(GlkData[Glkey[GlkY][GlkX]].xStart,
+					 			GlkData[Glkey[GlkY][GlkX]].yStart,
+					 			GlkData[Glkey[GlkY][GlkX]].xSize,
+					 			GlkData[Glkey[GlkY][GlkX]].ySize);
+					state++;
+					glSetBrushType(PIXBLACK);
+				}
+			break;
+		case 2:
+			switch(key)
+			{
+				case 'R':
+					if (GlkX < 3) GlkX++;
+					else GlkX = 0;
+					break;
+				case 'L':
+					if (GlkX > 0) GlkX--;
+					else GlkX = 3;
+					break;
+				case 'U':
+					if (GlkY > 0) GlkY--;
+					else GlkY = 3;
+					break;
+				case 'D':
+					if (GlkY < 3) GlkY++;
+					else GlkY = 0;
+					break;
+				case '-':
+					GlkY = 0;
+					break;
+				case '+':
+					GlkY = 3;
+					break;
+				case 'S':
+					GlkY = 3;
+					GlkX = 3;
+					break;
+				case 'B':
+					GlkY = 0;
+					GlkX = 0;
+					break;
+				case 'E':
+					state = 0;
+					buzzer(0);
+					return Glkey[GlkY][GlkX];
+					break;
+				}
+				if (GlkBzr)buzzer(1);
+				state = 0;
+			break;
+	}
+	return -1;
+}
+
+/*** BeginHeader glkGetInt */
+int	glkGetInt  (int *Value, int Min, int Max, int Digits,
+						fontInfo *pfont1, fontInfo *pfont2, char *Heading);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+glkGetInt					<KPCUSTKEYPAD.LIB>
+
+SYNTAX:			int	glkGetInt  (int *Value, int Min, int Max, int Digits,
+								fontInfo *pfont1, fontInfo *pfont2, char *Heading);
+
+DESCRIPTION:	Will display the Virtual keypad for integer data entry.
+
+PARAMETER1:		Pointer location to store the int.
+PARAMETER2:		Minimum acceptable value.
+PARAMETER3:		Maximum acceptable value.
+PARAMETER4:		Maximum number of digits
+PARAMETER5:		Font descriptor to use for the Entry box.
+PARAMETER6:		Font descriptor to use for the Heading box.
+PARAMETER7:		Heading to Display.
+								
+RETURN VALUE:	1 when completed.
+
+SEE ALSO:		glkGetInt, glkGetLong, glkGetFloat, glkGetString, glkCrtlVKP
+END  DESCRIPTION *********************************************************/
+
+
+nodebug
+int	glkGetInt  (int *Value, int Min, int Max, int Digits,
+						fontInfo  *pfont1, fontInfo *pfont2, char *Heading)
+{
+	static int state,retval;
+	static long chk;
+	static char RetStr[10];
+	#GLOBAL_INIT { state = 0; }
+	switch (state)
+	{
+		case 0:
+			sprintf( RetStr,"" );
+			chk = 0;
+			state++;
+			break;
+		case 1:
+			if ( glkDisplayVKP(pfont2, Heading) )
+			{
+				state++;
+			}
+			break;
+		case 2:
+			if ( (retval = glkCtrlVKP(pfont1, Digits, RetStr) ) != 0 )
+			{
+				state++;
+			}
+			break;
+		case 3:
+			if ( retval == -1 )
+			{
+				state = 6;
+			}
+			else
+			{
+				chk = atol(RetStr);
+				if (chk < Min || chk > Max)
+				{
+					chk = 0;
+					sprintf(RetStr,"");
+					state ++;
+				}
+				else
+				{
+					*Value = atoi(RetStr);
+					state = 6;
+				}
+			}
+			break;
+
+		case 4:
+			GlkErrMsgLen = MS_TIMER + 2000;
+			glkMsgBox(GLK_HEADING,pfont2,GlkErrMsg[GLK_ERRMSG_RANGE],1,1);
+			state++;
+			break;
+		case 5:
+			if ( GlkErrMsgLen > MS_TIMER )
+			{
+			}
+			else
+			{
+				glBuffLock();
+				glkMsgBox( GLK_HEADING,pfont2,Heading,1,0 );
+				glkMsgBox(GLK_ENTRY,pfont1,"",1,0);
+				glBuffUnlock();
+				state = 2;		
+			}
+			break;
+		case 6:
+			if (glkClearVKP())
+			{
+				state = 0;
+				return retval;
+			}
+			break;
+	}
+	return 0;
+}
+
+/*** BeginHeader glkGetLong */
+int	glkGetLong  (long *Value, long Min, long Max, int Digits,
+						fontInfo *pfont1, fontInfo *pfont2, char *Heading);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+glkGetLong					<KPCUSTKEYPAD.LIB>
+
+SYNTAX:			int	glkGetLong  (long *Value, long Min, long Max,
+											int Digits,	fontInfo *pfont1,
+											fontInfo *pfont2, char *Heading);
+
+DESCRIPTION:	Will display the Virtual keypad for long integer data entry.
+
+PARAMETER1:		Pointer location to store the long int.
+PARAMETER2:		Minimum acceptable value.
+PARAMETER3:		Maximum acceptable value.
+PARAMETER4:		Maximum number of digits
+PARAMETER5:		Font descriptor to use for the Entry box.
+PARAMETER6:		Font descriptor to use for the Heading box.
+PARAMETER7:		Heading to Display.
+								
+RETURN VALUE:	1 when completed.
+
+SEE ALSO:		glkGetInt, glkGetLong, glkGetFloat, glkGetString, glkCrtlVKP
+END  DESCRIPTION *********************************************************/
+
+nodebug
+int	glkGetLong  (long *Value, long Min, long Max, int Digits,
+						fontInfo  *pfont1, fontInfo *pfont2, char *Heading)
+{
+	static int state,retval;
+	static long chk;
+	static char RetStr[20];
+	#GLOBAL_INIT { state = 0; }
+	switch (state)
+	{
+		case 0:
+			sprintf( RetStr,"" );
+			chk = 0;
+			state++;
+			break;
+		case 1:
+			if ( glkDisplayVKP(pfont2, Heading) )
+			{
+				state++;
+			}
+			break;
+		case 2:
+			if ( (retval = glkCtrlVKP(pfont1, Digits, RetStr) ) != 0 )
+			{
+				state++;
+			}
+			break;
+		case 3:
+			if ( retval == -1 )
+			{
+				state = 6;
+			}
+			else
+			{
+				chk = atol(RetStr);
+				if (chk < Min || chk > Max)
+				{
+					chk = 0;
+					sprintf(RetStr,"");
+					state ++;
+				}
+				else
+				{
+					*Value = atol(RetStr);
+					state = 6;
+				}
+			}
+			break;
+
+		case 4:
+			GlkErrMsgLen = MS_TIMER + 2000;
+			glkMsgBox(GLK_HEADING,pfont2,GlkErrMsg[GLK_ERRMSG_RANGE],1,1);
+			state++;
+			break;
+		case 5:
+			if ( GlkErrMsgLen > MS_TIMER )
+			{
+			}
+			else
+			{
+				glBuffLock();
+				glkMsgBox( GLK_HEADING,pfont2,Heading,1,0 );
+				glkMsgBox(GLK_ENTRY,pfont1,"",1,0);
+				glBuffUnlock();
+				state = 2;		
+			}
+			break;
+		case 6:
+			if (glkClearVKP())
+			{
+				state = 0;
+				return retval;
+			}
+			break;
+	}
+	return 0;
+}
+/*** BeginHeader glkGetFloat */
+int	glkGetFloat  (float *Value, float Min, float Max, int Digits,
+						fontInfo *pfont1, fontInfo *pfont2, char *Heading);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+glkGetFloat					<KPCUSTKEYPAD.LIB>
+
+SYNTAX:			int	glkGetFloat  (float *Value, float Min, float Max,
+												int Digits,	fontInfo *pfont1,
+												fontInfo *pfont2, char *Heading);
+						
+DESCRIPTION:	Will display the Virtual keypad for float data entry.
+
+PARAMETER1:		Pointer location to store the float.
+PARAMETER2:		Minimum acceptable value.
+PARAMETER3:		Maximum acceptable value.
+PARAMETER4:		Maximum number of digits
+PARAMETER5:		Font descriptor to use for the Entry box.
+PARAMETER6:		Font descriptor to use for the Heading box.
+PARAMETER7:		Heading to Display.
+								
+RETURN VALUE:	1 when completed.
+
+SEE ALSO:		glkGetInt, glkGetLong, glkGetFloat, glkGetString, glkCrtlVKP
+END  DESCRIPTION *********************************************************/
+
+nodebug
+int	glkGetFloat  (float *Value, float Min, float Max, int Digits,
+						fontInfo  *pfont1, fontInfo *pfont2, char *Heading)
+{
+	static int state,retval;
+	static long chk;
+	static char RetStr[GLK_MSG_SIZE];
+	#GLOBAL_INIT { state = 0; }
+	switch (state)
+	{
+		case 0:
+			sprintf( RetStr,"" );
+			chk = 0;
+			state++;
+			break;
+		case 1:
+			if ( glkDisplayVKP(pfont2, Heading) )
+			{
+				state++;
+			}
+			break;
+		case 2:
+			if ( (retval = glkCtrlVKP(pfont1, Digits, RetStr) ) != 0 )
+			{
+				state++;
+			}
+			break;
+		case 3:
+			if ( retval == -1 )
+			{
+				state = 6;
+			}
+			else
+			{
+				chk = atol(RetStr);
+				if (chk < Min || chk > Max)
+				{
+					chk = 0;
+					sprintf(RetStr,"");
+					state ++;
+				}
+				else
+				{
+					*Value = atof(RetStr);
+					state = 6;
+				}
+			}
+			break;
+
+		case 4:
+			GlkErrMsgLen = MS_TIMER + 2000;
+			glkMsgBox(GLK_HEADING,pfont2,GlkErrMsg[GLK_ERRMSG_RANGE],1,1);
+			state++;
+			break;
+		case 5:
+			if ( GlkErrMsgLen > MS_TIMER  )
+			{
+			}
+			else
+			{
+				glBuffLock();
+				glkMsgBox( GLK_HEADING,pfont2,Heading,1,0 );
+				glkMsgBox(GLK_ENTRY,pfont1,"",1,0);
+				glBuffUnlock();
+				state = 2;		
+			}
+			break;
+		case 6:
+			if (glkClearVKP())
+			{
+				state = 0;
+				return 1;
+			}
+			break;
+	}
+	return 0;
+}
+/*** BeginHeader glkGetString */
+int	glkGetString  (char *Value, int Digits,
+						fontInfo *pfont1, fontInfo *pfont2, char *Heading);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+glkGetString				<KPCUSTKEYPAD.LIB>
+
+SYNTAX:			int	glkGetString  (char *Value, int Digits,
+								fontInfo *pfont1, fontInfo *pfont2, char *Heading);
+						
+DESCRIPTION:	Will display the Virtual keypad for string data entry.
+
+PARAMETER1:		Pointer location to store the string.
+PARAMETER2:		Maximum number of digits
+PARAMETER3:		Font descriptor to use for the Entry box.
+PARAMETER4:		Font descriptor to use for the Heading box.
+PARAMETER5:		Heading to Display.
+								
+RETURN VALUE:	1 when completed.
+
+SEE ALSO:		glkGetInt, glkGetLong, glkGetFloat, glkGetString, glkCrtlVKP
+END  DESCRIPTION *********************************************************/
+
+nodebug
+int	glkGetString  (char *Value, int Digits,
+						fontInfo  *pfont1, fontInfo *pfont2, char *Heading)
+{
+	static int state,retval,done;
+	static long chk;
+	static char RetStr[GLK_MSG_SIZE];
+	#GLOBAL_INIT { state = 0; done = 0;}
+	switch (state)
+	{
+		case 0:
+			sprintf( RetStr,"" );
+			chk = 0;
+			state++;
+			break;
+		case 1:
+			if ( glkDisplayVKP(pfont2, Heading) )
+			{
+				state++;
+			}
+			break;
+		case 2:
+			if ( (retval = glkCtrlVKP(pfont1, Digits, RetStr) ) != 0 )
+				{
+				state++;
+			}
+			break;
+		case 3:
+			if ( retval == -1 )
+			{
+				state = 4;
+			}
+			else
+			{
+				sprintf(Value,"%s",RetStr);
+				state = 4;
+			}
+			break;
+		case 4:
+			if (glkClearVKP())
+			{
+				state = 0;
+				return 1;
+			}
+			break;
+	}		
+	return 0;
+}
+/*** BeginHeader */
+#endif
+/*** EndHeader */

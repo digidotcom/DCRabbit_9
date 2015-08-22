@@ -1,0 +1,990 @@
+/* START LIBRARY DESCRIPTION *********************************************
+TARGETPROC_TCP.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains DeviceMate-side routines for communication with a
+   target processor.  This API allows TCP/IP functionality, including
+   UDP and DNS lookups, to be accessed from the target processor.  It
+   implements the state machine which translates between XTC channels
+   and internet TCP and UDP as implemented by DCRTCP.LIB.
+
+CONFIGURATION MACROS:
+	The following macros may be defined before inclusion of this library.
+	Note that the macro defaults are located in TC_CONF.LIB, and not this
+	library.  Instead of defining the macros in your program, you can
+	change them in TC_CONF.LIB.
+
+	TARGETPROC_TCP_TCBUFSIZE
+	   Defaults to 261, which allows for 256-byte data packets plus the
+	   5-byte XTC header.
+
+	TARGETPROC_TCP_XTCBUFSIZE
+	   Defaults to 512.  Must be greater than or egual to TCT_TCBUFSIZE-5.
+
+	TARGETPROC_TCP_MAXSOCK
+		Defaults to 6.
+	   Maximum number of sockets (implemented as XTC "channels") that are
+	   allowed.  Generally, this limits the number of sockets on the
+	   target since the target is assumed to be more resource-constrained
+	   than the DeviceMate.  The actual maximum is determined by the
+	   minumum value configured on the target or DeviceMate processor.
+	   Note that this value does not include the so-called "control"
+	   channel (channel 0).  Available socket numbers run from 1 to
+	   TCT_MAXCHANS inclusive.
+
+	TARGETPROC_TCP_NUMRXBUF
+	   Defaults to 4.  Specifies the number of target communications
+	   receive buffers.  A higher number allows greater performance, at
+	   the expense of additional memory usage.
+
+	TARGETPROC_TCP_NUMTXBUF
+	   Defaults to 2.  Specifies the number of target communications
+	   transmit buffers.  Set to 1 or 2; there is no real benefit to
+	   be obtained by specifying more than 2 transmit buffers.
+
+  	TARGETPROC_TCP_MAXRESOLVE
+  		Defaults to 4.  Specifies maximum number of concurrent DNS
+  		resolve requests that may be outstanding at any time.  This
+  		macro may be defined to zero to disable the DNS resolver.
+
+  	TARGETPROC_TCP_VERBOSE
+  		If defined, causes TCP state change and other debugging info
+  		to be printed to the stdio window.
+
+  	XTC_DEBUG
+  		This macro is common to this and the XTC library.  It enables
+  		Dynamic C debugging of these libraries.  It should be defined
+  		in the top-level .c file before including these libraries.
+
+GLOBAL VARIABLES:
+
+   TCTargetState _tcts;
+      One instance of this structure contains all necessary state
+      information for TCP/IP communication.  This library is thereby
+      made non-reentrant, however application code may serialize access
+      to these API functions so that the library may be used in a multi-
+      tasking environment.
+
+API FUNCTIONS:
+   This library is intended to operate entirely in the "background".  Its
+   functionality is provided merely by adding #use "targetproc_tcp.lib"
+   in the main program, ensuring that all of the DeviceMate state
+   machines are driven by periodically calling targetproc_tick(),
+   and calling sock_init() before calling any DeviceMate functions.
+   Calling sock_init() (in DCRTCP.LIB) is necessary to initialize
+   the TCP/IP side of communications.
+
+   Using this library automatically adds the necessary initialization
+   and state machine drivers to the existing DeviceMate function
+   chains.  For this reason, the functions herein are not formally
+   documented.
+
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader _tcts */
+#ifndef TARGETPROC_TCP_H
+#define TARGETPROC_TCP_H
+
+#ifndef TARGETPROC_XTC_H
+	#use "targetproc_xtc.lib"
+#endif
+
+#ifndef TC_TCP_H
+	#use "tc_tcp.lib"
+#endif
+
+#ifndef MAX_TCP_SOCKET_BUFFERS
+	// This tells DCRTCP how many TCP socket buffers to allocate
+	#define MAX_TCP_SOCKET_BUFFERS	TARGETPROC_TCP_MAXSOCK
+#endif
+
+#use "dcrtcp.lib"
+
+
+/*
+ * Additional socket state info for TCP/UDP sockets
+ */
+typedef struct {
+	union
+	{
+		tcp_Socket ts;			// Actual socket
+		udp_Socket us;
+	} u;
+	char		sc;			// Socket class (TC_SC_*)
+	char		xstate, tstate;		// XTC channel state, and corresponding TCP socket state as foll.
+#define TCTT_CLOSED	0x00	// Not in use
+#define TCTT_PASSIVE	0x01	// Passively opened
+#define TCTT_ACTIVE	0x02	// Actively opened socket
+#define TCTT_ESTAB	0x03	// Established socket
+#define TCTT_CLOSING	0x04	// Waiting for full close
+#define TCTT_UDP		0x05	// Opened in UDP mode (UDP socket only)
+	// Following fields for UDP support.  We need to add a UDP Tx buffer
+	// because we need to assemble the UDP datagram as it arrives from the
+	// target processor.
+	long		utxbuf;		// paddr of tx buffer.  length is ETH_MTU, since
+								// we don't support outbound fragmentation.  Since the TCP and UDP sockets
+								// "overlap" (the above union) this pointer actually refers to the TCP
+								// buffer, since it would otherwise be unused if this is a UDP entry.
+	TCUdpHeader uhout;	// Framing header for outbound UDP datagrams.
+	uint16	remout;		// Remaining length of outbound datagram to read from channel
+	TCUdpHeader uhin;		// Framing header for inbound UDP datagrams.
+	uint16	remin;		// Remaining length of inbound datagram to write to channel
+} TCTargetSock;
+
+typedef struct {
+	int		handle;		// Handle used by DNS service (0 if not in use)
+	uint16	request_id;	// TP request number
+	uint16	errcode;		// Error code from DNS (TC_RES_*)
+	uint32	ip;			// Resolved IP
+} TCTargetResolve;
+
+/*
+ * Struct to maintain overall TCP/IP comms state
+ */
+typedef struct {
+	XTCApp		app;							// XTC application stuff
+	XTCChan		chans[TARGETPROC_TCP_MAXSOCK+1];	// XTC channels for sockets and control
+	TCTargetSock tcp_sock[TARGETPROC_TCP_MAXSOCK+1];// Local socket state
+	uint16 flags;
+#define TCTT_STATE_INIT		0x0001	// TCP/IP stack initialized.
+	TCAckTcpipInit ackinit;	// Copy of response we sent to target
+
+#if TARGETPROC_TCP_MAXRESOLVE > 0
+	int	ndnsq;			// Number of outstanding DNS queries
+	TCTargetResolve dns_queries[TARGETPROC_TCP_MAXRESOLVE];
+#endif
+
+	TCTCPHdr hdr;			// Control channel framing header (length field non-zero when reading rest)
+	char cmd[124];			// Rest of command
+	char dummy;
+} TCTargetState;
+
+extern TCTargetState _tcts;			// Static instance
+
+
+/*** EndHeader */
+
+TCTargetState _tcts;
+
+
+/*** BeginHeader targetproc_resolve_free */
+int targetproc_resolve_free();
+/*** EndHeader */
+xtc_nodebug
+int targetproc_resolve_free()
+{
+	auto int i, j;
+	for (i = 0; i < TARGETPROC_TCP_MAXRESOLVE; i++)
+		if (!_tcts.dns_queries[i].handle) {
+			return i;
+		}
+	return -1;
+}
+
+
+
+
+/*** BeginHeader _targetproc_tcp_init */
+void _targetproc_tcp_init();
+#funcchain __targetproc_xtc_init _targetproc_tcp_init
+/*** EndHeader */
+
+xtc_nodebug
+void _targetproc_tcp_init()
+{
+	auto int rc;
+
+	_tcts.app.appno = TC_TYPE_TCPIP;
+	_tcts.app.numchans = TARGETPROC_TCP_MAXSOCK+1;
+	_tcts.app.chans = _tcts.chans;
+	_tcts.app.txbufsize = TARGETPROC_TCP_TCBUFSIZE;
+	_tcts.app.rxbufsize = TARGETPROC_TCP_TCBUFSIZE;
+	rc = targetproc_xtc_register(&_tcts.app, TARGETPROC_TCP_XTCBUFSIZE, TARGETPROC_TCP_XTCBUFSIZE);
+	if (rc) {
+#ifdef TARGETPROC_TCP_VERBOSE
+		printf("TCTS: targetproc_xtc_register failed %d\n", rc);
+#endif
+		exit(TC_TYPE_TCPIP);
+	}
+	_tcts.app.numrxbufs = TARGETPROC_TCP_NUMRXBUF;
+	_tcts.app.numtxbufs = TARGETPROC_TCP_NUMTXBUF;
+	_tcts.app.aflags = XTC_AF_CONTROL;	// Auto listen control channel
+	_tcts.app.tc_handler = NULL;
+	_tcts.app.reqpacing = 0;
+	memset((char *)_tcts.tcp_sock, 0, &_tcts.dummy - (char *)_tcts.tcp_sock);
+}
+
+/*** BeginHeader _tcts_set_tstate */
+void _tcts_set_tstate(TCTargetSock * ts, char newstate);
+/*** EndHeader */
+
+xtc_nodebug
+void _tcts_set_tstate(TCTargetSock * ts, char newstate)
+{
+	auto int chno;
+	chno = ts - _tcts.tcp_sock + 0x80;
+#ifdef TARGETPROC_TCP_VERBOSE
+	if (newstate != ts->tstate) {
+		printf("TCTS: CH %2X TCP %d --> %d\n", chno, (int)ts->tstate, (int)newstate);
+	}
+#endif
+	ts->tstate = newstate;
+}
+/*** BeginHeader _tcts_set_xstate */
+void _tcts_set_xstate(TCTargetSock * ts, char newstate);
+/*** EndHeader */
+
+xtc_nodebug
+void _tcts_set_xstate(TCTargetSock * ts, char newstate)
+{
+	auto int chno;
+	chno = ts - _tcts.tcp_sock + 0x80;
+#ifdef TARGETPROC_TCP_VERBOSE
+	if (newstate != ts->xstate) {
+		printf("TCTS: CH %2X XTC %d --> %d\n", chno, (int)ts->xstate, (int)newstate);
+	}
+#endif
+	ts->xstate = newstate;
+}
+
+/*** BeginHeader _targetproc_tcp_tick */
+void _targetproc_tcp_tick();
+#funcchain __targetproc_tick _targetproc_tcp_tick
+/*** EndHeader */
+
+xtc_nodebug
+int _tcts_udp_recvfromhdr(udp_Socket* s, longword* remip, word* remport)
+{
+	auto _udp_datagram_info udp_datagram_info;
+	auto int length;
+
+	LOCK_GLOBAL(TCPGlobalLock);
+	LOCK_SOCK(s);
+
+	if (s->rd.len >= sizeof(udp_datagram_info)) {
+		_tbuf_xread(paddr((char *)&udp_datagram_info), &s->rd, 0,
+						sizeof(_udp_datagram_info));
+		s->rd.len -= sizeof(udp_datagram_info);
+		_tbuf_delete(&s->rd, sizeof(udp_datagram_info));
+		*remip = udp_datagram_info.remip;
+		*remport = udp_datagram_info.remport;
+		length = udp_datagram_info.len;
+#ifdef TARGETPROC_TCP_VERBOSE
+		printf("TCTS: Got inbound udp data len=%d from %08X:%u\n", length, *remip, *remport);
+#endif
+	}
+	else {
+		length = -1;
+	}
+
+	// Return the number of characters waiting in the buffer
+	UNLOCK_SOCK(s);
+	UNLOCK_GLOBAL(TCPGlobalLock);
+	return length;
+}
+
+xtc_nodebug
+void _tcts_udp_recvdata(udp_Socket* s, char * buffer, int len)
+{
+	LOCK_GLOBAL(TCPGlobalLock);
+	LOCK_SOCK(s);
+
+	/* XXX : assert( len <= s->rd.len ) */
+	_tbuf_xread(paddr(buffer), &s->rd, 0, len);
+	s->rd.len -= len;
+	_tbuf_delete(&s->rd, len);
+
+	UNLOCK_SOCK(s);
+	UNLOCK_GLOBAL(TCPGlobalLock);
+}
+
+xtc_nodebug
+void _targetproc_tcp_tick()
+{
+	auto char buf[1500];	// Buffer for root data transfer
+	auto TCAckResolve ar;
+	auto TCUdpHeader uh;
+	auto int e, rc, av, ss;
+	auto TCTargetSock * ts;
+	auto TCTargetResolve * tr;
+
+	tcp_tick(NULL);
+
+	if (xtc_error(&_tcts.app, 0)) {
+		// Control channel dropped.  Need to reset everything, since the only reason
+		// the control channel can fail is if the peer reinitializes.
+		xtc_listen(&_tcts.app, 0, NULL);	// Cannot fail.
+		for (e = 1; e <= TARGETPROC_TCP_MAXSOCK; e++) {
+			ts = _tcts.tcp_sock + e;
+			if (ts->sc != TC_SC_TCP || !(ts->xstate | ts->tstate))
+				continue;
+			if (ts->sc == TC_SC_TCP)
+				tcp_abort(&ts->u.ts);
+			else
+				udp_close(&ts->u.us);
+			xtc_abort(&_tcts.app, e);
+			ts->xstate = TCTT_CLOSED;
+			ts->tstate = TCTT_CLOSED;
+		}
+		resolve_cancel(0);	// Cancel all outstanding
+		memset(_tcts.dns_queries, 0, sizeof(_tcts.dns_queries));
+		_tcts.ndnsq = 0;
+	}
+
+	rc = xtc_readable(&_tcts.app, 0);	// Anything on control channel?
+	if (rc && _tcts.hdr.length) {
+		if (rc > _tcts.hdr.length) {
+			xtc_read(&_tcts.app, 0, _tcts.cmd, _tcts.hdr.length);
+			switch (_tcts.hdr.typecode) {
+			case TC_TCPIP_INIT:
+				targetproc_tcpipinit((TCTcpipInit *)&_tcts.hdr);
+				break;
+			case TC_TCPIP_TCPOPEN:
+				targetproc_tcpopen((TCTcpOpen *)&_tcts.hdr);
+				break;
+			case TC_TCPIP_RESOLVE:
+				targetproc_resolve((TCResolve *)&_tcts.hdr);
+				break;
+			}
+			_tcts.hdr.length = 0;
+		}
+	}
+	else if (rc > sizeof(TCTCPHdr))
+		xtc_read(&_tcts.app, 0, (char *)&_tcts.hdr, sizeof(TCTCPHdr));
+
+	for (e = 1; e <= TARGETPROC_TCP_MAXSOCK; e++) {
+		ts = _tcts.tcp_sock + e;
+		if (!(ts->xstate | ts->tstate))
+			continue;
+		if (ts->sc == TC_SC_TCP) {
+			ss = ts->u.ts.state;
+			switch (ts->tstate) {
+			case TCTT_PASSIVE:
+				// FIXME: when connection opened, no data, closed.
+				if (sock_established(&ts->u.ts) || sock_bytesready(&ts->u.ts) >= 0) {
+					_tcts_set_tstate(ts, TCTT_ESTAB);
+					if (xtc_open(&_tcts.app, e) >= 0)
+						_tcts_set_xstate(ts, TCTT_ACTIVE);
+					else {
+						tcp_abort(&ts->u.ts);
+						_tcts_set_tstate(ts, TCTT_CLOSED);
+						_tcts_set_xstate(ts, TCTT_CLOSED);
+					}
+				}
+				else if (ts->u.ts.state == tcp_StateCLOSED) {
+					// Connection reset with no data.  No point in telling the target;
+					// just re-listen (sigh...)
+					tcp_extlisten(&ts->u.ts, 0, ts->u.ts.myport, 0, 0, NULL, 0, 0, 0);
+				}
+				break;
+			case TCTT_ACTIVE:
+				if (sock_established(&ts->u.ts))
+					_tcts_set_tstate(ts, TCTT_ESTAB);
+				break;
+			case TCTT_CLOSED:
+				if (ts->xstate == TCTT_ESTAB || ts->xstate == TCTT_ACTIVE) {
+					xtc_abort(&_tcts.app, e);
+					_tcts_set_xstate(ts, TCTT_CLOSED);
+					continue;
+				}
+				break;
+			default:
+				if (!tcp_tick(&ts->u.ts)) {
+					_tcts_set_tstate(ts, TCTT_CLOSED);
+					if (ts->xstate == TCTT_ACTIVE) {
+						xtc_abort(&_tcts.app, e);
+						_tcts_set_xstate(ts, TCTT_CLOSED);
+					}
+					else if (ts->xstate == TCTT_ESTAB) {
+						xtc_close(&_tcts.app, e);
+						_tcts_set_xstate(ts, TCTT_CLOSING);
+					}
+				}
+				break;
+			}
+
+			switch (ts->xstate) {
+			case TCTT_ACTIVE:
+			case TCTT_PASSIVE:
+				// FIXME: see above
+				if (xtc_estab(&_tcts.app, e)) {
+					if (xtc_error(&_tcts.app, e))
+						_tcts_set_xstate(ts, TCTT_CLOSED);
+						// fall through
+					else {
+						_tcts_set_xstate(ts, TCTT_ESTAB);
+						break;
+					}
+				}
+				else
+					break;
+			case TCTT_CLOSED:
+				if (ts->tstate == TCTT_ESTAB || ts->tstate == TCTT_ACTIVE) {
+					tcp_abort(&ts->u.ts);
+					_tcts_set_tstate(ts, TCTT_CLOSED);
+					continue;
+				}
+			default:
+				if (xtc_closed(&_tcts.app, e)) {
+					_tcts_set_xstate(ts, TCTT_CLOSED);
+					if (ts->tstate == TCTT_ACTIVE) {
+						tcp_abort(&ts->u.ts);
+						_tcts_set_tstate(ts, TCTT_CLOSED);
+					}
+					else if (ts->tstate == TCTT_ESTAB) {
+						tcp_close(&ts->u.ts);
+						_tcts_set_tstate(ts, TCTT_CLOSING);
+					}
+				}
+				break;
+			}
+
+			if (ts->tstate >= TCTT_ESTAB && ts->xstate >= TCTT_ESTAB) {
+				// Transfer data
+				rc = xtc_readable(&_tcts.app, e);
+				if (rc > 1) {
+					rc--;
+					if (rc > sizeof(buf)) rc = sizeof(buf);
+					xtc_preread(&_tcts.app, e, buf, rc);
+					rc = sock_fastwrite(&ts->u.ts, buf, rc);
+					if (rc > 0) {
+						xtc_read(&_tcts.app, e, buf, rc);
+						//printf("TCTS: Wrote '%*.*s'\n", rc, rc, buf);
+					}
+
+				}
+				else if (!rc) {
+					sock_close(&ts->u.ts);
+					_tcts_set_tstate(ts, TCTT_CLOSING);
+				}
+				rc = xtc_writable(&_tcts.app, e);
+				if (rc > 1) {
+					rc--;
+					if (rc > sizeof(buf)) rc = sizeof(buf);
+					rc = sock_preread(&ts->u.ts, buf, rc);
+					if (rc > 0) {
+						xtc_write(&_tcts.app, e, buf, rc);
+						sock_fastread(&ts->u.ts, buf, rc);
+					}
+					else if (ss >= tcp_StateCLOSWT) {
+						// TCP socket half closed
+						xtc_close(&_tcts.app, e);
+						_tcts_set_xstate(ts, TCTT_CLOSING);
+					}
+				}
+			}
+
+		}	// if TC_SC_TCP
+		else {
+			// TC_SC_UDP
+			switch (ts->xstate) {
+			case TCTT_ACTIVE:
+			case TCTT_PASSIVE:
+				// FIXME: see above
+				if (xtc_estab(&_tcts.app, e)) {
+					if (xtc_error(&_tcts.app, e))
+						_tcts_set_xstate(ts, TCTT_CLOSED);
+						// fall through
+					else {
+						_tcts_set_xstate(ts, TCTT_ESTAB);
+						break;
+					}
+				}
+				else
+					break;
+			case TCTT_CLOSED:
+				if (ts->tstate == TCTT_UDP) {
+					udp_close(&ts->u.us);
+					_tcts_set_tstate(ts, TCTT_CLOSED);
+					continue;
+				}
+			default:
+				if (xtc_closed(&_tcts.app, e)) {
+					_tcts_set_xstate(ts, TCTT_CLOSED);
+					if (ts->tstate == TCTT_UDP) {
+						udp_close(&ts->u.us);
+						_tcts_set_tstate(ts, TCTT_CLOSED);
+					}
+				}
+				break;
+			}
+
+			if (ts->tstate == TCTT_UDP && ts->xstate >= TCTT_ESTAB) {
+				// Check for outbound datagram request
+				if (!ts->remout) {
+					rc = xtc_aread(&_tcts.app, e, &ts->uhout, sizeof(ts->uhout));
+					if (rc > 0) {
+						// New request.
+						ts->remout = ts->uhout.len - rc;
+#ifdef TARGETPROC_TCP_VERBOSE
+						printf("TCTS: New outbound udp length %d from %d\n", ts->remout, e);
+#endif
+						if (ts->remout > sizeof(buf)) {
+							// No can do.  Abort channel since must be TP error.
+#ifdef TARGETPROC_TCP_VERBOSE
+							printf("TCTS: Unnaturally long!\n");
+#endif
+							xtc_abort_code(&_tcts.app, e, XTC_NEGCODE_APP);
+							_tcts_set_xstate(ts, TCTT_CLOSED);
+							udp_close(&ts->u.us);
+							_tcts_set_tstate(ts, TCTT_CLOSED);
+						}
+						if (!ts->remout) {
+							// Zero length datagram.  Send it without further ado.
+							rc = 0;
+							goto __targetproc_send_that_datagram;
+						}
+					}
+				}
+				else {
+					// Get remainder of outbound datagram
+					rc = sizeof(ts->uhout) + ts->remout;
+					rc = xtc_readp(&_tcts.app, e,
+							ts->utxbuf + (ts->uhout.len - rc),
+							ts->remout);
+					if (rc > 0) {
+#ifdef TARGETPROC_TCP_VERBOSE
+						printf("TCTS: Got outbound udp data %d from %d\n", rc, e);
+#endif
+						ts->remout -= rc;
+					}
+					if (!ts->remout) {
+						// Completed reading outbound datagram - send it
+						rc = sizeof(ts->uhout);
+						rc = ts->uhout.len - rc;
+						xmem2root(buf, ts->utxbuf, rc);
+					__targetproc_send_that_datagram:
+#ifdef TARGETPROC_TCP_VERBOSE
+						printf("TCTS: Sending it out (length %d)\n", rc);
+#endif
+						rc = udp_sendto(&ts->u.us, buf, rc, ts->uhout.remote_host, ts->uhout.remote_port);
+						if (rc < 0) {
+							// ARP resolve failed
+							xtc_abort_code(&_tcts.app, e, XTC_NEGCODE_APP);
+							_tcts_set_xstate(ts, TCTT_CLOSED);
+							udp_close(&ts->u.us);
+							_tcts_set_tstate(ts, TCTT_CLOSED);
+						}
+					}
+				}
+
+				// Check for inbound datagram; send over channel
+				rc = xtc_writable(&_tcts.app, e);
+				if (ts->remin) {
+					// Currently transferring inbound datagram
+					if (rc > 1) {
+						rc--;
+						if (rc > ts->remin)
+							rc = ts->remin;
+						if (rc > sizeof(buf))
+							rc = sizeof(buf);
+						_tcts_udp_recvdata(&ts->u.us, buf, rc);
+						ts->remin -= rc;
+#ifdef TARGETPROC_TCP_VERBOSE
+						if (rc)
+							printf("TCTS: Channeling udp %d to %d\n", rc, e);
+#endif
+						xtc_write(&_tcts.app, e, buf, rc);
+					}
+				}
+				else if (rc > sizeof(ts->uhin)){
+					// Nothing currently inbound, check for new datagram
+					rc = _tcts_udp_recvfromhdr(&ts->u.us, &ts->uhin.remote_host, &ts->uhin.remote_port);
+					if (rc >= 0) {
+						// New datagram of length rc
+#ifdef TARGETPROC_TCP_VERBOSE
+						printf("TCTS: New udp length %d for %d\n", rc, e);
+#endif
+						ts->remin = rc;
+						ts->uhin.len = rc + 12 /*(sizeof(ts->uhin))*/;
+						ts->uhin.local_port = ts->u.us.myport;
+						xtc_write(&_tcts.app, e, (char *)&ts->uhin, sizeof(ts->uhin));
+					}
+				}
+			}
+		}	// TC_SC_UDP
+
+	} // for
+
+
+	// Now check if any outstanding resolves
+	if (_tcts.ndnsq)
+		for (e = 0; e < TARGETPROC_TCP_MAXRESOLVE; e++) {
+			tr = _tcts.dns_queries + e;
+			if (tr->handle) {
+				//
+				rc = resolve_name_check(tr->handle, &tr->ip);
+				if (rc == RESOLVE_SUCCESS) {
+#ifdef TARGETPROC_TCP_VERBOSE
+					printf("TCTS: Resolved OK ip=%08lx\n", tr->ip);
+#endif
+					tr->errcode = 0;
+				}
+				else if (rc != RESOLVE_AGAIN) {
+#ifdef TARGETPROC_TCP_VERBOSE
+					printf("TCTS: Failed resolve\n");
+#endif
+					tr->errcode = -rc;
+					tr->ip = (uint32)(-1L);
+				}
+
+				if (rc != RESOLVE_AGAIN) {
+					_tcts.ndnsq--;
+					tr->handle = 0;
+					ar.hdr.version = TC_TCPIP_VERSION;
+					ar.hdr.typecode = TC_TCPIP_ACKRESOLVE;
+					rc = sizeof(ar) - sizeof(ar.hdr);
+					ar.hdr.length = rc;
+					ar.request_id = tr->request_id;
+					ar.errcode = tr->errcode;
+					ar.ip = tr->ip;
+					// If following fails, TP request will time out.
+					xtc_awrite(&_tcts.app, 0, (char *)&ar, sizeof(ar));
+
+				}
+			}
+
+		}
+}
+
+/*** BeginHeader targetproc_tcp_blockwrite */
+int targetproc_tcp_blockwrite(uint8 chan, char * buffer, int length);
+/*** EndHeader */
+xtc_nodebug
+int targetproc_tcp_blockwrite(uint8 chan, char * buffer, int length)
+{
+	auto int txlen, rc;
+
+	txlen = 0;
+	while (txlen < length) {
+		rc = xtc_write(&_tcts.app, chan, buffer + txlen, length - txlen);
+		if (rc >= 0)
+			txlen += rc;
+		else
+			return -1;
+	}
+	return txlen;
+}
+
+/*** BeginHeader targetproc_tcp_blockread */
+int targetproc_tcp_blockread(uint8 chan, char * buffer, int length);
+/*** EndHeader */
+xtc_nodebug
+int targetproc_tcp_blockread(uint8 chan, char * buffer, int length)
+{
+	auto int rxlen, rc;
+
+	rxlen = 0;
+	while (rxlen < length) {
+		rc = xtc_read(&_tcts.app, chan, buffer + rxlen, length - rxlen);
+		if (rc >= 0)
+			rxlen += rc;
+		else
+			return -1;
+	}
+	return rxlen;
+}
+
+
+
+
+/*
+ * Handlers for the various control requests we get from the target.
+ */
+
+/*** BeginHeader targetproc_tcpipinit */
+void targetproc_tcpipinit(TCTcpipInit * ti);
+/*** EndHeader */
+
+xtc_nodebug
+long targetproc_tcp_lookup_gateway(void)
+{
+	auto int i;
+	auto ATHandle ath;
+
+	/* find the default gateway */
+	for (i = 0; i < ARP_ROUTER_TABLE_SIZE; i++) {
+		// Fixme: need to make documented interface for this data
+		ath = ATH2INDEX(_arp_gate_data[i].ath);
+		if (ath > ARP_TABLE_SIZE)
+			continue;
+
+		// found it
+		return _arp_data[ath].ip;
+	}
+}
+
+xtc_nodebug
+void targetproc_tcpipinit(TCTcpipInit * ti)
+{
+	auto TCAckTcpipInit * at;
+	auto int rc, i, lll;
+#ifdef USE_DHCP
+	auto int len;
+#endif
+
+	at = &_tcts.ackinit;
+#ifdef TARGETPROC_TCP_VERBOSE
+	printf("TCTS: got init request\n");
+#endif
+	if (!(_tcts.flags & TCTT_STATE_INIT)) {
+		// Not yet initialized network stack.
+		at->flags = 0;
+//#ifdef USE_DHCP
+#if 0	// NB: the following is not implemented this release
+		// Configured with DHCP client, check if target wants it.
+		// Note: DHCP_CLASS_ID macro should be defined to "_dhcp_class".
+		// Also, client ID is not yet supported by BOOTP.LIB.
+		_bootpon = ti->flags & TC_TI_USE_DHCP;
+		_survivebootp = 1;
+		if (_bootpon)
+			len = strlen(ti->classid);
+		else
+			len = 0;
+		if (len) {
+			if (len >= sizeof(_dhcp_class))
+				len = sizeof(_dhcp_class) - 1;
+			strncpy(_dhcp_class, ti->classid, len);
+			_dhcp_class[len] = 0;
+		}
+		else {
+			// FIXME: fill in hardware code when known.
+			strcpy(_dhcp_class, ":Z-World:DeviceMate:");
+			sprintf(_dhcp_class + strlen(_dhcp_class), "%d.%d",
+				(int)TC_VERSION, (int)TC_TCPIP_VERSION);
+		}
+#endif
+		// Note: we expect sock_init() to have been called before starting
+		// this subsystem; hence we should never call sock_init() from here.
+		if(_initialized)
+			rc = 0;
+		else
+			rc = sock_init();
+#ifdef USE_DHCP
+		switch (rc) {
+			case 0:
+				at->flags |= TC_ATI_USED_DHCP;
+				// fall through
+			case 2:
+				_tcts.flags |= TCTT_STATE_INIT;
+				break;
+		}
+#else
+		if (!rc)
+			_tcts.flags |= TCTT_STATE_INIT;
+#endif
+		at->hdr.version = TC_TCPIP_VERSION;
+		at->hdr.typecode = TC_TCPIP_ACKINIT;
+		lll = sizeof(*at) - sizeof(at->hdr);
+		at->hdr.length = lll;
+		at->flags |= _tcts.flags & TCTT_STATE_INIT ? TC_ATI_NET | TC_ATI_BCNET : 0;
+		at->ipaddress = my_ip_addr;
+		at->netmask = sin_mask;
+		at->gateway = targetproc_tcp_lookup_gateway();
+
+		at->nameserver[0] = servlist_first(&_dns_server_table,0,NULL);
+      at->nameserver[1]	= (_dns_server_table.num >= 2) ? servlist_next(&_dns_server_table, at->nameserver[0], 0, NULL):at->nameserver[0];
+
+		at->max_socket = TARGETPROC_TCP_MAXSOCK;
+		if (at->max_socket > ti->max_socket)
+			at->max_socket = ti->max_socket;
+	}
+	// Always reset socket state in case target proc rebooted.
+	// Abort any in-use sockets
+	for (i = 1; i <= TARGETPROC_TCP_MAXSOCK; i++) {
+		tcp_abort(&_tcts.tcp_sock[i].u.ts);
+		xtc_abort(&_tcts.app, i);
+		}
+	memset(_tcts.tcp_sock, 0, sizeof(_tcts.tcp_sock));
+	// Reset any DNS queries
+	for (i = 0; i < TARGETPROC_TCP_MAXRESOLVE; i++)
+		_tcts.dns_queries[i].handle = 0;
+	resolve_cancel(0);
+
+#ifdef TARGETPROC_TCP_VERBOSE
+	printf("TCTS:  reply flags=%X ip=%08lX socks=%d\n", at->flags, at->ipaddress, at->max_socket);
+#endif
+	targetproc_tcp_blockwrite(0, (char *)at, sizeof(*at));
+}
+
+/*** BeginHeader targetproc_tcpopen */
+void targetproc_tcpopen(TCTcpOpen * to);
+/*** EndHeader */
+
+xtc_nodebug
+void targetproc_tcpopen(TCTcpOpen * to)
+{
+	auto char * hostname;
+	auto int hlen;
+	auto int e, rc;
+	auto TCAckTcpOpen ti;
+	auto TCTargetSock * ts;
+	auto uint32 remhost;
+
+#ifdef TARGETPROC_TCP_VERBOSE
+	printf("TCTS: got %s %s request: ch=%X loc=%u rem=%u host=%s\n",
+		to->sc == TC_SC_TCP ? "TCP" : "UDP",
+		to->flags & TC_TOPN_PASSIVE ? "listen" : "open",
+		(int)to->socket,
+		to->local_port, to->remote_port, to->hostname);
+#endif
+	hostname = to->hostname;
+	hlen = strlen(hostname);
+	memset(&ti, 0, sizeof(ti));
+	ti.hdr.version = TC_TCPIP_VERSION;
+	ti.hdr.typecode = TC_TCPIP_TCPACKOPEN;
+	ti.hdr.length = sizeof(ti) - sizeof(ti.hdr);
+	e = to->socket;
+	if (!e) {
+		// Target is requesting the next unused socket in the range that was
+		// originally negotiated.
+		for (e = 1; e <= (int)_tcts.ackinit.max_socket; e++) {
+			ts = _tcts.tcp_sock + e;
+			if (ts->xstate == TCTT_CLOSED && ts->tstate == TCTT_CLOSED)
+				break;
+		}
+		if (e > (int)_tcts.ackinit.max_socket)
+			e = 0;
+	}
+	if (e > 0 && e <= TARGETPROC_TCP_MAXSOCK) {
+		ts = _tcts.tcp_sock + e;
+
+		if (to->sc == TC_SC_TCP) {
+			// TCP class socket
+			if (to->flags & TC_TOPN_PASSIVE) {
+				ti.flags |= TC_SS_LISTEN;
+				if (to->flags & TC_TOPN_RESV)
+					tcp_reserveport(to->local_port);
+				rc = tcp_extlisten(&ts->u.ts, 0, to->local_port,
+					remhost = hlen ? resolve(hostname) : 0,
+					to->remote_port, NULL, 0, 0, 0);
+				if (rc) {
+					_tcts_set_tstate(ts, TCTT_PASSIVE);
+					if (!xtc_closed(&_tcts.app, e))
+						xtc_abort(&_tcts.app, e);
+					_tcts_set_xstate(ts, TCTT_CLOSED);
+				}
+			}
+			else {
+				ti.flags |= TC_SS_ACTIVE;
+				rc = tcp_extopen(&ts->u.ts, 0, to->local_port,
+					remhost = resolve(hostname), to->remote_port, NULL, 0, 0);
+				if (rc) {
+					_tcts_set_tstate(ts, TCTT_ACTIVE);
+					if (!xtc_closed(&_tcts.app, e))
+						xtc_abort(&_tcts.app, e);
+					_tcts_set_xstate(ts, TCTT_CLOSED);
+					if (xtc_listen(&_tcts.app, e, NULL) < 0) {
+						rc = 0;
+						tcp_abort(&ts->u.ts);
+						_tcts_set_tstate(ts, TCTT_CLOSED);
+					}
+					else
+						_tcts_set_xstate(ts, TCTT_PASSIVE);
+				}
+			}
+		}
+		else if (to->sc == TC_SC_UDP) {
+			// UDP class socket
+			ts->utxbuf = tcp_alloc_buffer(&ts->u.ts);	// Use a TCP buffer
+			rc = udp_extopen(&ts->u.us, 0, to->local_port,
+				remhost = hlen ? resolve(hostname) : 0,
+				to->remote_port, NULL, ts->utxbuf + TCP_BUF_SIZE/2, TCP_BUF_SIZE/2);
+			ts->remout = 0;
+			ts->remin = 0;
+			if (rc) {
+				_tcts_set_tstate(ts, TCTT_UDP);
+				if (!xtc_closed(&_tcts.app, e))
+					xtc_abort(&_tcts.app, e);
+				_tcts_set_xstate(ts, TCTT_CLOSED);
+				if (xtc_listen(&_tcts.app, e, NULL) < 0) {
+					rc = 0;
+					udp_close(&ts->u.us);
+					_tcts_set_tstate(ts, TCTT_CLOSED);
+				}
+				else
+					_tcts_set_xstate(ts, TCTT_PASSIVE);
+			}
+		}
+		else
+			rc = 0;	// Error, unknown class.
+		if (rc) {
+			ti.remote_port =
+				to->flags & TC_TOPN_PASSIVE ? 0 : to->remote_port;
+			ti.remote_host = remhost;
+			ti.local_port = to->local_port;
+			if (!ti.local_port)
+				ti.local_port = ts->u.ts.myport;
+			ti.sc = to->sc;
+			ti.socket = e;
+			ts->sc = to->sc;
+		}
+		else
+			goto __targetproc_err_hnd;
+	}
+	else {
+		// Error, or insufficient resources
+__targetproc_err_hnd:
+		ti.flags |= TC_SS_ERROR;
+		ti.socket = 0;
+	}
+#ifdef TARGETPROC_TCP_VERBOSE
+	printf("TCTS:  reply flags=%X chan=%d\n", ti.flags, (int)ti.socket);
+#endif
+	targetproc_tcp_blockwrite(0, (char *)&ti, sizeof(ti));
+}
+
+
+/*** BeginHeader targetproc_resolve */
+void targetproc_resolve(TCResolve * tr);
+/*** EndHeader */
+
+xtc_nodebug
+void targetproc_resolve(TCResolve * tr)
+{
+	auto TCAckResolve ar;
+	auto TCTargetResolve * t;
+	auto int e, rc;
+
+	// Set up response frame in case of resource shortage error only
+	ar.hdr.version = TC_TCPIP_VERSION;
+	ar.hdr.typecode = TC_TCPIP_ACKRESOLVE;
+	rc = sizeof(ar) - sizeof(ar.hdr);
+	ar.hdr.length = rc;
+	ar.request_id = tr->request_id;
+	ar.ip = 0;
+	ar.errcode = TC_RES_MAXRQ;
+
+	e = targetproc_resolve_free();
+	if (e < 0) {
+		// Immediate response if no free entry.  This should not happen,
+		// because the TP would be configured with fewer resolve buffers
+		// than the SP.
+		// If awrite fails, then too bad.
+		xtc_awrite(&_tcts.app, 0, (char *)&ar, sizeof(ar));
+		return;
+	}
+
+	t = _tcts.dns_queries + e;
+	rc = resolve_name_start(tr->hostname);
+#ifdef TARGETPROC_TCP_VERBOSE
+	printf("TCTS: resolve start rc = %d\n", rc);
+#endif
+	if (rc > 0) {
+		_tcts.ndnsq++;
+		t->handle = rc;
+		t->request_id = tr->request_id;
+	}
+	else {
+		xtc_awrite(&_tcts.app, 0, (char *)&ar, sizeof(ar));
+		return;
+	}
+
+}
+
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

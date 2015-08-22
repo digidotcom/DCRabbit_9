@@ -1,0 +1,87 @@
+/* START LIBRARY DESCRIPTION *********************************************
+TC_VAR.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains structure and object definitions which are
+   common to the DeviceMate and target processors.  TC_VAR.LIB is
+   automatically included by DM_VAR.LIB and TARGETPROC_VAR.LIB.
+
+PORTING NOTE:
+   For non-Rabbit target processors with an ANSI C compiler, there is
+   an equivalent .h file in the LIB\Target subdirectory.
+
+CONFIGURATION MACROS:
+	None.
+
+GLOBAL VARIABLES:
+   None.
+
+API FUNCTIONS:
+   None.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#ifndef __TC_VAR_LIB
+#define __TC_VAR_LIB
+/*** EndHeader */
+
+/*** BeginHeader */
+
+#ifndef TC_XTC_H
+	#use "tc_xtc.lib"
+#endif
+
+/*
+ * various configuration parameters
+ */
+
+/*
+ * Packet definitions for accessing the variables
+ * over the TC link.
+ */
+
+/* header of each packet */
+typedef struct {
+	uint8		start_byte;					// the value of TC_VAR_STARTBYTE
+	uint8		packet_type;				// what would be the subtype
+} _TC_VarHeader;
+#define TC_VAR_STARTBYTE		0xff
+
+/* update a variable */
+#define TC_VAR_UPDATE	0x01
+
+typedef struct {
+	uint16	type;
+	uint16	namelen;
+	uint16	formatlen;
+	uint16	varlen;
+	uint16	maxvarlen;
+	uint16	servermask;
+	char		data[TC_VAR_MAXNAME + TC_VAR_MAXFORMAT + TC_VAR_MAXDATA];
+} _TC_VarUpdate;
+
+typedef struct {
+	uint16	type;
+	uint16	namelen;
+	uint16	formatlen;
+	uint16	varlen;
+	uint16	maxvarlen;
+	uint16	servermask;
+} _TC_VarUpdateHeader;
+
+/* response */
+#define TC_VAR_RESPONSE	0x02
+typedef struct {
+	uint16	response_code;
+#define TC_VAR_RESPONSE_OK		0x01
+#define TC_VAR_RESPONSE_FULL	0x02
+#define TC_VAR_RESPONSE_ERROR	0x03
+} _TC_VarResponse;
+
+/*** EndHeader */
+
+/*** BeginHeader */
+#endif /*__TC_VAR_LIB*/
+/*** EndHeader */

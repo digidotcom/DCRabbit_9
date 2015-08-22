@@ -1,0 +1,1839 @@
+/* dm_tcp.lib
+ * Contains target-side TCP/IP subsystem.  Target calls these routines to
+ * get the DeviceMate to do various external network communications.
+ * Uses the XTC (eXtended Target Communications) layer.
+ */
+
+/* START LIBRARY DESCRIPTION *********************************************
+DM_TCP.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains target-side routines for communication with a
+   DeviceMate processor.  This API allows TCP/IP functionality, including
+   UDP and DNS lookups, to be accessed from the target processor.
+
+PORTING NOTE:
+   For non-Rabbit target processors with an ANSI C compiler, there are
+   equivalent .c and .h files in the LIB\Target subdirectory.
+
+CONFIGURATION MACROS:
+	The following macros may be defined before inclusion of this library.
+
+	DEVMATE_TCP_TCBUFSIZE
+	   Defaults to 133, which allows for 128-byte data packets plus the
+	   5-byte XTC header.
+
+	DEVMATE_TCP_XTCBUFSIZE
+	   Defaults to 256.  Must be greater than or egual to
+	   DEVMATE_TCP_TCBUFSIZE-5.
+
+	DEVMATE_TCP_MAXSOCK
+		Defaults to 4.
+	   Maximum number of sockets (implemented as XTC "channels") that are
+	   allowed.  Generally, this limits the number of sockets on the
+	   target since the target is assumed to be more resource-constrained
+	   than the DeviceMate.  The actual maximum is determined by the
+	   minumum value configured on the target or DeviceMate processor.
+	   Note that this value does not include the so-called "control"
+	   channel (channel 0).  Available socket numbers run from 1 to
+	   DEVMATE_TCP_MAXCHANS inclusive.  The function devmate_tcp_maxsocket()
+	   returns the actual negotiated maximum socket number.
+
+	DEVMATE_TCP_NUMRXBUF
+	   Defaults to 3.  Specifies the number of target communications
+	   receive buffers.  A higher number allows greater performance, at
+	   the expense of additional memory usage.
+
+	DEVMATE_TCP_NUMTXBUF
+	   Defaults to 1.  Specifies the number of target communications
+	   transmit buffers.  Do not set higher than 2.  2 is only necessary
+	   if the highest possible speed is required.
+
+	DEVMATE_TCP_MAXRESOLVE
+	   Defaults to 1.  Specifies the maximum number of concurrent DNS
+	   (Domain Name Server) lookups.  Set to 0 if DNS not required.
+
+	DEVMATE_TCP_DEBUG
+		Defaults to not defined.  If defined, then Dynamic C debugging is
+		turned on for all functions herein.
+
+GLOBAL VARIABLES:
+
+   TCTcpipState _tct;
+      One instance of this structure contains all necessary state
+      information for TCP/IP communication.  This library is thereby
+      made non-reentrant, however application code may serialize access
+      to these API functions so that the library may be used in a multi-
+      tasking environment.
+
+API FUNCTIONS:
+   See individual function description for details.  None of the
+   functions in this library are "blocking" i.e. they all set some
+   internal state, but return immediately (possibly without actually
+   accomplishing their intended goal).  Thus, it is usually necessary
+   to call the same function multiple times in order to complete the
+   action.  Such functions are noted as such in their individual
+   descriptions.
+
+   Most of the functions require a "socket" parameter.  Unlike the
+   native DCRTCP.LIB TCP stack, where sockets are actually pointers
+   to structures, sockets in this library are simply small numbers
+   which are basically selected by the application.  Only a limited
+   number of sockets may be in use at the one time.  This number is
+   configured in TC_TCP.LIB, via the DEVMATE_TCP_MAXSOCK define.  This
+   number defaults to 4, but may be overridden by the application.
+   The total number of sockets is the minimum of the number
+   configured for the target and DeviceMate processors.  This
+   minimum number is available by calling the devmate_tcp_maxsocket()
+   function, after devmate_sock_init().  The returned number may
+   be less than DEVMATE_TCP_MAXSOCK if the DeviceMate does not
+   support as many sockets as the target.
+
+   Note that the socket number space is shared between TCP and UDP
+   sockets.  For application with resource constraints, sockets
+   should be closed when not in use.  Allocation of socket numbers
+   is entirely the application's responsibility, however the
+   socket open APIs can assist in locating an unused socket number,
+   if a zero socket number is passed as the first parameter.
+
+   Initialize connection to DeviceMate:
+   	int devmate_sock_init()
+   	int devmate_tcp_status()
+   Open TCP or UDP sockets:
+   	int devmate_tcp_open()
+   	int devmate_tcp_listen()
+   	int devmate_udp_open()
+   Check socket status:
+   	int devmate_tcp_isestablished()
+   	int devmate_tcp_error()
+   	uint16 devmate_tcp_readable()
+   	uint16 devmate_tcp_writable()
+	   int devmate_tcp_isclosed()
+   Read or write TCP (stream) data:
+   	int devmate_tcp_fastread()
+   	int devmate_tcp_preread()
+   	int devmate_tcp_fastwrite()
+   Close socket:
+   	int devmate_tcp_close()
+   	int devmate_tcp_abort()
+   	int devmate_udp_close()
+   Read or write UDP (packet) data:
+   	int devmate_udp_sendto()
+   	int devmate_udp_send()
+   	int devmate_udp_recvfrom()
+   	int devmate_udp_recvdata()
+   Miscellaneous:
+   	int devmate_ip_resolve()
+
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader _tct */
+#ifndef DEVMATE_TCP_H
+#define DEVMATE_TCP_H
+
+
+#ifndef __DC__
+	#include <limits.h>
+#endif
+
+#ifndef DEVMATE_XTC_H
+	#use "dm_xtc.lib"
+#endif
+
+#ifndef TC_TCP_H
+	#use "tc_tcp.lib"
+#endif
+
+#ifdef DEVMATE_TCP_DEBUG
+	#define tct_nodebug
+#else
+	#ifndef __DC__
+		#define tct_nodebug
+	#else
+		#define tct_nodebug nodebug
+	#endif
+#endif
+
+
+
+/*
+ * Additional socket state info for TCP sockets
+ */
+typedef struct _TCTcpSock {
+	struct _TCTcpSock * next;	// Next in line for control channel response
+	uint8		state;		// Establishment state as follows:
+#define TCT_CLOSED	0x00
+#define TCT_CLOSING	0x10	// Shutdown from waiting state (still need to digest response)
+#define TCT_ABORTING	0x20	// Abort from waiting state (still need to digest response)
+#define TCT_WAIT_PO	0x01	// Wait for passive open response.
+#define TCT_WAIT_AO	0x02	// Wait for active open response.  In this and the previous 3 states,
+									// a request has been queued to the control channel, but no response
+									// has been received.  The socket state is not yet equivalent to the
+									// channel state.
+#define TCT_LISTEN	0x04	// XTC channel listening
+#define TCT_OPEN		0x08	// XTC channel open.  In this and the previous state, the socket state is
+									// precisely equivalent to the channel state.
+	uint8		errcode;		// Error code.  Reset to zero when open/listen.  Valid
+								// when closed (0=no error, else error).
+#define TCT_PEER_REFUSED	(XTC_NEGCODE_APP+0)	// Peer refused open request.
+#define TCT_LOST_PEER		(XTC_NEGCODE_APP+1)	// If peer connection lost, open sockets are aborted with this code.
+	uint16	rcvf;			// For UDP framing
+	uint16	local_port;	// Local ephemeral port number assigned for active open.
+} TCTcpSock;
+
+
+/*
+ * Additional state info for resolve requests
+ */
+typedef struct _TCResReq {
+	int		result;			// 0 if result not yet obtained, else 1.
+	uint16	request_id;		// Request ID to match responses.
+	uint16	errcode;			// Error code from SP.
+	uint32	ipaddr;			// Resolved IP address.
+} TCResReq;
+
+/*
+ * Struct to maintain overall TCP/IP comms state
+ */
+typedef struct {
+	XTCApp		app;		// XTC application stuff
+	XTCChan		chans[DEVMATE_TCP_MAXCHANS+1];	// XTC channels for sockets and control
+	TCTcpSock	tcp_sock[DEVMATE_TCP_MAXCHANS+1];// Local socket state
+#if DEVMATE_TCP_MAXRESOLVE > 0
+	TCResReq		rr[DEVMATE_TCP_MAXRESOLVE];			// Resolve requests
+#endif
+	TCTcpipInit ti;		// Initialization request parameters
+	TCAckTcpipInit ta;	// Current overall status
+	TCTcpSock *	queue;	// Request queue.  As control channel responses come in, this
+								// queue defines the order of requesters.
+	uint16		request_id;	// Request ID generator
+	uint8			initrq;	// Caller requesting init.
+	uint8			state;	// Overall TCP stack state:
+#define TCT_NOTREADY	0		// Initial state (wait for tcp_init() call)
+#define TCT_MAKERDY	1		// Waiting for peer to become ready
+#define TCT_ERROR		2		// Error readying
+#define TCT_OPENING	3		// Opening control channel
+#define TCT_READY		4		// Control channel OK
+#define TCT_INITRQ	5		// Sending init request
+#define TCT_WAITOK	6		// Init request sent, waiting for rest of response
+#define TCT_OK			7		// All OK, can now open sockets.
+	char dummy;
+#ifdef TC_LOCKING
+	TC_LOCKTYPE lock;
+#endif
+} TCTcpipState;
+
+extern TCTcpipState _tct;			// Static instance
+/*** EndHeader */
+
+TCTcpipState _tct;
+
+/*** BeginHeader _devmate_enqueue */
+void _devmate_enqueue(TCTcpSock * ts); 
+/*** EndHeader */
+tct_nodebug
+void _devmate_enqueue(TCTcpSock * ts)
+{
+	// Must be called with lock held
+	auto TCTcpSock * p;
+
+	if (!_tct.queue)
+		_tct.queue = ts;
+	else {
+		p = _tct.queue;
+		while (p->next)
+			p = p->next;
+		p->next = ts;
+	}
+	ts->next = NULL;
+}
+
+/*** BeginHeader devmate_tcp_status */
+int devmate_tcp_status(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_tcp_status                <DM_TCP.LIB>
+
+SYNTAX: int devmate_tcp_status(void)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Test communication link to the DeviceMate.  The link
+               status indicates whether TCP/IP functions can be accessed
+               on the DeviceMate.
+
+RETURN VALUE:  0: the link is currently being established
+               1: the link is successfully established
+               -1: an error has occurred.  Call devmate_sock_init()
+                 to re-establish the link.  An error typically occurs
+                 because there is either no DeviceMate, or because the
+                 DeviceMate is not configured for TCP/IP support.
+
+SEE ALSO:      devmate_sock_init
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+int devmate_tcp_status(void)
+{
+	if (_tct.state == TCT_ERROR)
+		return -1;
+	else if (_tct.state != TCT_OK)
+		return 0;
+	else
+		return 1;
+}
+
+/*** BeginHeader devmate_sock_init */
+int devmate_sock_init(uint32 *ipaddress, uint32 *netmask, uint32 *gateway,
+			uint32 *nameserver, char * classid, char * clientid);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_sock_init                <DM_TCP.LIB>
+
+SYNTAX: int devmate_sock_init(uint32 *ipaddress, uint32 *netmask,
+              uint32 *gateway, uint32 *nameserver, char * classid,
+              char * clientid)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Establish communication link to the DeviceMate.  If a link
+               is already established, then any open sockets are aborted
+               and the link is re-established.
+
+PARAMETERS:    All parameters are reserved for future use.  At present,
+               NULL should be given for each parameter.
+
+RETURN VALUE:  1.
+
+SEE ALSO:      devmate_tcp_status
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+int devmate_sock_init(uint32 *ipaddress, uint32 *netmask, uint32 *gateway,
+			uint32 *nameserver, char * classid, char * clientid)
+{
+	auto int i, xtra;
+#ifdef TC_BIG_ENDIAN
+	static const uint8 ti_swaps[] =
+	  { 2,3, 4,5, 8,11,9,10, 12,15,13,14, 16,19,17,18, 20,23,21,22, 24,27,25,26 };
+#endif
+
+	TC_LOCK(_tct.lock);
+	
+	switch (_tct.state) {
+	case TCT_ERROR:
+		// This call is error acknowledgment
+		_tct.state = TCT_NOTREADY;
+		break;
+	case TCT_OK:
+	case TCT_INITRQ:
+	case TCT_WAITOK:
+		// reinit; abort all sockets including control channel
+		for (i = 0; i <= DEVMATE_TCP_MAXCHANS; i++)
+			xtc_abort(&_tct.app, i);
+		_tct.state = TCT_MAKERDY;
+		_tct.queue = NULL;
+		break;
+	}
+	
+	_tct.initrq = 1;
+	memset(&_tct.ti, 0, sizeof(_tct.ti));
+	if (ipaddress) {
+		_tct.ti.flags |= TC_TI_IPADDRESS;
+		_tct.ti.ipaddress = *ipaddress;
+	}
+	if (netmask) {
+		_tct.ti.flags |= TC_TI_NETMASK;
+		_tct.ti.netmask = *netmask;
+	}
+	if (gateway) {
+		_tct.ti.flags |= TC_TI_GATEWAY;
+		_tct.ti.gateway = *gateway;
+	}
+	if (nameserver) {
+		_tct.ti.flags |= TC_TI_NAMESERVER_1;
+		_tct.ti.nameserver[0] = *nameserver;
+	}
+	if (classid) {
+		_tct.ti.flags |= TC_TI_CLASSID;
+		strncpy(_tct.ti.classid, classid, sizeof(_tct.ti.classid)-1);
+		xtra = strlen(_tct.ti.classid)+1;
+	}
+	else
+		xtra = 0;
+
+	_tct.ti.max_socket = DEVMATE_TCP_MAXCHANS;
+	_tct.ti.hdr.version = TC_TCPIP_VERSION;
+	_tct.ti.hdr.typecode = TC_TCPIP_INIT;
+	_tct.ti.hdr.length = &_tct.ti.classid[xtra] - (uint8 *)&_tct.ti.flags;
+#ifdef TC_BIG_ENDIAN
+	_tc_reorder((uint8 *)&_tct.ti, sizeof(ti_swaps), ti_swaps);
+#endif
+
+	TC_UNLOCK(_tct.lock);
+	
+	return 1;
+}
+
+
+/*** BeginHeader devmate_tcp_start, devmate_tcp_open,
+					devmate_tcp_listen, devmate_udp_open */
+int devmate_tcp_start(uint8 socket, uint16 local_port, char * remote_host,
+		uint16 remote_port, int passive, char sc);
+
+#define devmate_tcp_open(sock, local_port, remote_host, remote_port) \
+		devmate_tcp_start(sock, local_port, remote_host, remote_port, \
+					0, TC_SC_TCP)
+
+#define devmate_tcp_listen(sock, local_port, remote_host, remote_port) \
+		devmate_tcp_start(sock, local_port, remote_host, remote_port, \
+					1, TC_SC_TCP)
+
+#define devmate_udp_open(sock, local_port, remote_host, remote_port) \
+		devmate_tcp_start(sock, local_port, remote_host, remote_port, \
+					0, TC_SC_UDP)
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_tcp_open                <DM_TCP.LIB>
+
+SYNTAX: int devmate_tcp_open(uint8 socket, uint16 local_port,
+               char * remote_host, uint16 remote_port)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Open a TCP socket via the DeviceMate.  This is implemented
+               as a macro which invokes devmate_tcp_start().
+
+PARAMETER1:    Socket number to use.  This may be a number between 1 and
+               devmate_tcp_maxsocket() inclusive; the application must
+               select a socket number which is not already open or in use.
+               This may also be 0, in which case an unused socket number
+               will be selected (and returned as a positive number).
+PARAMETER2:    A local port number to use.  If zero, then a port number
+               will be assigned automatically.
+PARAMETER3:    The name of a remote host to connect to.  This may be
+               a dotted quad (e.g. "10.10.6.2") or a host name (e.g.
+               "ftp.zworld.com" or "server_host").  If a host name is
+               given, then the DeviceMate will look up the host's IP
+               address using DNS.
+PARAMETER4:    The port on the remote host to connect to.
+
+RETURN VALUE:  0: the open request could not be performed; try again
+                  later.  This may be because the DeviceMate is not yet
+                  fully linked, or because there is temporary buffer
+                  shortage.
+               positive: opened successfully.  The return value is the
+                 same socket number as passed in the first parameter, or
+                 the assigned socket number if the requested socket was 0.
+               -1: error; remote host not available.
+               -2: error; DeviceMate not linked because devmate_sock_init
+                 has not been called.
+               -3: error; requested socket number out of range.
+               -4: error; requested socket already in use.
+               -5: error; requested socket number zero, but none free.
+
+SEE ALSO:      devmate_tcp_listen, devmate_udp_open, devmate_tcp_close
+
+END DESCRIPTION **********************************************************/
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_tcp_listen               <DM_TCP.LIB>
+
+SYNTAX: int devmate_tcp_listen(uint8 socket, uint16 local_port,
+               char * remote_host, uint16 remote_port)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Open a TCP socket via the DeviceMate.  This is implemented
+               as a macro which invokes devmate_tcp_start().  The socket
+               is opened passively, meaning that it waits for active
+               connections from other host(s).  The application must
+               periodically call devmate_tcp_isestablished() to check
+               whether any connection has been made.
+
+PARAMETER1:    Socket number to use.  This may be a number between 1 and
+               devmate_tcp_maxsocket() inclusive; the application must
+               select a socket number which is not already open or in use.
+               This may also be 0, in which case an unused socket number
+               will be selected (and returned as a positive number).
+PARAMETER2:    A local port number to use.  This must be specified.
+PARAMETER3:    This is normally NULL, to allow any remote host to
+               establish a connection.  If not null, it specifies the
+               only host allowed to establish a connection with this
+               socket.
+PARAMETER4:    This is normally 0, which allows connections from any port
+               on the remote host.  If non-zero, then the remote host
+               must connect from this port number.
+
+RETURN VALUE:  0: the open request could not be performed; try again
+                  later.  This may be because the DeviceMate is not yet
+                  fully linked, or because there is temporary buffer
+                  shortage.
+               positive: opened successfully.  The return value is the
+                 same socket number as passed in the first parameter, or
+                 the assigned socket number if the requested socket was 0.
+               -1: error; host lookup failure or DeviceMate not linked.
+               -2: error; DeviceMate not linked because devmate_sock_init
+                 has not been called.
+               -3: error; requested socket number out of range.
+               -4: error; requested socket already in use.
+               -5: error; requested socket number zero, but none free.
+
+SEE ALSO:      devmate_tcp_open, devmate_udp_open, devmate_tcp_close
+
+END DESCRIPTION **********************************************************/
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_udp_open                <DM_TCP.LIB>
+
+SYNTAX: int devmate_udp_open(uint8 socket, uint16 local_port,
+               char * remote_host, uint16 remote_port)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Open a UDP socket via the DeviceMate.  This is implemented
+               as a macro which invokes devmate_tcp_start().  UDP
+               datagrams are delivered reliably (via an XTC channel) to
+               the DeviceMate, which then sends the datagram using
+               normal UDP which, by its nature, is an unreliable delivery
+               service.
+
+PARAMETER1:    Socket number to use.  This may be a number between 1 and
+               devmate_tcp_maxsocket() inclusive; the application must
+               select a socket number which is not already open or in use.
+               This may also be 0, in which case an unused socket number
+               will be selected (and returned as a positive number).
+PARAMETER2:    A local port number to use.  If zero, then a port number
+               will be assigned automatically.
+PARAMETER3:    The name of a remote host to connect to.  This may be
+               a dotted quad (e.g. "10.10.6.2") or a host name (e.g.
+               "ftp.zworld.com" or "server_host").  If a host name is
+               given, then the DeviceMate will look up the host's IP
+               address using DNS.  For UDP, this parameter may also be
+               NULL.  In this case, no host is selected as a default;
+               devmate_udp_sendto() must be used to specify a remote
+               host on a call-by-call basis.  If a non-NULL host is
+               specified, then that host is used as a default destination
+               if devmate_udp_send() is used; however devmate_udp_sendto()
+               may still be used to direct datagrams to other hosts.
+PARAMETER4:    The port on the remote host to connect to.  This may be
+               zero if devmate_udp_sendto() is used consistently to
+               specify the remote port on a call-by-call basis.
+
+RETURN VALUE:  0: the open request could not be performed; try again
+                  later.  This may be because the DeviceMate is not yet
+                  fully linked, or because there is temporary buffer
+                  shortage.
+               positive: opened successfully.  The return value is the
+                 same socket number as passed in the first parameter, or
+                 the assigned socket number if the requested socket was 0.
+               -1: error; remote host not available.
+               -2: error; DeviceMate not linked because devmate_sock_init
+                 has not been called.
+               -3: error; requested socket number out of range.
+               -4: error; requested socket already in use.
+               -5: error; requested socket number zero, but none free.
+
+SEE ALSO:      devmate_tcp_listen, devmate_tcp_open, devmate_udp_close
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+int devmate_tcp_start(uint8 socket, uint16 local_port, char * remote_host,
+		uint16 remote_port, int passive, char sc)
+{
+	auto int rc, rqlen;
+	auto TCTcpOpen to;
+	auto TCAckTcpOpen ta;
+	auto TCTcpSock * ts;
+#ifdef TC_BIG_ENDIAN
+	static const uint8 to_swaps[] =
+	  { 2,3, 4,5, 6,7, 8,9 };
+#endif
+
+	if (!_tct.initrq)
+		return -2;	// Error if not issued init call
+	if (_tct.state < TCT_OK)
+		return 0;	// Make caller retry if not yet ready
+	if (socket > _tct.ta.max_socket)
+		return -3;	// Exceeds negotiated number of sockets
+
+	TC_LOCK(_tct.lock);
+
+	// If zero socket parameter, pick an unused socket number (if any).
+	if (!socket) {
+		for (socket = 1; socket <= _tct.ta.max_socket; socket++) {
+			ts = _tct.tcp_sock + socket;
+			if (ts->state == TCT_CLOSED)
+				break;
+		}
+		if (socket > _tct.ta.max_socket) {
+			TC_UNLOCK(_tct.lock);
+			return -5;
+		}
+	}
+	else if (_tct.tcp_sock[socket].state != TCT_CLOSED) {
+		TC_UNLOCK(_tct.lock);
+		return -4;
+	}
+	
+	// Assume passive open will work, and open passive XTC channel
+	if (passive) {
+		rc = xtc_listen(&_tct.app, socket, NULL);
+		if (rc < 0)
+			goto __DM_unlock;
+	}
+	
+	memset(&to, 0, sizeof(to));
+	to.socket = socket;
+	to.local_port = local_port;
+	to.remote_port = remote_port;
+	if (passive)
+		to.flags |= TC_TOPN_PASSIVE | TC_TOPN_RESV;	// Always do SYN queueing
+	to.sc = sc;
+	if (remote_host)
+		strncpy(to.hostname, remote_host, sizeof(to.hostname)-1);
+
+	to.hdr.version = TC_TCPIP_VERSION;
+	to.hdr.typecode = TC_TCPIP_TCPOPEN;
+	to.hdr.length = strlen(to.hostname) + 1 + (to.hostname - (uint8 *)&to.local_port);
+	rqlen = to.hdr.length + sizeof(to.hdr);
+#ifdef TC_BIG_ENDIAN
+	_tc_reorder((uint8 *)&to, sizeof(to_swaps), to_swaps);
+#endif
+	rc = xtc_awrite(&_tct.app, 0, (char *)&to, rqlen);
+	if (!rc)
+		goto __DM_unlock;	// Try again later (could not queue request)
+	if (rc < 0) {
+		if (passive)
+			xtc_abort(&_tct.app, socket);
+		goto __DM_unlock;
+	}
+	ts = _tct.tcp_sock + socket;
+	_devmate_enqueue(ts);
+	ts->errcode = 0;
+	ts->state = passive ? TCT_WAIT_PO : TCT_WAIT_AO;
+	rc = socket;
+__DM_unlock:
+	TC_UNLOCK(_tct.lock);
+	return rc;
+}
+
+
+/*** BeginHeader devmate_tcp_maxsocket */
+int devmate_tcp_maxsocket(void);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_tcp_maxsocket                <DM_TCP.LIB>
+
+SYNTAX: int devmate_tcp_maxsocket(void)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Return the maximum allowable socket number.  This is the
+               minimum of the configured value for the target and
+               DeviceMate.  The value is only available after calling
+               devmate_sock_init().
+
+RETURN VALUE:  0: value not yet available.
+               positive: maximum socket number.  Valid socket numbers
+                 on future calls to the TCP/IP subsystem API must fall
+                 between 1 and this number inclusive.
+
+SEE ALSO:      devmate_sock_init, devmate_tcp_open
+
+END DESCRIPTION **********************************************************/
+
+int devmate_tcp_maxsocket(void)
+{
+	if (_tct.state < TCT_OK)
+		return 0;	// Make caller retry if not yet ready
+	return (int)_tct.ta.max_socket;	
+}
+
+
+/*** BeginHeader devmate_waiting */
+int devmate_waiting(int socket);
+/*** EndHeader */
+tct_nodebug
+int devmate_waiting(int socket)
+{
+	if (socket < 1 || socket > DEVMATE_TCP_MAXCHANS)
+		return 0;
+	return (_tct.tcp_sock[socket].state & (TCT_WAIT_PO|TCT_WAIT_AO|TCT_CLOSING|TCT_ABORTING)) != 0;
+}
+
+/*** BeginHeader devmate_tcp_isestablished */
+int devmate_tcp_isestablished(int socket);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_tcp_isestablished                <DM_TCP.LIB>
+
+SYNTAX: int devmate_tcp_isestablished(int socket)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Check the socket to see if a TCP (stream) connection is
+               currently, or was recently, established.  After passively
+               opening a socket with devmate_tcp_listen(), this function
+               is called to determine if a connection is, or was, made.
+               This function may also be used for actively opened TCP
+               sockets to check that the connection is still open.
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen().
+
+RETURN VALUE:  0: no connection is currently established.
+               1: a connection is currently established, or was
+                 established but immediately closed with no transfer of
+                 data.  It is possible to read zero or more bytes of
+                 data.
+               -1: a connection was established but immediately aborted.
+                 devmate_tcp_error() will return a non-zero code for
+                 further diagnostic information.
+
+SEE ALSO:      devmate_tcp_listen, devmate_tcp_readable,
+               devmate_tcp_writable, devmate_tcp_isclosed,
+               devmate_tcp_error
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+int devmate_tcp_isestablished(int socket)
+{
+	devmate_tick();
+	if (devmate_waiting(socket)) return 0;
+	return xtc_estab(&_tct.app, socket);
+}
+
+/*** BeginHeader devmate_tcp_error */
+int devmate_tcp_error(int socket);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_tcp_error                <DM_TCP.LIB>
+
+SYNTAX: int devmate_tcp_error(int socket)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Check the socket to see if any error has occurred.  Errors
+               may occur because of programming error, link problems with
+               the DeviceMate, or errors on the actual TCP/IP connection.
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen()
+               or devmate_udp_open().
+
+RETURN VALUE:  0: no error has occurred.
+               non-zero: an error has occurred.  The socket may be
+                 immediately re-opened.  The error codes are not
+                 officially defined, but may be logged for debugging
+                 purposes.
+
+SEE ALSO:      devmate_tcp_isestablished, devmate_tcp_readable,
+               devmate_tcp_writable, devmate_tcp_isclosed
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+int devmate_tcp_error(int socket)
+{
+	if (devmate_waiting(socket)) return 0;
+	return xtc_error(&_tct.app, socket);
+}
+
+/*** BeginHeader devmate_tcp_readable */
+uint16 devmate_tcp_readable(int socket);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_tcp_readable                <DM_TCP.LIB>
+
+SYNTAX: uint16 devmate_tcp_readable(int socket)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Return the number of data bytes which may be read from
+               the socket receive buffer.  The return value is encoded
+               such that it can be interpreted as a boolean indicator
+               of whether the socket is in a readable state, or as the
+               actual number of bytes which can be read with one call
+               to devmate_tcp_fastread().
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen().
+
+RETURN VALUE:  0: the socket is not readable e.g. it is not open, or
+                 encountered an error.
+               non-zero: the number of bytes which can be read, plus 1.
+                 E.g. if the return value is 5, then 4 bytes can be
+                 read immediately using devmate_tcp_fastread().  If the
+                 return value is 1, then the socket is readable but there
+                 is currently no data in the receive buffer.
+
+SEE ALSO:      devmate_tcp_isestablished, devmate_tcp_fastread,
+               devmate_tcp_writable, devmate_tcp_isclosed
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+uint16 devmate_tcp_readable(int socket)
+{
+	devmate_tick();
+	if (devmate_waiting(socket)) return 0;
+	return xtc_readable(&_tct.app, socket);
+}
+
+/*** BeginHeader devmate_tcp_writable */
+uint16 devmate_tcp_writable(int socket);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_tcp_writable                <DM_TCP.LIB>
+
+SYNTAX: uint16 devmate_tcp_writable(int socket)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Return the number of data bytes which may be written to
+               the socket transmit buffer.  The return value is encoded
+               such that it can be interpreted as a boolean indicator
+               of whether the socket is in a writable state, or as the
+               actual number of bytes which can be written with one call
+               to devmate_tcp_fastwrite().
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen().
+
+RETURN VALUE:  0: the socket is not writable e.g. it is not open, or
+                 encountered an error.
+               non-zero: the number of bytes which can be written, plus 1.
+                 E.g. if the return value is 200, then 199 bytes can be
+                 written immediately using devmate_tcp_fastwrite().  If the
+                 return value is 1, then the socket is writable but there
+                 is currently no space for new data in the transmit buffer.
+                 The latter situation occurs when new data is being
+                 generated faster than it can be transmitted to the
+                 DeviceMate or remote host.
+
+SEE ALSO:      devmate_tcp_isestablished, devmate_tcp_readable,
+               devmate_tcp_fastwrite, devmate_tcp_isclosed
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+uint16 devmate_tcp_writable(int socket)
+{
+	devmate_tick();
+	if (devmate_waiting(socket)) return 0;
+	return xtc_writable(&_tct.app, socket);
+}
+
+/*** BeginHeader devmate_tcp_fastread */
+int devmate_tcp_fastread(int socket, void* buffer, uint16 length);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_tcp_fastread                <DM_TCP.LIB>
+
+SYNTAX: int devmate_tcp_fastread(int socket, void* buffer, uint16 length)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Read up to length bytes of data from the socket receive
+               buffer into the given buffer.  In general, less than length
+               bytes may be moved.  In this case, the caller must re-
+               call this function to deliver the remainder of data.
+               This is typically performed via a loop which keeps track
+               of the total data amount to read and the amount which
+               has been successfully read.  Applications which can
+               afford to wait until all data are available can spin on
+               this function.
+
+               If devmate_tcp_readable() returns N for a given socket,
+               then a request for less than or equal (N-1) bytes is
+               guaranteed to return the full amount requested.
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen().
+PARAMETER2:    Pointer to the first byte of the local buffer.
+PARAMETER3:    Desired length of data to read.
+
+RETURN VALUE:  -1: an error occurred; the socket is not readable.
+               0: no data is available for reading.
+               1..(length-1): the data was partially read
+               length: the data was completely read.
+
+SEE ALSO:      devmate_tcp_readable, devmate_tcp_fastwrite,
+               devmate_tcp_preread
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+int devmate_tcp_fastread(int socket, void* buffer, uint16 length)
+{
+	devmate_tick();
+	if (devmate_waiting(socket)) return 0;
+	return xtc_read(&_tct.app, socket, (char *)buffer, length);
+}
+
+/*** BeginHeader devmate_tcp_preread */
+int devmate_tcp_preread(int socket, void* buffer, uint16 length);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_tcp_preread                <DM_TCP.LIB>
+
+SYNTAX: int devmate_tcp_preread(int socket, void* buffer, uint16 length)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Read up to length bytes of data from the socket receive
+               buffer into the given buffer.  In general, less than length
+               bytes may be moved.  Unlike devmate_tcp_fastread(), this
+               function does not actually remove the data from the
+               receive buffer.  This function is used to give a "sneak
+               preview" of the data in the buffer.  Sequential calls
+               to this function will return the same data each time, until
+               devmate_tcp_fastread() is used to read and remove the data.
+               Each sequential call to this function may return more data
+               than the previous time, since there may be new data
+               appended to the receive buffer.
+
+               If devmate_tcp_readable() returns N for a given socket,
+               then a request for less than or equal (N-1) bytes is
+               guaranteed to return the full amount requested.
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen().
+PARAMETER2:    Pointer to the first byte of the local buffer.
+PARAMETER3:    Desired length of data to read.
+
+RETURN VALUE:  -1: an error occurred; the socket is not readable.
+               0: no data is available for reading.
+               1..(length-1): the data was partially read
+               length: the data was completely read.
+
+SEE ALSO:      devmate_tcp_readable, devmate_tcp_fastread
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+int devmate_tcp_preread(int socket, void* buffer, uint16 length)
+{
+	devmate_tick();
+	if (devmate_waiting(socket)) return 0;
+	return xtc_preread(&_tct.app, socket, (char *)buffer, length);
+}
+
+
+/*** BeginHeader devmate_tcp_fastwrite */
+int devmate_tcp_fastwrite(int socket, void* buffer, int length); 
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_tcp_fastwrite                <DM_TCP.LIB>
+
+SYNTAX: int devmate_tcp_fastwrite(int socket, void* buffer, uint16 length)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Write up to length bytes of data from buffer into the
+               socket transmit buffer.  In general, less than length
+               bytes may be buffered.  In this case, the caller must re-
+               call this function to deliver the remainder of data.
+               This is typically performed via a loop which keeps track
+               of the total data amount to transmit and the amount which
+               has been successfully buffered.  Applications which can
+               afford to wait until all data is buffered can spin on
+               this function.  Once the data is buffered, then the
+               underlying library will ensure that it is transmitted
+               to the DeviceMate, so long as the application keeps
+               calling the devmate_tick() function.
+
+               If devmate_tcp_writable() returns N for a given socket,
+               then a request for less than or equal (N-1) bytes is
+               guaranteed to buffer the full amount requested.
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen().
+PARAMETER2:    Pointer to the first byte to write to the buffer.
+PARAMETER3:    Desired length of data to write.
+
+RETURN VALUE:  -1: an error occurred; the socket is not writable.
+               0: no data could be written because the transmit buffer is
+                 full.
+               1..(length-1): the data was partially buffered
+               length: the data was completely buffered.
+
+SEE ALSO:      devmate_tcp_writable, devmate_tcp_fastread
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+int devmate_tcp_fastwrite(int socket, void* buffer, int length)
+{
+	devmate_tick();
+	if (devmate_waiting(socket)) return 0;
+	return xtc_write(&_tct.app, socket, (char *)buffer, length);
+}
+
+/*** BeginHeader devmate_tcp_isclosed */
+int devmate_tcp_isclosed(int socket);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_tcp_isclosed                <DM_TCP.LIB>
+
+SYNTAX: int devmate_tcp_isclosed(int socket)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Check the socket to see if a TCP (stream) connection is
+               currently closed.  It is necessary to call this function
+               on a socket which has been closed using devmate_tcp_close()
+               since the socket will not actually close until the peer
+               has finished transmitting data.  After this function
+               returns 1, then devmate_tcp_error() should also be called
+               to test whether the connection closed normally i.e. all
+               data was transferred successfully.
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen().
+
+RETURN VALUE:  0: a connection is currently established.
+               1: the socket is completely closed, and may be immediately
+                 re-opened.
+
+SEE ALSO:      devmate_tcp_close, devmate_tcp_readable,
+               devmate_tcp_writable, devmate_tcp_abort,
+               devmate_tcp_error
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+int devmate_tcp_isclosed(int socket)
+{
+	auto int rc;
+	
+	devmate_tick();
+	if (devmate_waiting(socket)) return 0;
+	rc = xtc_closed(&_tct.app, socket);
+	if (rc)
+		_tct.tcp_sock[socket].state = TCT_CLOSED;
+	return rc;
+}
+
+
+/*** BeginHeader devmate_tcp_shutdown, devmate_tcp_close */
+int devmate_tcp_shutdown(int socket);
+#define devmate_tcp_close devmate_tcp_shutdown
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_tcp_close                <DM_TCP.LIB>
+
+SYNTAX: int devmate_tcp_close(int socket)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Close a socket gracefully.  Calling this function indicates
+               that no more data will be written.  The peer is notified.
+               Data may be read until the peer performs a corresponding
+               close, or the socket is forcibly closed using
+               devmate_tcp_abort().  After calling this function,
+               devmate_tcp_writable() will return 0, and devmate_tcp_-
+               readable() may or may not return 0.
+
+               This function is a macro alias of devmate_tcp_shutdown().
+               It is only used for TCP sockets.
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen().
+
+RETURN VALUE:  0: closed successfully.
+               1: the socket is not open, or is in the process of closing.
+
+SEE ALSO:      devmate_tcp_abort, devmate_udp_close
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+int devmate_tcp_shutdown(int socket)
+{
+	auto int rc;
+	
+	TC_LOCK(_tct.lock);
+	
+	if (devmate_waiting(socket)) {
+		_tct.tcp_sock[socket].state = TCT_CLOSING;
+		rc = 0;
+	}
+	else
+		rc = xtc_close(&_tct.app, socket);
+		
+	TC_UNLOCK(_tct.lock);
+	
+	return rc;
+}
+
+
+
+/*** BeginHeader devmate_tcp_abort, devmate_udp_close */
+int devmate_tcp_abort(int socket);
+#define devmate_udp_close devmate_tcp_abort
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_tcp_abort                <DM_TCP.LIB>
+
+SYNTAX: int devmate_tcp_abort(int socket)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Close a socket forcibly.  This is used to signal the peer
+               that the stream is in error.  The peer may or may not
+               actually receive the abort indicator; however the
+               library considers the socket to be closed.  After
+               calling this function, devmate_tcp_error() will return
+               a non-zero code.
+
+               Note that sockets are sometimes forcibly closed by other
+               library functions.  For example, if devmate_sock_init()
+               is called, then any open sockets will be aborted.
+
+               This function is also used to close UDP sockets.  In this
+               case, there is no special meaning to "abort", since UDP
+               sockets are not connection-oriented so either peer may
+               close its socket at any time.
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen().
+
+RETURN VALUE:  0
+
+SEE ALSO:      devmate_tcp_close
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_udp_close                <DM_TCP.LIB>
+
+SYNTAX: int devmate_udp_close(int socket)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Close a UDP socket.  This is actually a macro alias for
+               devmate_tcp_abort().  UDP sockets are normally opened for
+               the lifetime of the application, however if it is
+               desired to re-use the socket number taken by a UDP socket,
+               then it is necessary to first close the UDP socket to
+               release resources held for it on the target and DeviceMate
+               processors.
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen().
+
+RETURN VALUE:  0
+
+SEE ALSO:      devmate_tcp_close, devmate_tcp_abort
+
+END DESCRIPTION **********************************************************/
+
+
+tct_nodebug
+int devmate_tcp_abort(int socket)
+{
+	auto int rc;
+	
+	TC_LOCK(_tct.lock);
+	
+	if (devmate_waiting(socket)) {
+		_tct.tcp_sock[socket].state = TCT_ABORTING;
+		rc = 0;
+	}
+	else {
+		_tct.tcp_sock[socket].state = TCT_CLOSED;
+		rc = xtc_abort(&_tct.app, socket);
+	}
+
+	TC_UNLOCK(_tct.lock);
+	
+	return rc;
+}
+
+
+
+/*** BeginHeader devmate_udp_sendto, devmate_udp_send */
+int devmate_udp_sendto(int socket,
+	void* buffer, uint16 length, uint16 trans,
+	uint32 remote_host, uint16 remote_port);
+
+#define devmate_udp_send(socket, buffer, length, trans) \
+	devmate_udp_sendto(socket, buffer, length, trans, 0L, 0)
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_udp_sendto                <DM_TCP.LIB>
+
+SYNTAX: int devmate_udp_sendto(int socket, void* buffer, uint16 length,
+               uint16 trans, uint32 remote_host, uint16 remote_port)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Transmit a UDP datagram to the specified remote host and
+               port number.  UDP datagrams are sent in two phases: the
+               data is reliably transmitted to the DeviceMate, then the
+               DeviceMate sends the entire datagram on the network.  The
+               initial phase may require sending the datagram in more
+               than one chunk, if the local transmit buffer is not large
+               enough to contain the entire datagram (and header).  This
+               requires that the application call this function repeatedly
+               until the return value indicates that all data has been
+               buffered.  When re-calling, do not change any of the
+               passed parameter values except for trans.
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen().
+PARAMETER2:    Pointer to the start of the datagram to transmit
+PARAMETER3:    Total length of the datagram
+PARAMETER4:    Zero on first call to transmit a new datagram.
+               Subsequently, is the number of bytes that have been
+               transferred so far i.e. the return value from the
+               previous call to this function.
+PARAMETER5:    IP address of the remote host.  This may be zero to use
+               the host selected on the initial call to open the UDP
+               socket.  Otherwise, this must be a binary IP address
+               either hard-coded or obtained from devmate_ip_resolve().
+PARAMETER6:    Remote UDP port number.  May be zero to use the port
+               selected on the initial call to open the UDP socket.
+
+RETURN VALUE:  -1: an error occurred.
+               non-negative: the total number of bytes whcih have been
+               successfully transferred from this datagram.  If this is
+               less than 'length', then this return value should be
+               provided to a subsequent call to this function to complete
+               the transfer of this datagram.  If equal to 'length', then
+               the datagram has been fully transferred so that a new
+               datagram may be transmitted.
+
+SEE ALSO:      devmate_udp_send, devmate_udp_open, devmate_udp_recvfrom,
+               devmate_udp_recvdata
+
+END DESCRIPTION **********************************************************/
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_udp_send                <DM_TCP.LIB>
+
+SYNTAX: int devmate_udp_send(int socket, void* buffer, uint16 length,
+               uint16 trans)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Transmit a UDP datagram to the remote host and port
+               number which were specified on the original call to
+               devmate_udp_open() for this socket.  This is implemented
+               as a macro which invokes devmate_udp_sendto() with
+               zero remote host and port numbers.  See the description
+               of devmate_udp_sendto() for more details.
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen().
+PARAMETER2:    Pointer to the start of the datagram to transmit
+PARAMETER3:    Total length of the datagram
+PARAMETER4:    Zero on first call to transmit a new datagram.
+               Subsequently, is the number of bytes that have been
+               transferred so far i.e. the return value from the
+               previous call to this function.
+
+RETURN VALUE:  -1: an error occurred.
+               non-negative: the total number of bytes whcih have been
+               successfully transferred from this datagram.
+
+SEE ALSO:      devmate_udp_sendto, devmate_udp_open, devmate_udp_recvfrom,
+               devmate_udp_recvdata
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+int devmate_udp_sendto(int socket,
+	void* buffer, uint16 length, uint16 trans,
+	uint32 remote_host, uint16 remote_port)
+{
+	// Returns total bytes queued, which may be less than requested
+	// length.  'length' parm is total datagram length in 'buf'.
+	// 'trans' is the accumulated amount successfully queued from
+	// previous calls for same buffer - the caller must maintain this
+	// variable as part of the current state.  On first call, 'trans'
+	// is zero.  In this case, at least sizeof(TCUdpHeader)+1 bytes
+	// must be available in the LTRB, since the udp record header and
+	// first byte of datagram must be queued atomically.  An exception
+	// to this is if the datagram is zero length, in which case 1 is
+	// returned when queued.
+	auto int s;
+	auto int rc;
+	auto TCUdpHeader uh;
+	auto uint16 uhlen;
+	auto uint16 avreq;
+#ifdef TC_BIG_ENDIAN
+	static const uint8 uh_swaps[] =
+	  { 0,1, 2,3, 4,5, 6,7, 8,11,9,10 };
+#endif
+
+	devmate_tick();
+	s = socket;
+	if (s > 0) {
+		if (devmate_waiting(s)) return 0;
+		if (trans) {
+			rc = xtc_write(&_tct.app, socket, (char *)buffer+trans, length-trans);
+			if (rc < 0)
+				return rc;
+			return trans + rc;
+		}
+		uhlen = sizeof(uh) + length;
+		uh.len = uhlen;
+		uh.local_port = 0;	// Currently always use bound port
+		uh.remote_port = remote_port;
+		uh.remote_host = remote_host;
+		if (length)
+			avreq = sizeof(uh) + 1;
+		else
+			avreq = sizeof(uh);
+		rc = xtc_writable(&_tct.app, socket);
+		if (rc >= 0) {
+			if (rc <= avreq)
+				rc = 0;
+			else {
+#ifdef TC_BIG_ENDIAN
+				_tc_reorder((uint8 *)&uh, sizeof(uh_swaps), uh_swaps);
+#endif
+				xtc_write(&_tct.app, socket, &uh, sizeof(uh));	// guaranteed to work
+				if (length)
+					rc = xtc_write(&_tct.app, socket, buffer, length);
+				else
+					rc = 1;
+			}
+		}
+	}
+	else
+		rc = -1;
+	return rc;
+	
+}
+
+/*** BeginHeader devmate_udp_recvfrom */
+int devmate_udp_recvfrom(int socket, uint32* remote_host, uint16* remote_port);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_udp_recvfrom                <DM_TCP.LIB>
+
+SYNTAX: int devmate_udp_recvfrom(int socket, uint32* remote_host,
+               uint16* remote_port)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Receive notification of UDP datagram availability from the
+               given socket.  If a datagram is available, the data may be
+               retrieved using one or more calls to
+               devmate_udp_recvdata().  This two-phase receive process is
+               a consequence of the reliable transport between the target
+               and DeviceMate processors, and the possibly limited buffer
+               space on the target.
+
+               This function only notifies of the presence of a new
+               datagram.  Usually the data would be retrieved using
+               devmate_udp_recvdata(), however if this function is called
+               again before reading the data (or partially reading it),
+               then the rest of the previous datagram will be discarded.
+               It is thus not necessary to call devmate_udp_recvdata()
+               if the actual data is not important.
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen().
+PARAMETER2:    Pointer to a place to store the IP address of the sender.
+               This may be NULL if the sender's address is not required.
+PARAMETER3:    Pointer to place to store the sender's port number.  May
+               be NULL if not required, however if NULL it is not
+               possible to distinguish between reception of a zero-length
+               datagram and no datagram at all.
+
+RETURN VALUE:  -1: an error occurred.
+               0: no datagram is available (try again later), or a
+                 zero-length datagram is available.  These two cases are
+                 distinguished by examining the returned remote port:
+                 this will be zero if there is no datagram, or non-zero
+                 if there is a zero-length datagram.
+               non-negative: the received datagram length, including zero.
+
+SEE ALSO:      devmate_udp_sendto, devmate_udp_open, devmate_udp_recvdata
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+int devmate_udp_recvfrom(int socket, uint32* remote_host, uint16* remote_port)
+{
+	auto int s;
+	auto int rc;
+	auto TCUdpHeader uh;
+	auto uint16 uhlen;
+	auto int br;
+	auto TCTcpSock * ts;
+	auto XTCChan * c;
+#ifdef TC_BIG_ENDIAN
+	static const uint8 uh_swaps[] =
+	  { 0,1, 2,3, 4,5, 6,7, 8,11,9,10 };
+#endif
+
+	devmate_tick();
+	s = socket;
+	if (s > 0) {
+		if (devmate_waiting(s)) return 0;
+		if (remote_host)
+			*remote_host = 0;
+		if (remote_port)
+			*remote_port = 0;
+		ts = _tct.tcp_sock + s;
+		if (ts->rcvf) {
+			rc = xtc_readp(&_tct.app, socket, 0, ts->rcvf);
+			if (rc < 0)
+				return rc;
+			ts->rcvf -= rc;
+			if (ts->rcvf)
+				return 0;
+		}
+		br = xtc_aread(&_tct.app, socket, &uh, sizeof(uh));
+		if (br > 0) {
+#ifdef TC_BIG_ENDIAN
+			_tc_reorder((uint8 *)&uh, sizeof(uh_swaps), uh_swaps);
+#endif
+			ts->rcvf = uh.len - sizeof(uh);
+			if (remote_host)
+				*remote_host = uh.remote_host;
+			if (remote_port)
+				*remote_port = uh.remote_port;
+			br = ts->rcvf;
+		}
+		return br;
+	}
+	return -1;	
+}
+
+/*** BeginHeader devmate_udp_recvdata */
+int devmate_udp_recvdata(int socket, void* buffer, uint16 max_length,
+		uint16 recv);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_udp_recvdata                <DM_TCP.LIB>
+
+SYNTAX: int devmate_udp_recvdata(int socket, void* buffer,
+               uint16 max_length, uint16 recv)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Receive datagram payload data.  This function may be
+               called after devmate_udp_recvfrom() indicates that a
+               datagram has arrived.  It should be called repeatedly
+               (updating recv) until all required data has been read.
+               It is not necessary to read all data before calling
+               devmate_udp_recvfrom() again.  When re-calling, do
+               not change any of the passed parameters except for recv.
+
+PARAMETER1:    The socket number as used by devmate_tcp_open/listen().
+PARAMETER2:    Pointer to start of datagram buffer.
+PARAMETER3:    Maximum length of the datagram buffer.
+PARAMETER4:    Number of bytes transferred by previous calls to this
+               function.  This should be zero for the first call, then
+               should be the returned value from the previous call.
+               This allows the datagram to be transferred piecemeal.
+
+RETURN VALUE:  -1: an error occurred.
+               non-negative: the total number of bytes transferred so
+                 far.  If this is less than the length originally returned
+                 by devmate_udp_recvfrom(), then this function may be
+                 called again (with this return value passed as the recv
+                 parameter) to get the remainder of the datagram.
+
+SEE ALSO:      devmate_udp_sendto, devmate_udp_open, devmate_udp_recvfrom
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+int devmate_udp_recvdata(int socket, void* buffer, uint16 max_length,
+		uint16 recv)
+{
+	// Call to read datagram after calling recvfrom.  Caller sets recv to
+	// accumulated data read so far.  Returns new accumulated count.
+	// The return value from recvfrom indicates the total available bytes
+	// in the datagram.  This function may need to be called multiple
+	// times (updating only recv) in order to read the entire datagram,
+	// since it may not all be available in the LTRB.
+	auto int s;
+	auto int rc;
+	auto uint16 avreq;
+	auto TCTcpSock * ts;
+
+	devmate_tick();
+	s = socket;
+	if (s > 0) {
+		ts = _tct.tcp_sock + s;
+		if (ts->rcvf && recv < max_length) {
+			avreq = max_length - recv;
+			if (avreq > ts->rcvf)
+				avreq = ts->rcvf;
+			rc = xtc_read(&_tct.app, socket, (char *)buffer + recv, avreq);
+			if (rc < 0)
+				return 0;
+			ts->rcvf -= rc;
+			return recv + rc;
+		}
+		return recv;	// Nothing new, or end of current datagram, or
+							// cannot fit in buffer.
+	}
+	return -1;	
+}
+
+
+/*** BeginHeader devmate_ip_resolve */
+int devmate_ip_resolve(uint16 * request_id, char * remote_host, uint32 * ipaddr);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+devmate_ip_resolve                <DM_TCP.LIB>
+
+SYNTAX: int devmate_ip_resolve(uint16 * request_id, char * remote_host,
+               uint32 * ipaddr)
+
+KEYWORDS:      DeviceMate tcpip
+
+DESCRIPTION:   Perform a DNS (Domain Name Server) lookup of an internet
+               host name.  The host name is resolved into a binary IP
+               address.  Since DNS lookups can be time-consuming, this
+               function must be called several times to complete the
+               process of looking up one hostname.  Several hostnames
+               may be resolved simultaneously if the appropriate state
+               information is retained.
+
+PARAMETER1:    Pointer to a "handle" which is used to identify the
+               resolver request.  This handle should be initialized to
+               zero for the first call for a given host name.  On
+               return, the handle will be set to a unique identifier.
+               On subsequent calls, the same handle must be passed until
+               success or failure is declared.
+PARAMETER2:    The host name to resolve.  This may be an internet host
+               name, or a "dotted quad" e.g. "10.10.6.2".  The same
+               host name should be passed on all calls to this function
+               (for a particular request id) until the name is resolved.
+PARAMETER3:    Pointer to place to store the resolved IP address.
+
+RETURN VALUE:  -2: programming error - DeviceMate not initialized or no
+                 name resolver has been configured.
+               other negative value: an error occurred.
+               0: try again later.
+               1: name successfully resolved.
+
+END DESCRIPTION **********************************************************/
+
+tct_nodebug
+int devmate_ip_resolve(uint16 * request_id, char * remote_host, uint32 * ipaddr)
+{
+#if DEVMATE_TCP_MAXRESOLVE > 0
+	auto TCResolve tr;
+	auto uint16 rqlen;
+	auto int rc, i;
+#ifdef TC_BIG_ENDIAN
+	static const uint8 tr_swaps[] =
+	  { 2,3, 4,5 };
+#endif
+
+	if (!_tct.initrq)
+		return -2;	// Error if not issued init call
+	if (_tct.state < TCT_OK)
+		return 0;	// Make caller retry if not yet ready
+		
+	TC_LOCK(_tct.lock);
+	
+	if (!*request_id) {
+		_tct.request_id++;
+		if (!_tct.request_id)
+			_tct.request_id++;
+		*request_id = tr.request_id = _tct.request_id;
+		strncpy(tr.hostname, remote_host, sizeof(tr.hostname)-1);
+		tr.hostname[sizeof(tr.hostname)-1] = 0;
+		tr.hdr.version = TC_TCPIP_VERSION;
+		tr.hdr.typecode = TC_TCPIP_RESOLVE;
+		tr.hdr.length = strlen(tr.hostname) + 1 + sizeof(tr.request_id);
+		rqlen = tr.hdr.length + sizeof(tr.hdr);
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&tr, sizeof(tr_swaps), tr_swaps);
+#endif
+		rc = xtc_awrite(&_tct.app, 0, (char *)&tr, rqlen);
+		if (rc < 0)
+			goto __DM_unlock;
+		if (!rc) {
+			// Could not queue request, undo request ID
+			*request_id = 0;
+			_tct.request_id--;
+		}
+		// Use entry (request_id mod num_entries).  Too bad if there was an earlier request,
+		// the new request takes precedence.  Any response will be discarded.
+		i = _tct.request_id % DEVMATE_TCP_MAXRESOLVE;
+		memset(_tct.rr + i, 0, sizeof(_tct.rr[0]));
+		_tct.rr[i].request_id = *request_id;
+		rc = 0;	// Call again to get response
+	}
+	else {
+		// Check if result returned
+		i = *request_id % DEVMATE_TCP_MAXRESOLVE;
+		if (_tct.rr[i].request_id == *request_id) {
+			if (_tct.rr[i].result) {
+				*ipaddr = _tct.rr[i].ipaddr;
+				if (!_tct.rr[i].errcode)
+					rc = 1;
+				else
+					rc = -_tct.rr[i].errcode;
+			}
+			else
+				rc = 0;	// Still waiting
+		}
+		else
+			rc = -TC_RES_NSR;	// No such request
+	}
+
+__DM_unlock:
+	TC_LOCK(_tct.lock);
+	return rc;
+#else
+	return -2;	// No DNS resolve configured
+#endif
+}
+
+
+
+/*** BeginHeader _devmate_tcp_init */
+void _devmate_tcp_init(void);
+#funcchain __devmate_xtc_init _devmate_tcp_init
+/*** EndHeader */
+
+tct_nodebug
+void _devmate_tcp_init(void)
+{
+	auto int rc;
+	static int linit;
+	
+#GLOBAL_INIT { linit = 0; }
+	
+#ifdef TC_LOCKING
+	/* Get a lock */
+	if (!linit)
+		_tct.lock = TC_CREATELOCK();
+#endif
+	_tct.app.appno = TC_TYPE_TCPIP;
+	_tct.app.numchans = DEVMATE_TCP_MAXCHANS+1;
+	_tct.app.chans = _tct.chans;
+	_tct.app.txbufsize = DEVMATE_TCP_TCBUFSIZE;
+	_tct.app.rxbufsize = DEVMATE_TCP_TCBUFSIZE;
+	if (rc = devmate_xtc_register(&_tct.app, DEVMATE_TCP_XTCBUFSIZE, DEVMATE_TCP_XTCBUFSIZE)) {
+#ifdef DEVMATE_TCP_DEBUG
+		printf("_devmate_tcp_init: devmate_xtc_register failed %d\n", rc);
+#endif
+		exit(TC_TYPE_TCPIP);
+	}
+	_tct.app.numrxbufs = DEVMATE_TCP_NUMRXBUF;
+	_tct.app.numtxbufs = DEVMATE_TCP_NUMTXBUF;
+	_tct.app.aflags = 0;
+	_tct.app.tc_handler = NULL;
+	_tct.app.reqpacing = 0;
+	memset((char *)_tct.tcp_sock, 0, &_tct.dummy - (char *)_tct.tcp_sock);
+	linit = 1;
+}
+
+
+/*** BeginHeader _devmate_tcp_tick */
+void _devmate_tcp_tick(void);
+#funcchain __devmate_tick _devmate_tcp_tick
+/*** EndHeader */
+
+tct_nodebug
+void _devmate_tcp_tick(void)
+{
+	auto long buf[16];	// This is just a byte buffer, but defined as long to avoid
+								// alignment problems on machines with memory access restrictions,
+								// since we cast this buffer to various structures.
+	auto int i, rc, xtra, socket;
+	auto TCAckTcpOpen * ta;
+	auto TCAckResolve * tr;
+	auto TCTcpSock * ts;
+	auto TCTCPHdr * hdr;
+	auto uint16 temp;
+#ifdef TC_BIG_ENDIAN
+	static const uint8 ai_swaps[] =
+	  { 2,3, 4,5, 8,11,9,10, 12,15,13,14, 16,19,17,18, 20,23,21,22, 24,27,25,26 };
+	static const uint8 ta_swaps[] =
+	  { 2,3, 4,5, 6,7, 8,9, 12,15,13,14 };
+	static const uint8 tr_swaps[] =
+	  { 2,3, 4,5, 6,7, 8,11,9,10 };
+#endif
+
+
+	TC_LOCK(_tct.lock);
+	
+	// Action the global TCP state machine
+	switch (_tct.state) {
+	case TCT_ERROR:
+		goto __DM_unlock;
+	case TCT_NOTREADY:
+		if (!_tct.initrq)
+			goto __DM_unlock;		// Nothing to do
+		_tct.state = TCT_MAKERDY;
+		// fall thru
+	case TCT_MAKERDY:
+		rc = devmate_xtc_ready(&_tct.app);
+		if (!rc)
+			goto __DM_unlock;
+		if (rc < 0)
+			goto __DM_abort_all;
+		_tct.state = TCT_OPENING;
+		if (xtc_closed(&_tct.app, 0)) {
+			rc = xtc_open(&_tct.app, 0);
+			if (rc < 0)
+				goto __DM_abort_all;
+		}
+		// fall thru
+	case TCT_OPENING:
+		if (xtc_error(&_tct.app, 0))
+			goto __DM_abort_all;
+		if (!xtc_estab(&_tct.app, 0))
+			goto __DM_unlock;	// keep waiting for control channel
+		_tct.state = TCT_READY;
+		// fall thru
+	case TCT_READY:
+		if (!_tct.initrq)
+			goto __DM_unlock;		// Ready, but no init request.
+		_tct.state = TCT_INITRQ;
+		// fall thru
+	case TCT_INITRQ:
+#ifdef TC_BIG_ENDIAN
+		temp = _tct.ti.hdr.length >> 8 | _tct.ti.hdr.length << 8;
+#else
+		temp = _tct.ti.hdr.length;
+#endif
+		rc = xtc_awrite(&_tct.app, 0, (char *)&_tct.ti, sizeof(_tct.ti.hdr) + temp);
+		if (rc < 0)
+			goto __DM_abort_all;
+		if (!rc)
+			goto __DM_unlock;
+		_tct.state = TCT_WAITOK;
+		goto __DM_unlock;
+	case TCT_WAITOK:
+		rc = xtc_aread(&_tct.app, 0, (char *)&_tct.ta, sizeof(_tct.ta));
+		if (rc < 0)
+			goto __DM_abort_all;
+		if (!rc)
+			goto __DM_unlock;
+#ifdef TC_BIG_ENDIAN
+		_tc_reorder((uint8 *)&_tct.ta, sizeof(ai_swaps), ai_swaps);
+#endif
+		if (!(_tct.ta.flags & TC_ATI_NET))
+			goto __DM_abort_all;
+		_tct.state = TCT_OK;
+		// fall thru
+	case TCT_OK:
+		// When global state machine OK, execute the state machine for sockets whose response
+		// comes in on the control channel.
+		hdr = (TCTCPHdr *)buf;
+		rc = xtc_preread(&_tct.app, 0, (char *)buf, sizeof(*hdr));	// sneak preview of length
+		if (rc < 0)
+			goto __DM_abort_all;
+		if (rc < sizeof(*hdr))
+			goto __DM_unlock;
+#ifdef TC_BIG_ENDIAN
+		temp = hdr->length>>8 | hdr->length<<8;
+		rc = xtc_aread(&_tct.app, 0, (char *)buf, sizeof(*hdr) + temp);
+		hdr->length = temp;
+#else
+		rc = xtc_aread(&_tct.app, 0, (char *)buf, sizeof(*hdr) + hdr->length);
+#endif
+		if (!rc)
+			goto __DM_unlock;
+		if (rc < 0)
+			goto __DM_abort_all;
+		if (hdr->typecode == TC_TCPIP_TCPACKOPEN) {
+			if (!_tct.queue)	// Not expecting any socket responses.
+				break;
+			ts = _tct.queue;
+			_tct.queue = ts->next;	// dequeue.
+			ta = (TCAckTcpOpen *)buf;
+#ifdef TC_BIG_ENDIAN
+			_tc_reorder((uint8 *)ta, sizeof(ta_swaps), ta_swaps);
+#endif
+			socket = ts - _tct.tcp_sock;
+			if (ta->socket != socket || ta->flags & TC_SS_ERROR)
+				goto __DM_abort_socket;
+			switch (ts->state) {
+			case TCT_WAIT_PO:
+				ts->state = TCT_LISTEN;
+				break;
+			case TCT_WAIT_AO:
+				ts->state = TCT_OPEN;
+				ts->local_port = ta->local_port;
+				rc = xtc_open(&_tct.app, socket);
+				if (rc < 0)
+					goto __DM_abort_socket;
+				break;
+			case TCT_CLOSING:
+				xtc_open(&_tct.app, socket);
+				xtc_close(&_tct.app, socket);
+				ts->state = TCT_CLOSED;
+				break;
+			case TCT_ABORTING:
+				xtc_open(&_tct.app, socket);
+				xtc_abort(&_tct.app, socket);
+				ts->state = TCT_CLOSED;
+				break;
+			}
+		}
+#if DEVMATE_TCP_MAXRESOLVE > 0
+		else if (hdr->typecode == TC_TCPIP_ACKRESOLVE) {
+			tr = (TCAckResolve *)buf;
+#ifdef TC_BIG_ENDIAN
+			_tc_reorder((uint8 *)tr, sizeof(tr_swaps), tr_swaps);
+#endif
+			i = tr->request_id % DEVMATE_TCP_MAXRESOLVE;
+			if (_tct.rr[i].request_id == tr->request_id) {
+				// Matching resolve reply found
+				_tct.rr[i].result = 1;
+				_tct.rr[i].errcode = tr->errcode;
+				_tct.rr[i].ipaddr = tr->ip;
+			}
+		}
+#endif
+	}
+		
+__DM_unlock:
+	TC_UNLOCK(_tct.lock);
+	return;
+
+__DM_abort_all:
+	_tct.state = TCT_ERROR;
+	for (i = 1; i <= DEVMATE_TCP_MAXCHANS; i++) {
+		ts = _tct.tcp_sock + i;
+		if (ts->state != TCT_CLOSED) {
+			ts->state = TCT_CLOSED;
+			xtc_abort_code(&_tct.app, i, TCT_LOST_PEER);
+		}
+	}
+	goto __DM_unlock;
+
+__DM_abort_socket:
+	xtc_abort_code(&_tct.app, socket, TCT_PEER_REFUSED);
+	ts->state = TCT_CLOSED;
+	goto __DM_unlock;
+}
+
+
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

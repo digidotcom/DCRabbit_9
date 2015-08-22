@@ -1,0 +1,1744 @@
+/* START LIBRARY DESCRIPTION ************************************************
+LIB\FILESYSTEM\LOG.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains a message logging subsystem.  Messages may be stored
+   in the filesystem (see FS2.LIB), in an xmem buffer, or sent to the stdio
+   window for debugging.  Provision has been made for logging to an external
+   system via UDP, however this is not yet implemented.
+
+   Messages consist of a binary string (of length 0 to 115) plus additional
+   information including a sequence number, timestamp, format, and
+   destination information.
+
+   Messages may be retrieved from the file or xmem buffer in forward or
+   reverse sequence.
+
+   The API function to write a log message is log_put().  This function
+   requires a facility/priority code, which is mapped (via a configuration
+   macro) into an actual destination (or destinations).  The mapping provides
+   a layer of abstraction such that log messages may be diverted to
+   different destinations without requiring any source code change.
+
+   The facility/priority code is an 8-bit number.  The least significant 3
+   bits are interpreted as a "priority", and the 5 high bits specify a
+   "facility".  By convention, priority 0 is the highest priority, and 7 is
+   the lowest.  Standard semantics for each priority are listed in
+   LOG_DEFS.LIB.  These are taken from the Unix syslog protocol, however
+   there is no requirement to stick to this convention unless log messages
+   will be made accessible to external systems.
+
+   The facility is merely a number from 0 to 31 inclusive.  This may be
+   interpreted as either a "source" or "destination" specifier, depending
+   on application requirements.
+
+   Together, the facility and priority are mapped to a log message
+   destination.  From zero to 4 destinations may be specified for any
+   facility/priority.  The actual mapping should be configured using the
+   LOG_MAP macro, unless the defaults are satisfactory.  The limit of 4
+   destinations is a consequence of the need to pack 4 bytes in a return
+   value (longword).
+
+   Each destination is comprised of two components: the destination class and
+   a stream number.  The class is specified by the 2 most significant bits
+   of the 8-bit destination number, and the stream is the least 6 bits.
+   Some classes do not have streams (such as XMEM and stdout).  FS2 and
+   UDP, when implemented, can have up to 64 streams each.  An FS2 stream
+   is actually a file in which to store the log entries, and a UDP stream
+   is an IP address and port number.  By default, there is only one FS2
+   stream defined.
+
+CONFIGURATION MACROS:
+	This library is configured for your application via numerous macros,
+	which should be defined before the #use.  The defaults are suitable
+	for an initial test configuration.  If using FS2 as a logging destination,
+	you should also review the FS2 documentation.
+
+	LOG_USE_FS2
+	LOG_USE_XMEM
+
+	  One or both of these macros may be defined to allow the specified
+	  storage class to be used as a logging destination.  Both of these
+	  destination classes are "retrievable" in that the stored entries may
+	  be retrieved at runtime using log_seek(), log_next() and log_prev().
+	  If you define LOG_USE_FS2, then the FS2.LIB library is automatically
+	  included.
+
+	  -------------------------------------------------------------------
+	  |  You must initialize the filesystem before calling any logging  |
+	  |  functions, since the logging subsystem does not do this!       |
+	  -------------------------------------------------------------------
+
+	  If you do not define LOG_USE_FS2, then the filesystem library is not
+	  included, and you do not have to initialize it (unless your application
+	  uses it independently).
+
+	  If you define LOG_USE_XMEM, then a single xmem buffer is allocated
+	  for storing log entries.  If FS2 is not also used, this has the
+	  advantage of being faster and using much less root code space.  The
+	  disadvantage is that the log entries will be lost when the application
+	  boots up, and obviously there will be less xmem space for the
+	  application.
+
+   LOG_FS2_MAXSTRM
+
+     Define the maximum number of FS2 streams.  Default 1.
+
+   LOG_FS2_FILENO(strm)
+
+     Define the FS2 file number (0-255) to use for a given stream.  Defaults
+     to 123 independent of stream.
+
+   LOG_FS2_DATALX(strm)
+   LOG_FS2_METALX(strm)
+
+     Define FS2 logical extent numbers for given stream.  Defaults to the
+     preferred flash extent, independent of stream.
+
+   LOG_FS2_CIRCULAR(strm)
+
+     Define to 1 if the specified FS2 stream is "circular" i.e. when full,
+     the oldest entries are automatically deleted to make room for the
+     new entry.  If defined to zero, then the log subsystem will refuse to
+     add new entries when the stream becomes full.  Defaults to 1.
+     When a non-circular log is full, it can only be re-used by calling
+     log_clean() on it.  A circular log would not normally ever need
+     cleaning.
+
+   LOG_FS2_SIZE(strm)
+
+     Define the FS2 stream quota, in bytes.  When the stream exceeds this
+     amount, either the oldest messages will be discarded (if circular) or
+     the new message will not be added (non-circular).  The actual file size
+     may exceed the specified value by up to 256 bytes.  The default is
+     8000 bytes.  By carefully specifying this value, you can ensure that
+     the filesystem capacity will not be exceeded because of an unexpected
+     number of log messages.
+
+   LOG_XMEM_CIRCULAR
+
+     Define to 0 or 1 to make the xmem buffer log non-circular or
+     circular (see LOG_FS2_CIRCULAR above for details).  Defaults to 1.
+
+   LOG_XMEM_SIZE
+
+     Define to the xmem buffer size quota.  This is similar to the meaning
+     of LOG_FS2_SIZE, except that the quota is never exceeded.
+
+	LOG_MAP(facpri)	
+
+     Map from facility/priority to destination class and stream.  The result
+     should be an unsigned long, which allows up to 4 dest/streams to be
+     specified.  Each dest/stream is a single byte, with the 2 MSBs specifying
+     the destination class, and the 6 LSBs specifying the stream number within
+     that class.  A zero byte is special, which means "no destination".
+ 
+     The mapping must be "constant" in that a particular input always
+     gives the same output.  The mapping must not be a function of anything
+     other than the input parameter.
+ 
+     In general, this macro could be overridden to an arbitrarily complex
+     function of the facpri, however the default should be sufficient for
+     most purposes.  The default maps as follows:
+      Facility  Priority  Destination
+      --------  --------  ------------------------------------------------
+      0         any       The first of FS2 or XMEM which is configured.
+                          If none configured, then STDOUT.  Stream 0.
+      1         any       STDOUT (intended for debugging)
+      2         any       As for facility zero, plus STDOUT.
+      3         any       UDP, if configured, else ignored. (UDP not impl!)
+      4-31		 any       Ignored
+     These defaults are implemented by the function _log_default_map().  You
+     can change this function if desired (rather than changing the macro).
+ 
+     There is only one instantiation of this macro, in the function log_map().
+ 
+     If any of the returned destinations are invalid (e.g. stream number higher
+     than the maximum configured for that class), then the destination will
+     be deemed to be "nowhere" -- no error is returned in this case.
+ 
+     If more than one of the four possible destinations is the same, then
+     the same message may be logged multiple times to that destination.  This
+     is not checked for.
+
+   LOG_DEBUG
+
+     Define this to turn on dynamic C debugging for the log subsystem
+
+   LOG_VERBOSE
+
+     Define this to cause some extra printf() messages to be issued, for
+     debugging.
+
+     
+API FUNCTIONS
+
+   See the individual function descriptions for more details.
+
+   Opening, closing, deleting:
+     int    log_open(LogDestClass ldc, int clean)
+     int    log_close(LogDestClass ldc)
+     int    log_clean(LogDest ld)
+   Add new message:
+     int    log_put(LogFacPri ifp, uint8 fmt, const char * data, int length)
+   Retrieving messages:
+     int    log_seek(LogDest ldst, int whence)
+     int    log_next(LogDest ldst, LogEntry * le)
+     int    log_prev(LogDest ldst, LogEntry * le)
+     char * log_format(LogEntry * le, char * buffer, int length, int pfx)
+   Obtaining information:
+     uint32 log_map(LogFacPri lfp)
+     int    log_condition(LogDest ldst)
+   
+END DESCRIPTION *************************************************************/
+
+/*** BeginHeader ***************/
+
+#ifndef __LIB_LOG_H
+#define __LIB_LOG_H
+
+
+#ifndef __LIB_LOG_DEFS_H
+	#use "log_defs.lib"
+#endif
+
+/******************************************/
+/****  BEGIN USER MODIFIABLE SETTINGS  ****/
+/******************************************/
+
+/**  All *_MAXSTRM defines must be constant.  They are used to define arrays. **/
+
+/**
+ * 	LOG_USE_FS2
+ */
+#ifdef LOG_USE_FS2
+  #use "fs2.lib"
+  
+  #ifndef LOG_FS2_MAXSTRM
+    #define  LOG_FS2_MAXSTRM	1
+  #endif
+
+  #ifndef LOG_FS2_FILENO
+    #define  LOG_FS2_FILENO(strm)	123
+  #endif
+
+  #ifndef LOG_FS2_DATALX
+    #define  LOG_FS2_DATALX(strm)	fs_get_flash_lx()
+  #endif
+
+  #ifndef LOG_FS2_METALX
+    #define  LOG_FS2_METALX(strm)	fs_get_flash_lx()
+  #endif
+
+  #ifndef LOG_FS2_CIRCULAR
+    #define  LOG_FS2_CIRCULAR(strm) 	1
+  #endif
+
+  #ifndef LOG_FS2_SIZE
+    #define  LOG_FS2_SIZE(strm)		8000
+  #endif
+#endif	/* ifdef LOG_USE_FS2 */
+
+
+/**
+ * 	LOG_USE_UDP
+ */
+#ifdef LOG_USE_UDP
+  #use "dcrtcp.lib"
+  
+  #ifndef LOG_UDP_MAXSTRM
+    #define  LOG_UDP_MAXSTRM	1
+  #endif
+
+  #ifndef LOG_UDP_IPADDR
+    #define  LOG_UDP_IPADDR(strm)	"10.10.6.100"
+  #endif
+
+  #ifndef LOG_UDP_PORTNO
+    #define  LOG_UDP_PORTNO(strm)	514
+  #endif
+
+  #ifndef LOG_UDP_PNAME
+    #define  LOG_UDP_PNAME(strm)		"RLog"
+  #endif
+  
+#endif	/* ifdef LOG_USE_UDP */
+
+
+/**
+ * 	LOG_USE_XMEM
+ */
+#ifdef LOG_USE_XMEM
+  #ifndef LOG_XMEM_CIRCULAR
+    #define  LOG_XMEM_CIRCULAR	1
+  #endif
+
+  #ifndef LOG_XMEM_SIZE
+    #define  LOG_XMEM_SIZE 	8192L		// Make this a "long" constant.
+  #endif
+#endif	/* ifdef LOG_USE_XMEM */
+
+
+/**
+ * Mapping of facility/priority to destination class/stream(s)
+ */
+#ifndef LOG_MAP
+	#define LOG_MAP(facpri)	_log_default_map(facpri)
+#endif
+
+/******************************************/
+/*****  END USER MODIFIABLE SETTINGS  *****/
+/******************************************/
+
+
+typedef uint8  	LogDest;			// 2-bits dest + 6-bits log stream
+typedef uint32 	LogDestList;	// Up to 4 LogDest's (unused entries zero).
+typedef uint8  	LogDestClass;	// One of LOG_DEST_FS2, _UDP, _XMEM, etc
+  #define  LOG_DEST_NONE	0x00
+  #define  LOG_DEST_STDOUT	0x01		// Only ascii format (0) gets written to stdout
+  #define  LOG_DEST_STDOUT2	0x02	// As above, but written in blue with no prefixes
+  #define  LOG_DEST_FS2 	0x40
+  #define  LOG_DEST_UDP		0x80
+  #define  LOG_DEST_XMEM	0xC0
+  #define  LOG_DEST_ALL		0xFF		// EVERY destination class (open/close only).
+
+typedef uint8  	LogFacPri;		// Facility/priority encoding: 5-bit fac, 3-bit priority.
+
+/*  Computed from (255:max_record_size - 12:_LOG_HEADER_SIZE) / 2:HDLC_max_expansion */
+#define  LOG_MAX_MESSAGE	115
+
+typedef struct _LogEntry {
+	uint8			this_length;  		// data+header lengths, including escapes!
+	uint8			prev_length;		// length of previous entry (0 if not known)
+	uint8			facpri;				// Request facility and priority bits
+	uint8 		fmt;					// Format specifier: 0=ascii string
+	uint32		serial;				// Monotonically increasing serial number.
+	uint32		stamp;				// Timestamp (seconds since Epoch 1980)
+	uint8 		data[LOG_MAX_MESSAGE+1];	// (this_length-12) bytes stored.  1 extra byte allowed
+														// for convenient null termination of ascii strings.
+} LogEntry;
+/*  Fields of "LogEntry" not including data[]. */
+#define _LOG_HEADER_SIZE	(1+1+1+1+4+4)
+
+#ifdef LOG_DEBUG
+	#define log_nodebug
+#else
+	#define log_nodebug nodebug
+#endif
+
+#ifndef LOG_UDP_PNAME
+	#define  LOG_UDP_PNAME(strm)		""
+#endif
+
+
+/* ------------------------------------------------------------------------- */
+
+/**
+ * 	Define control blocks for each destination class.  Each class knows
+ * 	how many streams it will support.  Function log_open() sets up every
+ * 	stream of a class, and log_close() shuts them down.
+ */
+
+#define  _LOG_SEPARATOR_CH   ((char)0x7E)
+#define  _LOG_ESCAPE_CH   ((char)0x7D)
+
+typedef long 		offset_t;		/* Mr. POSIX likes it. */
+
+
+#ifdef LOG_USE_FS2
+
+	typedef struct _LogFileCB {
+		File			f;
+		offset_t	 	last_valid;		// Offset of last valid record, -1 if empty.
+		offset_t		seek_pos;		// Next entry position to retrieve
+		int			condition;		// 0 if closed, 1 if OK, 2 if run out of quota or closed, -1 if error
+	} LogFileCB;
+
+	LogFileCB	_log_filecb[ LOG_FS2_MAXSTRM ];
+
+#endif	/* ifdef LOG_USE_FS2 */
+
+#ifdef LOG_USE_UDP
+
+	struct LogUdpCB {
+		udp_Socket		sock;
+	};
+
+	struct LogUdpCB 	_log_udpcb[ LOG_UDP_MAXSTRM ];
+	uint8  				_log_udpvalid;
+
+#endif	/* ifdef LOG_USE_UDP */
+
+#ifdef LOG_USE_XMEM
+
+	struct LogXmemCB {
+		int				is_open;
+		faraddr_t 		base;
+		uint32	 		seiz;
+		uint32	 		head;		// Offset (0..seiz-1) of first entry start
+		uint32	 		tail;		// Offset of next free entry start.  If equal to head, log is empty.
+										// This may range from 0 to 2*seiz.  If greater than seiz, then
+										// log has wrapped around.
+		uint32			seek_pos;// Current readback position
+		uint8				prev_length;		// Length of last entry written (if head != tail)
+		uint8				prev_len_retr;		// Length of previous to last entry retrieved
+	};
+
+	struct LogXmemCB 	_log_xmemcb;
+						//  "valid" if _log_xmemcb.base != FARADDR_NULL .
+
+#endif	/* ifdef LOG_USE_XMEM */
+
+
+/*** EndHeader */
+
+
+/*** BeginHeader log_map */
+uint32 log_map(LogFacPri lfp);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+log_map                                              <LOG.LIB>
+
+SYNTAX:  uint32 log_map(LogFacPri lfp)
+
+DESCRIPTION:   Return the log destination class and stream, for a given
+               facility/priority code.  The result is up to 4 destinations
+               packed into a longword.  This function merely invokes
+               the macro LOG_MAP(), which may be overridden by the
+               application, but defaults to just the filesystem.
+
+PARAMETER1:		Facility/priority code.  This is a single-byte code
+               specified whenever any log message is added.  Facility is
+               coded in the 5 MSBs, and priority in the 3 LSBs.
+
+RETURN VALUE:	Up to 4 destinations for a message of the specified
+               facility and priority.  Each byte in the resulting long
+               word represents a destination/stream.  A zero byte
+               indicates no destination.  If the result is all zeros,
+               then a message of this type would be discarded.
+
+END DESCRIPTION **********************************************************/
+
+log_nodebug
+uint32 log_map(LogFacPri lfp)
+{
+	return LOG_MAP(lfp);
+}
+
+
+/*** BeginHeader _log_default_map */
+uint32 _log_default_map(LogFacPri lfp);
+/*** EndHeader */
+
+/*
+ * This is the default mapping, invoked by the default definition of LOG_MAP().
+ *   Facility  Priority  Destination
+ *   --------  --------  ------------------------------------------------
+ *   0         any       The first of FS2 or XMEM which is configured.
+ *                       If none configured, then STDOUT.  Stream 0.
+ *   1         any       STDOUT (intended for debugging)
+ *   2         any       As for facility zero, plus STDOUT.
+ *   3         any       UDP, if configured, else ignored.
+ *   4-31		any       Ignored
+ */
+log_nodebug
+uint32 _log_default_map(LogFacPri lfp)
+{
+	switch (lfp>>3) {
+		case 0:
+#ifdef LOG_USE_FS2
+			return LOG_DEST_FS2;
+#else
+#ifdef LOG_USE_XMEM
+			return LOG_DEST_XMEM;
+#else
+			return LOG_DEST_STDOUT;
+#endif
+#endif
+		case 1:
+			return LOG_DEST_STDOUT;
+		case 4:
+			return LOG_DEST_STDOUT2;
+		case 2:
+#ifdef LOG_USE_FS2
+			return LOG_DEST_FS2 | LOG_DEST_STDOUT<<8;
+#else
+#ifdef LOG_USE_XMEM
+			return LOG_DEST_XMEM | LOG_DEST_STDOUT<<8;
+#else
+			return LOG_DEST_STDOUT;
+#endif
+#endif
+		case 3:
+#ifdef LOG_USE_UDP
+			return LOG_DEST_UDP;
+#else
+			return 0;
+#endif
+	}
+	return 0;	// default is to ignore
+}
+
+
+/*** BeginHeader log_condition */
+int log_condition(LogDest ldst);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+log_condition                                              <LOG.LIB>
+
+SYNTAX:  int log_condition(LogDest ldst)
+
+DESCRIPTION:   Return the state of the specified log destination.
+               Destination classes or streams which are not configured
+               cause a -2 return code.
+
+PARAMETER1:    Destination class and stream.  Use one of the constants
+               LOG_DEST_FS2 or LOG_DEST_XMEM, then OR in the stream
+               number (0-63).
+
+RETURN VALUE:	0: destination not open
+               1: destination OK
+               2: destination reached limit of its space quota
+               -1: error in destination.
+               -2: destination not configured.
+
+END DESCRIPTION **********************************************************/
+
+log_nodebug
+int log_condition(LogDest ldst)
+{
+	uint8 dst, stream;
+
+	dst = ldst & 0xC0;
+	stream = ldst & ~0xC0;
+	if (!dst)
+		return 1;
+#ifdef LOG_USE_FS2
+	if (dst == LOG_DEST_FS2)
+		return stream < LOG_FS2_MAXSTRM ? _log_filecb[stream].condition : -2;
+#endif
+#ifdef LOG_USE_UDP
+	if (dst == LOG_DEST_UDP)
+		return 1;
+#endif
+#ifdef LOG_USE_XMEM
+	if (dst == LOG_DEST_XMEM)
+		return _log_xmemcb.is_open;
+#endif
+	return -2;
+}
+
+
+/*** BeginHeader log_open */
+
+int 	log_open( LogDestClass ldc, int clean );
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+log_open                                              <LOG.LIB>
+
+SYNTAX:  int 	log_open( LogDestClass ldc, int clean )
+
+DESCRIPTION:   Open the specified logging destination class.  If
+               necessary, this enumerates all possible streams within the
+               class, opening them all (necessary only for FS2 class,
+               since each file needs to be opened).  Class LOG_DEST_ALL
+               opens all configured classes.
+
+               If clean is true, then the dest is set to empty log, if
+               that makes sense for the class.
+
+PARAMETER1:		Destination class: LOG_DEST_FS2, LOG_DEST_UDP,
+               LOG_DEST_XMEM or LOG_DEST_ALL.
+PARAMETER2:		Boolean, should the destination be erased before using?
+
+RETURN VALUE:	0 = success
+					-1 = unknown LogDestClass value.
+
+END DESCRIPTION **********************************************************/
+
+log_nodebug
+int log_open( LogDestClass ldc, int clean )
+{
+#ifdef LOG_USE_FS2
+	auto int 	j;
+	auto LogFileCB * pfile;
+	auto int		fnum;
+	auto FSLXnum meta_lx;
+	auto FSLXnum data_lx;
+#endif
+
+	#GLOBAL_INIT {
+		/*  Say no streams are valid. */
+#ifdef LOG_USE_FS2
+		memset( _log_filecb, 0, sizeof(_log_filecb) );
+#endif
+#ifdef LOG_USE_UDP
+		_log_udpvalid  = 0;
+#endif
+#ifdef LOG_USE_XMEM
+		_log_xmemcb.is_open = 0;
+		_log_xmemcb.seiz = LOG_XMEM_SIZE;
+		_log_xmemcb.base = xalloc(LOG_XMEM_SIZE);
+		_log_xmemcb.head = _log_xmemcb.tail = 0;
+#endif
+	}
+
+	/*  As a special, open all configured logs! */
+	if( LOG_DEST_ALL == ldc ) {
+#ifdef LOG_USE_FS2
+		log_open( LOG_DEST_FS2, clean );
+#endif
+#ifdef LOG_USE_UDP
+		log_open( LOG_DEST_UDP, clean );
+#endif
+#ifdef LOG_USE_XMEM
+		log_open( LOG_DEST_XMEM, clean );
+#endif		
+		return 0;
+	}
+
+	switch( ldc ) {
+#ifdef LOG_USE_FS2
+		case LOG_DEST_FS2 :
+				if (clean) for( j=0 ; j < LOG_FS2_MAXSTRM ; ++j )
+					log_clean( ldc + j );
+
+				pfile = & _log_filecb[0];
+				for( j=0 ; j < LOG_FS2_MAXSTRM ; ++j, ++pfile ) {
+					meta_lx = fs_get_lx(1);
+					data_lx = fs_get_lx(0);
+					fs_set_lx(LOG_FS2_METALX(j), LOG_FS2_DATALX(j));
+					fnum = LOG_FS2_FILENO(j);
+					if (pfile->condition) {
+						fclose(&pfile->f);
+						pfile->condition = 0;
+					}
+					if( fopen_wr( & pfile->f, fnum ) == 0 ||
+						 fcreate( & pfile->f, fnum ) == 0 ) {
+						/* Yeah, this file can be opened.  Validate. */
+						pfile->condition = 1;
+						_log_fs2_validate( pfile, j, fnum );
+					}
+					fs_set_lx(meta_lx, data_lx);
+				}
+				break;
+#endif
+
+#ifdef LOG_USE_UDP
+		case LOG_DEST_UDP :
+				/* TODO: Open up the socket. */
+				/* call udp_open( udp_Socket *s, word lport, longword remip,
+                 	    word port, dataHandler_t datahandler );
+               */
+				break;
+#endif
+
+#ifdef LOG_USE_XMEM
+		case LOG_DEST_XMEM :
+				if( clean )
+					log_clean( ldc );
+				_log_xmemcb.is_open = 1;
+				break;
+#endif
+
+		default :
+#ifdef LOG_VERBOSE
+				printf( "ERROR: log_open() unknown class: $%02x.\n", ldc );
+#endif
+				return -1;
+
+	}   /* switch ... */
+
+	return 0;
+}   /* end log_open() */
+
+
+/*** BeginHeader log_close */
+
+int 	log_close( LogDestClass ldc );
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+log_close                                              <LOG.LIB>
+
+SYNTAX:  int 	log_close( LogDestClass ldc )
+
+DESCRIPTION:   Close the specified class, enumerating all streams.  If
+               the destination class is already closed, returns success.
+
+PARAMETER1:    Destination class.  Use one of the constants LOG_DEST_FS2,
+               LOG_DEST_XMEM, LOG_DEST_UDP or LOG_DEST_ALL.  The latter
+               case closes all open destinations.
+
+RETURN VALUE:	0 = success
+
+END DESCRIPTION **********************************************************/
+
+log_nodebug
+int log_close( LogDestClass ldc )
+{
+	auto int 	j;
+#ifdef LOG_USE_FS2
+	auto LogFileCB * pfile;
+#endif
+
+	/*  As a special, close all configured logs! */
+	if( LOG_DEST_ALL == ldc ) {
+#ifdef LOG_USE_FS2
+		log_close( LOG_DEST_FS2 );
+#endif
+#ifdef LOG_USE_UDP
+		log_close( LOG_DEST_UDP );
+#endif
+#ifdef LOG_USE_XMEM
+		log_close( LOG_DEST_XMEM );
+#endif		
+		return 0;
+	}
+
+	switch( ldc ) {
+#ifdef LOG_USE_FS2
+		case LOG_DEST_FS2 :
+				pfile = & _log_filecb[0];
+				for( j=0 ; j < LOG_FS2_MAXSTRM ; ++j, ++pfile ) {
+					if (pfile->condition != 0)
+						fclose( & pfile->f );
+					pfile->condition = 0;
+				}
+				break;
+#endif
+
+#ifdef LOG_USE_UDP
+		case LOG_DEST_UDP :
+				for( j=0 ; j < LOG_UDP_MAXSTRM ; ++j, ++pfile ) {
+					/* TODO: Close the socket. */
+				}
+				_log_udpvalid = FALSE;
+				break;
+#endif
+
+#ifdef LOG_USE_XMEM
+		case LOG_DEST_XMEM :
+				_log_xmemcb.is_open = 0;
+				break;
+#endif
+	}
+	return 0;
+}   /* end log_close() */
+
+
+/*** BeginHeader log_clean */
+int 	log_clean( LogDest ld );
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+log_clean                                              <LOG.LIB>
+
+SYNTAX:  int 	log_clean( LogDest ld )
+
+DESCRIPTION:   Reset only the specified destination class and stream
+               (encoded as a LogDest value).  This is only applicable to
+               filesystem or XMEM destinations since they are locally
+               persistent storage.  XMEM is automatically cleaned at
+               start-up time, since it is not assumed to be non-volatile.
+               If this operation is not applicable, 0 is returned with
+               no further action.
+
+PARAMETER1:    Destination class and stream.  Use one of the constants
+               LOG_DEST_FS2 or LOG_DEST_XMEM, then OR in the stream
+               number (0-63).
+
+RETURN VALUE:	0 = success
+					-2 = The stream is out-of-range for the class.
+
+END DESCRIPTION **********************************************************/
+
+log_nodebug
+int log_clean( LogDest ld )
+{
+	auto LogDest 	stream;
+	auto unsigned int	j;
+
+	stream = ld & ~0xC0;
+
+	switch( ld & 0xC0 ) {
+#ifdef LOG_USE_FS2
+		case LOG_DEST_FS2 :
+				if( stream >= LOG_FS2_MAXSTRM ) {
+#ifdef LOG_VERBOSE
+					printf( "ERROR: log_clean: FS2 stream out-of-range: %d\n", (int)stream);
+#endif
+					return -2;
+				}
+				_log_filecb[stream].last_valid = -1;
+#ifdef LOG_VERBOSE
+				printf("LOG: cleaned file stream %d\n", (int)stream);
+#endif
+				if (_log_filecb[stream].condition) {
+					fclose(&_log_filecb[stream].f);
+					_log_filecb[stream].condition = 0;
+				}
+				fdelete( LOG_FS2_FILENO(stream) );
+				break;
+#endif
+
+#ifdef LOG_USE_XMEM
+		case LOG_DEST_XMEM :
+				_log_xmemcb.head = _log_xmemcb.tail = 0;
+				break;
+#endif
+	}
+
+	return 0;
+}   /* end log_clean() */
+
+
+/*** BeginHeader log_put, _log_next_serial */
+int 	log_put( LogFacPri ifp, uint8 fmt, char * data, int length );
+extern uint32 		_log_next_serial;
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+log_put                                              <LOG.LIB>
+
+SYNTAX:  int log_put(LogFacPri ifp, uint8 fmt, const char * data,
+                     int length)
+
+DESCRIPTION:   Add a log entry.  The specified facility/priority is
+               mapped to the appropriate destination(s), as configured by
+               the macros.  If the destination exists, then the log
+               entry is added.  Otherwise, the entry is quietly ignored.
+               If a destination is unable to fit the log entry, and the
+               destination is configured as "circular", then the
+               first few entries may be deleted to make room.  If this
+               cannot be done, or an unrecoverable error occurs, then
+               -2 is returned.  For non-circular destinations, -2 is
+               returned when it becomes full.
+
+               Since multiple log destinations can result from the
+               given facility/priority, it can be difficult to determine
+               which actual destination caused an error.  You can use
+               the log_map() function to determine the destinations,
+               then check each destination's state using log_condition().
+
+PARAMETER1:		Facility/priority code.  Facility in 5 MSBs, priority in
+               3 LSBs.
+PARAMETER2:		Format code.  0 for ascii string, others user-defined.
+PARAMETER3:		Pointer to first byte of data to store.
+PARAMETER4:		Length of data.  Must be between 0 and 115 (LOG_MAX_MESSAGE)
+               inclusive.
+
+RETURN VALUE:	0 = success
+					-1 = Message too long (over 115).
+					-2 = Unrecoverable error in destination.  This return code
+					  usually means that the destination is unusable and
+					  further entries for that destination will probably meet
+					  the same fate.  This can also mean that the destination
+					  has not been opened.
+
+END DESCRIPTION **********************************************************/
+
+uint32 		_log_next_serial;
+
+#ifdef LOG_USE_FS2
+log_nodebug
+offset_t _log_next_start(LogFileCB * pfile)
+{
+	auto uint8 buf[3];
+	auto long m;
+
+	fread(&pfile->f, buf, 3);
+	if (buf[1] == _LOG_ESCAPE_CH)
+		m = (long)(buf[2] ^ 0x20);
+	else
+		m = (long)buf[1];
+	fseek(&pfile->f, ftell(&pfile->f) + m - 2, SEEK_SET);
+	return ftell(&pfile->f);
+}
+
+log_nodebug
+long _log_shift(LogFileCB * pfile, uint8 stream)
+{
+	auto offset_t shiftamt, flen;
+	
+	shiftamt = LOG_FS2_SIZE(stream) >> 3;		// Delete smaller of 1/8 of the current space, or 16k
+	if (shiftamt > 1<<14)
+		shiftamt = 1<<14;
+	fseek(&pfile->f, 0L, SEEK_SET);
+	flen = 0;
+	while (flen < shiftamt)
+		flen = _log_next_start(pfile);
+#ifdef LOG_VERBOSE
+	printf("LOG: shifting %d\n", (int)flen);
+	if ((flen = fshift(&pfile->f, (int)flen, NULL)) <= 0)
+		printf("  shift error %d\n", errno);
+#else
+	flen = fshift(&pfile->f, (int)flen, NULL);
+#endif
+	return flen;
+}
+
+#endif
+
+log_nodebug
+int log_put( LogFacPri ifp, uint8 fmt, char * data, int length )
+{
+	auto union {
+		LogEntry		block;			// Unadorned entry
+		uint8			buffer[256];	// Entry with HDLC-stuffing and separator char
+	} s;
+	auto LogDestList	ldl, ldlstuff, ldlformat, ldlnostuff;
+	auto LogDest 		dest;
+#ifdef LOG_USE_FS2
+	auto LogFileCB * pfile;
+	auto offset_t		flen;
+	auto uint32			shiftamt;
+#endif
+#ifdef LOG_USE_XMEM
+	auto int				xlen;
+	auto uint32			elen;
+	auto uint32			tpos;
+	auto uint32			xspace;
+#endif
+	auto int 			j;
+	auto int 			errorct;
+	auto int				retcode;
+	auto uint8 * p, * q, * r, * t;
+
+	#GLOBAL_INIT { _log_next_serial = 1; }
+
+	if (length > LOG_MAX_MESSAGE)
+		return -1;
+
+	// Determine the destination(s).   Split into ones which require HDLC stuffing, those which
+	// need formatting, and those which don't need either.  Currently, only FS2 requires stuffing,
+	// and stdout and UDP need formatting.  XMEM is stored as-is.
+	ldlstuff = 0;
+	ldlformat = 0;
+	ldlnostuff = 0;
+	ldl = log_map(ifp);
+	if (!ldl)
+		return 0;
+		
+	
+	retcode = 0;
+	s.block.fmt = fmt;
+	s.block.facpri = ifp;
+	s.block.serial = _log_next_serial++;
+	s.block.stamp = SEC_TIMER;
+	memcpy( s.block.data, data, length );
+	s.block.data[length] = 0;
+
+	
+	for (; ldl; ldl >>= 8) {
+		dest = (LogDest)ldl & 0xC0;
+		if (dest == LOG_DEST_FS2) {
+			ldlstuff <<= 8;
+			ldlstuff |= ldl & 0xFF;
+		}
+		else if (dest == LOG_DEST_XMEM) {
+			ldlnostuff <<= 8;
+			ldlnostuff |= ldl & 0xFF;
+		}
+		else {
+			ldlformat <<= 8;
+			ldlformat |= ldl & 0xFF;
+		}
+	}
+
+#ifdef LOG_USE_XMEM
+	if (ldlnostuff) {
+		xlen = length + _LOG_HEADER_SIZE;
+		s.block.this_length = (uint8)xlen;
+		for(; ldlnostuff ; ldlnostuff >>= 8 ) {
+			dest = (LogDest)ldlnostuff;
+			switch( dest & 0xC0 ) {
+			case LOG_DEST_XMEM :
+				if (_log_xmemcb.tail == _log_xmemcb.head)
+					s.block.prev_length = 0;
+				else {
+					s.block.prev_length = _log_xmemcb.prev_length;
+					xspace = _log_xmemcb.seiz - (_log_xmemcb.tail - _log_xmemcb.head);
+					if (xspace < (uint32)xlen) {
+						if (LOG_XMEM_CIRCULAR) {
+							elen = 0;
+							while (_log_xmemcb.head != _log_xmemcb.tail) {
+								if (_log_xmemcb.head >= _log_xmemcb.seiz)
+									xmem2root((char *)&elen, _log_xmemcb.base + _log_xmemcb.head - _log_xmemcb.seiz, 1);
+								else
+									xmem2root((char *)&elen, _log_xmemcb.base + _log_xmemcb.head, 1);
+								xspace += (uint16)elen;
+								_log_xmemcb.head += elen;
+								if (xspace >= (uint32)xlen)
+									break;
+							}
+							if (_log_xmemcb.head >= _log_xmemcb.seiz) {
+								_log_xmemcb.head -= _log_xmemcb.seiz;
+								_log_xmemcb.tail -= _log_xmemcb.seiz;
+							}
+						}
+						else {
+							retcode = -2;
+							continue;
+						}
+					}
+				}
+				_log_xmemcb.prev_length = (uint8)xlen;
+				tpos = _log_xmemcb.tail;
+				if (tpos >= _log_xmemcb.seiz)
+					tpos -= _log_xmemcb.seiz;
+				elen = _log_xmemcb.seiz - tpos;
+				if (elen >= xlen)
+					root2xmem(_log_xmemcb.base + tpos, &s.block, xlen);
+				else {
+					root2xmem(_log_xmemcb.base + tpos, (char *)&s.block, (int)elen);
+					root2xmem(_log_xmemcb.base, (char *)&s.block + (int)elen, (int)(xlen - elen));
+				}
+				_log_xmemcb.tail += xlen;
+				break;
+			}
+		}
+	}
+#endif
+
+	
+	if (ldlformat) {
+		p = s.buffer + (256-43);	// Where to store prefix
+		log_format(&s.block, p, 43, 2);
+		for(; ldlformat ; ldlformat >>= 8 ) {
+			dest = (LogDest)ldlformat;
+			switch( dest & 0xC0 ) {
+				case LOG_DEST_NONE:
+					if (dest == LOG_DEST_STDOUT && !fmt) {
+						printf("%s:\n  ", p);
+						printf("%s\n", s.block.data);
+					}
+					else if (dest == LOG_DEST_STDOUT2 && !fmt)
+						printf("\033[34m%s\033[0m", s.block.data);
+					break;
+				
+#ifdef LOG_USE_UDP
+				case LOG_DEST_UDP :
+						break;
+#endif
+			}
+		}
+	}
+
+	if (!ldlstuff)
+		return 0;
+
+	// Setup log entry and perform stuffing.  This expands the data size, so we
+	// work back from the last byte, moving the stuffed data to the end of the
+	// buffer.  Finally, the 0x7E is added to the start.  At this point, the
+	// new length is known.  There is a wrinkle with computing the current length:
+	// if this happens to be 7D or 7E, then it must be incremented by 1 since the
+	// length byte itself will need to be escaped!
+	s.block.prev_length = 0;	// Don't bother computing this (set unknown)
+
+	p = s.block.data + length - 1;	// source
+	q = r = s.buffer + 255;				// dest
+	t = &s.block.this_length;			// stop here
+	while (p != t) {
+		if (*p == _LOG_SEPARATOR_CH ||
+		    *p == _LOG_ESCAPE_CH) {
+			*q-- = *p-- ^ 0x20;
+			*q-- = _LOG_ESCAPE_CH;
+		}
+		else
+			*q-- = *p--;
+	}
+	*t = r - q + 1;	// Stuffed length (not counting length byte)
+	if (*t == _LOG_SEPARATOR_CH ||
+		 *t == _LOG_ESCAPE_CH) {
+		*q-- = (*t + 1) ^ 0x20;
+		*q-- = _LOG_ESCAPE_CH;
+	}
+	else
+		*q-- = *t;
+	*q = _LOG_SEPARATOR_CH;
+	length = r - q + 1;
+
+	for(; ldlstuff ; ldlstuff >>= 8 ) {
+		dest = (LogDest)ldlstuff;
+		switch( dest & 0xC0 ) {
+#ifdef LOG_USE_FS2
+			case LOG_DEST_FS2 :
+					j = dest & ~0xC0;
+					if( j >= LOG_FS2_MAXSTRM )
+						continue;
+					pfile = & _log_filecb[j];
+					if (pfile->condition != 1) {
+						retcode = -2;
+						break;
+					}
+					if( pfile->last_valid < 0 )
+						pfile->last_valid = 1;
+					else
+						pfile->last_valid = ftell( & pfile->f ) + 1; 	// skip separator
+					// Add the entry
+					fseek(&pfile->f, 0L, SEEK_END);
+					flen = ftell(&pfile->f);
+					errorct = 0;
+					while (fwrite(&pfile->f, q, length) < length) {
+						errorct++;
+#ifdef LOG_VERBOSE
+						printf("LOG: error %d writing entry\n", errno);
+#endif
+						if (!LOG_FS2_CIRCULAR(j)) {
+							errorct = 2;
+							break;
+						}
+						// May have run out of space: try shifting out some, then retry.
+						if (errno == ENOSPC && !errorct) {
+							flen -= _log_shift(pfile, j);
+							fseek(&pfile->f, flen, SEEK_SET);
+						}
+						else if (errorct < 2) {
+							// serious or repeat error; crunch to zero.
+							fclose(&pfile->f);
+							log_clean(dest);
+							fopen_wr(&pfile->f, LOG_FS2_FILENO(j));
+							pfile->last_valid = -1;
+						}
+						else {
+#ifdef LOG_VERBOSE
+							printf("LOG: unrecoverable error on file #%d\n", (int)LOG_FS2_FILENO(j));
+#endif
+							break;
+						}
+					}
+					if (errorct >= 2) {
+						pfile->condition = -1;
+						retcode = -2;
+						break;
+					}
+					flen = ftell(&pfile->f);
+					// Check if now exceeding allowable space, if so then shift.
+					if (flen > LOG_FS2_SIZE(j))
+						if (LOG_FS2_CIRCULAR(j))
+							_log_shift(pfile, j);
+						else {
+							pfile->condition = 2;
+							retcode = -2;
+						}
+					break;
+#endif
+		}   /* end switch on actual */
+	}
+
+	return retcode;
+}   /* end log_put() */
+
+
+/*** BeginHeader _log_fs2_validate */
+#ifdef LOG_USE_FS2
+int 	_log_fs2_validate( LogFileCB * pfile, uint8 stream, int fnum );
+#endif
+/*** EndHeader */
+
+/**
+ * 	Validate a file.  Assumes caller has setup data and meta extents.
+ * 	Returns pfile->last_valid indicating where the last valid record in
+ * 	the file can be found (file offset).  If file contains bad stuff,
+ * 	we might delete then fcreate() it.
+ */
+log_nodebug
+int _log_fs2_validate( LogFileCB * pfile, uint8 stream, int fnum )
+{
+	auto uint8 		buffer[256];
+	auto LogEntry	* lm;
+	auto uint8 *	p;
+	auto uint8 *	q;
+	auto uint8 *	r;
+	auto uint8 		tempbyte;
+	auto long		fstart;
+	auto int 		siz;
+	auto FSLXnum meta_lx;
+	auto FSLXnum data_lx;
+
+	/* TODO: Validate file's contents */
+
+ _RETRY :
+	fseek( & pfile->f, 0L, SEEK_END );
+	if( 0L == ftell( & pfile->f ) ) {
+		pfile->last_valid = -1; 		// Empty file.
+		return 0;
+	}
+
+	/*
+	 *  Ensure the file starts with the separator char.  fshift() if it doesn't.
+	 *  If the whole file read but no _LOG_SEPARATOR_CH found, then scratch
+	 *  the whole thing (ouch).  Tries to find the 3-byte pattern:
+	 * 		_LOG_SEPARATOR_CH
+	 *  		_LOG_HEADER_SIZE..255 = size of record
+	 * 		0	= size of previous record, none.
+	 *  The second byte (size) could be byte stuffed.
+	 */
+	fseek( & pfile->f, 0L, SEEK_SET );
+	do {
+  		fstart = ftell(&pfile->f);
+		if( (siz = fread( & pfile->f, buffer, 256 )) < _LOG_HEADER_SIZE ) {
+			/* Not enough data there to have a complete header.  Scratch! */
+			goto _scratch_file;
+		}
+		p = buffer;
+		q = p + siz;
+  _RESUME_SEARCH :
+		while (p != q && *p != _LOG_SEPARATOR_CH) p++;
+
+		if( p == q )
+			continue;		// Keep searching until EOF or 0x7E char is found.
+
+		// Found the 0x7E char at p[0]...
+		if( (int) (q-p) < _LOG_HEADER_SIZE ) {
+			/*  However our little block might be crossing a block.  Shift
+			 *  everything but the 0x7E thing and try again.  Eventually either
+			 *  we find a good record header or we trim the file to less than
+			 *  _LOG_HEADER_SIZE chars and the fread() takes us out of here...
+			 */
+			fshift( &pfile->f, siz - (int)(q-p), NULL);
+			goto _RETRY;
+		}
+
+		if( p[1] == _LOG_ESCAPE_CH) {
+			if( (p[2] ^ 0x20) < _LOG_HEADER_SIZE || p[3] != 0 ) {
+				p++;
+				goto _RESUME_SEARCH;
+			}
+		} else {
+			if( p[1] < _LOG_HEADER_SIZE || p[2] != 0 ) {
+				p++;
+				goto _RESUME_SEARCH;
+			}
+		}
+
+		fstart += p - buffer;	// Compute number of chars to delete.
+		if (fstart) {
+			/*
+			 *  Found separator but it wasn't at the beginning.  OK, fshift to
+			 *  deleting leading cruft.  fshift() always removes from beginning
+			 *  of the file.  Have to do it less than 32K at a time.
+			 */
+			while (fstart > 1<<14) {
+				fshift(&pfile->f, 1<<14, NULL);
+				fstart -= 1<<14;
+			}
+			if (fstart)
+				fshift(&pfile->f, (int)fstart, NULL);
+		}
+		break;
+	} while(1);
+
+	/*
+	 * Look for the last log entry.  We can safely assume that only the first or
+	 * last entry in the file may be corrupted if power was interrupted during a
+	 * shift or append respectively.  We have already found the first entry (and
+	 * corrected it, if necessary).  Note that there _must_ be a 0x7E in the last
+	 * 256 bytes of the file.  If not, then the whole file is deemed to be corrupt.
+	 */
+	fseek(&pfile->f, 0L, SEEK_END );
+	fstart = ftell(&pfile->f) - 256;
+	if (fstart < 0)
+		fstart = 0;
+	fseek(&pfile->f, fstart, SEEK_SET);
+	siz = fread( & pfile->f, buffer, 256 );
+	if( siz <= _LOG_HEADER_SIZE ) {
+		printf( "ERROR: _log_fs2_validate() file disappeared!\n" );
+		goto _scratch_file;
+	}
+
+	q = buffer - 1;
+	r = buffer + siz;	// Location of last real or imaginary 0x7E.
+	for( p = r  - 1 ; p != q ; --p ) {
+		if( *p == _LOG_SEPARATOR_CH ) {
+			_log_unstuff(p, p+1, 2*_LOG_HEADER_SIZE);	// 24 is worst-case for header, which is all we need 
+			lm = (LogEntry *)(p + 1);
+			// Validate proper trailing entry
+			if ((unsigned)lm->this_length != (unsigned)(r - p - 1)) {
+				// length didn't make sense
+				r = p;
+				continue;
+			}
+			// Grab serial number only if currently larger.
+			if( _log_next_serial <= lm->serial )
+				_log_next_serial = lm->serial + 1;
+			pfile->last_valid = fstart + ((uint8 *)lm - buffer);
+			return 0;
+		}
+	}
+	
+_scratch_file:
+  	/*
+  	 * Get here in case of corruption which is unrecoverable.  The file is
+  	 * deleted (rather than overwritten in place) because this is faster,
+  	 * improves recoverability, and improves flash wear.
+  	 */
+#ifdef LOG_VERBOSE
+	printf( "LOG: _log_fs2_validate() Deleting file %d\n", fnum );
+#endif
+	errno = 0;
+	fclose( & pfile->f );
+	fdelete( fnum );
+	meta_lx = fs_get_lx(1);
+	data_lx = fs_get_lx(0);
+	fs_set_lx(LOG_FS2_METALX(stream), LOG_FS2_DATALX(stream));
+	fcreate( & pfile->f, fnum );
+	fs_set_lx(meta_lx, data_lx);
+#ifdef LOG_VERBOSE
+	if( errno != 0 )
+		printf( "LOG: _log_fs2_validate() couldn't recreate file, errno=%d\n", errno );
+#endif
+	pfile->last_valid = -1;
+	return 0;
+}   /* _log_fs2_validate() */
+
+
+/*** BeginHeader log_seek */
+int log_seek(LogDest ldst, int whence);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+log_seek                                              <LOG.LIB>
+
+SYNTAX:  int log_seek(LogDest ldst, int whence)
+
+DESCRIPTION:   Position log for readback.  The next call to log_next()
+               will return the first entry in the log (if whence=0),
+               or log_prev() will return the last entry (if whence=1).
+
+PARAMETER1:    Destination class and stream.  Use one of the constants
+               LOG_DEST_FS2 or LOG_DEST_XMEM, then OR in the stream
+               number (0-63).
+PARAMETER2:    0: first entry.
+               1: last entry.
+               other values reserved.
+
+RETURN VALUE:	0 = success.
+               -1 = Log empty.
+               -2 = Unrecoverable error or not open.
+               -3 = Not a seekable or configured log destination class.
+               -4 = invalid whence parameter.
+
+SEE ALSO:      log_next, log_prev
+
+END DESCRIPTION **********************************************************/
+log_nodebug
+int log_seek(LogDest ldst, int whence)
+{
+#ifdef LOG_USE_FS2
+	auto LogFileCB * pfile;
+#endif
+	auto LogDest ldc, stream;
+
+	ldc = ldst & 0xC0;
+	stream = ldst & ~0xC0;
+	if (whence != 0 && whence != 1) {
+#ifdef LOG_VERBOSE
+		printf( "NOTE: log_seek() Whence value of %d not supported\n", whence );
+#endif
+		return -4;
+	}
+	
+#ifdef LOG_USE_FS2
+	if (ldc == LOG_DEST_FS2) {
+		if (stream >= LOG_FS2_MAXSTRM)
+			return -3;
+		pfile = _log_filecb + stream;
+		if (pfile->condition < 1)
+			return -2;
+		if (pfile->last_valid <= 0)
+			return -1;
+		if (whence) {
+			fseek(&pfile->f, 0, SEEK_END);
+			pfile->seek_pos = ftell(&pfile->f);
+		}
+		else
+			pfile->seek_pos = 0;
+		return 0;
+	}
+#endif
+
+#ifdef LOG_USE_XMEM
+	if (ldc == LOG_DEST_XMEM) {
+		if (!_log_xmemcb.is_open)
+			return -2;
+		if (_log_xmemcb.head == _log_xmemcb.tail)
+			return -1;
+		if (whence) {
+			_log_xmemcb.seek_pos = _log_xmemcb.tail;
+			_log_xmemcb.prev_len_retr = _log_xmemcb.prev_length;
+		}
+		else {
+			_log_xmemcb.seek_pos = _log_xmemcb.head;
+			_log_xmemcb.prev_len_retr = 0;
+		}
+		return 0;
+	}
+#endif
+
+	return -3;
+}
+
+/*** BeginHeader _log_fs2_entry */
+#ifdef LOG_USE_FS2
+int _log_fs2_entry(LogFileCB * pfile, offset_t pos, uint8 * buffer);
+#endif
+/*** EndHeader */
+
+#ifdef LOG_USE_FS2
+log_nodebug
+int _log_fs2_entry(LogFileCB * pfile, offset_t pos, uint8 * buffer)
+{
+	// Get entry into buffer, return total length.  Do NOT do unstuffing.
+	// Expects pos to indicate file position where 0x7E char is stored.
+	// Returns entry length (not counting the 0x7E).  Buffer must be 256 chars.
+	auto int rc;
+	
+	if (pfile->condition < 1)
+		return -1;
+	fseek(&pfile->f, pos, SEEK_SET);
+	rc = fread(&pfile->f, buffer, 3);
+	if (rc < 3)
+		return -1;
+	if (buffer[0] != _LOG_SEPARATOR_CH) {
+#ifdef LOG_VERBOSE
+		printf("Logfile corrupt!\n");
+#endif
+		return -2;
+	}
+	if (buffer[1] == _LOG_ESCAPE_CH)
+		rc = (int)(buffer[2] ^ 0x20);
+	else
+		rc = buffer[1];
+	return fread(&pfile->f, buffer+3, rc - 2) + 2;
+}
+#endif
+
+/*** BeginHeader _log_unstuff */
+int _log_unstuff(uint8 * src, uint8 * q, int len);
+/*** EndHeader */
+log_nodebug
+int _log_unstuff(uint8 * src, uint8 * q, int len)
+{
+	/*
+	 * Remove HDLC stuffing from turkey, uh, log entry.  'src' points to 0x7E
+	 * delimiter.  'q' points to destination.  'len' is length of 'src' buffer.
+	 * 'q' buffer must be at least LogEntry size.  Returns unstuffed length.
+	 * 'src' and 'q' may point to same buffer.
+	 */
+	auto uint8 * r, * q0;
+
+	src++;
+	q0 = q;
+	r = src + len;
+	while (src != r) {
+		if (*src == _LOG_ESCAPE_CH)
+			*q++ = *++src ^ 0x20;
+		else
+			*q++ = *src;
+		src++;
+	}
+	return q - q0;
+}
+
+/*** BeginHeader _log_xmem_entry */
+#ifdef LOG_USE_XMEM
+int _log_xmem_entry(LogEntry * le);
+#endif
+/*** EndHeader */
+log_nodebug
+int _log_xmem_entry(LogEntry * le)
+{
+	auto uint32 elen, xlen;
+	auto uint32 tpos;
+
+	if (_log_xmemcb.seek_pos == _log_xmemcb.tail)
+		return -1;
+	tpos = _log_xmemcb.seek_pos;
+	if (tpos >= _log_xmemcb.seiz)
+		tpos -= _log_xmemcb.seiz;
+	xlen = 0;
+	xmem2root((char *)&xlen, _log_xmemcb.base + tpos, 1);
+	elen = _log_xmemcb.seiz - tpos;
+	if (elen >= xlen)
+		xmem2root((char *)le, _log_xmemcb.base + tpos, (int)xlen);
+	else {
+		xmem2root((char *)le, _log_xmemcb.base + tpos, (int)elen);
+		xmem2root((char *)le + (int)elen, _log_xmemcb.base, (int)(xlen - elen));
+	}
+	if (_log_xmemcb.seek_pos != _log_xmemcb.head)
+		_log_xmemcb.prev_len_retr = le->prev_length;
+	else
+		_log_xmemcb.prev_len_retr = 0;
+	return (int)le->this_length - _LOG_HEADER_SIZE;
+}
+
+/*** BeginHeader log_format */
+char * log_format(LogEntry * le, char * buffer, int length, int pfx);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+log_format                                             <LOG.LIB>
+
+SYNTAX:  char * log_format(LogEntry * le, char * buffer, int length,
+                           int pfx)
+
+DESCRIPTION:   Given the log entry returned by log_next() or log_prev(),
+               format the entry as an ASCII string.  The string is
+               constructed in Unix "syslog" format:
+                 <%d>%.15s %.8s[%d]: %s
+               where the substitutions are:
+                 %d: facility/priority as decimal number (0-255)
+                 %.15s: date/time as "Mon dd hh:mm:ss"
+                 %s: process name - taken from LOG_UDP_PNAME(0) if
+                   defined, else "" (empty).
+                 %d: process ID, but the entry serial number is used
+                   instead.
+                 %s: the log entry data.
+               A null terminator is always added at buffer[length-1],
+               or at the end of the string if it fits in the buffer.
+               If pfx is zero, then the above syslog prefix is not
+               generated.
+
+PARAMETER1:    Log entry result from log_next/log_prev().
+PARAMETER2:    Storage for result.  Must be dimensioned at least 'length'.
+PARAMETER3:    Length of buffer.  For the maximum sized log entry, the
+               buffer should be 158 bytes.  The minimum length must be
+               greater than or equal to 43 (if pfx true) else 1.  If
+               a bad length is passed, the function returns without
+               writing to buffer.
+PARAMETER4:    0: message text only; do not generate syslog prefix.
+               1: prefix plus message text.
+               2: prefix only (up to ']', then null terminator).
+
+RETURN VALUE:	buffer address, or NULL if bad length passed.
+
+SEE ALSO:      log_next, log_prev
+
+END DESCRIPTION **********************************************************/
+
+static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+
+log_nodebug
+char * _format_stamp(uint32 stamp, char * date)
+{
+   auto char mth[4];
+   auto struct tm t;
+	
+	mktm(&t, stamp);
+	strncpy(mth, months + (t.tm_mon-1)*3, 3);
+	mth[3] = 0;
+	sprintf(date, "%s %d %02d:%02d:%02d", mth, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+	return date;
+}
+
+log_nodebug
+char * log_format(LogEntry * le, char * buffer, int length, int pfx)
+{
+	auto char * p;
+	auto int len;
+	auto char stamp_buf[32];
+	
+	p = buffer;
+	if (pfx) {
+		if (length < 43)
+			return NULL;
+		sprintf(p, "<%d>%s %s[%ld]",
+			(int)le->facpri,
+			_format_stamp(le->stamp, stamp_buf),
+			LOG_UDP_PNAME(0),
+			le->serial
+			);
+		if (pfx == 2)
+			return buffer;
+		p += strlen(p);
+		*p++ = ':';
+		*p++ = ' ';
+	}
+	else {
+		if (length < 1)
+			return NULL;
+	}
+	len = length - (p - buffer) - 1;
+	if (len > le->this_length)
+		len = le->this_length;
+	strncpy(p, le->data, len);
+	p[len] = 0;
+	return buffer;
+}
+
+/*** BeginHeader log_next */
+int log_next(LogDest ldst, LogEntry * le);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+log_next                                              <LOG.LIB>
+
+SYNTAX:  int log_next(LogDest ldst, LogEntry * le)
+
+DESCRIPTION:   Retrieve next log entry.  You must call log_seek() before
+					calling this function the first time.  Retrieval of
+               stored log messages proceeds, for example, as follows:
+					  log_seek(ldst, 0);		// seek to start
+					  log_next(ldst, &L);	// get 1st entry
+					  log_next(ldst, &L);	// get 2nd entry
+					  log_prev(ldst, &L);	// get 2nd entry again
+					  log_prev(ldst, &L);	// get 1st entry
+					  log_prev(ldst, &L);	// returns -1.
+
+PARAMETER1:    Destination class and stream.  Use one of the constants
+               LOG_DEST_FS2 or LOG_DEST_XMEM, then OR in the stream
+               number (0-63).
+PARAMETER2:    Storage for result.
+
+RETURN VALUE:	non-negative = length of log entry data
+               -1 = End of log or not open.
+               -2 = Not a readable log destination class
+
+SEE ALSO:      log_seek, log_prev
+
+END DESCRIPTION **********************************************************/
+log_nodebug
+int log_next(LogDest ldst, LogEntry * le)
+{
+	auto uint8 buffer[256];
+	auto LogDest ldc, stream;
+	auto int rc;
+	auto uint8 * p, * q, * r;
+#ifdef LOG_USE_FS2
+	auto LogFileCB * pfile;
+#endif
+	
+
+	ldc = ldst & 0xC0;
+	stream = ldst & ~0xC0;
+	
+#ifdef LOG_USE_FS2
+	if (ldc == LOG_DEST_FS2) {
+		if (stream >= LOG_FS2_MAXSTRM)
+			return -2;
+		pfile = _log_filecb + stream;
+		rc = _log_fs2_entry(pfile, pfile->seek_pos, buffer);
+		if (rc <= 0)
+			return rc;
+		pfile->seek_pos = ftell(&pfile->f);
+		// Now undo the HDLC stuffing
+		return (int)(le->this_length = (uint8)_log_unstuff(buffer, (uint8 *)le, rc) - _LOG_HEADER_SIZE);
+	}
+#endif
+
+#ifdef LOG_USE_XMEM
+	if (ldc == LOG_DEST_XMEM) {
+		if (!_log_xmemcb.is_open)
+			return -1;
+		rc = _log_xmem_entry(le);
+		if (rc < 0)
+			return rc;
+		_log_xmemcb.seek_pos += le->this_length;
+		le->this_length = (uint8)rc;
+		return rc;
+	}
+#endif
+
+	return -2;
+}
+
+/*** BeginHeader log_prev */
+int log_prev(LogDest ldst, LogEntry * le);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+log_prev                                              <LOG.LIB>
+
+SYNTAX:  int log_prev(LogDest ldst, LogEntry * le)
+
+DESCRIPTION:   Retrieve previous log entry.  You must call log_seek()
+               before calling this function the first time.  Retrieval of
+               stored log messages proceeds, for example, as follows:
+					  log_seek(ldst, 1);		// seek to end
+					  log_prev(ldst, &L);	// get last entry
+					  log_prev(ldst, &L);	// get 2nd last entry
+					  log_next(ldst, &L);	// get 2nd last entry again
+					  log_next(ldst, &L);	// get last entry
+					  log_next(ldst, &L);	// returns -1.
+
+PARAMETER1:    Destination class and stream.  Use one of the constants
+               LOG_DEST_FS2 or LOG_DEST_XMEM, then OR in the stream
+               number (0-63).
+PARAMETER2:    Storage for result.
+
+RETURN VALUE:	non-negative = length of log entry data
+               -1 = Start of log or not open.
+               -2 = Not a readable log destination class
+
+SEE ALSO:      log_seek, log_next
+
+END DESCRIPTION **********************************************************/
+log_nodebug
+int log_prev(LogDest ldst, LogEntry * le)
+{
+	auto uint8 buffer[256];
+	auto LogDest ldc, stream;
+	auto int rc;
+	auto uint8 * p, * q, * r;
+#ifdef LOG_USE_FS2
+	auto LogFileCB * pfile;
+	auto offset_t sp;
+#endif
+	
+
+	ldc = ldst & 0xC0;
+	stream = ldst & ~0xC0;
+	
+#ifdef LOG_USE_FS2
+	if (ldc == LOG_DEST_FS2) {
+		if (stream >= LOG_FS2_MAXSTRM)
+			return -2;
+		pfile = _log_filecb + stream;
+		if (pfile->seek_pos <= 0)
+			return -1;
+		sp = pfile->seek_pos - 256;
+		rc = 256;
+		if (sp < 0) {
+			rc += (int)sp;
+			sp = 0;
+		}
+		fseek(&pfile->f, sp, SEEK_SET);
+		rc = fread(&pfile->f, buffer, rc);
+		while (rc-- && buffer[rc] != _LOG_SEPARATOR_CH);
+		pfile->seek_pos = sp + rc;
+		rc = _log_fs2_entry(pfile, pfile->seek_pos, buffer);
+		if (rc <= 0)
+			return rc;
+		// Now undo the HDLC stuffing
+		return (int)(le->this_length = (uint8)_log_unstuff(buffer, (uint8 *)le, rc) - _LOG_HEADER_SIZE);
+	}
+#endif
+
+#ifdef LOG_USE_XMEM
+	if (ldc == LOG_DEST_XMEM) {
+		if (!_log_xmemcb.is_open || !_log_xmemcb.prev_len_retr)
+			return -1;
+		_log_xmemcb.seek_pos -= _log_xmemcb.prev_len_retr;
+		rc = _log_xmem_entry(le);
+		le->this_length = (uint8)rc;
+		return rc;
+	}
+#endif
+
+	return -2;
+}
+
+
+/*** BeginHeader ***************/
+
+#endif	/* ifndef __LIB_LOG_H */
+
+/*** EndHeader *****************/

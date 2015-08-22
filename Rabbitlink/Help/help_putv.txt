@@ -1,0 +1,4 @@
+
+PUTV
+   Usage: "putv <varname> <value>"
+   Assign the variable <varname> the value <value>.

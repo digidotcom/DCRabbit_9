@@ -1,0 +1,584 @@
+/* START LIBRARY DESCRIPTION *********************************************
+DM_APP.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+	Support routines for DevMate low level applications.
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#ifndef __DEVMATE_APP_LIB
+#define __DEVMATE_APP_LIB
+/*** EndHeader */
+
+/*** BeginHeader */
+
+#ifndef DEVMATE_ETHERNET_LOADING
+/*
+ * No ethernet loading is enabled.
+ *
+ * The serial port is configurable, as a new
+ * copy of the driver will be spawned, in
+ * parallel w/ the copy on port A that is in
+ * the BIOS.
+ */
+
+#ifndef DEVMATE_SERIAL_SPEED
+	#define DEVMATE_SERIAL_SPEED	115200
+#endif
+
+/* select out the appropriate serial port */
+#ifdef DEVMATE_SERA
+	#define DEVMATE_SPSR					SASR
+	#define DEVMATE_SPCR					SACR
+	#define DEVMATE_SPDR					SADR
+	#define DEVMATE_VECTOR				0xC0
+	#define DEVMATE_BAUDTIMER			TAT4R
+	#define DEVMATE_BAUDTIMER_SHADOW	TAT4RShadow
+#else
+#ifdef DEVMATE_SERB
+	#define DEVMATE_SPSR					SBSR
+	#define DEVMATE_SPCR					SBCR
+	#define DEVMATE_SPDR					SBDR
+	#define DEVMATE_VECTOR				0xD0
+	#define DEVMATE_BAUDTIMER			TAT5R
+	#define DEVMATE_BAUDTIMER_SHADOW	TAT5RShadow
+#else
+#ifdef DEVMATE_SERC
+	#define DEVMATE_SPSR					SCSR
+	#define DEVMATE_SPCR					SCCR
+	#define DEVMATE_SPDR					SCDR
+	#define DEVMATE_VECTOR				0xE0
+	#define DEVMATE_BAUDTIMER			TAT6R
+	#define DEVMATE_BAUDTIMER_SHADOW	TAT6RShadow
+#else
+#ifdef DEVMATE_SERD
+	#define DEVMATE_SPSR					SDSR
+	#define DEVMATE_SPCR					SDCR
+	#define DEVMATE_SPDR					SDDR
+	#define DEVMATE_VECTOR				0xF0
+	#define DEVMATE_BAUDTIMER			TAT7R
+	#define DEVMATE_BAUDTIMER_SHADOW	TAT7RShadow
+#else
+	#error "A serial port for the devmate lib must be selected with DEVMATE_SERx!"
+#endif
+#endif
+#endif
+#endif
+
+#endif /* DEVMATE_ETHERNET_LOADING */
+
+/* Locking macros, with defaults for ucos2 */
+#ifdef MCOS
+	uint8 _tc_mcos_lockstatus;
+
+	#define TC_LOCKING
+
+	#ifndef TC_LOCKTYPE
+		#define TC_LOCKTYPE OS_EVENT*
+	#endif
+
+	#ifndef TC_CREATELOCK
+		#define TC_CREATELOCK() OSSemCreate(1)
+	#endif
+
+	#ifndef TC_LOCK
+		#define TC_LOCK(lock) OSSemPend((lock), 0, &_tc_mcos_lockstatus)
+	#endif
+
+	#ifndef TC_LOCK_TRY
+		#define TC_LOCK_TRY(lock) OSSemAccept((lock))
+	#endif
+
+	#ifndef TC_UNLOCK
+		#define TC_UNLOCK(lock) OSSemPost((lock))
+	#endif
+
+	#ifndef TC_ENTER_CRITICAL
+		#define TC_ENTER_CRITICAL() OS_ENTER_CRITICAL()
+	#endif
+
+	#ifndef TC_EXIT_CRITICAL
+		#define TC_EXIT_CRITICAL() OS_EXIT_CRITICAL()
+	#endif
+#else
+	#ifndef TC_LOCK
+		#define TC_LOCK(lock)
+	#endif
+
+	#ifndef TC_LOCK_TRY
+		#define TC_LOCK_TRY(lock) 1
+	#endif
+
+	#ifndef TC_UNLOCK
+		#define TC_UNLOCK(lock)
+	#endif
+
+	#ifndef TC_ENTER_CRITICAL
+		#define TC_ENTER_CRITICAL()
+	#endif
+
+	#ifndef TC_EXIT_CRITICAL
+		#define TC_EXIT_CRITICAL()
+	#endif
+#endif
+
+/*** EndHeader */
+
+/*** BeginHeader devmate_init */
+
+void __devmate_xtc_init();
+void __devmate_init();
+void __devmate_tick();
+#makechain __devmate_xtc_init
+#makechain __devmate_init
+#makechain __devmate_tick
+
+void devmate_init();
+
+#ifndef DEVMATE_ETHERNET_LOADING
+//extern _tc_state DMState;
+_tc_state DMState;
+extern faraddr_t DMRXBufferListStore[TC_MAX_APPLICATIONS];
+extern void *DMCallbackListStore[TC_MAX_APPLICATIONS];
+#endif /*DEVMATE_ETHERNET_LOADING*/
+/*** EndHeader */
+
+#ifndef DEVMATE_ETHERNET_LOADING
+
+/* the actuall state structure */
+
+/* the list of receive buffer queues */
+faraddr_t DMRXBufferListStore[TC_MAX_APPLICATIONS];
+
+/* list of callbacks, indexed by 'type' */
+void *DMCallbackListStore[TC_MAX_APPLICATIONS];
+
+#asm
+DMisr_start::
+    jp	DMSerialISR
+    ret
+
+DMSerialISR::
+	;	serial interrupt handler
+	push	ip
+	push	af
+	ex    af,af'
+	push	af
+	ld    a,xpc
+	push	af
+	push	bc
+	push	de
+	push	hl
+	push  ix
+	push	iy
+
+	exx
+	push	bc
+	push	de
+	push	hl
+	ld		iy,DMState			; iy == pointer to our state structure
+
+;	ioi 	ld a,(DEVMATE_SPSR)			;	check the status
+	IOREAD_A(DEVMATE_SPSR)
+	bit	SS_RRDY_BIT,a			;  was a character received?
+	jr		z,_DMnoRxIntReqNEW
+
+	call	dkcEntryRX			;  handle the RX interrupt
+	jr		_DMreadyToExitNEW		;  all done for now
+
+_DMnoRxIntReqNEW:
+	bit	2,a
+	jr		z,_DMSecondTXInt
+	call	dkcEntryTX			;	handle the TX interrupt
+	jr		_DMreadyToExitNEW
+
+_DMSecondTXInt:
+	ld		a,(DMState+TXBusy)
+	or		a
+	jr		z,_DMSkipInt
+
+	; this really is a good int
+	call	dkcEntryTX
+	jr		_DMreadyToExitNEW
+
+_DMSkipInt:
+	; just clear the int
+;	ioi 	ld (DEVMATE_SPSR), a
+   IOWRITE_A(DEVMATE_SPSR)
+
+_DMreadyToExitNEW:
+
+	pop	hl
+	pop	de
+	pop	bc
+	exx
+
+	pop	iy
+	pop   ix
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	ld    xpc,a
+	pop	af
+	ex    af,af'
+	pop	af
+	pop	ip
+	ipres
+	ret
+
+DMReadPort::
+	;	destroys A
+	;	returns byte read (if any) in A
+	;	returns with Z set if nothing is read
+
+	;	check if there is anything available
+;	ioi 	ld a, (DEVMATE_SPSR)
+   IOREAD_A(DEVMATE_SPSR)
+	bit	SS_RRDY_BIT,a		;	if a received byte ready?
+	ret	z						;	nope, return with z set
+	;	otherwise, a byte *is* ready, read from data port
+;	ioi 	ld a, (DEVMATE_SPDR)
+   IOREAD_A(DEVMATE_SPDR)
+	ret							;	return with z *not* set
+
+DMClearReadInt::
+	ld		a,SS_RRDY_BIT
+;	ioi	ld (DEVMATE_SPSR),a
+   IOWRITE_A(DEVMATE_SPSR)
+	ret
+
+DMWritePort::
+	;	assumes byte to transmit is in C
+	;	destroys A
+	;	returns with Z reset if not transmitted
+
+	;	check if the port is ready
+;	ioi 	ld a, (DEVMATE_SPSR)
+   IOREAD_A(DEVMATE_SPSR)
+	bit	SS_TFULL_BIT,a		;	can I transmit now?
+	ret	nz						;	nope, return with nz set
+	;	otherwise, the transmit buffer is ready, write to it!
+	ld		a,c					;	move byte to transmit to a
+;	ioi 	ld (DEVMATE_SPDR), a
+   IOWRITE_A(DEVMATE_SPDR)
+	ret							;	return with z *not* set
+#endasm
+#endif /*DEVMATE_ETHERNET_LOADING*/
+
+nodebug
+void devmate_init()
+{
+#ifndef DEVMATE_ETHERNET_LOADING
+   auto long divisor, ta1div;
+
+#ifdef __DC__
+	#GLOBAL_INIT {
+		#ifdef DEVMATE_SERA
+			serAclose();
+		#endif
+		#ifdef DEVMATE_SERB
+			serBclose();
+		#endif
+		#ifdef DEVMATE_SERC
+			serCclose();
+		#endif
+		#ifdef DEVMATE_SERD
+			serDclose();
+		#endif
+	}
+#endif
+
+	/* init the low level handlers */
+	DMState.ReadPort = DMReadPort;
+	DMState.WritePort = DMWritePort;
+	DMState.ClearReadInt = DMClearReadInt;
+	DMState.RXBufferList = DMRXBufferListStore;
+	DMState.CallbackList = DMCallbackListStore;
+	DMState.TrapSysWrites = 1;		// sys-writes are handled as a special case
+	DMState.SysWriteHandler = dkcSystemWriteHeader;
+
+	/* init the baud rate */
+   ta1div = 0;
+	// (divisor+1) for 19200 baud is stored in BIOS variable "freq_divider"
+	divisor = (long)(freq_divider * 19200.0/(float)DEVMATE_SERIAL_SPEED + 0.5) - 1L;
+	while ((divisor / (1L + ta1div)) > 255L && ta1div < 255L)
+	{
+		++ta1div;
+	}
+
+	if (ta1div)
+	{
+		divisor /= (1L + ta1div);
+   	WrPortI(TAT1R, &TAT1RShadow, (char)ta1div);
+   	WrPortI(TACR, &TACRShadow, TACRShadow | 0x10);  // set 'use port A' bit
+	}
+	else
+	{
+   	WrPortI(TACR, &TACRShadow, TACRShadow & ~0x10); // clear bit
+	}
+	WrPortI(DEVMATE_BAUDTIMER, &(DEVMATE_BAUDTIMER_SHADOW), (char)divisor);
+
+#asm
+ 	ld		iy,DMState
+	call	dkcInit		; init the driver
+	call	dkcSystemINIT	; init the system-type handler
+
+	; hl=spcisr_start, de={iir,0xe0}
+   ld    de, INTVEC_BASE + DEVMATE_VECTOR
+   ld    hl,DMisr_start
+   push	 ip
+   ipset 1
+
+   ld    bc,0x0010     ; copy 16 bytes from spcisr_start into interrupt table
+   ldir
+
+#ifdef DEVMATE_SERA
+   ld	 a, (PCDRShadow)
+   set	 6, a    ;Tx should initially be idle high
+   ld	 (PCDRShadow), a
+;	ioi ld	 (PCDR), a
+   IOWRITE_A(PCDR)
+   ld    a,(PCFRShadow)
+   set	 6, a    ;Tx should initially be idle high
+   ld    (PCFRShadow),a
+;	ioi ld    (PCFR),a
+   IOWRITE_A(PCFR)
+   ld    a,0x01
+   ld    (SACRShadow),a
+;	ioi ld    (SACR),a       ; enable interrupts, use parallel port D
+   IOWRITE_A(SACR)
+								 ; for serial port B
+#else
+#ifdef DEVMATE_SERB
+	#ifdef SERB_USEPORTD
+   ld	 a, (PDDRShadow)
+   set	 4, a    ;Tx should initially be idle high
+   ld	 (PDDRShadow), a
+;	ioi ld	 (PDDR), a
+   IOWRITE_A(PDDR)
+	ld	 a, (PDDDRShadow)
+	set	 4, a
+	ld	 (PDDDRShadow), a
+;	ioi ld	 (PDDDR), a
+   IOWRITE_A(PDDR)
+   ld    a,(PDFRShadow)
+   set	 4, a    ;Tx should initially be idle high
+   ld    (PDFRShadow),a
+;	ioi ld    (PDFR),a
+   IOWRITE_A(PDFR)
+   ld    a,0x11
+   ld    (SBCRShadow),a
+;	ioi ld    (SBCR),a      ; enable interrupts, use parallel port D for serial port B
+   IOWRITE_A(SBCR)
+	#else
+   ld	 a, (PCDRShadow)
+   set	 4, a    ;Tx should initially be idle high
+   ld	 (PCDRShadow), a
+;	ioi ld	 (PCDR), a
+   IOWRITE_A(PCDR)
+   ld    a,(PCFRShadow)
+   set	 4, a    ;Tx should initially be idle high
+   ld    (PCFRShadow),a
+;	ioi ld    (PCFR),a
+   IOWRITE_A(PCFR)
+   ld    a,0x01
+   ld    (SBCRShadow),a
+;	ioi ld    (SBCR),a      ; enable interrupts, use parallel port C for serial port B
+   IOWRITE_A(SBCR)
+	#endif
+#else
+#ifdef DEVMATE_SERC
+   ld	 a, (PCDRShadow)
+   set	 2, a    ;Tx should initially be idle high
+   ld	 (PCDRShadow), a
+;	ioi ld	 (PCDR), a
+   IOWRITE_A(PCDR)
+   ld    a,(PCFRShadow)
+   set	 2, a	   ;enable serial
+   ld    (PCFRShadow),a
+;	ioi ld    (PCFR),a
+   IOWRITE_A(PCFR)
+   ld    a,0x01        ; enable interrupts for port
+   ld    (SCCRShadow),a
+;	ioi ld    (SCCR),a
+   IOWRITE_A(SCCR)
+#else
+#ifdef DEVMATE_SERD
+	ld	 a, (PCDRShadow)
+   set	 0, a    ;Tx should initially be idle high
+   ld	 (PCDRShadow), a
+;	ioi ld	 (PCDR), a
+   IOWRITE_A(PCDR)
+   ld    a,(PCFRShadow)
+   set	 0, a    ;Tx should initially be idle high
+   ld    (PCFRShadow),a
+;	ioi ld    (PCFR),a
+   IOWRITE_A(PCFR)
+   ld    a,0x01        ; enable interrupts for port
+   ld    (SDCRShadow),a
+;	ioi ld    (SDCR),a
+   IOWRITE_A(SDCR)
+#endif
+#endif
+#endif
+#endif
+
+	 pop	 ip
+#endasm
+
+#endif /*DEVMATE_ETHERNET_LOADING*/
+
+	/* run the init chain */
+	__devmate_xtc_init();
+	__devmate_init();
+}
+
+/*** BeginHeader devmate_tick */
+void devmate_tick(void);
+/*** EndHeader */
+nodebug void devmate_tick(void)
+{
+	/* run the tick chain */
+	__devmate_tick();
+}
+
+/*** BeginHeader devmate_registercallback */
+int devmate_registercallback(char type, int (*callback)());
+/*** EndHeader */
+
+nodebug int devmate_registercallback(char type, int (*callback)())
+{
+	if(type >= TC_MAX_APPLICATIONS) {
+		/* they are trying to register a non-valid type!
+			Increase TC_MAX_APPLICATIONS! */
+		return TC_ERROR;
+	}
+
+#ifdef DEVMATE_ETHERNET_LOADING
+	TCState.CallbackList[type] = (int)callback;
+#else
+	DMState.CallbackList[type] = (int)callback;
+#endif
+
+	return TC_SUCCESS;
+}
+
+/*** BeginHeader devmate_send */
+int devmate_send(char type, char subtype, int length, long buffer, long userdata);
+/*** EndHeader */
+nodebug
+root int devmate_send(char type, char subtype, int length, long buffer, long userdata)
+{
+	auto _TCHeader hdr;
+
+	/* is 'type' a sane value? */
+	if(type >= TC_MAX_APPLICATIONS)
+		return TC_ERROR;
+
+	/* did they register a callback properly? */
+#ifdef DEVMATE_ETHERNET_LOADING
+	if(NULL == TCState.CallbackList[type])
+		return TC_NOCALLBACK;
+#else
+	if(NULL == DMState.CallbackList[type])
+		return TC_NOCALLBACK;
+#endif
+
+	/* build the last header of the queue */
+	hdr.next = 0;
+	hdr.flags = 0;
+	hdr.type = type;
+	hdr.subtype = subtype;
+	hdr.length = length;
+	hdr.userdata = userdata;
+
+	/* copy the header into the packet */
+	if(0 != root2xmem(buffer, (char *)&hdr, sizeof(hdr)))
+		return TC_ERROR;
+
+	/* add the packet to the end of the chain */
+#ifdef DEVMATE_ETHERNET_LOADING
+	if(_tc_queue_buffer(&(TCState.NextPacket),buffer))
+		return TC_ERROR;
+#else
+	if(_tc_queue_buffer(&(DMState.NextPacket),buffer))
+		return TC_ERROR;
+#endif
+
+#asm
+		push	ip
+		ipset	1
+#ifdef DEVMATE_ETHERNET_LOADING
+		ld		a,(TCState+TXBusy)
+#else
+		ld		a,(DMState+TXBusy)
+#endif
+		or		a
+		jr		nz,_DM_sendNoStart
+
+		; the transmitter was not busy - try and send the packet
+#ifdef DEVMATE_ETHERNET_LOADING
+		ld		iy,TCState
+#else
+		ld		iy,DMState
+#endif
+_DM_sendFirstByte:
+		call	dkcTXStart
+		;jr		nz,_DM_sendFirstByte
+
+_DM_sendNoStart:
+		pop	ip
+#endasm
+
+	return TC_SUCCESS;
+}
+
+/*** BeginHeader devmate_recvbuf */
+int devmate_recvbuf(char type, int length, long buffer, long userdata);
+/*** EndHeader */
+nodebug int devmate_recvbuf(char type, int length, long buffer, long userdata)
+{
+	auto _TCHeader	hdr;
+
+	/* is 'type' a sane value? */
+	if(type >= TC_MAX_APPLICATIONS)
+		return TC_ERROR;
+
+	/* did they register a callback properly? */
+#ifdef DEVMATE_ETHERNET_LOADING
+	if(NULL == TCState.CallbackList[type])
+		return TC_NOCALLBACK;
+#else
+	if(NULL == DMState.CallbackList[type])
+		return TC_NOCALLBACK;
+#endif
+
+	/* build the new receive header */
+	hdr.next = 0;
+	hdr.flags = 0;
+	hdr.length = length;
+	hdr.userdata = userdata;
+
+	/* copy the header into the packet */
+	if(0 != root2xmem(buffer, (char *)&hdr, sizeof(hdr)))
+		return TC_ERROR;
+
+	/* queue the buffer */
+#ifdef DEVMATE_ETHERNET_LOADING
+	if(_tc_queue_buffer(&(TCState.RXBufferList[type]),buffer))
+		return TC_ERROR;
+#else
+	if(_tc_queue_buffer(&(DMState.RXBufferList[type]),buffer))
+		return TC_ERROR;
+#endif
+
+	return TC_SUCCESS;
+}
+
+/*** BeginHeader */
+#endif /*__DEVMATE_APP_LIB*/
+/*** EndHeader */

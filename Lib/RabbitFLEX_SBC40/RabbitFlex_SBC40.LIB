@@ -1,0 +1,4020 @@
+/*
+ *    rabbitflex_sbc40.lib
+ *    Copyright (C) Rabbit Semiconductor. All rights reserved.
+ *
+ *    This library contains code for the various components of RabbitFlex SBC40.
+ *
+ */
+
+/*** BeginHeader */
+#ifdef RABBITFLEX_SBC40_DEBUG
+	#define _rabbitflex_sbc40_nodebug debug
+#else
+	#define _rabbitflex_sbc40_nodebug nodebug
+#endif
+
+/*
+ * Compile in the data structure and macro information needed by the board-
+ * specific library.
+ */
+#use "rabbitflex_sbc40_header.lib"
+
+/*
+ * Use the board-specific library.
+ */
+#define _FLEX_CONCAT(X, Y) X##Y
+#define _FLEX_LIBNAMEXY(SERNUM, EXT) _FLEX_CONCAT(SERNUM, EXT)
+#define _FLEX_LIBNAME(N) _FLEX_LIBNAMEXY(N, .lib)
+
+#use _FLEX_LIBNAME(__DC_DESIGN_NUMBER__)
+
+/*
+ * Set up the mux control for selecting an analog in channel.
+ */
+#ifdef _FLEX_ENABLE_ANAIN
+	#define ADC_MUX_CNTRL call _flex_adc_mux
+#endif
+
+/*
+ * Use the PowerCoreFLEX's adcramp.lib library.  This includes the basic
+ * functionality for doing analog in, calibration constants, and thermistor
+ * reading.
+ */
+#define ADC_DISCOUNT_AVERAGE
+#use "adcramp.lib"
+#use "adctriac_isr.lib"
+
+#define DAC_CALIB_ADDR	(ADC_CALIB_ADDR + 16*2*sizeof(float))
+
+// Define flags to indicate whether specific subsystems have been initialized.
+int _flex_anain_init_flag;
+int _flex_anaout_init_flag;
+
+// Define flags to indicate which serial ports are present
+int _flex_rs232_d;
+int _flex_rs232_e;
+int _flex_rs232_f;
+int _flex_rs485;
+
+/*** EndHeader */
+
+/*** BeginHeader brdInit */
+void brdInit(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+brdInit                               <RABBITFLEX_SBC40.LIB>
+
+SYNTAX:			void brdInit(void);
+
+DESCRIPTION:	Call this function at the beginning of application code
+					to initialize the controller's I/O ports.  For the
+               RabbitFLEX SBC40, this function sets up all of the I/O
+               available on your board, including Ethernet, digital I/O,
+               and analog I/O.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		Please refer to the user manual for a complete listing
+					of all API functions for the RabbitFLEX SBC40
+               controller.
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void brdInit(void)
+{
+	auto int i;
+	auto unsigned long macro;
+   auto int status;
+
+	// Set the number of loops needed in the _flex_wait_50usX() delay routine
+	// to delay 50 us.
+	_flex_wait_loopsPer50us = (int)(19200L * 32 * freq_divider / 1000000L) + 1;
+
+	WrPortI(SPCR, &SPCRShadow, 0x8c);		// sets external i/o bus
+
+   BitWrPortI(PEFR, &PEFRShadow, 1, 4);	// set P4 to external i/o
+   WrPortI(IB4CR, &IB4CRShadow, 0x50);    // set external select active low,
+   									  				// 3 waitstates
+
+   // enable external output access
+   BitWrPortI(PEFR, &PEFRShadow, 1, 7);	// set PE7 to external i/o
+   WrPortI(IB7CR, &IB7CRShadow, 0x68);    // set external select active low,
+   									  				// 3 waitstate
+
+	// Set the CLK B and CLK A (serial flash and programming port)
+	WrPortI(PBDR, &PBDRShadow, (PBDRShadow | 0x03));
+	WrPortI(PBDDR, &PBDDRShadow, (PBDDRShadow | 0x03));
+
+	// Set up the serial flash and programming port
+	WrPortI(PCFR, &PCFRShadow, (PCFRShadow & ~0x30));
+	WrPortI(PCDR, &PCDRShadow, (PCDRShadow | 0x30));
+
+	// Set up peripherals on Port D, including Ethernet, ADC, and serial flash
+   status = _GetSysMacroValue("_DC_ETH0_", &macro);
+   if(status != 0)
+   {
+   	WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow  |  0xCF));
+   	WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0x45));
+   }
+   else
+   {
+   	WrPortI(PDDR,  &PDDRShadow,  (PDDRShadow  |  0xCF));
+   	WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  0x40));
+   }
+   WrPortI(PDFR,  &PDFRShadow,  (PDFRShadow  & ~0xCA));
+   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0xCF));
+   WrPortI(PDCR,  &PDCRShadow,  0x00);
+
+	// Set up Port E (ADC and Ethernet)
+	status = _GetSysMacroValue("_DC_ETH0_", &macro);
+   if(status != 0)
+   {
+   	WrPortI(PEDR,  &PEDRShadow,  (PEDRShadow  |  0x26));
+   	WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow |  0x04));
+   }
+   else
+   {
+   	WrPortI(PEDR,  &PEDRShadow,  (PEDRShadow  |  0x26));
+   	//WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow |  0xD9));
+   }
+   WrPortI(PEFR,  &PEFRShadow,  (PEFRShadow  & ~0x02));
+   WrPortI(PECR,  &PECRShadow,  0x00);
+
+	// Port F needs no configuration
+
+	// Set up ADC on Port G
+   WrPortI(PGFR,  &PGFRShadow,  PGFRShadow & ~0xFC);
+   WrPortI(PGDR,  &PGDRShadow,  PGDRShadow | 0x03);
+   WrPortI(PGDDR, &PGDDRShadow, PGDDRShadow & ~0xFC);
+   WrPortI(PGDCR, &PGDCRShadow, PGDCRShadow & ~0xFC);
+   WrPortI(PGCR,  &PGCRShadow,  0x00);
+
+	// Initialize available serial ports to none
+	_flex_rs232_d = 0;
+	_flex_rs232_e = 0;
+	_flex_rs232_f = 0;
+	_flex_rs485 = 0;
+
+	// Initialize the shadow values to 0xff.  Also check which serial ports are
+	// present.
+	for (i = 0; i < FLEX_PINS_NUMBER; i++) {
+		switch (_flex_pin[i]->type) {
+		case FLEX_PINTYPE_DIGOUT:
+      case FLEX_PINTYPE_DIGINOUT:
+		case FLEX_PINTYPE_PUSHPULL:
+			// Initialize the shadow to 0xff
+			((Flex_RAM_DigIO *)_flex_pin[i]->ramdata)->shadow = 0xff;
+         break;
+		case FLEX_PINTYPE_RS232_F:
+			_flex_rs232_f = 1;
+			break;
+		case FLEX_PINTYPE_RS232_FD:
+			_flex_rs232_f = 1;
+			_flex_rs232_d = 1;
+			break;
+		case FLEX_PINTYPE_RS232_FE:
+			_flex_rs232_f = 1;
+			_flex_rs232_e = 1;
+			break;
+		case FLEX_PINTYPE_RS485:
+			_flex_rs485 = 1;
+			break;
+		}
+	}
+
+	// Initialize signal pin PF1 for RS485 transmit control, and
+   // initially set the signal to disable the RS485 transmitter (if
+   // RS485 functionality exists)
+   if (_flex_rs485) {
+	   WrPortI(PFDDR, &PFDDRShadow, (PEDDRShadow|0x02));
+	   WrPortI(PFFR,  &PFFRShadow,  (PEFRShadow&~0x02));
+	   WrPortI(PFDR,  &PFDRShadow,  (PEDRShadow&~0x02));
+	   WrPortI(PFCR,  &PFCRShadow,  (PDCRShadow&~0x0F));
+	   WrPortI(PFDCR,  &PFDRShadow,  (PEDRShadow&~0x02));
+	}
+
+	// Initialize the ramp
+#ifdef _FLEX_ENABLE_ANAIN
+	anaInRampInit();
+#endif
+
+	// Initialize analog in and out subsystems
+#ifdef _FLEX_ENABLE_ANAIN
+	_flex_anaInInit(_flex_pins_anain);
+#endif
+#ifdef _FLEX_ENABLE_ANAOUT
+	_flex_anaOutInit(_flex_pins_anaout);
+#endif
+}
+
+/*** BeginHeader _flex_wait50usX, _flex_wait_loopsPer50us */
+
+// This variable is calculated to determine the number of loops in the delay
+// routine below are needed to delay 50 us.
+extern int _flex_wait_loopsPer50us;
+void _flex_wait50usX(int periods);
+/*** EndHeader */
+
+int _flex_wait_loopsPer50us;
+
+// This assembly routine busy waits a specified number of 50 us intervals.  It
+// supports up to 65K loops.  With a 51 MHz board, it takes 52 loops to reach
+// 50 us.  Thus, at 51 MHz, this routine can busy wait up to about 630 ms.
+#asm root
+_flex_wait50usX::
+	; Save registers
+	push	af
+	push	bc
+	push	de
+
+	; Calculate the number of loops needed
+	ex		de,hl
+	ld		hl,(_flex_wait_loopsPer50us)
+	ld		b,h
+	ld		c,l
+	mul
+
+	; BC = # of loops
+.loopbegin:
+	; 50 clocks in loop
+
+	; 26 clocks in next instructions
+	ldp	hl,(hl)			; 10 clocks
+	ldp	hl,(hl)			; 10 clocks
+	nop						; 2 clocks
+	nop						; 2 clocks
+	nop						; 2 clocks
+	; 24 clocks in next instructions
+	adc	a,(hl)			; 5 clocks
+	dec	bc					; 2 clocks
+	or		a					; 2 clocks
+	ld		hl,0				; 6 clocks
+	sbc	hl,bc				; 4 clocks
+	jr		nz, .loopbegin ; 5 clocks
+
+	; Restore registers
+	pop	de
+	pop	bc
+	pop	af
+	ret
+#endasm
+
+/*** BeginHeader flexPinName */
+char *flexPinName(Flex_IOPin *pin);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexPinName                           <RABBITFLEX_SBC40.LIB>
+
+SYNTAX: 			char *flexPinName(Flex_IOPin *pin);
+
+KEYWORDS:		RabbitFlex SBC
+
+DESCRIPTION:	Returns the character string that represents the name of
+					the given Flex pin.  Note that the returned string cannot
+					be modified.
+
+PARAMETER1:		The information structure for the requested pin
+
+RETURN VALUE:	A string representing the name of the requested Flex pin
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+char *flexPinName(Flex_IOPin *pin)
+{
+	return pin->name;
+}
+
+/*** BeginHeader flexDigIn */
+int flexDigIn(Flex_IOPin *pin);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDigIn                             <RABBITFLEX_SBC40.LIB>
+
+SYNTAX: 			int flexDigIn(Flex_IOPin *pin);
+
+KEYWORDS:		RabbitFlex SBC, Digital I/O
+
+DESCRIPTION:	Reads the state of a digital input channel.  This function
+               is non-reentrant.
+
+PARAMETER1:		The information structure for the requested pin
+
+RETURN VALUE:	0   -- Logic low
+					1   -- Logic high
+					< 0 -- Error (not a valid digital input?)
+
+SEE ALSO:		flexDigShadow, flexDigOut, flexDigInGroup16,
+					flexDigOutGroup16
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexDigIn(Flex_IOPin *pin)
+{
+	auto int bitnum;
+	auto int value;
+
+	// Check that this is a digital input
+	if ((pin->type != FLEX_PINTYPE_DIGIN) &&
+	    (pin->type != FLEX_PINTYPE_DIGINOUT)) {
+		return -1;
+	}
+
+	// Since we read a nibble at a time, then we need to find the bit position of
+	// the read within the nibble.  This means that if we are reading pins 4-7,
+	// we need to subtract 4 from the pin position.
+	if (pin->pin_pos < 4) {
+		bitnum = pin->pin_pos;
+	}
+	else {
+		bitnum = pin->pin_pos - 4;
+	}
+
+	// Read the digital input
+	value = BitRdPortE(pin->rd_addr, bitnum);
+
+	// Deassert the chip select due to external I/O address bus latching last
+	// state
+	RdPortE(FLEX_ADDR_CS_DEASSERT);
+
+	return value;
+}
+
+/*** BeginHeader _flex_digWrite */
+void _flex_digWrite(unsigned int addr, unsigned int data);
+/*** EndHeader */
+
+// This function performs a 16-bit write to the external I/O bus.  The first
+// byte (low byte in the data parameter) contains the data plus a 1 in the
+// 4th bit, and the high byte contains the data with a 0 in the 4th bit (the
+// 4th bit acting as a strobe).
+
+_rabbitflex_sbc40_nodebug
+void _flex_digWrite(unsigned int addr, unsigned int data)
+{
+#asm nodebug
+	; Load the data we are writing into HL and modify it.
+	ld		hl,(sp+@sp+data)
+	ld		h,l
+	; H = 0 in bit 4, data in bits 0-3
+	ld		a,h
+	and	0xef
+	ld		h,a
+	; L = 1 in bit 4, data in bits 0-3
+	ld		a,l
+	or		0x10
+	ld		l,a
+	; Store the data back into the stack
+	ld		(sp+@sp+data), hl
+
+	; Load BC with 2 to indicate an LDIR of 2 bytes
+	ld		bc,2
+	; Load the address we are writing to into DE
+	ld		hl,(sp+@sp+addr)
+	ex		de,hl
+	; Load the address we are reading from into HL
+	ld		hl,@sp+data
+	add	hl,sp
+;	ioe ldir
+	db		0xdb, 0xed, 0xb0
+#endasm
+}
+
+/*** BeginHeader flexDigOut */
+int flexDigOut(Flex_IOPin *pin, int state);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDigOut                            <RABBITFLEX_SBC40.LIB>
+
+SYNTAX: 			int flexDigOut(Flex_IOPin *pin, int state);
+
+KEYWORDS:		RabbitFlex SBC, Digital I/O
+
+DESCRIPTION:	Sets the state of a digital output channel.  This function
+					is non-reentrant.
+
+PARAMETER1:		The information structure for the requested pin
+PARAMETER2:		Output logic value
+						0 = logic low
+						1 = logic high
+						2 = tristated (valid for pushpull outputs)
+
+RETURN VALUE:	0   -- Success
+					< 0 -- Error (not a valid digital output?)
+
+SEE ALSO:		flexDigShadow, flexDigIn, flexDigInGroup16,
+					flexDigOutGroup16
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexDigOut(Flex_IOPin *pin, int state)
+{
+	auto int pin_pos;
+	char *shadow;
+
+	switch (pin->type) {
+	case FLEX_PINTYPE_DIGOUT:
+	case FLEX_PINTYPE_DIGINOUT:
+		// Normal digital outputs
+
+		// Only perform the output if the new state is different from the old
+		// state (the shadow)
+		shadow = &(((Flex_RAM_DigIO *)pin->ramdata)->shadow);
+		if (state > 2) {
+			state = 2;
+		}
+		if (*shadow == state) {
+			return 0;
+		}
+
+		// Write to the write address.  The data is the pin position within the
+		// header OR'd with the output state (with polarity inversion taken into
+		// account)
+      _flex_digWrite(pin->wr_addr,
+                     (pin->pin_pos << 1) | ((pin->polarity&0x01)?(!state):state));
+		// Save the output to the shadow
+		*shadow = state;
+		break;
+	case FLEX_PINTYPE_PUSHPULL:
+		// Pushpull digital output.  This is two linked outputs, both of which
+		// must be manipulated.
+
+		// Only perform the output if the new state is different from the old
+		// state (the shadow)
+		shadow = &(((Flex_RAM_DigIO *)pin->ramdata)->shadow);
+		if (*shadow == state) {
+			return 0;
+		}
+
+		// Make sure we are manipulating the even pin
+		pin_pos = pin->pin_pos & ~0x0001;
+		// Output the correct state.  state == 0, then the first (even) pin is 1.
+		// state == 1, then the second (odd) pin is 1.  state == 2, then both pins
+		// are 0.
+		switch (state) {
+		case 0:
+			// Always clear first
+			if (*shadow != 2) {
+				_flex_digWrite(pin->wr_addr, (pin_pos + 1) << 1);
+            // Wait for a bit just to make sure that both outputs aren't "on"
+            // at the same time
+            _flex_wait50usX(1);
+			}
+			_flex_digWrite(pin->wr_addr, (pin_pos << 1) | 0x0001);
+			break;
+		case 1:
+			if (*shadow != 2) {
+				_flex_digWrite(pin->wr_addr, pin_pos << 1);
+            // Wait for a bit just to make sure that both outputs aren't "on"
+            // at the same time
+            _flex_wait50usX(1);
+			}
+			_flex_digWrite(pin->wr_addr, ((pin_pos + 1) << 1) | 0x0001);
+			break;
+		default:
+			// Clear both pins
+			if (*shadow == 0) {
+				_flex_digWrite(pin->wr_addr, pin_pos << 1);
+			}
+			else {
+				_flex_digWrite(pin->wr_addr, (pin_pos + 1) << 1);
+			}
+			break;
+		}
+		// Save the output to the shadow
+		*shadow = state;
+		break;
+	default:
+		// Not a valid digital output pin
+		return -1;
+	}
+
+	// Deassert the chip select due to external I/O address bus latching last
+	// state
+	RdPortE(FLEX_ADDR_CS_DEASSERT);
+
+	return 0;
+}
+
+/*** BeginHeader flexDigShadow */
+char flexDigShadow(Flex_IOPin *pin);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDigShadow                         <RABBITFLEX_SBC40.LIB>
+
+SYNTAX:			int flexDigShadow(Flex_IOPin *pin);
+
+KEYWORDS:		RabbitFlex SBC, Digital I/O
+
+DESCRIPTION:	Reads the shadow (last value) of the given digital output
+					channel.
+
+PARAMETER1:		The information structure for the requested pin
+
+RETURN VALUE:	>= 0 -- Value of the shadow
+					0xff -- No shadow value (digital channel not yet used)
+					< 0  -- Error (not a valid digital input or output?)
+
+SEE ALSO:		flexDigIn, flexDigOut, flexDigInGroup16,
+					flexDigOutGroup16
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+char flexDigShadow(Flex_IOPin *pin)
+{
+	auto int type;
+
+	type = pin->type;
+	// Check if it is a valid digital input or output
+	if ((type != FLEX_PINTYPE_DIGOUT) && (type != FLEX_PINTYPE_DIGINOUT) &&
+       (type != FLEX_PINTYPE_PUSHPULL)) {
+		// Not a valid digital or output
+		return -1;
+	}
+	// Return the shadow
+	return ((Flex_RAM_DigIO *)pin->ramdata)->shadow;
+}
+
+/*** BeginHeader flexDigInGroup16 */
+int flexDigInGroup16(Flex_IOPin *digin_pins[], unsigned int *result);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDigInGroup16                      <RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexDigInGroup16(Flex_IOPin *digin_pins[],
+                                    unsigned int *result);
+
+KEYWORDS:		RabbitFlex SBC, Digital I/O
+
+DESCRIPTION:   This function reads the state of a set of digital input
+					channels into the result parameter.  The first parameter
+               must be an array of pointers to Flex_IOPin structures.
+               Essentially, this is an array of pins.  The last entry in
+               the array must be FLEX_GROUP_END.  This indicates the end
+               of the pins in the group.  The second parameter must be a
+               pointer to an unsigned int.  The values for each of the
+               inputs will be placed into the variable pointed to by this
+               pointer.  The values are place in the following manner:
+               the input reading from the first pin in the pin group is
+               placed in the first bit (lsb) of the result; the second pin
+               is placed in the second bit; etc.
+
+               Note that this function is limited to reading 16 digital
+               inputs at a time.  Any unused bits in the result field will
+               be filled with 0's.
+
+PARAMETER1:		An array of pointers to Flex_IOPin structures (the
+					information structure for each Flex pin), terminated by
+               FLEX_GROUP_END.  These are the input pins.
+PARAMETER2:    The results of the digital reads, with the ith bit in the
+					result field corresponding to the ith Flex pin in the
+               digin_pins array.
+
+RETURN VALUE:	0   -- Success
+					< 0 -- Error (not a valid digital input, or greater than
+                             16 digital inputs?)
+
+SEE ALSO:		flexDigShadow, flexDigIn, flexDigOut,
+					flexDigOutGroup16
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexDigInGroup16(Flex_IOPin *digin_pins[], unsigned int *result)
+{
+	auto Flex_IOPin **pin;
+	auto int count;
+	auto int value;
+
+	// Select the first pin
+	pin = digin_pins;
+	count = 0;
+	// Continue until the end of the group or we have processed the maximum of
+	// 16 pins
+	while ((*pin != FLEX_GROUP_END) && (count < 16)) {
+		// Read the new value
+		value = flexDigIn(*pin);
+		if (value < 0) {
+			// flexDigIn returned an error, so we return an error
+			return -1;
+		}
+		// Shift the results to the right
+		*result >>= 1;
+		// If we read a 1, then we need to OR in that value.  Otherwise, leave it
+		// as a 0.
+		if (value) {
+			*result |= 0x8000;
+		}
+		// Go to the next pin and increment the count
+		pin++;
+		count++;
+	}
+	// Check if the pin group was too large, and indicate an error if so
+	if ((count >= 16) && (*pin != FLEX_GROUP_END)) {
+		return -2;
+	}
+	// Shift the results all the way to the right
+	*result >>= 16 - count;
+	// Indicate success
+	return 0;
+}
+
+/*** BeginHeader flexDigOutGroup16 */
+int flexDigOutGroup16(Flex_IOPin *digout_pins[], unsigned int values);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDigOutGroup16                     <RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexDigOutGroup16(Flex_IOPin *digout_pins[],
+                                     unsigned int values);
+
+KEYWORDS:		RabbitFlex SBC, Digital I/O
+
+DESCRIPTION:   This function sets the state of a set of digital output
+					channels based on the values parameter.  The first
+               parameter must be an array of pointers to Flex_IOPin
+               structures.  Essentially, this is an array of pins.  The
+               last entry in the array must be FLEX_GROUP_END.  This
+               indicates the end of the pins in the group.  The second
+               parameter must be an unsigned int.  This function will
+               set the state of the first pin in the pin group from the
+               value of the first bit (lsb) of the values variable; the
+               second pin is set from the value of the second bit; etc.
+
+               Note that this function is limited to setting 16 digital
+               outputs at a time.
+
+PARAMETER1:		An array of pointers to Flex_IOPin structures (the
+					information structure for each Flex pin), terminated by
+               FLEX_GROUP_END.  These are the output pins.
+PARAMETER2:    The values with which to set the digital outputs.  The ith
+					bit in the values field will be used to set the ith pin in
+               the digout_pins array.
+
+RETURN VALUE:	0   -- Success
+					< 0 -- Error (not a valid digital output, or greater than
+                             16 digital outputs?)
+
+SEE ALSO:		flexDigShadow, flexDigIn, flexDigInGroup16,
+					flexDigOut
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexDigOutGroup16(Flex_IOPin *digout_pins[], unsigned int values)
+{
+	auto Flex_IOPin **pin;
+	auto int count;
+
+	// Select the first pin
+	pin = digout_pins;
+	count = 0;
+	// Continue until the end of the group or we have processed the maximum of
+	// 16 pins
+	while ((*pin != FLEX_GROUP_END) && (count < 16)) {
+		// Output the new value (mask to get the value bit)
+		if (flexDigOut(*pin, values & 0x0001) < 0) {
+			// flexDigOut returned an error, so we return an error
+			return -1;
+		}
+		// Go to the next pin and value, and increment the count
+		pin++;
+		count++;
+		values >>= 1;
+	}
+	// Check if the pin group was too large, and indicate an error if so
+	if ((count >= 16) && (*pin != FLEX_GROUP_END)) {
+		return -2;
+	}
+	// Indicate success
+	return 0;
+}
+
+/*** BeginHeader _flex_anaInInit */
+int _flex_anaInInit(Flex_IOPin *anain_pins[]);
+extern Flex_IOPin **_flex_initial_anain;
+extern Flex_IOPin **_flex_current_anain;
+/*** EndHeader */
+
+/*
+ * Initialize the AD (analog in) functionality.  This reads in the calibration
+ * constants, sets up the initial input capture pin, and selects the first pin
+ * in the header.
+ */
+
+Flex_IOPin **_flex_initial_anain;
+Flex_IOPin **_flex_current_anain;
+
+_rabbitflex_sbc40_nodebug
+int _flex_anaInInit(Flex_IOPin *anain_pins[])
+{
+	auto Flex_IOPin **pin;
+	auto int channel;
+	auto int retval;
+	auto char pin_pos;
+   auto int i;
+
+	// Initialize some variables
+   #GLOBAL_INIT
+   {
+   	_adcrampInit = FALSE;
+   	_adc_mux_channel = 0;
+      adc_conversion_done = FALSE;
+   }
+   // Check if brdInit() has already been called
+   if(!_adcrampInit)
+	{
+		// the brdInit function hasn't been executed
+      exit(ERR_INITNOTCALLED);
+	}
+
+	// Go through all the pins in the analog in group
+	pin = anain_pins;
+	while (*pin != FLEX_GROUP_END) {
+		// Make sure that this is an analog in channel
+		if (((*pin)->type != FLEX_PINTYPE_ANAIN) &&
+		    ((*pin)->type != FLEX_PINTYPE_ANAIN_AMPS)) {
+			return -1;
+		}
+	   // Calculate the channel number (0-15).  For pin->rd_addr == 0, the
+	   // channels are 0-7, and for pin->rd_addr == 1, the channels are 8-15.
+	   channel = (*pin)->rd_addr*8 + (*pin)->pin_pos;
+		retval = readUserBlock(_adcCalib[channel],
+		                       ADC_CALIB_ADDR + channel*sizeof(_adcCalib[0]),
+		                       sizeof(_adcCalib[0]));
+		// Check if we read the user block successfully
+		if (retval < 0) {
+			return -2;
+		}
+
+		pin++;
+	}
+   for(i=0; i<MAX_ADCHANNELS; i++)
+   {
+   	_adc_overflow[i] = 0;
+   }
+#ifdef ADC_DISCOUNT_AVERAGE
+   // Set alpha value for all channels be 1.0, no averaging
+   for(i=0; i < MAX_ADCHANNELS; i++)
+   {
+   	_adc_alpha[i] = (int)32768;
+   }
+#endif
+
+	// Set the initial and current analog in pin
+	_flex_initial_anain = _flex_current_anain = anain_pins;
+
+	// Set the initial analog channel number (0-15)
+	_adc_mux_channel = anain_pins[0]->rd_addr*8 + anain_pins[0]->pin_pos;
+
+   // Make sure the lines are low when the lines are enabled
+   WrPortI(PEDR, &PEDRShadow, (PEDRShadow & ~0x48));
+   WrPortI(PDDR, &PDDRShadow, (PDDRShadow & ~0x10));
+   // Set Function for I/O operation
+   WrPortI(PEFR, &PEFRShadow, (PEFRShadow & ~0x48));
+   WrPortI(PDFR, &PDFRShadow, (PDFRShadow & ~0x10));
+   // Make the lines outputs
+   WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow | 0x48));
+   WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow | 0x10));
+   // Set PD4 for active high/low operation
+   WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~0x10));
+   // Set lines to be clocked by PCLK/2
+   WrPortI(PECR, &PECRShadow, 0x00);
+   WrPortI(PDCR, &PDCRShadow, (PDCRShadow & 0x0f));
+
+	// Select the right initial input capture pin and analog in pin
+	if (anain_pins[0] != FLEX_GROUP_END) {
+		// Set up the analog in pin selection (handled by PE3, PE6, and PD4)
+		pin_pos = anain_pins[0]->pin_pos;
+		WrPortI(PEDR, &PEDRShadow,
+		        (pin_pos & 0x01)?(PEDRShadow | 0x08):(PEDRShadow & ~0x08));
+		WrPortI(PEDR, &PEDRShadow,
+		        (pin_pos & 0x02)?(PEDRShadow | 0x40):(PEDRShadow & ~0x40));
+		WrPortI(PDDR, &PDDRShadow,
+		        (pin_pos & 0x04)?(PDDRShadow | 0x10):(PEDRShadow & ~0x10));
+
+		// Set the input capture pin
+		// If rd_addr == 1, then Port G, Bit 1 to start, Port G, Bit 5 to stop
+		// If rd_addr == 0, then Port G, Bit 1 to start, Port D, Bit 5 to stop
+	   WrPortI(ICS2R, &ICS2RShadow, anain_pins[0]->rd_addr?0xce:0xc6);
+	   // Count from start to stop, latch counter on stop, start at start
+	   // input falling edge, stop at stop input falling edge
+		WrPortI(ICT2R, &ICT2RShadow, 0x5a);
+	}
+
+   // Set the method to clear the input capture, and enable measuring
+   // external AD channels
+   rampadc.adc_clear = 0x0c;
+   rampadc.adc_external_enable = 0xffff;
+
+	// Indicate that the analog in subsystem has been initialized
+	_flex_anain_init_flag = TRUE;
+	return 0;
+}
+
+/*** BeginHeader flexAnaInCalib */
+int flexAnaInCalib(Flex_IOPin *pin, int value1, float volts1,
+                    int value2, float volts2);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAnaInCalib     							<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexAnaInCalib(Flex_IOPin *pin,
+					                   int value1, float volts1,
+					                   int value2, float volts2);
+
+DESCRIPTION:   Calibrates the response of the ADC channel desired as a
+               linear function using the two conversion points provided.
+               Gain and offset constants are calculated and placed into
+               a global table. This function is non-reentrant.
+
+PARAMETER1:		A pointer to the information structure for this pin
+PARAMETER2:    The first ADC value.
+PARAMETER3:    The voltage corresponding to the first ADC value.
+PARAMETER4:    The second ADC value.
+PARAMETER5:    The voltage corresponding to the second ADC value.
+
+RETURN VALUE:    0 -- success
+               < 0 -- error (not an analog in?)
+
+SEE ALSO:      flexAnaIn, flexAnaInVolts
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexAnaInCalib(Flex_IOPin *pin, int value1, float volts1,
+                   int value2, float volts2)
+{
+	auto float gain, offset;
+	auto int channel;
+	auto int retval;
+
+	// Make sure it is an analog in
+	if ((pin->type != FLEX_PINTYPE_ANAIN) &&
+	    (pin->type != FLEX_PINTYPE_ANAIN_AMPS)) {
+		return -1;
+	}
+
+	// Calculate the channel number (0-15).  For pin->rd_addr == 0, the channels
+	// are 0-7, and for pin->rd_addr == 1, the channels are 8-15.
+	channel = pin->rd_addr*8 + pin->pin_pos;
+
+	// Calculate the gain and offset
+	if( (volts1 == volts2) || (value1 == value2) ) return -2;
+
+  	offset = (volts2*value1 - volts1*value2)/(volts2-volts1);
+   if (offset == value1)
+      gain = volts2/(offset-value2);
+   else
+      gain = volts1/(offset-value1);
+
+   _adcCalib[channel][0] = gain;
+   _adcCalib[channel][1] = offset;
+
+	// Write out the new calibration constant information for this channel
+	retval = writeUserBlock(ADC_CALIB_ADDR + channel*sizeof(_adcCalib[0]),
+	                        _adcCalib[channel], sizeof(_adcCalib[0]));
+	// Check if writing the calibration constants succeeded
+	if (retval < 0) {
+		// Error writing to user block
+		return -3;
+	}
+}
+
+/*** BeginHeader _dacCalib */
+// Array to hold the [0]=gain, [1]=offset values
+extern float _dacCalib[MAX_DACHANNELS][2];
+/*** EndHeader */
+
+float _dacCalib[MAX_DACHANNELS][2];	 //[0]=gain,[1]=offset
+
+/*** BeginHeader _flex_anaOutInit */
+int _flex_anaOutInit(Flex_IOPin *anaout_pins[]);
+/*** EndHeader */
+
+_rabbitflex_sbc40_nodebug
+int _flex_anaOutInit(Flex_IOPin *anaout_pins[])
+{
+	auto Flex_IOPin **pin;
+	auto int channel;
+	auto int retval;
+
+	// Go through all the pins in the analog out group
+	pin = anaout_pins;
+
+	// Make sure we have some members
+	if (*pin != FLEX_GROUP_END) {
+		pwm_init(PWM_CNTRL_FREQ);
+	}
+
+	while (*pin != FLEX_GROUP_END) {
+		channel = (*pin)->wr_addr;
+		// Must subtract 2 from channel below, since DAC0 and DAC1 are on PWM2
+		// and PWM3
+		retval = readUserBlock(_dacCalib[channel-2],
+		                       DAC_CALIB_ADDR + (channel-2)*sizeof(_dacCalib[0]),
+		                       sizeof(_dacCalib[0]));
+		// Check if we read the user block successfully
+		if (retval < 0) {
+			return -1;
+		}
+		pwm_set(channel, 0, (channel==2)?FLEX_DAC0_CNTRL:FLEX_DAC1_CNTRL);
+
+		pin++;
+	}
+
+	// Indicate that the analog out functionality has been initialized
+	_flex_anaout_init_flag = TRUE;
+
+	return 0;
+}
+
+/*** BeginHeader flexAnaOutCalib */
+int flexAnaOutCalib(Flex_IOPin *pin, int value1, float volts1,
+                     int value2, float volts2);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAnaOutCalib								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexAnaOutCalib(Flex_IOPin *pin,
+					                    int value1, float volts1,
+					                    int value2, float volts2);
+
+DESCRIPTION:	Calibrates the response of the DAC channel desired as a
+               linear function using the two conversion points provided.
+               Gain and offset constants are calculated and placed into
+               a global table.  This function is non-reentrant.
+
+PARAMETER1:		A pointer to the information structure for this pin
+PARAMETER2:		The first DAC value (0 - 1024).
+PARAMETER3:		The voltage (volts) corresponding to the first DAC value.
+PARAMETER4:		The second DAC value (0 - 1024).
+PARAMETER5:		The voltage (volts) corresponding to the second DAC value.
+
+RETURN VALUE:    0 -- success
+               < 0 -- error (not an analog in?)
+
+SEE ALSO:		flexAnaOut, flexAnaOutVolts
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexAnaOutCalib(Flex_IOPin *pin, int value1, float volts1,
+                    int value2, float volts2)
+{
+	auto float gain, offset;
+	auto int retval;
+	auto int channel;
+
+	// Make sure it is an analog out
+	if (pin->type != FLEX_PINTYPE_ANAOUT) {
+		return -1;
+	}
+
+	// The DAC channels start at PWM2, so subtract 2 from the channel number
+	// to get to the correct calibration
+	channel = pin->wr_addr - 2;
+
+	// Calculate the gain and offset
+	if( (volts1 == volts2) || (value1 == value2) ) return -2;
+
+	offset = (volts2*value1 - volts1*value2)/(volts2-volts1);
+   gain = (volts2-volts1)/(value2-value1);
+
+   _dacCalib[channel][0] = gain;
+   _dacCalib[channel][1] = offset;
+
+	// Write out the new calibration constant information for this channel
+	retval = writeUserBlock(DAC_CALIB_ADDR + channel*sizeof(_dacCalib[0]),
+	                        _dacCalib[channel], sizeof(_dacCalib[0]));
+	// Check if writing the calibration constants succeeded
+	if (retval < 0) {
+		// Error writing to user block
+		return -3;
+	}
+
+	return 0;
+}
+
+/*** BeginHeader _flex_adc_mux */
+void _flex_adc_mux(void);
+/*** EndHeader */
+
+/*
+ * After each analog in reading, this assembly code will set up the system to
+ * read the next analog in channel.  In particular, it selects the right input
+ * pin through the multiplexer control, and it sets up the input capture to
+ * work on the correct pin.
+ *
+ * This code is called by the analog in ISR (through the ADC_MUX_CNTRL macro).
+ */
+
+#asm root nodebug
+_flex_adc_mux::
+	; Disable the input capture channels
+	xor	a
+   ld		(ICT1RShadow),a
+	ioi	ld (ICT1R), a
+	ld		(ICT2RShadow),a
+   ioi	ld (ICT2R),a
+
+	; Increment to the next analog in pin
+	ld 	hl,(_flex_current_anain)
+	inc	hl
+	inc	hl
+	; Check if we've reached the end of the analog in pins
+	ld 	iy,hl		; Save the pointer to potentially store in _flex_current_anain
+	ld 	hl,(hl)
+	xor 	a
+	or 	h
+	or 	l
+	jr 	nz,.storepin
+	; Must go back to the beginning of flex_pins_anain
+	ld 	iy,(_flex_initial_anain)
+.storepin:
+	; Store the next pin to process
+	ld 	(_flex_current_anain),iy
+
+	; Set up the mux to select the right analog in pin
+	ld 	hl,(iy)
+	ld 	iy,hl
+	ld 	c,(iy+[Flex_IOPin]+pin_pos)
+
+	; Set the first and second pins
+	ld 	a,(PEDRShadow)
+	bit 	0,c
+	jr 	z,.bit0zero
+	set 	3,a
+	jr 	.testbit1
+.bit0zero:
+	res 	3,a
+.testbit1:
+	bit 	1,c
+	jr 	z,.bit1zero
+	set 	6,a
+	jr 	.writebits0and1
+.bit1zero:
+	res 	6,a
+.writebits0and1:
+	ld 	(PEDRShadow),a
+	ioi 	ld (PEDR),a
+
+	; Set the third pin
+	ld 	a,(PDDRShadow)
+	bit 	2,c
+	jr 	z,.bit2zero
+	set 	4,a
+	jr 	.writebit2
+.bit2zero:
+	res 	4,a
+.writebit2:
+	ld 	(PDDRShadow),a
+	ioi 	ld (PDDR),a
+
+	; Set the right input capture pin
+	ld		hl,(iy+[Flex_IOPin]+rd_addr)
+	dec	l
+	jr		z,.inputcapture2
+	ld		a,0xc6
+	jr		.setinputcapture
+.inputcapture2:
+	; Add 8 to the channel number if using the second input capture pin
+	ld		a,0x08
+	add	a,c
+	ld		c,a
+	ld		a,0xce
+.setinputcapture:
+	ld		(ICS2RShadow),a
+	ioi	ld (ICS2R),a
+
+	; Save off which mux channel we're using
+	ld		a,c
+	ld		(_adc_mux_channel),a
+
+	; Indicate that we've processed this ADC
+	ccf
+	rl		c
+	ld		b,0
+	ld		hl,mux_conversion_done
+	add	hl,bc
+	ld		(hl),0xffff
+
+	; Reenable the input capture
+	ld		a,0x5a
+   ld		(ICT1RShadow),a
+	ioi	ld (ICT1R),a
+	ld		(ICT2RShadow),a
+   ioi	ld (ICT2R),a
+
+	ret
+#endasm
+
+/*** BeginHeader flexAnaIn */
+int flexAnaIn(Flex_IOPin *pin);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAnaIn 										<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexAnaIn(Flex_IOPin *pin);
+
+DESCRIPTION:   Reads the state of the external analog channel.  Note that
+					this is a raw value that has not been converted to voltage.
+					The raw values are useful for calibration.
+
+					Also note that	the value retrieved here is not read when
+					requested; rather, the latest value that has been
+					calculated by the analog in ISR is returned.  The update
+					rate is 2.5 ms times the number of analog in channels.
+
+               This function is non-reentrant.
+
+PARAMETER1:		The information structure for the requested pin
+
+RETURN VALUE:  >= 0 -- A value corresponding to the voltage on the
+                       analog input channel (0 - 4095)
+					-1   -- Overflow or out of range
+               -2   -- Error (not an analog input?)
+
+SEE ALSO:      flexAnaInVolts, flexAnaInmAmps, flexAnaInCalib
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexAnaIn(Flex_IOPin *pin)
+{
+	auto int channel;
+	auto float normalized_rawdata, ramp_rawdata_ratio;
+   static int adc_overflow, rawdata, refvoltdata;
+   static int tempchannel;
+
+	// Initialize analog in initialization flag
+	#GLOBAL_INIT { _flex_anain_init_flag = FALSE; }
+
+	// Make sure the analog in subsystem has been initialized
+	if (!_adcrampInit || !_flex_anain_init_flag) {
+      exit(ERR_INITNOTCALLED);
+	}
+
+	// Make sure it is an analog in
+	if ((pin->type != FLEX_PINTYPE_ANAIN) &&
+	    (pin->type != FLEX_PINTYPE_ANAIN_AMPS)) {
+		return -2;
+	}
+
+	// Calculate the channel number
+	channel = pin->rd_addr*8 + pin->pin_pos;
+   tempchannel = channel;
+
+   // Do atomic read of the A/D conversion values
+   #asm nodebug
+   push 	ip
+	ipset	RAMP_INT_LEVEL
+   #endasm
+   adc_overflow = _adc_overflow[tempchannel];
+   rawdata = _adc_rawdata[tempchannel];
+   refvoltdata = rampadc.ref_rawdata;
+   #asm nodebug
+   pop	ip
+	#endasm
+
+	// Check for overflow
+   if((adc_overflow == ADOVERFLOW) || (refvoltdata == ADOVERFLOW)) {
+      return -1;
+   }
+
+   ramp_rawdata_ratio = (float)rawdata /(float)refvoltdata;
+   normalized_rawdata = (ramp_rawdata_ratio * _adcCalibRamp[2]) + .5;
+   if (normalized_rawdata > ADC_RESOLUTION) {
+   	return -1;
+   }
+   else {
+   	return (int)normalized_rawdata;
+   }
+}
+
+/*** BeginHeader flexAnaInVolts */
+float flexAnaInVolts(Flex_IOPin *pin);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAnaInVolts								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        float flexAnaInVolts(Flex_IOPin *pin);
+
+DESCRIPTION:	Reads the state of the external analog channel and uses
+               the previously set calibration constants to convert it
+               to volts. This function is non-reentrant.
+
+					Also note that	the value retrieved here is not read when
+					requested; rather, the latest value that has been
+					calculated by the analog in ISR is returned.  The update
+					rate is 2.5 ms times the number of analog in channels.
+
+PARAMETER1:		The information structure for the requested pin
+
+RETURN VALUE:  >= 0 -- A voltage value corresponding to the voltage on
+                       the analog input channel
+               FLEX_ANAIN_ERROR -- Overflow, out-of-range, or not an
+       			                    analog input
+
+
+SEE ALSO:      flexAnaIn, flexAnaInmAmps, flexAnaInCalib
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+float flexAnaInVolts(Flex_IOPin *pin)
+{
+	auto int rawdata;
+	auto int channel;
+	auto float gain, offset, voltage;
+
+	// Initialize analog in initialization flag
+	#GLOBAL_INIT { _flex_anain_init_flag = FALSE; }
+
+	// Make sure the analog in subsystem has been initialized
+	if (!_adcrampInit || !_flex_anain_init_flag) {
+      exit(ERR_INITNOTCALLED);
+	}
+
+	// Read the raw value
+	rawdata = flexAnaIn(pin);
+	if (rawdata < 0) {
+		return FLEX_ANAIN_ERROR;
+	}
+
+	// Calculate the channel number
+	channel = pin->rd_addr*8 + pin->pin_pos;
+
+	// Use the calibration data to convert to volts
+   gain = _adcCalib[channel][0];
+   offset = _adcCalib[channel][1];
+   voltage = gain * (offset - (float)rawdata);
+  	return voltage;
+}
+
+/*** BeginHeader flexAnaInmAmps */
+float flexAnaInmAmps(Flex_IOPin *pin);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAnaInmAmps								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        float flexAnaInmAmps(Flex_IOPin *pin);
+
+DESCRIPTION:	Reads the state of the external analog channel and uses
+               the previously set calibration constants to convert it
+               to milliamps. This function is non-reentrant.
+
+					Also note that	the value retrieved here is not read when
+					requested; rather, the latest value that has been
+					calculated by the analog in ISR is returned.  The update
+					rate is 2.5 ms times the number of analog in channels.
+
+PARAMETER1:		The information structure for the requested pin
+
+RETURN VALUE:  >= 0 -- A milliamp value corresponding to the current on
+                       the analog input channel
+               FLEX_ANAIN_ERROR -- Overflow, out-of-range, or not an
+                                   analog input
+
+SEE ALSO:      flexAnaIn, flexAnaInVolts, flexAnaInCalib
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+float flexAnaInmAmps(Flex_IOPin *pin)
+{
+	// Initialize analog in initialization flag
+	#GLOBAL_INIT { _flex_anain_init_flag = FALSE; }
+
+	// Make sure the analog in subsystem has been initialized
+	if (!_adcrampInit || !_flex_anain_init_flag) {
+      exit(ERR_INITNOTCALLED);
+	}
+
+	// Make sure this pin is to read current
+	if (pin->type != FLEX_PINTYPE_ANAIN_AMPS) {
+		return FLEX_ANAIN_ERROR;
+	}
+
+	// There's no real difference software-wise between reading voltage and
+	// reading current (the difference is in the calibration), so just call
+	// flexAnaInVolts() here.
+	return flexAnaInVolts(pin);
+}
+
+/*** BeginHeader flexAnaInAverageSetting */
+int flexAnaInAverageSetting(Flex_IOPin *pin, float alpha);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAnaInAverageSetting	  <RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexAnaInAverageSetting(Flex_IOPin *pin, float alpha);
+
+DESCRIPTION:   This function sets the averaging alpha value (weight value)
+					for a given ADC channel to read averaged ADC data. To read
+               the average ADC data use the following functions:
+
+               - flexAnaInAverage........Reads averaged rawdata
+               - flexAnaInVoltsAverage...Reads averaged voltage
+					- flexAnaInmAmpsAverage...Reads averaged current
+
+               Note, if you set the alpha value to 1 for a given A/D
+               channel then you will get the actual unaltered rawdata
+               value.
+
+      			This function is non-reentrant.
+
+PARAMETER1:		The information structure for the requested pin
+PARAMETER1:    Alpha value for averaging the given ADC channel
+					Recommended Range is 0.001 - 1.0
+
+RETURN VALUE:   0 -- success
+					-1 -- Invalid alpha value
+               -2 -- Error (not an analog input?)
+
+SEE ALSO:      flexAnaInAverage, flexAnaInVoltsAverage,
+					flexAnaInmAmpsAverage
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexAnaInAverageSetting(Flex_IOPin *pin, float alpha)
+{
+	auto int channel;
+   auto unsigned long done_time;
+
+	// Initialize analog in initialization flag
+	#GLOBAL_INIT
+   {
+   	_flex_anain_init_flag = FALSE;
+   }
+   // Make sure the analog in subsystem has been initialized
+	if (!_adcrampInit || !_flex_anain_init_flag) {
+      exit(ERR_INITNOTCALLED);
+	}
+
+   if(alpha < 0 || alpha > 1) {
+      return -1;
+	}
+
+	// Make sure it is an analog in
+	if ((pin->type != FLEX_PINTYPE_ANAIN) &&
+	    (pin->type != FLEX_PINTYPE_ANAIN_AMPS)) {
+		return -2;
+	}
+
+	// Calculate the channel number
+	channel = pin->rd_addr*8 + pin->pin_pos;
+	if(alpha == 1.0){
+		_adc_alpha[channel] = (int)32768;
+   }
+   else {
+      _adc_alpha[channel] = (int)ceil(alpha * (float)32768);
+      // Set the initial average
+	   // Do atomic read the A/D conversion values
+	   #asm nodebug
+	   push  ip
+	   ipset RAMP_INT_LEVEL
+	   #endasm
+	   _adc_avgdata[channel] = _adc_rawdata[channel];
+	   #asm nodebug
+	   pop   ip
+	   #endasm
+   }
+	return 0;
+}
+
+/*** BeginHeader flexAnaInAverage */
+int flexAnaInAverage(Flex_IOPin *pin);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAnaInAverage				<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexAnaInAverage(Flex_IOPin *pin);
+
+DESCRIPTION:   This function is like flexAnaIn() except that it reports
+					the most recent discount averaged value instead of the raw
+               value.
+
+               To set the discount average alpha value execute the
+               flexAnaInAverageSetting function before calling this
+               function. This function is non-reentrant.
+
+PARAMETER1:		The information structure for the requested pin
+
+RETURN VALUE:  >= 0 -- A value corresponding to the voltage on the
+                       analog input channel (0 - 4095)
+					-1   -- Overflow or out of range
+               -2   -- Error (not an analog input?)
+
+SEE ALSO:      flexAnaInAverageSetting, flexAnaInVoltsAverage,
+					flexAnaInmAmpsAverage
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexAnaInAverage(Flex_IOPin *pin)
+{
+	auto int channel;
+	auto float normalized_rawdata, ramp_rawdata_ratio;
+   static int avgdata, adc_overflow, refvoltdata;
+   static int tempchannel;
+
+	// Initialize analog in initialization flag
+	#GLOBAL_INIT { _flex_anain_init_flag = FALSE; }
+
+	// Make sure the analog in subsystem has been initialized
+	if (!_adcrampInit || !_flex_anain_init_flag) {
+      exit(ERR_INITNOTCALLED);
+	}
+
+	// Make sure it is an analog in
+	if ((pin->type != FLEX_PINTYPE_ANAIN) &&
+	    (pin->type != FLEX_PINTYPE_ANAIN_AMPS)) {
+		return -2;
+	}
+
+	// Calculate the channel number
+	channel = pin->rd_addr*8 + pin->pin_pos;
+
+   tempchannel = channel;
+   // Do atomic read the A/D conversion values
+   #asm nodebug
+   push 	ip
+	ipset	RAMP_INT_LEVEL
+   #endasm
+   avgdata = _adc_avgdata[tempchannel];
+   adc_overflow = _adc_overflow[tempchannel];
+   refvoltdata = rampadc.ref_rawdata;
+   #asm nodebug
+   pop	ip
+	#endasm
+
+   // Check for overflow
+   if((adc_overflow == ADOVERFLOW) || (refvoltdata == ADOVERFLOW)) {
+      return -1;
+   }
+   if(avgdata < 0)
+    	_adc_avgdata[tempchannel] = 0;
+
+   ramp_rawdata_ratio = (float)avgdata /(float)refvoltdata;
+   normalized_rawdata = (ramp_rawdata_ratio * _adcCalibRamp[2]) + .5;
+   if (normalized_rawdata > ADC_RESOLUTION) {
+   	return -1;
+   }
+   else {
+   	return (int)normalized_rawdata;
+   }
+}
+
+/*** BeginHeader flexAnaInVoltsAverage */
+float flexAnaInVoltsAverage(Flex_IOPin *pin);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAnaInVoltsAverage		<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        float flexAnaInVoltsAverage(Flex_IOPin *pin);
+
+DESCRIPTION:   This function is like flexAnaInVolts(), except that it
+					reports the most recent discount averaged voltage value
+               instead of the raw voltage value.
+
+               To set the discount average alpha value execute the
+               flexAnaInAverageSetting function before calling this
+               function. This function is non-reentrant.
+
+PARAMETER1:		The information structure for the requested pin
+
+RETURN VALUE:  >= 0 -- A voltage value corresponding to the voltage on
+                       the analog input channel
+               FLEX_ANAIN_ERROR -- Overflow, out-of-range, or not an
+       			                    analog input
+
+
+SEE ALSO:      flexAnaInAverageSetting, flexAnaInAverage,
+					flexAnaInmAmpsAverage
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+float flexAnaInVoltsAverage(Flex_IOPin *pin)
+{
+	auto int rawdata;
+	auto int channel;
+	auto float gain, offset, voltage;
+
+	// Initialize analog in initialization flag
+	#GLOBAL_INIT { _flex_anain_init_flag = FALSE; }
+
+	// Make sure the analog in subsystem has been initialized
+	if (!_adcrampInit || !_flex_anain_init_flag) {
+      exit(ERR_INITNOTCALLED);
+	}
+
+	// Read the raw value
+	rawdata = flexAnaInAverage(pin);
+	if (rawdata < 0) {
+		return FLEX_ANAIN_ERROR;
+	}
+
+	// Calculate the channel number
+	channel = pin->rd_addr*8 + pin->pin_pos;
+
+	// Use the calibration data to convert to volts
+   gain = _adcCalib[channel][0];
+   offset = _adcCalib[channel][1];
+   voltage = gain * (offset - (float)rawdata);
+  	return voltage;
+}
+
+/*** BeginHeader flexAnaInmAmpsAverage */
+float flexAnaInmAmpsAverage(Flex_IOPin *pin);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAnaInmAmpsAverage								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        float flexAnaInmAmpsAverage(Flex_IOPin *pin);
+
+DESCRIPTION:   This function is like flexAnaInmAmps(), except that it
+					reports the most recent discount averaged current reading
+               instead of the raw current reading.
+
+               To set the discount average alpha value execute the
+               flexAnaInAverageSetting function before calling this
+               function. This function is non-reentrant.
+
+PARAMETER1:		The information structure for the requested pin
+
+RETURN VALUE:  >= 0 -- A milliamp value corresponding to the current on
+                       the analog input channel
+               FLEX_ANAIN_ERROR -- Overflow, out-of-range, or not an
+                                   analog input
+
+SEE ALSO:      flexAnaInAverageSetting, flexAnaInAverage,
+					flexAnaInVoltsAverage
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+float flexAnaInmAmpsAverage(Flex_IOPin *pin)
+{
+	// Initialize analog in initialization flag
+	#GLOBAL_INIT { _flex_anain_init_flag = FALSE; }
+
+	// Make sure the analog in subsystem has been initialized
+	if (!_adcrampInit || !_flex_anain_init_flag) {
+      exit(ERR_INITNOTCALLED);
+	}
+
+	// Make sure this pin is to read current
+	if (pin->type != FLEX_PINTYPE_ANAIN_AMPS) {
+		return FLEX_ANAIN_ERROR;
+	}
+
+	// There's no real difference software-wise between reading voltage and
+	// reading current (the difference is in the calibration), so just call
+	// flexAnaInVolts() here.
+	return flexAnaInVoltsAverage(pin);
+}
+
+/*** BeginHeader flexAnaInNewValue */
+int flexAnaInNewValue(Flex_IOPin *pin, int clear);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAnaInNewValue			<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexAnaInNewValue(Flex_IOPin *pin, int clear);
+
+DESCRIPTION:	This function reports if an updated value is available for
+					the given analog input pin.  If the "clear" parameter is
+               1, then the call to this function will clear the fact that
+               a new value is available.  That is, the next time
+               flexAnaInNewValue is called, and assuming that another
+               new value has been processed and made available, then
+               this function will indicate that a new value is not
+               available.
+
+PARAMETER1:		The information structure for the requested pin
+
+PARAMETER2:		Should be !0 (e.g., 1) to indicate that this new value
+					should subsequently be considered old.  0 indicates that
+               this value will still be considered new on a subsequent
+               call.
+
+RETURN VALUE:  > 0 -- A new value is available for this analog input
+					0   -- This analog input has not been updated
+               < 0 -- error (not an analog output?)
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexAnaInNewValue(Flex_IOPin *pin, int clear)
+{
+	auto int channel;
+	auto int status;
+
+	// Initialize analog in initialization flag
+	#GLOBAL_INIT { _flex_anain_init_flag = FALSE; }
+
+	// Make sure it is an analog in
+	if ((pin->type != FLEX_PINTYPE_ANAIN) &&
+	    (pin->type != FLEX_PINTYPE_ANAIN_AMPS)) {
+		return -2;
+	}
+
+	// Calculate the channel number
+	channel = pin->rd_addr*8 + pin->pin_pos;
+
+	// Get the conversion status of the given channel
+	status = mux_conversion_done[channel];
+
+	// Clear the conversion flag if the user has requested it
+	if (clear) {
+		mux_conversion_done[channel] = 0;
+	}
+
+	// Return the conversion status of the given channel
+	if (status) {
+   	return 1;
+   }
+   else {
+   	return 0;
+   }
+}
+
+/*** BeginHeader flexAnaOut */
+int flexAnaOut(Flex_IOPin *pin, int rawvalue);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAnaOut										<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexAnaOut(Flex_IOPin *pin, int rawvalue);
+
+DESCRIPTION:	Sets the voltage on a given analog output pin and a raw
+					value.  This function is particularly useful for
+					calibration.  This function is non-reentrant.
+
+PARAMETER1:		The information structure for the requested pin
+PARAMETER2:		A value corresponding to the voltage on the analog output
+					(valid range is 0 - 1024)
+
+RETURN VALUE:	 0 -- success
+					-1 -- error (not an analog output?)
+
+SEE ALSO:      flexAnaOutVolts, flexAnaOutCalib
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexAnaOut(Flex_IOPin *pin, int rawvalue)
+{
+	auto int channel;
+	auto int options;
+
+	// Initialize analog out initialization flag
+	#GLOBAL_INIT { _flex_anaout_init_flag = FALSE; }
+
+	// Make sure the analog out subsystem has been initialized
+	if (!_flex_anaout_init_flag) {
+      exit(ERR_INITNOTCALLED);
+	}
+
+	// Make sure this is an analog out
+	if (pin->type != FLEX_PINTYPE_ANAOUT) {
+		return -1;
+	}
+
+	// Limit the raw value to the minimum and maximum
+	if (rawvalue > FLEX_MAX_DAC_COUNT || rawvalue < FLEX_MIN_DAC_COUNT) {
+		rawvalue = (rawvalue > FLEX_MAX_DAC_COUNT) ?
+		           FLEX_MAX_DAC_COUNT : FLEX_MIN_DAC_COUNT;
+	}
+
+	channel = pin->wr_addr;
+	options = (channel == 2) ? FLEX_DAC0_CNTRL : FLEX_DAC1_CNTRL;
+
+	// Output the new value
+   pwm_set(channel, rawvalue, options);
+
+	return 0;
+}
+
+/*** BeginHeader flexAnaOutVolts */
+int flexAnaOutVolts(Flex_IOPin *pin, float voltage);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAnaOutVolts								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexAnaOutVolts(Flex_IOPin *pin, float voltage);
+
+DESCRIPTION:	Sets the voltage on a given analog output pin by using the
+					previously set calibration constants to calculate the
+					correct data values.  This function is non-reentrant.
+
+PARAMETER1:		The information structure for the requested pin
+PARAMETER2:		The voltage desired on the output pin
+
+RETURN VALUE:	 0 -- success
+					-1 -- error (not an analog output?)
+
+SEE ALSO:      flexAnaOut, flexAnaOutCalib
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexAnaOutVolts(Flex_IOPin *pin, float voltage)
+{
+	auto int rawvalue;
+	auto int channel;
+
+	// Make sure this is an analog out
+	if (pin->type != FLEX_PINTYPE_ANAOUT) {
+		return -1;
+	}
+
+	// The DAC channels start at PWM2, so subtract 2 from the channel number
+	// to get to the correct calibration
+	channel = pin->wr_addr - 2;
+
+	// Calculate the raw value using the calibration constants
+	rawvalue = (int)(_dacCalib[channel][1] + (voltage / _dacCalib[channel][0]));
+
+	// Output the new analog value
+	return flexAnaOut(pin, rawvalue);
+}
+
+/*
+ * This function writes out the given 4 bits of a command to the LCD in 4-bit
+ * mode.
+ */
+
+/*** BeginHeader _flex_dispCmd4 */
+void _flex_dispCmd4(Flex_LCD *lcd, char cmd);
+/*** EndHeader */
+
+_rabbitflex_sbc40_nodebug
+void _flex_dispCmd4(Flex_LCD *lcd, char cmd)
+{
+	// Set control lines
+	flexDigOut(lcd->rs, 0);
+	if (lcd->rw) {
+		flexDigOut(lcd->rw, 0);
+	}
+	// Write the command
+	flexDigOutGroup16(lcd->data, cmd);
+	// Strobe the chip select
+	flexDigOut(lcd->cs, 1);
+	flexDigOut(lcd->cs, 0);
+}
+
+/*
+ * Write out a command to the LCD in two 4-bit chunks in 4-bit mode.
+ */
+
+/*** BeginHeader _flex_dispCmd */
+void _flex_dispCmd(Flex_LCD *lcd, char cmd);
+/*** EndHeader */
+
+_rabbitflex_sbc40_nodebug
+void _flex_dispCmd(Flex_LCD *lcd, char cmd)
+{
+	// Write upper nibble
+	_flex_dispCmd4(lcd, cmd >> 4);
+	// Wait 160 usec
+   _flex_wait50usX(4);
+	// Write lower nibble
+	_flex_dispCmd4(lcd, cmd & 0x0f);
+	// Wait 160 usec
+	_flex_wait50usX(4);
+}
+
+/*** BeginHeader flexDispInit */
+void flexDispInit(Flex_LCD *lcd, Flex_LCDConf *user_conf);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDispInit									<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexDispInit(Flex_LCD *lcd, Flex_LCDConf *user_conf)
+
+DESCRIPTION:	Initializes the given LCD display, optionally using the
+					given user configuration structure.  This function defaults
+					the cursor to off, the backlight to off, and the contrast
+					control to the display's default value.
+
+PARAMETER1:		A pointer to an LCD data structure
+PARAMETER2:		A pointer to a user-supplied configuration structure for
+					this LCD, or NULL to use the defaults supplied in the Flex
+					board's configuration library.  The structure definition is
+					given as follows:
+
+					typedef struct {
+						char num_cols;				// Number of columns on the
+														// display
+						char num_rows;				// Number of rows on the
+														// display
+						char row_addresses[4];	// Starting address of each row
+														// (up to 4 rows)
+						float anaout_contrast_min;	// Minimum voltage for
+															// contrast control
+						float anaout_contrast_max; // Maximum voltage for
+															// contrast control
+						int pwm_contrast_min;		// Minimum duty cycle for
+															// contrast control
+						int pwm_contrast_max;		// Maximum duty cycle for
+															// contrast control
+					   char def_contrast; 		// Default scaled value for
+					   								// contrast control (0-255)
+					} Flex_LCDConf;
+
+
+RETURN VALUE:	none
+
+SEE ALSO:      flexDispCursor, flexDispGoto, flexDispClear,
+					flexDispPutc, flexDispPrintf, flexDispOnOff,
+					flexDispBacklight, flexDispContrast
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexDispInit(Flex_LCD *lcd, Flex_LCDConf *user_conf)
+{
+	auto Flex_LCDConf *conf;
+	auto char command;
+
+	// Check if the user provided some run-time configuration
+	if (user_conf) {
+		conf = user_conf;
+	}
+	else {
+		conf = &(lcd->def_conf);
+	}
+
+	// Copy the configuration
+	*(lcd->conf) = *conf;
+
+	// Assure outputs are low
+	flexDigOut(lcd->rs, 0);
+	// The display can be configured with the rw line grounded (always write
+	// mode)
+	if (lcd->rw) {
+		flexDigOut(lcd->rw, 0);
+	}
+	flexDigOut(lcd->cs, 0);
+	flexDigOutGroup16(lcd->data, 0);
+
+	// Set backlight to off
+	flexDispBacklight(lcd, 0);
+
+	// Initialize the PWM subsystem if we're using PWM for the contrast control
+	if (lcd->contrast && lcd->contrast->type == FLEX_PINTYPE_PWM) {
+		pwm_init(PWM_CNTRL_FREQ);
+	}
+	// Set the contrast to the default
+	flexDispContrast(lcd, lcd->conf->def_contrast);
+
+	// Set 8-bit interface
+	_flex_dispCmd4(lcd, 0x03);
+	// Wait 5 ms
+   _flex_wait50usX(100);
+	// Set 8-bit interface
+	_flex_dispCmd4(lcd, 0x03);
+	// Wait 160 us
+	_flex_wait50usX(4);
+	// Set 8-bit interface
+	_flex_dispCmd4(lcd, 0x03);
+	// Wait 160 us
+	_flex_wait50usX(4);
+	// Set 4-bit interface
+	_flex_dispCmd4(lcd, 0x02);
+	// Wait another 160 us (not clear if this is necessary, but it's here to be
+	// safe)
+	_flex_wait50usX(4);
+	// Set interface length (4-bit, 2-line or 1-line display, 5x7 font set)
+	command = (lcd->conf->num_rows == 1)?0x20:0x28;
+	_flex_dispCmd(lcd, command);
+	// Turn off the display
+	_flex_dispCmd(lcd, 0x10);
+	// Clear display and home cursor
+	flexDispClear(lcd);
+	// Increment cursor, but don't shift display
+	_flex_dispCmd(lcd, 0x06);
+	// Display on, cursor off
+	_flex_dispCmd(lcd, 0x0c);
+}
+
+/*** BeginHeader flexDispCursor */
+void flexDispCursor(Flex_LCD *lcd, unsigned int style);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDispCursor								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        void flexDispCursor(Flex_LCD *lcd, unsigned int style);
+
+DESCRIPTION:	Sets the cursor type to be on, off, or blink.
+
+PARAMETER1:		A pointer to an LCD data structure
+PARAMETER2:		One of the following cursor macros:
+					* DISP_CUROFF -- cursor off
+					* DISP_CURON -- cursor on
+					* DISP_CURBLINK -- cursor blink
+
+RETURN VALUE:	none
+
+SEE ALSO:      flexDispInit, flexDispGoto,	flexDispClear,
+					flexDispPutc, flexDispPrintf, flexDispOnoff,
+					flexDispBacklight, flexDispContrast
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexDispCursor(Flex_LCD *lcd, unsigned int style)
+{
+	_flex_dispCmd(lcd, 0x0c | style);
+}
+
+/*** BeginHeader flexDispGoto */
+int flexDispGoto(Flex_LCD *lcd, unsigned int col, unsigned int row);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDispGoto									<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexDispGoto(Flex_LCD *lcd, unsigned int col,
+					                  unsigned int row)
+
+DESCRIPTION:	Places the cursor at the given column and row.
+
+PARAMETER1:		A pointer to an LCD data structure
+PARAMETER2:		Column position
+PARAMETER3:		Row position
+
+RETURN VALUE:	 0 -- success
+					-1 -- error (column or row not in allowed range for this
+					      display?)
+
+SEE ALSO:      flexDispInit, flexDispCursor, flexDispClear,
+					flexDispPutc, flexDispPrintf, flexDispOnoff,
+					flexDispBacklight, flexDispContrast
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexDispGoto(Flex_LCD *lcd, unsigned int col, unsigned int row)
+{
+	// Make sure the new column and row are in range
+	if ((col < lcd->conf->num_cols) && (row < lcd->conf->num_rows)) {
+		// Send the command
+		_flex_dispCmd(lcd, lcd->conf->row_addresses[row] + col);
+		// Set the new position
+		lcd->info->col = col;
+		lcd->info->row = row;
+	}
+	// Out of range
+	else {
+		return -1;
+	}
+
+	return 0;
+}
+
+/*** BeginHeader flexDispGetPosition */
+void flexDispGetPosition(Flex_LCD *lcd, unsigned int *col, unsigned int *row);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDispGetPosition							<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexDispGetPosition(Flex_LCD *lcd, unsigned int *col,
+					                         unsigned int *row)
+
+DESCRIPTION:	Gets the current cursor position to the col and row
+					parameters.
+
+PARAMETER1:		A pointer to an LCD data structure
+PARAMETER2:		Pointer to an unsigned int (used to store column position)
+PARAMETER3:		Pointer to an unsigned int (used to store row position)
+
+RETURN VALUE:	none
+
+SEE ALSO:		flexDispGetDimensions, flexDispGetContrast
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexDispGetPosition(Flex_LCD *lcd, unsigned int *col, unsigned int *row)
+{
+	*col = lcd->info->col;
+	*row = lcd->info->row;
+}
+
+/*** BeginHeader flexDispGetDimensions */
+void flexDispGetDimensions(Flex_LCD *lcd, unsigned int *num_cols,
+                            unsigned int *num_rows);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDispGetDimensions						<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:			void flexDispGetDimensions(Flex_LCD *lcd,
+                                           unsigned int *num_cols,
+                                           unsigned int *num_rows);
+
+DESCRIPTION:	Gets the number of columns and rows for the given display.
+
+PARAMETER1:		A pointer to an LCD data structure
+PARAMETER2:		Pointer to an unsigned int (used to store number of
+					columns)
+PARAMETER3:		Pointer to an unsigned int (used to store number of rows))
+
+RETURN VALUE:	none
+
+SEE ALSO:		flexDispGetPosition, flexDispGetContrast
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexDispGetDimensions(Flex_LCD *lcd, unsigned int *num_cols,
+                            unsigned int *num_rows)
+{
+	*num_cols = lcd->conf->num_cols;
+	*num_rows = lcd->conf->num_rows;
+}
+
+/*** BeginHeader flexDispClear */
+void flexDispClear(Flex_LCD *lcd);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDispClear									<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        void flexDispClear(Flex_LCD *lcd);
+
+DESCRIPTION:	Clears the display and returns the cursor to the home
+					position.
+
+PARAMETER1:		A pointer to an LCD data structure
+
+RETURN VALUE:	None
+
+SEE ALSO:      flexDispInit, flexDispCursor, flexDispGoto,
+					flexDispPutc, flexDispPrintf, flexDispOnoff,
+					flexDispBacklight, flexDispContrast
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexDispClear(Flex_LCD *lcd)
+{
+	lcd->info->col = lcd->info->row = 0;
+	// Clear screen and home cursor
+	_flex_dispCmd(lcd, 0x01);
+	// Wait 4.1 msec
+	_flex_wait50usX(82);
+}
+
+/*** BeginHeader _flex_dispData */
+void _flex_dispData(Flex_LCD *lcd, char cData);
+/*** EndHeader */
+
+/*
+ * This function writes a character out to the display.  This is similar to
+ * writing out a command, except that the rs line is set during the operation.
+ */
+
+_rabbitflex_sbc40_nodebug
+void _flex_dispData(Flex_LCD *lcd, char cData)
+{
+	// Set control lines
+	if (lcd->rw) {
+		flexDigOut(lcd->rw, 0);
+	}
+	flexDigOut(lcd->rs, 1);
+
+	// Ready upper nibble
+	flexDigOutGroup16(lcd->data, cData>>4);
+	// Strobe chip select
+	flexDigOut(lcd->cs, 1);
+	flexDigOut(lcd->cs, 0);
+
+	// Ready lower nibble
+	flexDigOutGroup16(lcd->data, cData & 0x0f);
+	// Strobe chip select
+	flexDigOut(lcd->cs, 1);
+	flexDigOut(lcd->cs, 0);
+
+	// Wait 160 usec
+	_flex_wait50usX(4);
+
+	// Set back to read mode
+	if (lcd->rw) {
+		flexDigOut(lcd->rw, 1);
+  	}
+}
+
+/*** BeginHeader _flexDispPutcInternal */
+void _flexDispPutcInternal(int ch, char *buf, int *cnt, void *instanceParam);
+/*** EndHeader */
+
+/*
+ * This function is used by both flexDispPutc() and flexDispPrintf() to
+ * output a character to the display.  This internal function has been created
+ * because the printf() putc mechanism has extra parameters compared to the
+ * flexDispPutc() function.  The second and third parameters are not used
+ * for this putc function, but instaceParam is used to pass in the Flex LCD
+ * structure.
+ */
+
+_rabbitflex_sbc40_nodebug
+void _flexDispPutcInternal(int ch, char *buf, int *cnt, void *instanceParam)
+{
+	auto Flex_LCD *lcd;
+	auto Flex_LCDInfo *info;
+	auto char c;
+	auto char num_rows;
+
+	// instanceParam contains the reference to the LCD structure
+	lcd = (Flex_LCD *)instanceParam;
+	info = lcd->info;
+	c = (char)ch;
+	num_rows = lcd->conf->num_rows;
+
+	// Go to the next line if this is a newline character
+	if (c == '\n') {
+		flexDispGoto(lcd, 0, (info->row + 1) % num_rows);
+		return;
+	}
+	// Ignore carriage return character
+	else if (c == '\r') {
+		return;
+	}
+	// Send the data to the display
+	_flex_dispData(lcd, c);
+	// Go to the next row if we're on the last character in the row
+	if (info->col == lcd->conf->num_cols - 1) {
+		flexDispGoto(lcd, 0, (info->row + 1) % num_rows);
+	}
+	// Otherwise just indicate that we've gone to the next column
+	else {
+		info->col++;
+	}
+	// Increment the count
+	if (cnt) {
+		*cnt = *cnt + 1;
+   }
+}
+
+/*** BeginHeader flexDispPutc */
+void flexDispPutc(Flex_LCD *lcd, char ch);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDispPutc									<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        void flexDispPutc(Flex_LCD *lcd, char ch);
+
+DESCRIPTION:	Puts the given character on the display at the current
+					cursor position.
+
+PARAMETER1:		A pointer to an LCD data structure
+PARAMETER2:		The character to write to the display
+
+RETURN VALUE:	none
+
+SEE ALSO:      flexDispInit, flexDispCursor, flexDispGoto,
+					flexDispClear, flexDispPrintf,	flexDispOnoff,
+					flexDispBacklight, flexDispContrast
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexDispPutc(Flex_LCD *lcd, char ch)
+{
+	_flexDispPutcInternal(ch, NULL, NULL, lcd);
+}
+
+/*** BeginHeader flexDispPrintf */
+int flexDispPrintf(Flex_LCD *lcd, char *format, ...);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDispPrintf								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexDispPrintf(Flex_LCD *lcd, char *format, ...);
+
+DESCRIPTION:	Prints the formatted string to the display starting at the
+					current cursor position.  The pcFormat format specifier and
+					additional parameters are specified just like in printf().
+
+PARAMETER1:		A pointer to an LCD data structure
+PARAMETER2:		A printf()-style format specifier string
+
+RETURN VALUE:	The number of characters displayed.
+
+SEE ALSO:      flexDispInit, flexDispCursor, flexDispGoto,
+					flexDispClear, flexDispPutc, flexDispOnoff,
+					flexDispBacklight, flexDispContrast
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexDispPrintf(Flex_LCD *lcd, char *format, ...)
+{
+	auto int count;
+
+	// Initialize the count
+	count = 0;
+
+	// Print the string
+	doprnt(_flexDispPutcInternal, format, &format + 1, lcd, NULL, &count);
+
+	// Return the number of characters displayed
+	return count;
+}
+
+/*** BeginHeader flexDispOnoff */
+void flexDispOnoff(Flex_LCD *lcd, int onOff);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDispOnoff									<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        void flexDispOnoff(Flex_LCD *lcd, int onOff);
+
+DESCRIPTION:	Turns the display on or off.
+
+PARAMETER1:		A pointer to an LCD data structure
+PARAMETER2:		1 to turn the display on, 0 to turn it off
+
+RETURN VALUE:	None
+
+SEE ALSO:      flexDispInit, flexDispCursor, flexDispGoto,
+					flexDispClear, flexDispPutc, flexDispPrintf,
+					flexDispBacklight, flexDispContrast
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexDispOnoff(Flex_LCD *lcd, int onOff)
+{
+	if (onOff) {
+		_flex_dispCmd(lcd, 0x0c);
+	}
+	else {
+		_flex_dispCmd(lcd, 0x08);
+	}
+}
+
+/*** BeginHeader flexDispBacklight */
+int flexDispBacklight(Flex_LCD *lcd, int onOff);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDispBacklight							<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexDispBacklight(Flex_LCD *lcd, int onOff);
+
+DESCRIPTION:	Turns the display's backlight on or off.
+
+PARAMETER1:		A pointer to an LCD data structure
+PARAMETER2:		1 to turn the backlight on, 0 to turn it off
+
+RETURN VALUE:	 0 -- success
+					-1 -- error (no backlight control on this display)
+
+SEE ALSO:      flexDispInit, flexDispCursor, flexDispGoto,
+					flexDispClear, flexDispPutc, flexDispPrintf,
+					flexDispOnoff, flexDispContrast
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexDispBacklight(Flex_LCD *lcd, int onOff)
+{
+	// Make sure we have backlight control
+	if (lcd->backlight == NULL) {
+		return -1;
+	}
+
+	if (onOff) {
+		onOff = 0;
+	}
+   else {
+   	onOff = 1;
+   }
+	flexDigOut(lcd->backlight, onOff);
+
+	return 0;
+}
+
+/*** BeginHeader flexDispContrast */
+int flexDispContrast(Flex_LCD *lcd, char vcontrast);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDispContrast								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexDispContrast(Flex_LCD *lcd, char vcontrast);
+
+DESCRIPTION:	Sets the contrast for the display. The vcontrast value
+					range is from 0-255, and is scaled to a contrast control
+					voltage.
+
+PARAMETER1:		A pointer to an LCD data structure
+PARAMETER2:		A value from 0-255 that is scaled to produce a contrast
+					control voltage (lower values are higher contrast)
+
+RETURN VALUE:	 0 -- success
+					-1 -- error (no contrast control on this display)
+
+SEE ALSO:      flexDispInit, flexDispCursor, flexDispGoto,
+					flexDispClear, flexDispPutc, flexDispPrintf,
+					flexDispOnoff, flexDispBacklight,
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexDispContrast(Flex_LCD *lcd, char vcontrast)
+{
+	auto float fraction;
+	auto float voltage;
+	auto int duty_cycle;
+	auto Flex_LCDConf *conf;
+
+	// Make sure we have contrast control
+	if (lcd->contrast == NULL) {
+		return -1;
+	}
+
+	// Save off the current contrast
+	lcd->info->contrast = vcontrast;
+
+	// Determine the fraction of the minimum and maximum voltage range that the
+	// caller has requested
+	fraction = (float)vcontrast / 255;
+
+	conf = lcd->conf;
+	// Calculate the new voltage, if the4 contrast control is with an analog
+	// output
+	if (lcd->contrast->type == FLEX_PINTYPE_ANAOUT) {
+	   voltage = conf->anaout_contrast_min +
+	             fraction*(conf->anaout_contrast_max - conf->anaout_contrast_min);
+
+	   // Output the new contrast voltage
+	   flexAnaOutVolts(lcd->contrast, voltage);
+	}
+	else {
+		duty_cycle = conf->pwm_contrast_min +
+		             (int)(fraction * (conf->pwm_contrast_max - conf->pwm_contrast_min));
+
+		// Output the new duty cycle
+		pwm_set(lcd->contrast->wr_addr, duty_cycle, PWM_SPREAD);
+	}
+	return 0;
+}
+
+/*** BeginHeader flexDispGetContrast */
+char flexDispGetContrast(Flex_LCD *lcd);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexDispGetContrast							<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:			char flexDispGetContrast(FLEX_LCD *lcd);
+
+DESCRIPTION:	Returns the current contrast setting (a value from
+					0 - 255).
+
+PARAMETER1:		A pointer to an LCD data structure
+
+RETURN VALUE:	The current contrast setting (0 - 255)
+
+SEE ALSO:		flexDispContrast, flexDispGetDimensions,
+					flexDispGetPosition
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+char flexDispGetContrast(Flex_LCD *lcd)
+{
+	return lcd->info->contrast;
+}
+
+/*** BeginHeader _flex_dqInit, _flex_dqPop, _flex_dqPush */
+int _flex_dqPop ( struct _Flex_KeypadQueue * );					//	Remove Char from Tail
+int _flex_dqPush ( struct _Flex_KeypadQueue *,char );
+void _flex_dqInit ( struct _Flex_KeypadQueue *,void *,unsigned );
+/*** EndHeader */
+
+#asm root
+;============================================================================
+; ._flex_dqPop : Pop Item from Queue (Remove from Tail)
+;
+; INPUT  :
+;          IY = Pointer to Queue Structure
+; OUTPUT :
+;          A  = Character Popped from Queue
+;          NZ = Character Popped OK
+;          Z  = Queue is EMPTY
+; NOTES  :
+;          Destroys HL,DE,Flags
+
+._flex_dqPop::
+	ld    e,(iy+8)          ; DE = Out Pointer
+   ld    d,(iy+9)
+   ld    l,(iy+6)          ; HL = In Pointer
+   ld    h,(iy+7)
+   xor   a                 ; Check for Empty Queue
+   sbc   hl,de
+   ret   z                 ; Done if Empty
+   ld    a,(de)            ; Get Character
+   ld    l,(iy+4)          ; HL = Last Buffer Location
+   ld    h,(iy+5)
+   or    a                 ; Check for Wrap
+   sbc   hl,de
+   inc   de                ; DE = Next Out Pointer
+   jr    nz,.PoNoWrap1     ; Done if No Wrap
+   ld    e,(iy+2)          ; DE = First Buffer Location
+   ld    d,(iy+3)
+.PoNoWrap1:
+   ld    (iy+8),e          ; Update Out Pointer
+	ld    (iy+9),d
+   ld    e,a               ; Set NZ Flag
+   inc   e
+   cp    e
+   ret                     ; Return w/ Error
+
+;============================================================================
+; _flex_dqPop  : Pop Item from Queue
+;
+; C CALL :
+;          int _flex_dqPop ( Queue * );
+; RETURN :
+;          0 - 255 : Character Read
+;          -1      : Buffer Empty
+
+_flex_dqPop::
+	pop   hl                ; Return Address
+   pop   iy                ; IY = Queue Pointer
+   push  hl                ; Restore Stack
+   push  hl
+   call  ._flex_dqPop				; Push Character
+   ld    h,0               ; HL = Character Read
+   ld    l,a
+   ret   nz                ; Done if No Error
+   ld    hl,-1             ; HL = Queue is Empty
+   ret                     ; Done
+
+
+;============================================================================
+; ._flex_dqPush : Push Item (Add to Tail)
+;
+; INPUT  :
+;          IY = Pointer to Queue Structure
+;          A  = Character to Add to Queue
+; OUTPUT :
+;          NZ = Pushing OK
+;          Z  = Queue is FULL
+; NOTES  :
+;          Destroys HL,DE,Flags
+
+._flex_dqPush::
+	ld		e,(iy+8)				; DE = Out Pointer
+	ld		d,(iy+9)
+   ld    l,(iy+2)          ; HL = First Buffer Location
+   ld    h,(iy+3)
+   or    a                 ; Check for Wrap
+   sbc   hl,de
+   dec	de                ; DE = Prev (Out Pointer)
+   jr    nz,.PuNoWrap0		; Done if No Wrap
+   ld    e,(iy+4)          ; DE = Last Buffer Location
+   ld    d,(iy+5)
+.PuNoWrap0:
+	ld    l,(iy+6)          ; HL = Input Pointer
+   ld    h,(iy+7)
+   or    a                 ; Check for Overrun
+   sbc   hl,de
+   ret   z                 ; Done if Overrun
+   ld    (iy+8),e          ; Update Out Pointer
+   ld    (iy+9),d
+   ld    (de),a            ; Store Character
+   ret                     ; Done - No Error
+
+;============================================================================
+; _flex_dqPush : Push Item (Add to Head)
+;
+; C CALL :
+;          int _flex_dqPush ( Queue *,char );
+; RETURN :
+;          0  - No Error
+;          -2 - Buffer Full
+
+_flex_dqPush::
+	pop   hl                ; Return Address
+   pop   iy                ; IY = Queue Pointer
+   pop   de                ; E  = Character
+   push  de                ; Restore Stack
+   push  hl
+   push  hl
+   ld    a,e               ; A = Character
+   call  ._flex_dqPush				; Push Character
+   ld    hl,0              ; HL = No Error
+   ret   nz                ; Done if No Error
+   ld    hl,-2             ; HL = Queue is Full
+   ret                     ; Done
+
+;============================================================================
+; _flex_dqInit :  Initialize Queue
+;
+; C CALL :
+;          void _flex_dqInit ( Queue *,void *,unsigned );
+; RETURN :
+;          None
+; INPUT  :
+;          HL = Pointer to Queue Structure
+;          DE = Address of Buffer
+;          BC = Size of Buffer
+; OUTPUT :
+;          None
+_flex_dqInit::
+	call  _param3           ; Get Parameters from C
+	ld    (hl),c            ; Store Size of Buffer
+   inc   hl
+   ld    (hl),b
+   inc   hl
+   push  de                ; Protect Low Buffer Address
+   ld    (hl),e            ; Store Low Buffer Address
+   inc   hl
+   ld    (hl),d
+   inc   hl
+   ex    de,hl             ; Compute Last Byte of Buffer
+   add   hl,bc
+   dec	hl
+   ex    de,hl
+   ld    (hl),e            ; Store High Buffer Address
+   inc   hl
+   ld    (hl),d
+   inc   hl
+   pop   de                ; Restore Low Buffer Address
+   ld    (hl),e            ; Initialize In Pointer
+   inc   hl
+   ld    (hl),d
+   inc   hl
+   ld    (hl),e            ; Initialize Out Pointer
+   inc   hl
+   ld    (hl),d
+   inc   hl
+   ret                     ; Done
+
+;============================================================================
+; .dqQueue : Queue Item (Add to Head)
+;
+; INPUT  :
+;          IY = Pointer to Queue Structure
+;          A  = Character to Add to Queue
+; OUTPUT :
+;          NZ = Queueing OK
+;          Z  = Queue is FULL
+; NOTES  :
+;          Destroys HL,DE,Flags
+
+.dqQueue::
+	ld		e,(iy+6)				; DE = In Pointer
+	ld		d,(iy+7)
+   push  de                ; Protect In Pointer
+   ld    l,(iy+4)          ; HL = Last Buffer Location
+   ld    h,(iy+5)
+   or    a                 ; Check for Wrap
+   sbc   hl,de
+   inc   de                ; DE = Next In Pointer
+   jr    nz,.QuNoWrap0		; Done if No Wrap
+   ld    e,(iy+2)          ; DE = First Buffer Location
+   ld    d,(iy+3)
+.QuNoWrap0:
+	ld    l,(iy+8)          ; HL = Output Pointer
+   ld    h,(iy+9)
+   or    a                 ; Check for Overrun
+   sbc   hl,de
+   pop   hl                ; Restore Current In Pointer
+   ret   z                 ; Done if Overrun
+   ld    (iy+6),e          ; Update In Pointer
+   ld    (iy+7),d
+   ld    (hl),a            ; Store Character
+   ret                     ; Done - No Error
+
+;============================================================================
+; .dqQueueS : Queue Item w/ Minimum of Register Damage
+;
+; INPUT  :
+;          IY = Pointer to Queue Structure
+;          A  = Character to Add to Queue
+; OUTPUT :
+;          NZ = Queueing OK
+;          Z  = Queue is FULL
+; NOTES  :
+;          Destroys Flags
+
+.dqQueueS::
+	push  hl                ; Protect HL
+   push  de                ; Protect DE
+   call  .dqQueue				; Queue Item
+   pop   de                ; Restore DE
+   pop   hl                ; Restore HL
+   ret                     ; Done
+
+#endasm
+
+/*** BeginHeader flexKeyProcess */
+void flexKeyProcess(Flex_Keypad *keypad);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexKeyProcess								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:			void flexKeyProcess(Flex_Keypad *keypad);
+
+DESCRIPTION:   For the given keypad, this function scans and processes
+					keypad data for keypresses.  It also handles debouncing,
+               releases, and repeats.
+
+PARAMETER1:		The keypad to process
+
+RETURN VALUE:	None
+
+SEE ALSO:		flexKeyInit, flexKeyConfig, flexKeyGet, flexKeyUnget
+
+END DESCRIPTION **********************************************************/
+
+#asm root
+flexKeyProcess::
+	push	ix
+
+	; Save the Flex_Keypad pointer
+	ld		ix,hl
+
+	; rawfifo[1..2] = rawfifo[0..1]
+	; HL = Flex_KeypadData pointer
+	ld		hl,(ix+[Flex_Keypad]+data)
+	ld		iy,hl			; Save this memory location
+	; BC = offset of rawfifo
+	ld		bc,[Flex_KeypadData]+rawfifo
+	; DE' = end of rawfifo[1]
+	add	hl,bc
+   ld		de,2*__FLEX_MAX_RAWFIFO*sizeof(unsigned)-1
+	add	hl,de
+	ex		de',hl
+	; HL = Flex_KeypadData pointer
+	ld		hl,iy
+	; DE = end of rawfifo[2]
+	add	hl,bc
+   ld		de,3*__FLEX_MAX_RAWFIFO*sizeof(unsigned)-1
+   add	hl,de
+	ex		de,hl
+	; HL = end of rawfifo[1]
+	ex		de',hl
+	; BC = 2 * size of one rawfifo array (we're copying 2 sets of data)
+	ld		bc,2*__FLEX_MAX_RAWFIFO*sizeof(unsigned)
+	; Perform the copy
+	lddr
+
+	; Call _flex_keyScan to read keypad state
+	ld		hl,ix
+	push	hl
+	call	_flex_keyScan
+	pop	hl
+
+	; Store the initial counter values for number of outputs and inputs into
+	; BC'.  Also save them on the stack.
+	exx
+	ld		b,(ix+[Flex_Keypad]+num_outs)
+	ld		c,(ix+[Flex_Keypad]+num_ins)
+	push	bc
+	exx
+
+	; Load IX with keypad codes array
+	ld		iy,hl			; Save the keypad memory location
+	ld		hl,(hl+[Flex_Keypad]+codes)
+	ld		ix,hl
+
+	; Push queue address onto the stack
+	ld		hl,iy
+	ld		hl,(hl+[Flex_Keypad]+data)
+	ld		iy,hl			; Save the data memory location
+	ld		bc,[Flex_KeypadData]+queue
+	add	hl,bc
+	push	hl
+
+	; Load IY with rawfifo
+	ld		hl,iy
+	ld		bc,[Flex_KeypadData]+rawfifo
+	add	hl,bc
+	ld		iy,hl
+
+.kP0:
+	; Set up BC with size of one rawfifo array
+   ld		bc,__FLEX_MAX_RAWFIFO*sizeof(unsigned)
+	;
+	; Calculate falling edge detectors
+	;
+	; DE = rawfifo[0][row]
+	ld		hl,(iy)
+	ex		de,hl
+	; HL = rawfifo[1][row]
+	ld		hl,iy
+	add	hl,bc
+	ld		hl,(hl)
+	; HL = rawfifo[0][row] | rawfifo[1][row]
+	or		hl,de
+	; HL = ~rawfifo[0][row] & ~rawfifo[1][row]
+	ld		a,h
+	cpl
+	ld		h,a
+	ld		a,l
+	cpl
+	ld		l,a
+	; DE = ~rawfifo[0][row] & ~rawfifo[1][row]
+	ex		de,hl
+	; HL = rawfifo[2][row]
+	ld		hl,iy
+	add	hl,bc
+	add	hl,bc
+	ld		hl,(hl)
+	; HL = ~rawfifo[0][row] & ~rawfifo[1][row] & rawfifo[2][row]
+	and	hl,de
+	; DE' = Falling Edge Detectors
+	ex		de',hl
+
+	;
+	; Calculate rising edge detectors
+	;
+	; HL = rawfifo[2][row]
+	ld		hl,iy
+	add	hl,bc
+	add	hl,bc
+	ld		hl,(hl)
+	; HL = ~rawfifo[2][row]
+	ld		a,h
+	cpl
+	ld		h,a
+	ld		a,l
+	cpl
+	ld		l,a
+	; DE = ~rawfifo[2][row]
+	ex		de,hl
+	; HL = rawfifo[1][row]
+	ld		hl,iy
+	add	hl,bc
+	ld		hl,(hl)
+	; HL = rawfifo[1][row] & ~rawfifo[2][row]
+	and	hl,de
+	; DE = rawfifo[1][row] & ~rawfifo[2][row]
+	ex		de,hl
+	; HL = rawfifo[0][row]
+	ld		hl,(iy)
+	; HL = rawfifo[0][row] & rawfifo[1][row] & ~rawfifo[2][row]
+	and	hl,de
+	; HL' = Rising Edge Detectors
+	ex		de,hl
+	ex		de,hl'
+
+	; Get queue address
+	pop	hl
+	; Protect rawfifo pointer
+	push	iy
+	; Put queue address in iy
+	ld		iy,hl
+
+	; Reset column counter (in C')
+	ld		hl,(sp+2)				; # Columns in SP+2
+	ld		c',l
+
+.kP1:
+	; Bring edge detectors into primary registers
+	exx
+	rr		de						 						; C = Press Detected
+	jr		nc,.kP2										; Skip if No Press Detected
+	ld		a,(ix+[Flex_KeypadCodes]+cPress)		; Code Set for Press?
+	or		a,a
+	jr		z,.kP3
+	call	.dqQueueS	 						  		; Queue Key Press
+.kP3:
+	ld		a,(ix+[Flex_KeypadCodes]+cCntHold)	; Set Initial Hold Count
+	ld		(ix+[Flex_KeypadCodes]+cCount),a
+	ld		a,1	 										; Button is Downing & Holding
+	ld		(ix+[Flex_KeypadCodes]+cState),a
+.kP2:
+	rr		hl		  										; C = Release Detected
+	jr		nc,.kP4
+	ld		a,(ix+[Flex_KeypadCodes]+cRelease)	; Code Set for Release?
+	or		a,a
+	jr		z,.kP5
+	call	.dqQueueS	 								; Queue Key Release
+.kP5:
+	xor	a	  											; Button is Up
+	ld		(ix+[Flex_KeypadCodes]+cState),a
+.kP4:
+	ld		a,(ix+[Flex_KeypadCodes]+cState)		; A = Current Key State
+	dec	a		 										; cState == 1?
+	jr		nz,.kP6
+	or		a,(ix+[Flex_KeypadCodes]+cCount)		; If Hold Count Zero, Done
+	jr		z,.kP8
+	dec	(ix+[Flex_KeypadCodes]+cCount)		; If Count Not Reaching Zero, Done
+	jr		nz,.kP8
+	ld		a,(ix+[Flex_KeypadCodes]+cPress)		; Queue New Keypress
+	call	.dqQueueS
+	ld		a,(ix+[Flex_KeypadCodes]+cSpdLo)		; Setup Low Speed Repeat
+	ld		(ix+[Flex_KeypadCodes]+cSpeed),a
+	ld		(ix+[Flex_KeypadCodes]+cRepeat),a
+	ld		a,(ix+[Flex_KeypadCodes]+cCntLo)		; Setup Low Speed Period
+	ld		(ix+[Flex_KeypadCodes]+cCount),a
+	ld		a,2											; Button in Low Speed Repeat
+	ld		(ix+[Flex_KeypadCodes]+cState),a
+	jr		.kP8		  									; Done
+.kP6:
+	dec	a			 							  		; cState == 2?
+	jr		nz,.kP7
+	or		a,(ix+[Flex_KeypadCodes]+cCount)		; If Hold Count Zero, Done
+	jr		z,.kP9
+	dec	(ix+[Flex_KeypadCodes]+cCount)		; If Count Not Reaching Zero, Done
+	jr		nz,.kP9
+	ld		a,(ix+[Flex_KeypadCodes]+cSpdHi)		; Set High Speed Repeat
+	ld		(ix+[Flex_KeypadCodes]+cSpeed),a
+	ld		a,3											; Button in High Speed Repeat
+	ld		(ix+[Flex_KeypadCodes]+cState),a
+	jr		.kP9	 										; Finish Processing
+.kP7:
+	dec	a		  										; cState == 3?
+	jr		nz,.kP8
+.kP9:
+	dec	(ix+[Flex_KeypadCodes]+cRepeat)		; If Repeat Count not Reaching Zero, Done
+	jr		nz,.kP8
+	ld		a,(ix+[Flex_KeypadCodes]+cPress)		; Queue New Keypress
+	call	.dqQueueS
+	ld		a,(ix+[Flex_KeypadCodes]+cSpeed)		; Reset Repeat Count
+	ld		(ix+[Flex_KeypadCodes]+cRepeat),a
+.kP8:
+	; Put edge detectors back in alternate registers
+	exx
+	ld		bc,sizeof(Flex_KeypadCodes)	 		; Bump Process Array Pointer
+	add	ix,bc
+	exx
+	dec	c							; Decrement Column Counter
+	exx
+	jp		nz,.kP1					; Continue til Columns Done
+	; Get rawfifo back into IY / Save queue pointer
+	pop	hl
+	push	iy
+	ld		iy,hl
+	inc	iy							; Bump aacKey Pointer
+	inc	iy
+	exx
+	dec	b							; Decrement Row Counter
+	exx
+	jp		nz,.kP0					; Continue til All Rows Done
+
+	pop	hl							; Throw away
+	pop	hl							; Throw away
+	pop	ix
+	ret							; Done
+#endasm
+
+/*** BeginHeader _flex_keyScan */
+void _flex_keyScan(Flex_Keypad *keypad);
+/*** EndHeader */
+
+root _rabbitflex_sbc40_nodebug
+void _flex_keyScan(Flex_Keypad *keypad)
+{
+	auto int i;
+	auto unsigned int input;
+
+	// Loop through the outputs
+	for (i = 0; i < keypad->num_outs; i++) {
+		flexDigOut(keypad->outs[i], 0);
+		// Delay 250 us to let the output settle
+		_flex_wait50usX(5);
+		flexDigInGroup16(keypad->ins, &input);
+		flexDigOut(keypad->outs[i], 1);
+		keypad->data->rawfifo[0][i] = input;
+	}
+}
+
+/*** Beginheader flexKeyInit */
+void flexKeyInit(Flex_Keypad *keypad);
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexKeyInit   								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:			void flexKeyInit(Flex_Keypad *keypad);
+
+DESCRIPTION:   Initializes the given keypad.  This function must be
+					called before any other function for this particular
+               keypad.
+
+PARAMETER1:		The keypad to initialize
+
+RETURN VALUE:	None
+
+SEE ALSO:		flexKeyConfig, flexKeyProcess, flexKeyGet,
+					flexKeyUnget
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexKeyInit(Flex_Keypad *keypad)
+{
+	memset(keypad->codes, 0x00,
+	       keypad->num_outs * keypad->num_ins * sizeof(Flex_KeypadCodes));
+
+	memset(keypad->data->rawfifo, 0xff, sizeof(keypad->data->rawfifo));
+   // Initialize the keypad outputs
+   flexDigOutGroup16(keypad->outs, 0xffff);
+	_flex_dqInit(&(keypad->data->queue), keypad->data->queuebuffer,
+	       sizeof(keypad->data->queuebuffer));
+}
+
+/*** BeginHeader flexKeyConfig */
+void flexKeyConfig(Flex_Keypad *keypad,
+                    char cRaw,
+                    char cPress,
+                    char cRelease,
+                    char cCntHold,
+                    char cSpdLo,
+                    char cCntLo,
+                    char cSpdHi);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexKeyConfig                         <RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        void flexKeyConfig(Flex_Keypad *keypad,
+                                   char cRaw,
+                                   char cPress,
+                                   char cRelease,
+                                   char cCntHold,
+                                   char cSpdLo,
+                                   char cCntLo,
+                                   char cSpdHi);
+
+
+DESCRIPTION:   Assigns each key with key press and release codes, hold
+					and repeat ticks for auto repeat and debouncing for a
+               specific keypad.
+
+PARAMETER1:		keypad - The keypad to configure
+
+PARAMETER2:		cRaw - Raw Key Code Index
+					Each key has a raw keycode.  These start from 0 and count
+               up.  Each crosswire keypad has m outputs and n inputs
+               (these may or may not correspond to "rows" and "columns").
+               The raw keycode can be calculated by the following formula:
+
+               [output #] * [num outputs] + [input #]
+
+               where the output # and input # start from 0.  If these
+               correspond to rows and columns, then the formula would be:
+
+               [row #] * [num rows] + [column #]
+
+PARAMETER3:		cPress - Key Press Code
+					An 8-bit value returned when a key is pressed.  0 = Unused.
+
+PARAMETER4:		cRelease - Key Release Code
+					An 8-bit value to be returned when a key is released.  0 = Unused.
+
+PARAMETER5:		cCntHold - Hold Ticks
+					How long to hold before repeating.  0 = No Repeat.
+
+PARAMETER6:		cSpdLo - Low Speed Repeat Ticks
+					How many times to repeat.  0 = None.
+
+PARAMETER7:		cCntLo - Low Speed Hold Ticks
+					How long to hold before going to high speed repeat.  0 = Slow Only.
+
+PARAMETER8:		cSpdHi - High Speed Repeat Ticks
+					How many times to repeat after low speed repeat.  0 = None.
+
+RETURN VALUE:	None
+
+SEE ALSO:		flexKeyInit, flexKeyProcess, flexKeyGet,
+					flexKeyUnget
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexKeyConfig(Flex_Keypad *keypad,
+                    char cRaw,
+                    char cPress,
+                    char cRelease,
+                    char cCntHold,
+                    char cSpdLo,
+                    char cCntLo,
+                    char cSpdHi)
+{
+	auto Flex_KeypadCodes *pKey;
+
+	pKey = &((keypad->codes)[cRaw]);
+	pKey->cRaw = cRaw;
+	pKey->cPress = cPress;
+	pKey->cRelease = cRelease;
+	if (!cPress) {
+		cCntHold = cSpdLo = cCntLo = cSpdHi = 0;
+	}
+	pKey->cCntHold = cCntHold;
+	pKey->cSpdLo = cSpdLo;
+	pKey->cCntLo = cCntLo;
+	pKey->cSpdHi = cSpdHi;
+	pKey->cState = 0;
+}
+
+/*** BeginHeader flexKeyUnget */
+int flexKeyUnget(Flex_Keypad *keypad, char cKey);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexKeyUnget  								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:			int flexKeyUnget(Flex_Keypad *keypad, char cKey)
+
+DESCRIPTION:   For the given keypad, push the keypress (cKey) back onto
+					the top of the input queue.
+
+PARAMETER1:		The keypad to use
+
+PARAMETER2:		The keycode to put back onto the top of the queue
+
+RETURN VALUE:	> 0 -- The keycode put back onto the queue (success)
+               0   -- Failure (keypad queue full?)
+
+SEE ALSO:		flexKeyInit, flexKeyConfig, flexKeyProcess, flexKeyGet
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexKeyUnget(Flex_Keypad *keypad, char cKey)
+{
+	return cKey && !_flex_dqPush(&(keypad->data->queue), cKey);
+}
+
+/*** BeginHeader flexKeyGet */
+char flexKeyGet(Flex_Keypad *keypad);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexKeyGet  								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        char flexKeyGet(Flex_Keypad *keypad);
+
+DESCRIPTION:   For the given keypad, this function gets the next
+					keypress from the keypad input queue.
+
+PARAMETER1:		The keypad to use
+
+RETURN VALUE:	> 0 -- The next keypress
+               0   -- No keypresses available
+
+SEE ALSO:		flexKeyInit, flexKeyConfig, flexKeyProcess,
+					flex_keyUnGet
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+char flexKeyGet(Flex_Keypad *keypad)
+{
+	auto int nKey;
+
+	return (nKey = _flex_dqPop(&(keypad->data->queue))) == -1 ? 0 : nKey;
+}
+
+/*
+ * The following function selects the PWM pin to use for the tone and audio
+ * speaker drivers.
+ */
+
+/*** BeginHeader flexSpeakerPWM */
+int flexSpeakerPWM(Flex_IOPin *pin);
+
+// Holds the speaker PWM channel register addresses (least significant and
+// most significant portions), as well as the channel number.
+extern int _flex_speaker_PWM_l;
+extern int _flex_speaker_PWM_m;
+extern int _flex_speaker_PWM_channel;
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexSpeakerPWM								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:			int flexSpeakerPWM(Flex_IOPin *pin);
+
+DESCRIPTION:	Selects the PWM channel to be used for the audio and tone
+					speaker drivers.
+
+PARAMETER1:		The PWM pin to use for the speaker.
+
+RETURN VALUE:	 0 -- success
+					-1 -- error (not a PWM pin?)
+
+SEE ALSO:		flexToneActivate, flexAudioActivate
+
+END DESCRIPTION **********************************************************/
+
+// Holds the speaker PWM channel register addresses (least significant and
+// most significant portions), as well as the channel number.
+int _flex_speaker_PWM_l;
+int _flex_speaker_PWM_m;
+int _flex_speaker_PWM_channel;
+
+int flexSpeakerPWM(Flex_IOPin *pin)
+{
+	// Make sure we have a PWM pin
+	if (pin->type != FLEX_PINTYPE_PWM) {
+		return -1;
+	}
+
+	// Save off the PWM channel
+	_flex_speaker_PWM_channel = pin->wr_addr;
+
+	// Save off the register addresses for the appropriate PWM channel
+	switch (_flex_speaker_PWM_channel) {
+	case 0:
+		_flex_speaker_PWM_l = PWL0R;
+		_flex_speaker_PWM_m = PWM0R;
+		break;
+	case 1:
+		_flex_speaker_PWM_l = PWL1R;
+		_flex_speaker_PWM_m = PWM1R;
+		break;
+	case 2:
+		_flex_speaker_PWM_l = PWL2R;
+		_flex_speaker_PWM_m = PWM2R;
+		break;
+	case 3:
+		_flex_speaker_PWM_l = PWL3R;
+		_flex_speaker_PWM_m = PWM3R;
+		break;
+	}
+
+	return 0;
+}
+
+/****************************************************************
+RabbitFlex SBC tone driver
+
+Outputs a PWM tone signal on PF7 using a PWM channel and the
+input capture interrupt.
+Cannot be used with other interupt based input capture functions.
+Output range is 0 to 0.5 duty cycle
+
+****************************************************************/
+
+/*** BeginHeader flexToneActivate */
+unsigned int flexToneActivate();
+void _flex_tone_isr();
+
+// Divisor for timer TA9.  This can be increased to decrease the PWM cycle
+// rate, which will also decrease the audio quality.
+#ifndef FLEX_TONE_DIVISOR
+#define FLEX_TONE_DIVISOR 0
+#endif
+
+extern char _flex_tone_busy_flag;
+
+// Variables for rate conversion
+extern long _flex_tone_remainder;
+extern unsigned int _flex_tone_sourcerate;
+extern unsigned int _flex_tone_outputrate;
+
+// This is the size of the circular buffer that holds the tone information
+// as it is being loaded and played.  This is located in root memory.
+#ifndef FLEX_TONE_BUFSIZE
+#define FLEX_TONE_BUFSIZE 500
+#endif
+
+extern char _flex_tone_cbuf[];
+
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexToneActivate								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        unsigned int flexToneActivate();
+
+DESCRIPTION:   Enables the tone driver so that samples can be loaded
+               and played.
+               Note: The tone driver consumes %10-20 of the processor's
+               time while it is running. Use flexToneShutdown() to
+               disable the tone driver while not in use.
+               The tone and audio drivers may not be used at the same time.
+               You may switch between using one and the other within the
+               same program, however.
+
+RETURN VALUE:  The frequency of PWM pulses output by the tone driver.
+
+SEE ALSO:		flexSpeakerPWM, flexToneShutdown, flexToneLoad,
+					flexToneStop
+
+END DESCRIPTION **********************************************************/
+
+char _flex_tone_busy_flag;
+long _flex_tone_remainder;
+unsigned int _flex_tone_sourcerate;
+unsigned int _flex_tone_outputrate;
+
+char _flex_tone_cbuf[FLEX_TONE_BUFSIZE+5];
+
+_rabbitflex_sbc40_nodebug
+unsigned int flexToneActivate()
+{
+   _flex_tone_busy_flag = 0;
+   _flex_tone_remainder = 0;
+
+   // 19200*16 / 1024 = 300
+   _flex_tone_outputrate = (int)((300L * (long)freq_divider) /
+                                 (FLEX_TONE_DIVISOR + 1));
+	_flex_tone_outputrate /= 2;
+   _flex_tone_sourcerate = _flex_tone_outputrate; // safe default
+   WrPortI(TAT9R, &TAT9RShadow, FLEX_TONE_DIVISOR);
+
+   // center(zero) is 1/2 pulse
+   WrPortI(_flex_speaker_PWM_m, NULL, 0x80);
+   WrPortI(_flex_speaker_PWM_l, NULL, 0x01);
+   // set PFx to PWM drive
+   BitWrPortI(PFFR, &PFFRShadow, 1, 4 + _flex_speaker_PWM_channel);
+   // make PFx output
+   BitWrPortI(PFDDR, &PFDDRShadow, 1, 4 + _flex_speaker_PWM_channel);
+
+   SetVectIntern(0x17, _flex_tone_isr);   // set PWM interrupt routine vector
+	// PWM int's every other cycle
+   WrPortI(PWL1R, &PWL1RShadow, ((PWL1RShadow & 0xF1) + 6));
+	// Turn on PWM interrupts
+   WrPortI(PWL0R, &PWL0RShadow, ((PWL0RShadow & 0xF1)+ 2));
+
+   return _flex_tone_outputrate;
+}
+
+#asm root
+_flex_tone_isr::
+    push  af
+    push  bc
+    push  de
+    push  hl
+
+    ld    a, (_flex_tone_busy_flag)
+    or    a
+    jp    z, .flex_tone_isr_quiet      ; not playing
+
+    ld    hl, (_flex_tone_remainder)
+    ld    a, (_flex_tone_remainder+2)
+    ex    de, hl
+    ld    hl, (_flex_tone_sourcerate)
+    add   hl, de
+    adc   a, 0                         ; add sourcerate to 24-bit remainder
+    ex    de, hl
+    ld    hl, (_flex_tone_outputrate)
+    ex    de, hl                       ; A:HL holds remainder
+    ld    b, 0
+    ld    c, 0
+.flex_tone_isr_skip:
+    or    a
+    sbc   hl, de
+    sbc   a, 0                         ; subtract carry
+    jr    c, .flex_tone_isr_sample     ; outputrate > remainder
+    inc   c                            ; count samples to increment to
+    jr    .flex_tone_isr_skip
+.flex_tone_isr_sample:
+    add   hl, de
+    adc   a, 0                         ; cancel last subtract
+    ld    (_flex_tone_remainder), hl
+    ld    (_flex_tone_remainder+2), a
+    ld    a, c
+    or    a                            ; check for new sample
+    jr    z, .flex_tone_isr_done
+
+    ld    hl, _flex_tone_cbuf+4
+    ld    b,(hl)                       ; get repeat counter
+    ld    de, (_flex_tone_cbuf)        ; get buffer pointer
+    inc   de
+    ld    (_flex_tone_cbuf),de         ; save new buffer pointer
+    add   hl,de
+    ld    c,(hl)                       ; get next byte from buffer
+    ld    hl, (_flex_tone_cbuf+2)
+    sbc   hl,de
+    jr    nz, .flex_tone_set_pwm       ; jump if not at end of buffer
+
+    xor   a
+    or    b                            ; test repeat counter
+    jp    m, .flex_tone_repeat         ; if negative, infinite repeat set
+    djnz  .flex_tone_save_count        ; jump if buffer should be repeated
+
+    ld    hl, _flex_tone_busy_flag
+    ld    (hl),b                       ; set to turn off tone system
+    jr    .flex_tone_set_pwm
+
+.flex_tone_save_count:
+    ld    hl, _flex_tone_cbuf+4
+    ld    (hl),b                       ; save new repeat count
+.flex_tone_repeat:
+    sbc   hl,hl
+    ld    (_flex_tone_cbuf),hl         ; reset buffer pointer to start of buffer
+
+.flex_tone_set_pwm:
+    ld    a,c
+    ld    hl, (_flex_speaker_PWM_m)
+ioi ld    (hl), a
+    ld    a, 1                 ; set bit for pulse preading
+    ld    hl, (_flex_speaker_PWM_l)
+ioi ld    (hl), a              ; load byte into PWM: value = byte*3 (almost)
+    jr    .flex_tone_isr_done
+
+.flex_tone_isr_quiet:
+    ld    a, 0x80
+    ld    hl, (_flex_speaker_PWM_m)
+ioi ld    (hl), a
+    ld    a, 0x01
+    ld    hl, (_flex_speaker_PWM_l)
+ioi ld    (hl), a
+    xor   a
+    ld    (_flex_tone_busy_flag), a
+
+.flex_tone_isr_done:
+    ipres
+    pop   hl
+    pop   de
+    pop   bc
+    pop   af
+    ret
+
+#endasm
+
+/*** BeginHeader flexToneShutdown */
+void flexToneShutdown(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexToneShutdown								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        void flexToneShutdown();
+
+DESCRIPTION:   Turns off the tone driver.  Useful to preserve
+               processor resources.
+
+RETURN VALUE:  None.
+
+SEE ALSO:		flexSpeakerPWM, flexToneActivate, flexToneLoad,
+					flexToneStop
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexToneShutdown(void)
+{
+   _flex_tone_busy_flag = 0;
+   // turn off interrupts
+   WrPortI(ICCR, &ICCRShadow, 0x00);
+}
+
+
+/*** BeginHeader flexToneLoad */
+int flexToneLoad(char *buffer, int bufsize, char repeat);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexToneLoad									<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexToneLoad(char *buffer, int bufsize, char repeat);
+
+DESCRIPTION:   Loads tone samples to be played into the tone driver
+               buffer. This sample will be repeatedly played the
+               number of repeat times given.  If repeat is negative,
+               the clip will be repeated indefinitely until
+               flexToneStop() is called.
+
+PARAMETER1:    buffer - An array of bytes to be loaded
+
+PARAMETER2:    bufsize - The number of bytes in the buffer
+
+PARAMETER3:    repeat - The number of times the buffer will be repeated.
+                        A value of 128+ will repeat the buffer indefinitely.
+                        A zero value will play the tone once (as will 1).
+
+RETURN VALUE:  Returns the number of bytes actually loaded into the
+               driver. Due to limits on the size of the audio driver's
+               internal buffer, this number may be smaller than the
+               requested 'bufsize', or even 0.
+
+SEE ALSO:		flexSpeakerPWM, flexToneActivate, flexToneShutdown,
+					flexToneStop
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexToneLoad(char *buffer, int bufsize, char repeat)
+{
+   if (bufsize > FLEX_TONE_BUFSIZE) {
+   	bufsize = FLEX_TONE_BUFSIZE;
+   }
+   if (repeat == 0) {
+   	repeat = 1;
+   }
+
+   _flex_tone_cbuf[0] = _flex_tone_cbuf[1] = 0;   // Set pointer to buffer start
+   _flex_tone_cbuf[4] = repeat;                   // Save repeat count
+#asm
+	ld  hl,(sp+bufsize)
+	ld  (_flex_tone_cbuf+2),hl    // Save bufsize to _flex_tone_cbuf
+	ld  b,h
+	ld  c,l
+	ld  hl,(sp+buffer)
+	ld  de,_flex_tone_cbuf+5
+	ldir                       // Copy buffer to _flex_tone_cbuf
+#endasm
+
+   _flex_tone_busy_flag = 1;       // Start playing the tone
+   return bufsize;
+}
+
+/*** BeginHeader flexToneStop */
+void flexToneStop();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexToneStop									<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        void flexToneStop();
+
+DESCRIPTION:   Immediately stops any tone that is playing.
+
+RETURN VALUE:  None.
+
+SEE ALSO:		flexSpeakerPWM, flexToneActivate, flexToneShutdown,
+					flexToneLoad
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexToneStop()
+{
+   _flex_tone_busy_flag = 0;
+}
+
+/****************************************************************
+RabbitFlex SBC audio driver
+
+Outputs a PWM audio signal using a PWM channel and the input
+capture interrupt.  Cannot be used with other interupt based
+input capture functions.
+Output range is 0 to 0.5 duty cycle
+
+****************************************************************/
+
+/*** BeginHeader flexAudioActivate */
+unsigned int flexAudioActivate();
+void _flex_audio_isr();
+
+// Divisor for timer TA9.  This can be increased to decrease the PWM cycle
+// rate, which will also decrease the audio quality.
+#ifndef FLEX_AUDIO_DIVISOR
+#define FLEX_AUDIO_DIVISOR 0
+#endif
+
+
+extern char _flex_audio_busy_flag;
+
+// variables for rate conversion
+extern long _flex_audio_remainder;
+extern unsigned int _flex_audio_sourcerate;
+extern unsigned int _flex_audio_outputrate;
+
+// This is the size of the circular buffer that holds the audio information
+// as it is being loaded and played.  This is located in root memory.
+#ifndef FLEX_AUDIO_BUFSIZE
+#define FLEX_AUDIO_BUFSIZE 1023
+#endif
+
+extern char _flex_audio_cbuf[];
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAudioActivate							<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        unsigned int flexAudioActivate();
+
+DESCRIPTION:   Enables the audio driver so that samples can be loaded
+               and played.
+               Note: The audio driver consumes %10-20 of the processor's
+               time while it is running. Use flexAudioShutdown() to
+               disable the audio driver while not in use.
+               The audio and tone drivers may not be used at the same time.
+               You may switch between using one and the other though.
+
+RETURN VALUE:  The frequency of PWM pulses output by the audio driver.
+
+SEE ALSO:		flexSpeakerPWM, flexAudioShutdown, flexAudioPlay,
+					flexAudioStop, flexAudioPlaying, flexAudioSetRate,
+					flexAudioLoad
+
+END DESCRIPTION **********************************************************/
+
+char _flex_audio_busy_flag;
+long _flex_audio_remainder;
+unsigned int _flex_audio_sourcerate;
+unsigned int _flex_audio_outputrate;
+
+char _flex_audio_cbuf[FLEX_AUDIO_BUFSIZE+9];
+
+_rabbitflex_sbc40_nodebug
+unsigned int flexAudioActivate()
+{
+   _flex_audio_busy_flag = 0;
+   _flex_audio_remainder = 0;
+
+   cbuf_init(_flex_audio_cbuf, FLEX_AUDIO_BUFSIZE);
+
+   //19200*16/1024 = 300
+   _flex_audio_outputrate = (int)((300L * (long)freq_divider) /
+                                  (FLEX_AUDIO_DIVISOR + 1));
+	_flex_audio_outputrate /= 2;
+   _flex_audio_sourcerate = _flex_audio_outputrate; // safe default
+   WrPortI(TAT9R, &TAT9RShadow, FLEX_AUDIO_DIVISOR);
+
+   // center(zero) is 1/2 pulse
+   WrPortI(_flex_speaker_PWM_m, NULL, 0x80);
+   WrPortI(_flex_speaker_PWM_l, NULL, 0x01);
+   // set PFx to PWM drive
+   BitWrPortI(PFFR, &PFFRShadow, 1, 4 + _flex_speaker_PWM_channel);
+   // make PFx output
+   BitWrPortI(PFDDR, &PFDDRShadow, 1, 4 + _flex_speaker_PWM_channel);
+
+   SetVectIntern(0x17, _flex_audio_isr);  // set PWM interrupt routine vector
+	// PWM int's every other cycle
+	WrPortI(PWL1R, &PWL1RShadow, (PWL1RShadow & 0xF1) + 6);
+	// Turn on PWM interrupts
+   WrPortI(PWL0R, &PWL0RShadow, ((PWL0RShadow & 0xF1)+ 2));
+
+   return _flex_audio_outputrate;
+}
+
+#asm root
+_flex_audio_isr::
+    push  af
+    push  bc
+    push  de
+    push  hl
+
+    ld    a, (_flex_audio_busy_flag)
+    or    a
+    jr    z, .flex_audio_isr_quiet      ; not playing
+
+    ld    hl, (_flex_audio_remainder)
+    ld    a, (_flex_audio_remainder+2)
+    ex    de, hl
+    ld    hl, (_flex_audio_sourcerate)
+    add   hl, de
+    adc   a, 0                          ; add sourcerate to 24-bit remainder
+    ex    de, hl
+    ld    hl, (_flex_audio_outputrate)
+    ex    de, hl                        ; A:HL holds remainder
+    ld    b, 0
+    ld    c, 0
+.flex_audio_isr_skip:
+    or    a
+    sbc   hl, de
+    sbc   a, 0                          ; subtract carry
+    jr    c, .flex_audio_isr_sample     ; outputrate > remainder
+    inc   c                             ; count samples to increment to
+    jr    .flex_audio_isr_skip
+.flex_audio_isr_sample:
+    add   hl, de
+    adc   a, 0                          ; cancel last subtract
+    ld    (_flex_audio_remainder), hl
+    ld    (_flex_audio_remainder+2), a
+    ld    a, c
+    or    a                             ; check for new sample
+    jr    z, .flex_audio_isr_done
+
+    push  bc                            ; index for dropget
+    ld    hl, _flex_audio_cbuf
+    push  hl
+    lcall cbuf_dropget
+    add   sp, 4                         ; restore stack
+    inc   h
+    jr    z, .flex_audio_isr_quiet      ; returned -1, buffer is empty
+
+    ld    a, L
+    ld    hl, (_flex_speaker_PWM_m)
+ioi ld    (hl), a
+    ld    a, 1	          ; set bit for pulse spreading
+    ld    hl, (_flex_speaker_PWM_l)
+ioi ld    (hl), a        ; load byte into PWM: value = byte*4
+    jr    .flex_audio_isr_done
+
+.flex_audio_isr_quiet:
+    ld    a, 0x80
+    ld    hl, (_flex_speaker_PWM_m)
+ioi ld    (hl), a
+    ld    a, 0x01
+    ld    hl, (_flex_speaker_PWM_l)
+ioi ld    (hl), a
+    xor   a
+    ld    (_flex_audio_busy_flag), a
+
+.flex_audio_isr_done:
+    ipres
+    pop   hl
+    pop   de
+    pop   bc
+    pop   af
+    ret
+
+#endasm
+
+/*** BeginHeader flexAudioShutdown */
+void flexAudioShutdown();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAudioShutdown							<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        void flexAudioShutdown();
+
+DESCRIPTION:   Turns off the audio driver. Useful to preserve
+               processor resources.
+
+SEE ALSO:		flexSpeakerPWM, flexAudioActivate, flexAudioPlay,
+					flexAudioStop, flexAudioPlaying, flexAudioSetRate,
+					flexAudioLoad
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexAudioShutdown()
+{
+   _flex_audio_busy_flag = 0;
+   // turn off interrupts
+   WrPortI(ICCR, &ICCRShadow, 0x00);
+}
+
+
+/*** BeginHeader flexAudioPlay */
+void flexAudioPlay();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAudioPlay									<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        void flexAudioPlay();
+
+DESCRIPTION:   Begin playing samples that have been loaded into the
+               driver buffer, see flexAudioLoad(). The driver will
+               continue to play samples until it's buffer is empty.
+
+SEE ALSO:		flexSpeakerPWM, flexAudioActivate, flexAudioShutdown,
+					flexAudioStop, flexAudioPlaying, flexAudioSetRate,
+					flexAudioLoad
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexAudioPlay()
+{
+   _flex_audio_busy_flag = 1;
+}
+
+/*** BeginHeader flexAudioStop */
+void flexAudioStop();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAudioStop      							<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        void flexAudioStop();
+
+DESCRIPTION:   Immediately stops any sound that is playing, and empties
+               the sample buffer. Any samples loaded after calling this
+               will not play until flexAudioPlay() is called.
+
+SEE ALSO:		flexSpeakerPWM, flexAudioActivate, flexAudioShutdown,
+					flexAudioPlay, flexAudioPlaying, flexAudioSetRate,
+					flexAudioLoad
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexAudioStop()
+{
+   _flex_audio_busy_flag = 0;
+   cbuf_flush(_flex_audio_cbuf);
+}
+
+/*** BeginHeader flexAudioPlaying */
+int flexAudioPlaying();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAudioPlaying								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexAudioPlaying();
+
+DESCRIPTION:   Determines if the audio driver is currently playing samples
+
+RETURN VALUE:  1 if the driver is playing audio samples. 0 if it is not
+
+SEE ALSO:		flexSpeakerPWM, flexAudioActivate, flexAudioShutdown,
+					flexAudioPlay, flexAudioStop, flexAudioSetRate,
+					flexAudioLoad
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexAudioPlaying()
+{
+   return _flex_audio_busy_flag;
+}
+
+/*** BeginHeader flexAudioSetRate */
+void flexAudioSetRate(unsigned int sample_rate);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAudioSetRate								<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        void flexAudioSetRate(unsigned int sample_rate);
+
+DESCRIPTION:   This function tells the drive to treat the incoming data as
+               audio sampled at this given rate. This tells the driver how
+               fast the data should be played through.
+
+PARAMETER1:    sample_rate - The sampling rate of the input data:
+                              1-65535 Hz
+
+
+SEE ALSO:		flexSpeakerPWM, flexAudioActivate, flexAudioShutdown,
+					flexAudioPlay, flexAudioStop, flexAudioPlaying,
+					flexAudioLoad
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+void flexAudioSetRate(unsigned int sample_rate)
+{
+   _flex_audio_sourcerate = sample_rate;
+}
+
+/*** BeginHeader flexAudioLoad */
+int flexAudioLoad(char *buffer, int bufsize);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flexAudioLoad									<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:        int flexAudioLoad(char *buffer, int bufsize);
+
+DESCRIPTION:   Loads audio samples to be played into the audio driver
+               buffer. These samples will not actually play unless
+               flexAudioPlay() is called.
+               Note:  flexAudioPlay() only needs to be called once
+               when starting. Data is subsequent calls will also be
+               played as long as the audio buffer does not become
+               empty.
+
+PARAMETER1:    buffer - An array of bytes to be loaded
+
+PARAMETER2:    bufsize - The number of bytes in the buffer
+
+RETURN VALUE:  Returns the number of bytes actually loaded into the
+               driver. Due to limits on the size of the audio driver's
+               internal buffer, this number may be smaller than the
+               requested 'bufsize', or even 0.
+
+SEE ALSO:		flexSpeakerPWM, flexAudioActivate, flexAudioShutdown,
+					flexAudioPlay, flexAudioStop, flexAudioPlaying,
+					flexAudioSetRate
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int flexAudioLoad(char *buffer, int bufsize)
+{
+   return cbuf_put(_flex_audio_cbuf, buffer, bufsize);
+}
+
+/*** BeginHeader serMode */
+int serMode(int mode);
+
+// defaults for flow control RTS/CTS
+#ifdef _FLEX_ENABLE_RS232_FD
+	#define SERF_RTS_PORT PCDR
+	#define SERF_RTS_SHADOW PCDRShadow
+	#define SERF_RTS_BIT 0
+	#define SERF_CTS_PORT PCDR
+	#define SERF_CTS_BIT 1
+#else
+	#define SERF_RTS_PORT PGDR
+	#define SERF_RTS_SHADOW PGDRShadow
+	#define SERF_RTS_BIT 6
+	#define SERF_CTS_PORT PGDR
+	#define SERF_CTS_BIT 7
+#endif
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+serMode              <RABBITFLEX_SBC40.LIB>
+
+SYNTAX:	      int serMode(int mode);
+
+DESCRIPTION:   User interface to set up serial communication lines for
+					this board. This function must be called after executing
+               the serXOpen() function. Whether you are opening one or
+               multiple serial ports this function must be executed after
+               executing the last serXOpen function AND before you start
+               using any of the serial ports. This function is non-
+               reentrant.
+
+PARAMETER1:    mode - defined serial port configuration if devices
+					are installed.
+
+   				Serial port setup:
+
+					Mode 	Port F      	Port D or E
+					----  ------         -----------
+    				0		RS232 3wire		RS232 3wire (if present)
+    				1		RS232 5wire		CTS/RTS
+
+RETURN VALUE:	0 if valid mode; 1 if not.
+
+SEE ALSO:		See serX functions located in rs232.lib.
+
+END DESCRIPTION **********************************************************/
+
+_rabbitflex_sbc40_nodebug
+int serMode(int mode)
+{
+	auto int status;
+
+	status = 0;
+	switch (mode) {
+   case 0:
+      //    Initialize Serial Ports
+      //    -----------------------
+      //    RS232 serial port F 3 wire
+      //    RS232 serial port D or E 3 wire
+      //
+      if (_flex_rs232_f) {
+      	WrPortI(PGFR, &PGFRShadow, (PGFRShadow | 0x04));
+	      if (_flex_rs232_e) {
+	         WrPortI(PGFR, &PGFRShadow, (PGFRShadow | 0x40));
+	      }
+	      if (_flex_rs232_d) {
+	         WrPortI(PCFR, &PCFRShadow, (PCFRShadow | 0x01));
+	      }
+      }
+      else {
+      	// No serial ports are present
+      	status = 1;
+      }
+      break;
+
+   case 1:
+      if (_flex_rs232_f) {
+      	WrPortI(PGFR, &PGFRShadow, (PGFRShadow | 0x04));
+      }
+      if (_flex_rs232_e) {
+      	// Set bit 6 of PGFR to change I/O pins PG6 an PG7 to the primary
+      	// function
+			WrPortI(PGFR, &PGFRShadow, (PGFRShadow & ~0x40));
+			BitWrPortI(SERF_RTS_PORT, &SERF_RTS_SHADOW, 0, SERF_RTS_BIT);
+			// Set the data direction registers appropriately
+			WrPortI(PGDDR, &PGDDRShadow, (PGDDRShadow | 0x40));
+			WrPortI(PGDDR, &PGDDRShadow, (PGDDRShadow & ~0x80));
+     }
+      else if (_flex_rs232_d) {
+      	// Set bit 0 of PCFR to change I/O pins PC0 and PC1 to the primary
+      	// function
+      	WrPortI(PCFR, &PCFRShadow, (PCFRShadow & ~0x01));
+			BitWrPortI(SERF_RTS_PORT, &SERF_RTS_SHADOW, 0, SERF_RTS_BIT);
+      }
+      else {
+      	// Neither ports E or F are present, so this is invalid
+      	status = 1;
+      }
+      break;
+
+   default:
+      // unsupported mode
+      status = 1;
+      break;
+	}
+	return status;
+}
+
+/*** BeginHeader ser485Tx */
+root void ser485Tx(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Tx						<RABBITFLEX_SBC40.LIB>
+
+SYNTAX:			void ser485Tx(void);
+
+DESCRIPTION:   Enables the RS485 transmitter. The brdInit function must
+					be executed before running this function. This function
+               is non-reentrant.
+
+					Note:
+               -----
+               Transmitted data is echo'ed back into the receive data
+               buffer. This echo'ed data could be used to identify when
+               to disable the transmitter by using one of the following
+               methods:
+
+               a) Byte mode...disable the transmitter after the byte that
+               is transmitted, is detected in the receive data buffer.
+
+               b) Block data mode...disable the transmitter after the
+               same number of bytes transmitted, are detected in the
+               receive data buffer.
+
+PARAMETER1:		None.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		flex_brdInit, ser485Rx
+
+END DESCRIPTION **********************************************************/
+
+#asm root _rabbitflex_sbc40_nodebug
+ser485Tx::
+	push 	ip
+	ipset	1		 	; Stop normal ISR's to prevent race
+	ld 	de,PFDR 	; Port address
+	ld 	hl,PFDRShadow
+   set	1,(hl)   ; Set bit 1
+ 	ioi 	ldd   	; [io](de) <- (hl)  copy shadow to port
+	pop 	ip
+   ret
+#endasm
+
+/*** BeginHeader ser485Rx */
+root void ser485Rx(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Rx						<RABBITFLEX_SBC40.LIB>
+
+SYNTAX: 			void ser485Rx(void);
+
+DESCRIPTION:   Disables the RS485 transmitter. This puts you in listen
+					mode which allows you to receive data from the RS485
+               interface. The brdInit function must be executed before
+               running this function, This function is non-reentrant.
+
+PARAMETER1:    None.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		flex_brdInit, ser485Tx
+
+END DESCRIPTION **********************************************************/
+
+#asm root _rabbitflex_sbc40_nodebug
+ser485Rx::
+	push 	ip
+	ipset	1		 	; Stop normal ISR's to prevent race
+	ld 	de,PFDR 	; Port address
+	ld 	hl,PFDRShadow
+   res	1,(hl)   ; Clear bit 1
+	ioi 	ldd   	; [io](de) <- (hl)  copy shadow to port
+	pop 	ip
+   ret
+#endasm
+

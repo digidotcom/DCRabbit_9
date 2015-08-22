@@ -1,0 +1,74 @@
+ /***********************************************************
+  *
+  *   Syntax:    System VDriver Library
+  *   Created:   09/15/2004 11:22AM
+  *   Comments:  Vdriver interface to RabbitSys
+  *
+  ************************************************************/
+
+// RabbitSys version 1.02
+
+/*** BeginHeader TICK_TIMER, MS_TIMER, SEC_TIMER, __MS_COUNTER,
+periodic_isr, bios_intexit, __MCOS_CNT_VAL, bios_intnesting, bios_swpend */
+
+extern char __TICK_COUNTER;
+extern char __MS_COUNTER;
+extern unsigned int __MCOS_COUNTER;
+extern unsigned int __MCOS_CNT_VAL;
+extern shared unsigned long MS_TIMER;
+extern shared unsigned long TICK_TIMER;
+extern shared unsigned long SEC_TIMER;
+
+extern char  bios_intnesting;
+extern char  bios_swpend;
+
+root void bios_intexit(void);
+
+/*** EndHeader */
+
+char  bios_intnesting;
+char  bios_swpend;
+unsigned int __MCOS_COUNTER;
+char  __TICK_COUNTER;
+char __MS_COUNTER;
+shared unsigned long SEC_TIMER;
+shared unsigned long MS_TIMER;
+shared unsigned long TICK_TIMER;
+unsigned int __MCOS_CNT_VAL;
+
+#asm root
+bios_intexit::
+#ifdef MCOS
+	ld		ix,(OSTCBCur)								; OSTCBCur->OSTCBStkPtr=sp
+	bool	hl
+	ld		l,h
+	add	hl,sp
+	ld		(ix+0),hl
+
+	call	OSTaskSwHook
+
+	ld		a,(OSPrioHighRdy)							; OSPrioCur = OSPrioHighRdy
+	ld		(OSPrioCur),a
+
+	ld    hl,(OSTCBHighRdy)							; OSTCBCur = OSTCBHighRdy
+	ld    (OSTCBCur),hl
+
+	ld		hl,(hl+os_tcb+OSTCBStkSeg)				; Get STACKSEG of task to resume
+	ld    a,l
+   ld    hl,(OSTCBHighRdy)							; Get stack ptr of task to resume
+   ld		hl,(hl+0)
+
+	ex		de,hl
+   ld		b,0
+   ld		c,a
+   push	bc
+   push	de
+   call	_sys_stack_switch
+   add	sp,4
+#endif
+
+	xor	a								; 2
+	ld		(bios_swpend),a			; 10, clear switch pending flag
+	ld		(bios_intnesting),a		; 10,	store decremented nesting counter
+	lret									; 13,	restore new/old context
+#endasm

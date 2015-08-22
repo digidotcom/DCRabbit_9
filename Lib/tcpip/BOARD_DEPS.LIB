@@ -1,0 +1,357 @@
+/*
+ *    board_deps.lib
+ *    Copyright (C) Rabbit Semiconductor, Inc. All rights reserved.
+ *
+ * This library contains configuration items which are automatically
+ * determined, based on the target board type.
+ */
+
+/*** BeginHeader */
+#ifndef BOARD_DEPS_LIB
+#define BOARD_DEPS_LIB
+
+/************************************************************************************
+
+    This section examines the board type, and selects ethernet driver parameters.
+
+    *CUSTOM*
+    Note: to add a new driver library (let's call it XXX.LIB), for a new board
+    called e.g. MYBOARD, write the following
+    block of macros:
+
+      #elif _BOARD_TYPE_ == MYBOARD
+         #define XXX_PKTDRV_LIB "xxx.lib"
+         #define XXX_INIT_FUNC pd_setup_MYBOARD		// a function in xxx.lib
+         #define XXX_INIT_FLAGS  ...		// Any other macros required by xxx.lib
+
+    This macro block should be inserted somewhere in the list of #elif...#elif
+    conditionals.
+
+    Note that there is no NEED to base selection on _BOARD_TYPE_.  Some drivers
+    may not be associated with any board type in particular; these would require
+    the user to explicitly include support by e.g. defining a USE_XXX macro.
+
+************************************************************************************/
+
+#if USE_ETHERNET||USE_PPPOE		// We only do the following if ethernet needed
+
+// Skip the autoconfiguration if the user disabled it
+#ifndef DISABLE_ETHERNET_AUTOCONF
+
+   /******************************************************************************
+    RealTek variants...
+   ******************************************************************************/
+
+#if ( (_BOARD_TYPE_==RCM3000) || (_BOARD_TYPE_==RCM3010) \
+		|| ((_BOARD_TYPE_ >= BL2500A) && (_BOARD_TYPE_ <= (BL2500A+0x00FF)) && (_BOARD_TYPE_ != BL2500C)) \
+      || (_BOARD_TYPE_== BL2600B) || (_BOARD_TYPE_== BL2600C) )
+	#define RT_PKTDRV_LIB			"realtek.lib"
+	#define RT_INIT_FUNC			pd_setup_RCM3000CORE
+	#define RT_INIT_FLAGS		(RT_FLAGS_NOEEDI)
+	#define RT_CUSTOM9346		emu9346_noeedi
+   #define RT_WRIO	0x4000
+   #define RT_FDX		0x70
+   #define RT_HDX		0x30
+   #define RT_RESPORT	PDDR
+   #define RT_RESSHAD	PDDRShadow
+   #define RT_RESMASK	0x01
+	#ifdef PORTA_AUX_IO
+	   #define RT_RDIO   0x4000
+	#else
+	   #define RT_RDIO   0x4100
+	#endif
+#elif ((_BOARD_TYPE_ == RABLINK) || (_BOARD_TYPE_ == EG2020) || (_BOARD_TYPE_ == EG2110A))
+	// Net Gateways (Blue Cheese) with only one Ethernet interface
+	#define RT_PKTDRV_LIB			"realtek.lib"
+	#define RT_INIT_FUNC			pd_setup_BLUECHEESE
+	#define RT_INIT_FLAGS		RT_FLAGS_BLUECHEESE_MUX_FIX
+   #define RT_WRIO	0xC000
+   #define RT_RDIO	0xE000
+   #define RT_FDX		0xE0
+   #define RT_HDX		0x60
+   #define RT_RESPORT	PEDR
+   #define RT_RESSHAD	PEDRShadow
+   #define RT_RESMASK	0x02
+#elif ((_BOARD_TYPE_ == RCM2100) ||(_BOARD_TYPE_ == RCM2110) ||(_BOARD_TYPE_ == RCM2115))
+	// Ethernet Core Module
+	#define RT_PKTDRV_LIB			"realtek.lib"
+	#define RT_INIT_FUNC			pd_setup_ETHCOREMOD
+	#define RT_INIT_FLAGS		0
+   #define RT_WRIO	0xC000
+   #define RT_RDIO	0x4000
+   #define RT_FDX		0x70
+   #define RT_HDX		0x30
+   #define RT_RESPORT	PDDR
+   #define RT_RESSHAD	PDDRShadow
+   #define RT_RESMASK	0x10
+#elif (_BOARD_TYPE_ == EG2000)
+	// Net Gateway with two Ethernet interfaces
+	#define RT_PKTDRV_LIB			"realtek.lib"
+	#define RT_INIT_FUNC			pd_setup_BLUECHEESE
+	#define RT_INIT_FLAGS		(RT_FLAGS_BLUECHEESE_MUX_FIX)
+   #ifndef USING_REALTEK
+		#define USING_REALTEK 2			// Make 2 instances
+   #endif
+   #define RT_WRIO	0xC000
+   #define RT_RDIO	0xE000
+   #define RT_FDX		0xE0
+   #define RT_HDX		0x60
+   #define RT_RESPORT	PEDR
+   #define RT_RESSHAD	PEDRShadow
+   #define RT_RESMASK	0x02
+	#define RT_INIT_FUNC2		pd_setup_BLUECHEESE
+	#define RT_INIT_FLAGS2		(RT_FLAGS_TWOIF|RT_FLAGS_BLUECHEESE_MUX_FIX)
+   #define RT_WRIO2	0x6000
+   #define RT_RDIO2	0x4000
+   #define RT_FDX2		0xE0
+   #define RT_HDX2		0x60
+   #define RT_RESPORT2	PEDR
+   #define RT_RESSHAD2	PEDRShadow
+   #define RT_RESMASK2	0x02
+#elif ((_BOARD_TYPE_ >= BL2000) && (_BOARD_TYPE_ <= (BL2000+0x00FF)))
+	// BL2000 and BL2010
+	#define RT_PKTDRV_LIB			"realtek.lib"
+	#define RT_INIT_FUNC			pd_setup_EMICRO
+	#define RT_INIT_FLAGS		RT_FLAGS_NOHARDWARERESET
+   #define RT_WRIO	0x0000
+   #define RT_RDIO	0x0000
+   #define RT_FDX		0x0E
+   #define RT_HDX		0x06
+   #define RT_RESPORT	0x00
+   #define RT_RESSHAD	PDDRShadow	// anything syntactic will do
+   #define RT_RESMASK	0x00
+#elif ((_BOARD_TYPE_==RCM2200) || (_BOARD_TYPE_==RCM2250) \
+      || (_BOARD_TYPE_ == RCM2260A) \
+		|| ((_BOARD_TYPE_ >= BL2100) && (_BOARD_TYPE_ <= (BL2100+0x00FF))) \
+		|| ((_BOARD_TYPE_ >= OP6800) && (_BOARD_TYPE_ <= (OP6800+0x00FF))) \
+		|| ((_BOARD_TYPE_ >= OP7200) && (_BOARD_TYPE_ <= (OP7200+0x00FF))))
+	// Micro Ethernet Core
+	#define RT_PKTDRV_LIB			"realtek.lib"
+	#define RT_INIT_FUNC			pd_setup_MICROCORE
+	#define RT_INIT_FLAGS		0
+   #define RT_WRIO	0xC000
+   #define RT_RDIO	0x4000
+   #define RT_FDX		0x07
+   #define RT_HDX		0x03
+   #define RT_RESPORT	PCDR
+   #define RT_RESSHAD	PCDRShadow
+   #define RT_RESMASK	0x10
+#elif (_BOARD_TYPE_ == SR9150)
+	// MiniStar
+	#define RT_PKTDRV_LIB			"realtek.lib"
+	#define RT_INIT_FUNC			pd_setup_MINISTAR
+	#define RT_INIT_FLAGS		(RT_FLAGS_NOEEDI|RT_FLAGS_INVERTEED0)
+	#define RT_CUSTOM9346		emu9346_noeedi
+   #define RT_WRIO	0x4000
+   #define RT_RDIO	0x4000
+   #define RT_FDX		0x30
+   #define RT_HDX		0x70
+   #define RT_RESPORT	PDDR
+   #define RT_RESSHAD	PDDRShadow
+   #define RT_RESMASK	0x40
+#elif ((_BOARD_TYPE_ >= RCM3700A) && (_BOARD_TYPE_ <= RCM3700LP) \
+   || (_BOARD_TYPE_ >= RCM3700H) && (_BOARD_TYPE_ <= RCM3720H))
+	// Tiny Core
+	#define RT_PKTDRV_LIB			"realtek.lib"
+	#define RT_INIT_FUNC			pd_setup_RCM3700CORE
+	#define RT_INIT_FLAGS		0
+   #define RT_WRIO	0x4000
+   #define RT_RDIO	0x4000
+   #define RT_FDX		0x07
+   #define RT_HDX		0x03
+   #define RT_RESPORT	PDDR
+   #define RT_RESSHAD	PDDRShadow
+   #define RT_RESMASK	0x01
+
+   /******************************************************************************
+    ASIX variants...
+   ******************************************************************************/
+
+#elif (_BOARD_TYPE_ & 0xFF00) == (RCM3200 & 0xFF00) || \
+      _BOARD_TYPE_ == BL2500C || _BOARD_TYPE_ == EM1500A || \
+      _BOARD_TYPE_ == BL2600A
+	#define ASIX_PKTDRV_LIB			"asix.lib"
+	#define ASIX_INIT_FUNC     pd_setup_RCM3200CORE
+	#define ASIX_INIT_FLAGS    0
+   #define ASIX_WRIO	0x4200
+   #define ASIX_RESPORT	PDDR
+   #define ASIX_RESSHAD	PDDRShadow
+   #define ASIX_RESMASK	0x01
+	#define _ASIX
+	#define ASIX_RX_BUF_Stop   0x80
+	#ifdef PORTA_AUX_IO
+	   #define ASIX_RDIO 0x4200
+	#else
+	   #define ASIX_RDIO 0x4300
+	#endif
+#elif (_BOARD_TYPE_ == RCM3750 || _BOARD_TYPE_ == RCM3760)
+   #define ASIX_PKTDRV_LIB       "asix.lib"
+   #define ASIX_INIT_FUNC     pd_setup_RCM37xxAsix
+   #define ASIX_INIT_FLAGS    0
+   #define ASIX_WRIO 0x4200
+   #define ASIX_RESPORT PDDR
+   #define ASIX_RESSHAD PDDRShadow
+   #define ASIX_RESMASK 0x01
+   #define _ASIX
+   #define ASIX_RX_BUF_Stop   0x80
+   #define ASIX_RDIO 0x4200
+#elif _BOARD_TYPE_ == RCM3365 || _BOARD_TYPE_ == RCM3375 || \
+      _BOARD_TYPE_ == RCM3305 || _BOARD_TYPE_ == RCM3315 || \
+      _BOARD_TYPE_ == BL2600M || _BOARD_TYPE_ == BL2600N || \
+      RCM3900_SERIES
+	#if RCM3900_SERIES
+	   #define _AX88796B
+	#endif
+   #define ASIX_PKTDRV_LIB       "asix.lib"
+   #define ASIX_INIT_FUNC     pd_setup_RCM336xxCORE
+   #define ASIX_INIT_FLAGS    0
+   #define ASIX_WRIO 0x4600
+	#define ASIX_RESPORT 0x00
+   #define ASIX_RESSHAD PDDRShadow //no real RESHAD needed for this variant...
+   #define ASIX_RESMASK 0x00
+   #define _ASIX
+   #define ASIX_RX_BUF_Stop   0x80
+   #define ASIX_RDIO 0x4600
+
+   /******************************************************************************
+    SMSC variants...
+   ******************************************************************************/
+
+#elif  ((_BOARD_TYPE_ >= RCM3400A) && (_BOARD_TYPE_ <= (RCM3400A+0x00FF)))
+  	#ifndef RCM3400_FORCESMSC
+	#define RCM3400_FORCESMSC 0
+   #endif
+
+   #if (RCM3400_FORCESMSC==0 && (_BOARD_TYPE_ >= 0x1602 ) && (_BOARD_TYPE_ <= 0x1604 )  )
+   /* This for RCM3400 variants that do not have SMSC populated on their
+    * prototyping boards.
+    */
+      #error "Board type does not support ethernet TCP/IP. To add"
+      #error "Ethernet support add following to the top of your program:"
+      #error "#define RCM3400_FORCESMSC 1"
+   #else
+		#define SMSC_PKTDRV_LIB			"smsc.lib"
+		#define SMSC_INIT_FUNC     pd_setup_RCM3400
+		#define SMSC_INIT_FLAGS    0
+   	#define SMSC_IOBASE			0x4000
+   	#define SMSC_RESPORT	PGDR
+   	#define SMSC_RESSHAD	PGDRShadow
+   	#define SMSC_RESMASK	0x02
+   #endif
+
+#elif ( ((_BOARD_TYPE_ >= RCM3300A) && (_BOARD_TYPE_ <= (RCM3300A+0x00FF))) \
+      || (_BOARD_TYPE_ == BL2600D) || (_BOARD_TYPE_ == BL2600K) || (_BOARD_TYPE_ == BL2600L))
+   #if USE_ETH_PRELOADED_DRIVER == 1 && PLD_ETH_COMPILING == 0
+      #define USING_SMSC			1
+   #else
+		#define SMSC_PKTDRV_LIB       "smsc.lib"
+	   #define SMSC_INIT_FUNC     pd_setup_RCM3300
+	   #define SMSC_INIT_FLAGS    0
+	   /*
+	   ** In general, cores with SMSC ethernet must have /AEN aligned on a 32
+	   ** byte boundary within the PE2 I/O block [0x4000, 0x5FFF).  Nand cores
+	   ** have the additional requirement that SMSC ethernet /AEN be mapped at
+	   ** /PE2 & A12 & /A11 & A10 (& A9 & A8 & A7 & A6 & A5).  The parenthesized
+	   ** part of the /AEN decode expression is optional, but allows for the
+	   ** maximum number of additional future high-address-bit-selected devices
+	   ** in the PE2 I/O block.
+	   */
+	   #define SMSC_IOBASE        0x57E0
+	   #define SMSC_RESPORT PGDR
+	   #define SMSC_RESSHAD PGDRShadow
+	   #ifdef DPCM_OLD
+	   	#define SMSC_RESMASK 0x02
+	   #else
+	      #define SMSC_RESMASK 0x20
+	   #endif
+   #endif
+#else
+  	#ifdef _DC_ETH0_
+   /*
+    * Begin the _DC_ETH0_ macro section
+    *
+    * These configurations are defined in the macro definitions contained
+    * in the system ID block.  Currently, this is only used for the
+    * PowerCore/Flex boards, but it can be extended other boards as well.
+    *
+    * To check the compile-time configuration section of the _DC_ETH0_
+    * macro, we AND it with 0x0000ffff to extract the lowest 16 bits.  This
+    * is then compared against known configuration numbers.
+    */
+     //Powercore Realtek + SMSC
+	   #if ((_DC_ETH0_ & _DC_ETH_COMPILETIME_MASK) == 0x00001000)
+	      //SMSC defines
+	      #define SMSC_PKTDRV_LIB       "smsc.lib"
+	      #define SMSC_INIT_FUNC     pd_setup_RCM3800_SMSC
+	      #define SMSC_INIT_FLAGS    0
+	      #define SMSC_IOBASE        0x4000
+	      #define SMSC_RESPORT PDDR
+	      #define SMSC_RESSHAD PDDRShadow
+	      #define SMSC_RESMASK 0x01
+
+	      //Realtek Defines
+	      #define RT_PKTDRV_LIB         "realtek.lib"
+	      #define RT_INIT_FUNC       pd_setup_RCM3800_RT
+	      #define RT_CUSTOM9346      emu9346_noeedi
+	      #define RT_INIT_FLAGS      (RT_FLAGS_NOEEDI)
+	      #define RT_WRIO   0x4100
+	      #define RT_RDIO   0x4100
+	      #define RT_FDX    0x70
+	      #define RT_HDX    0x30
+	      #define RT_RESPORT   PDDR
+	      #define RT_RESSHAD   PDDRShadow
+	      #define RT_RESMASK   0x01
+	   #elif ((_DC_ETH0_ & _DC_ETH_COMPILETIME_MASK) == 0x00000001)
+
+	      #define ASIX_PKTDRV_LIB       "asix.lib"
+	      #define ASIX_INIT_FUNC     pd_setup_SM3xxxxAsix
+	      #define ASIX_INIT_FLAGS    0
+	      #define ASIX_WRIO 0x4000
+	      #define ASIX_RESPORT PEDR
+	      #define ASIX_RESSHAD PEDRShadow //no real RESHAD needed for this variant...
+	      #define ASIX_RESMASK 0x08
+	      #define _ASIX
+	      #define ASIX_RX_BUF_Stop   0x80
+	      #define ASIX_RDIO 0x4000
+	   #else
+	      #warns "Unknown _DC_ETH0_ type.  No support for Ethernet compiled in."
+	   #endif
+	#else
+	   /******************************************************************************
+	    Final default is RealTek...
+	   ******************************************************************************/
+
+	   #if ((_BOARD_TYPE_ != OP6600) && (_BOARD_TYPE_ != OP6700) && (_BOARD_TYPE_ != RTDK))
+	      // Is not a TCP/IP Dev Kit, Intellicom
+	      #warns "Board type does not support TCP/IP, assuming TCP/IP Development Kit setup."
+	   #endif
+
+	   #if USE_ETH_PRELOADED_DRIVER == 1 && PLD_ETH_COMPILING == 0
+	      #define USING_REALTEK         1
+	   #else
+	      #define RT_PKTDRV_LIB         "realtek.lib"
+	      #define RT_INIT_FUNC       pd_setup_TCPIPDEVKIT
+	      #define RT_INIT_FLAGS      RT_FLAGS_HAVE9346
+	      #define RT_WRIO   0xC000
+	      #define RT_RDIO   0xE000
+	      #define RT_FDX    0x00
+	      #define RT_HDX    0x00
+	      #define RT_RESPORT   PEDR
+	      #define RT_RESSHAD   PEDRShadow
+	      #define RT_RESMASK   0x02
+	   #endif
+  	#endif //_DC_ETH0_
+#endif
+
+#endif   // ifndef DISABLE_ETHERNET_AUTOCONF
+
+#endif	// if USE_ETHERNET||USE_PPPOE
+
+/************************************************************************************
+
+  End of board-specific settings.
+
+************************************************************************************/
+
+#endif
+/*** EndHeader */

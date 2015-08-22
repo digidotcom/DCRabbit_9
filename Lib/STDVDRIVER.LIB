@@ -1,0 +1,369 @@
+ /***********************************************************
+  *
+  *   Syntax:    Standard VDriver Library (no RabbitSys)
+  *   Created:   09/15/2004 11:22AM
+  *   Comments:  These routines are only used when not using
+  *				  RabbitSys (__RABBITSYS=0).
+  *
+  ************************************************************/
+
+/*** BeginHeader secwd_isr */
+void secwd_isr(void);
+/*** EndHeader */
+
+#asm nodebug root
+;
+; secwd_isr
+;
+; Handles a secondary watchdog interrupt if the periodic interrupt fails to
+; hit the secondary watchdog timer.  This ISR disables the secondary watchdog,
+; reloads the secondary watchdog timeout register, re-enables interrupts, sets
+; the interrupt priority level to 0, and causes an ERR_SECONDARYWDTO exception.
+; The interrupt priority level is set to 0, rather than doing an ipres to ensure
+; proper behavior with the debug kernel.  In the case of a program running
+; stand-alone, the run-time exception will result in a primary watchdog timeout.
+;
+
+secwd_isr::
+	ld		a, 0x5A				; disable secondary watchdog
+;	ioi	ld (SWDTR), a
+	IOWRITE_A(SWDTR)
+	ld		a, 0x52
+;	ioi	ld (SWDTR), a
+	IOWRITE_A(SWDTR)
+	ld		a, 0x44
+;	ioi	ld (SWDTR), a
+	IOWRITE_A(SWDTR)
+	ld    a, 0xff				; reload secondary watchdog timer
+;   ioi   ld (SWDTR), a
+	IOWRITE_A(SWDTR)
+	ipset 0
+   EXCEPTION(-ERR_SECONDARYWDTO)
+#endasm
+
+/*** BeginHeader periodic_init, TICK_TIMER, MS_TIMER, SEC_TIMER, __MS_COUNTER,
+periodic_isr, bios_intexit, __MCOS_CNT_VAL, bios_intnesting, bios_swpend */
+
+xmem void periodic_init();
+root void periodic_isr();
+root void bios_intexit();
+
+extern char __TICK_COUNTER;
+extern char __MS_COUNTER;
+extern unsigned int __MCOS_COUNTER;
+extern unsigned int __MCOS_CNT_VAL;
+extern shared unsigned long MS_TIMER;
+extern shared unsigned long TICK_TIMER;
+extern shared unsigned long SEC_TIMER;
+
+extern char  bios_intnesting;
+extern char  bios_swpend;
+
+/*** EndHeader */
+
+char  bios_intnesting;
+char  bios_swpend;
+unsigned int __MCOS_COUNTER;
+char  __TICK_COUNTER;
+char __MS_COUNTER;
+shared unsigned long SEC_TIMER;
+shared unsigned long MS_TIMER;
+shared unsigned long TICK_TIMER;
+unsigned int __MCOS_CNT_VAL;
+
+char pisr_inuse;
+
+#if _RK_FIXED_VECTORS
+// This overwrites the periodic interrupt relay
+#rcodorg	periodic_intvec apply
+#asm
+		jp periodic_isr
+#endasm
+#rcodorg rootcode resume
+#endif
+
+#asm xmem nodebug
+;
+; periodic_init
+;
+; Initializes the TICK_TIMER, MS_TIMER, and SEC_TIMER global
+; counters.  Sets up the periodic interrupt and the associated
+; ISR.
+;
+
+periodic_init::
+#ifdef MCOS
+c	OSRunning = 0;
+#endif
+	push	ip
+	ipset	3
+	xor	a
+	ld		l,a
+	ld		h,a
+
+	ld		(__TICK_COUNTER),a
+	ld		(TICK_TIMER+0),hl
+	ld		(TICK_TIMER+2),hl
+	ld		(__MS_COUNTER),a
+	ld		(MS_TIMER+0),hl
+	ld		(MS_TIMER+2),hl
+c	SEC_TIMER = read_rtc();	  // initialize SEC_TIMER to RTC
+	ld		(pisr_inuse),a
+
+	ld 	a, 0xc3					; jp instruction entry
+	ld		hl, periodic_isr		; set service routine
+	ld		(INTVEC_BASE+PERIODIC_OFS), a			; write to the interrupt table
+	ld		(INTVEC_BASE+PERIODIC_OFS+1), hl
+
+	ld		a,(GCSRShadow)		; enable periodic interrupt
+	and	0xfc
+	or		0x01
+	ld		(GCSRShadow),a
+;	ioi ld	(GCSR),a
+	IOWRITE_A(GCSR)
+
+#ifdef USE_SECONDARY_WD
+#if _CPU_ID_ >= R3000_R1
+	ld    a, 0xff				; secondary watch dog will cause ip level 3 interrupt
+;   ioi   ld (SWDTR), a		; if not hit every 7.8125 ms
+	IOWRITE_A(SWDTR)
+   ld		a,0x5f				;
+;   ioi	ld (WDTCR), a		; start secondary watchdog
+	IOWRITE_A(WDTCR)
+#endif
+#endif
+
+	xor	a
+	ld		(bios_swpend),a
+	ld		(bios_intnesting),a
+
+	pop	ip
+	lret
+#endasm
+
+#asm
+;
+; periodic_isr
+;
+; The periodic_isr cannot be called recursively.  To decrease latency
+; it reenables interrupts towards the beginning of the routine, but it
+; is necessary for the completion of the routine to not be delayed by
+; other interrupts past the next periodic interrupt.
+;
+periodic_isr::
+	push	af								; 10, save registers for peridic_timers
+	push	ip								; 9
+	push	hl								; 10
+	push	de								; 10
+	push	ix								; 12
+
+periodic_isr_ep2::					; Extra entry point for hooking to this ISR
+
+;	ioi ld a,(GCSR)						; 11,	clear interrupt source
+	IOREAD_A(GCSR)
+
+	ld		hl,bios_intnesting		; 5,	increase the nesting count
+	inc	(hl)							; 8
+
+	ipres									; 4,	reenable interrupts
+
+	//********* Do Periodic_Timers  ~79 average cycles.
+   //                               279 worst case (assumes TICK_TIMER,MS_TIMER,and SEC_TIMER
+   //                                               all roll over on the same interrupt)
+	ld		hl,__TICK_COUNTER		; 6
+	inc   (hl)                 ; 8
+
+	ld    a,0x7f               ; 4    call virtual wd's 16 time per second
+	and   (hl)                 ; 5
+	jr		nz,.novwdog				; 5
+	lcall	vwdog                ; 12
+
+.novwdog:
+#ifdef USE_SECONDARY_WD
+#if _CPU_ID_ >= R3000_R1
+	ld    a, 0x07					; 4   secondary watchdog must be hit every 7.8ms
+   and	(hl)                 ; 5
+   jr		nz,.checkTime        ; 5
+   ld		a,0x5f					; 4	restart secondary watchdog
+;   ioi	ld (WDTCR), a			; 12
+	IOWRITE_A(WDTCR)
+#endif
+#endif
+.checkTime:
+	bit   0,(hl)               ; 7    run every other time
+	jr	   nz,.DoneTimers			; 5
+
+	ld    hl,  TICK_TIMER      ; 6    this runs every 1/1024th s.
+	inc   (hl)                 ; 8
+	jr    nz,.DoneTICK         ; 5
+	inc   hl                   ; 2    this runs every 1/4 s.
+	inc   (hl)                 ; 8
+   ld		a,(hl)               ; 5
+   ld    d,a                  ; 2    save 1/4 s. counter in D
+   and	3                    ; 4    test for 1 second boundary
+	jr    nz,.DoneTICK         ; 5
+
+	ld    hl,  SEC_TIMER       ; 6
+	inc   (hl)                 ; 8    this runs ~ every 1 s.
+	jr 	nz,.DoneSec 			; 5
+	inc   hl                   ; 2
+	inc   (hl)                 ; 8    this runs ~ every 256 s.
+	jr 	nz,.DoneSec 			; 5
+	inc   hl                   ; 2
+	inc   (hl)                 ; 8    this runs ~ every 65536 s.
+	jr 	nz,.DoneSec 			; 5
+	inc   hl                   ; 2
+	inc   (hl)                 ; 8    this runs ~ every 16777216 s.
+
+.DoneSec:
+   xor	a,a                  ; 2
+   or		a,d                  ; 2    look at previously saved count
+   jr		nz,.DoneTICK         ; 5
+
+   ld		hl,  TICK_TIMER+2    ; 6    this runs every 64 s.
+	inc   (hl)                 ; 8
+	jr    nz,.DoneTICK          ; 5
+	inc   hl                   ; 2    this runs every 16384 s.
+	inc   (hl)                 ; 8
+
+.DoneTICK:
+	ld		a,(__MS_COUNTER)		; 9    this runs every 1/1024th s.
+	add	a,250						; 4
+	ld		(__MS_COUNTER),a		; 10
+
+	jr    nc, .DoneTimers      ; 5     skip 6 times per 256 entries because
+	                           ;                  (250/256)*1024 = 1000
+
+	ld    hl,	MS_TIMER       ; 6    this runs 1000 time per s.
+	inc   (hl)                 ; 8
+	jr    nz,.DoneTimers       ; 5
+	inc   hl                   ; 2    this runs ~ every 32/125 s.
+	inc   (hl)                 ; 8
+	jr		nz,.DoneTimers	      ; 5
+	inc   hl                   ; 2    this runs ~ every 8192/125 s.
+	inc   (hl)                 ; 8
+	jr		nz,.DoneTimers	      ; 5
+	inc   hl                   ; 2    this runs ~ every 2097152/125 s.
+	inc   (hl)                 ; 8
+
+.DoneTimers:
+
+.pisr_mcossched:
+#ifdef MCOS
+	ld		a,(OSRunning)				; 9 has MCOS started multitasking yet?
+	or		a								; 2
+	jr		z,.pisr_ncall				; 5
+
+	ld		hl,__MCOS_COUNTER       ; 6, MCOS scheduling performed 2^4 / 2^11,
+                                 ;    or 128 times per second (default)
+	dec	(hl)							; 8
+	jr		nz,.pisr_ncall			   ; 5
+	call OSTimeTick					; 162 + OSTimeTickHook + num of tasks
+                                 ;     (210 worst or 57 best)
+	call OSIntExit						; 67/332 Best/Worst
+	ld		hl,(__MCOS_CNT_VAL)		; user defined count down value
+	ld		(__MCOS_COUNTER),hl 		; reset __MCOS_COUNTER
+#endif
+
+.pisr_ncall:
+#ifdef SLICING
+	call	__slice_tick				; 71/23 (active/inactive) schedule slicing
+#endif
+
+	ipset	1
+	ld		hl,bios_intnesting
+	dec	(hl)
+	jr		nz,.pisr_done
+
+	ld		a,(bios_swpend)
+	or		a
+	jr		z,.pisr_done
+
+	push	bc								; 10
+	ex		af,af'						; 2
+	push	af								; 10
+	exx									; 2
+	push	hl								; 10
+	push	de								; 10
+	push	bc								; 10
+	push	iy								; 12
+
+	lcall	bios_intexit				; SLICING=95, MCOS=...
+
+	pop	iy								; 9
+	pop	bc								; 7
+	pop	de								; 7
+	pop	hl								; 7
+	exx									; 2
+	pop	af								; 7
+	ex		af,af'						; 2
+	pop	bc								; 7
+
+.pisr_done:
+
+	pop	ix								; 9
+	pop	de								; 7
+	pop	hl								; 7
+	pop	ip								; 7
+	pop	af								; 7
+
+	ipres									; 4
+	ret									; 8
+
+;
+; bios_intexit
+; change the stack to the next task
+;
+; worst case 95, not including restoring registers
+;
+
+bios_intexit::
+#ifdef SLICING
+	ld		hl,(FSP)						; 11
+	ld		ix,hl							; 4
+
+	bool	hl								; 2
+	ld		l,h							; 2
+	add	hl,sp							; 2
+
+	ld		(ix+2),hl					; 11
+	ld		hl,(ix+4)					; 9
+
+	ld		sp,hl							; 2
+
+	bool	hl								; 2
+	ld		l,h							; 2
+	ld		(FSP),hl						; 13
+#endif
+
+#ifdef MCOS
+	ld		ix,(OSTCBCur)								; OSTCBCur->OSTCBStkPtr=sp
+	bool	hl
+	ld		l,h
+	add	hl,sp
+	ld		(ix+0),hl
+
+	call	OSTaskSwHook
+
+	ld		a,(OSPrioHighRdy)							; OSPrioCur = OSPrioHighRdy
+	ld		(OSPrioCur),a
+
+	ld    hl,(OSTCBHighRdy)							; OSTCBCur = OSTCBHighRdy
+	ld    (OSTCBCur),hl
+
+	ld		hl,(hl+os_tcb+OSTCBStkSeg)				; Get STACKSEG of task to resume
+	ld    a,l
+   ld    hl,(OSTCBHighRdy)							; Get stack ptr of task to resume
+   ld		hl,(hl+0)
+   ld		sp,hl											; ptr = OSTCBHighRdy->OSTCBStkPtr
+   ioi	ld (STACKSEG),a
+#endif
+
+	xor	a								; 2
+	ld		(bios_swpend),a		   ; 10, clear switch pending flag
+	ld		(bios_intnesting),a	   ; 10,	store decremented nesting counter
+	lret									; 13,	restore new/old context
+
+#endasm
+
+

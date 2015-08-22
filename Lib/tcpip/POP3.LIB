@@ -1,0 +1,595 @@
+/*** BeginHeader */
+#ifndef __POP3_LIB
+#define __POP3_LIB
+
+/*** EndHeader */
+
+/*** BeginHeader pop3_init, pop3_getmail, pop3_tick */
+
+/*
+ *	This POP3 client will fetch e-mails from a remote site. 
+ * These e-mails can be passed to a client program through a
+ * function called storemail(). This is a client program
+ * provided function, and should have the following prototype:
+ *
+ * By default:
+ * int storemail(int number, char *buf, int size);
+ *
+ * If POP_PARSE_EXTRA is defined:
+ * int storemail(int number, char *to, char *from, char *subject, char *body, int size);
+ *
+ * By default:
+ * "size"	== size of "buf" in bytes
+ * "buf"		== a text buffer containing part of an e-mail
+ * "number" == the e-mail number currently being transfered
+ *
+ * If multiple e-mails are received, this function may be called
+ * several times per e-mail, with "number" changing for each e-mail.
+ *
+ * An example:
+ *		2 e-mails are received
+ *			- the first is 20 bytes & one line
+ *			- the second is 40 & two lines.
+ *
+ *	storemail(1, email_buffer, 20);
+ * storemail(2, email_buffer, 33);
+ * storemail(2, email_buffer, 7);
+ *
+ * Each line of the e-mail is sent in a seperate call to storemail! Also, the CRLF
+ * (end of line mark) has been REMOVED from each line! (each line ends with '\0' now)
+ *
+ * NOTE - "number" is NOT guanenteed to be in any sort of order! It could be
+ * a series of random numbers!
+ *
+ * If POP_PARSE_EXTRA is defined:
+ *
+ * "number" is the same as above.
+ * "to" is who the e-mail is sent to.
+ * "from" is who the e-mail is from.
+ * "subject" is the subject line.
+ * "body" containes one line at a time of the body.
+ * "size" is the length of body in bytes. All other buffers are null ( \0 ) terminated. 
+ *
+ * You must copy the data out of these buffers, as when the function returns, they
+ * will all be overwritten.
+ *
+ * Number, To, From, and Subject will all be the same for a given e-mail, while the
+ * "body" buffer will change between each call.
+ *
+ * All buffers except body (to, from, subject) will be truncated down to POP_BUFFER_SIZE.
+ *
+ * ----------------------
+ *
+ * Server options:
+ *
+ * // leave the e-mails on the server 
+ * #define POP_NODELETE
+ *
+ * // set the timeout
+ * #define POP_TIMEOUT 12
+ * This sets a 12 second timeout. Default is 30 seconds.
+ *
+ * // Use alternative parsing method, for easier use
+ * #define POP_PARSE_EXTRA
+ *
+ * // set the buffer size for POP_PARSE_EXTRA, in bytes
+ * #define POP_BUFFER_SIZE 128
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+pop3_init                            <POP3.LIB>
+
+SYNTAX: int pop3_init(int (*storemail)());
+
+KEYWORDS:		pop3, mail
+
+DESCRIPTION: 	This function will set the call-back where the incoming
+					e-mail will be passed to. This probably should only be
+					called once.
+
+PARAMETER1: 	A function pointer to the call-back function.
+
+RETURN VALUE:  0 on success, 1 on failure
+               
+SEE ALSO:      pop3_init, pop3_getmail, pop3_tick
+
+END DESCRIPTION **********************************************************/
+int pop3_init(int (*storemail)());
+
+/* START FUNCTION DESCRIPTION ********************************************
+pop3_getmail                            <POP3.LIB>
+
+SYNTAX: int pop3_getmail(char *username, char *password, long server);
+
+KEYWORDS:		pop3, mail
+
+DESCRIPTION: 	This function will initiate a POP3 request to a remote
+					e-mail server. IMPORTANT NOTE - the buffers for 'username'
+					and 'password', as described below, must NOT change until
+					pop3_tick() returnes something besides POP_PENDING. These
+					values are not saved internally, and depend on the buffers
+					not changing.
+
+PARAMETER1: 	The username of the account to access.
+PARAMETER2:		The password of the account to access.
+PARAMETER3:		The IP address of the server to connect to, as returned
+					from the function resolve().
+
+RETURN VALUE:  0 on success, 1 on failure
+               
+SEE ALSO:      pop3_init, pop3_getmail, pop3_tick
+
+END DESCRIPTION **********************************************************/
+int pop3_getmail(char *username, char *password, long server);
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+pop3_tick                            <POP3.LIB>
+
+SYNTAX: int pop3_tick(void);
+
+KEYWORDS:		pop3, mail
+
+DESCRIPTION: 	A standard tick funciton, to run the daemon. Continue to
+					call it as it returnes POP_PENDING. 
+
+RETURN VALUE:  POP_PENDING	- Transfer is not done; call pop3_tick again.
+					POP_SUCCESS	- All e-mails were received successfully.
+					POP_ERROR	- An unknown error occoured.
+					POP_TIME		- The session timed-out. Try it again, or use
+										POP_TIMEOUT to increase the timeout length.
+               
+SEE ALSO:      pop3_init, pop3_getmail, pop3_tick
+
+END DESCRIPTION **********************************************************/
+int pop3_tick(void);
+
+/* pop3_tick() return values */
+#define POP_PENDING	1
+#define POP_SUCCESS	2
+#define POP_ERROR		3	/* unknown error */
+#define POP_TIME		4	/* we timed out */
+
+/* set the default timeout */
+#ifndef POP_TIMEOUT
+	#define POP_TIMEOUT 30
+#endif
+
+/* set our internal buffer size */
+#ifndef POP_BUFFER_SIZE
+	#define POP_BUFFER_SIZE 64
+#endif
+
+/*** EndHeader */
+
+/*
+ * Our local vars
+ */
+int 				(*pop_storemail)();
+int 				pop_delete;
+char 				*pop_username, *pop_password;
+long 				pop_server;
+int 				pop_state;
+unsigned long 	pop_timeout;
+tcp_Socket 		pop_sock;
+const tcp_Socket 		* const pop_s = &pop_sock;
+int 				pop_retval;
+char				pop_line[512]; /* line of data read from the socket */
+char				pop_tok[16]; /* mail id number */
+int 				pop_msgnum, pop_msgcount;
+#ifdef POP_PARSE_EXTRA
+char				pop_to[POP_BUFFER_SIZE];
+char				pop_from[POP_BUFFER_SIZE];
+char				pop_subject[POP_BUFFER_SIZE];
+int 				pop_body, pop_datasent;
+#endif
+
+/*
+ * The states
+ */
+#define POP_INIT				1
+#define POP_WAITCONNECT 	2
+#define POP_WAITWELCOME		3
+#define POP_USERNAME			4
+#define POP_WAITUSERNAME	5
+#define POP_PASSWORD			6
+#define POP_WAITPASSWORD	7
+#define POP_LIST				8
+#define POP_LIST1				9
+#define POP_LIST2				10
+#define POP_LIST3				11
+#define POP_RETR				12
+#define POP_RETR1				13
+#define POP_RETR2				14
+#define POP_DELE				15
+#define POP_WAITDELE			16
+#define POP_QUIT			22
+#define POP_WAITQUIT		23
+#define POP_CLOSE			24
+#define POP_WAITCLOSE	25
+
+/******************
+ * Helper functions
+ */
+
+#define POP_MSG_GOOD		1
+#define POP_MSG_BAD		2
+#define POP_MSG_PENDING	3
+#define POP_MSG_ERROR	4
+nodebug int pop_getmessage(void)
+{
+	if(sock_dataready(pop_s)) {
+		sock_gets(pop_s, pop_line, 512);
+
+#ifdef POP_DEBUG
+		printf("POP_READ> '%s'\n", pop_line);
+#endif
+		
+		if(pop_line[0] == '+')
+			return POP_MSG_GOOD;
+		if(pop_line[0] == '-')
+			return POP_MSG_BAD;
+		return POP_MSG_ERROR;
+	}
+	return POP_MSG_PENDING;
+}
+
+nodebug void pop_msg(char *str, char *insert)
+{
+	static char buf[128];
+	static int length, offset;
+
+	offset = 0;
+	if(NULL != insert) {
+		/* insert into string */
+		sprintf(buf, str, insert);
+	} else {
+		strcpy(buf, str);
+	}
+
+#ifdef POP_DEBUG
+	printf("POP_WRITE> '%s'\n", buf);
+#endif
+
+	strcat(buf, "\r\n");
+	length = strlen(buf);
+	while(offset < length) {
+		if(0 == tcp_tick(pop_s))
+			return;
+		offset += sock_fastwrite(pop_s, buf + offset, length - offset);
+	}
+	pop_timeout = set_timeout(POP_TIMEOUT);
+}
+
+/********************
+ * Main API functions
+ */
+
+nodebug int pop3_init(int (*storemail)())
+{
+	pop_storemail = storemail;
+
+	return 0;
+}
+
+nodebug int pop3_getmail(char *username, char *password, long server)
+{
+	pop_username = username;
+	pop_password = password;
+	pop_server = server;
+
+	pop_state = POP_INIT;
+	pop_timeout = set_timeout(POP_TIMEOUT);
+	pop_retval = POP_ERROR;
+	pop_msgnum = 0;
+
+	return 0;
+}
+
+nodebug int pop3_tick(void)
+{
+	static char *p;
+	
+	/* did the socket die? */
+	if((pop_state != POP_INIT) && (tcp_tick(pop_s) == 0)) {
+#ifdef POP_DEBUG
+		printf("POP> Socket closed!\n");
+#endif
+		return pop_retval;
+	}
+	
+	/* timeout? */
+	if(chk_timeout(pop_timeout)) {
+		/* we have timed out - return error */
+#ifdef POP_DEBUG
+		printf("POP> TIMEOUT!\n");
+#endif
+		pop_retval = POP_TIME;
+		pop_state = POP_CLOSE;
+		pop_timeout = set_timeout(POP_TIMEOUT);
+	}
+
+	/* the main state machine */
+	switch(pop_state) {
+	case POP_INIT:
+#ifdef POP_DEBUG
+		printf("POP> Opening socket\n");
+#endif
+		tcp_open(&pop_sock, 0, pop_server, 110, NULL);
+		pop_state = POP_WAITCONNECT;
+		break;
+		
+	case POP_WAITCONNECT:
+		if(sock_established(pop_s)) {
+#ifdef POP_DEBUG
+			printf("POP> Socket connected!\n");
+#endif
+			sock_mode(pop_s, TCP_MODE_ASCII); /* set mode to ASCII */
+			pop_state = POP_WAITWELCOME;
+		}
+		break;
+
+	case POP_WAITWELCOME:
+		/* wait for welcome message */
+		switch(pop_getmessage()) {
+		case POP_MSG_GOOD:
+			pop_state = POP_USERNAME;
+			break;
+		case POP_MSG_BAD:
+		case POP_MSG_ERROR:
+			pop_state = POP_CLOSE;
+			break;
+		case POP_MSG_PENDING:
+			break;
+		}
+		break;
+
+	case POP_USERNAME:
+		pop_msg("USER %s", pop_username);
+		pop_state = POP_WAITUSERNAME;
+		break;
+
+	case POP_WAITUSERNAME:
+			switch(pop_getmessage()) {
+			case POP_MSG_GOOD:
+				pop_state = POP_PASSWORD;
+				break;
+			case POP_MSG_BAD:
+			case POP_MSG_ERROR:
+				pop_state = POP_CLOSE;
+				break;
+			case POP_MSG_PENDING:
+				break;
+			}
+		
+		break;
+
+	case POP_PASSWORD:
+		pop_msg("PASS %s", pop_password);
+		pop_state = POP_WAITPASSWORD;
+		break;
+
+	case POP_WAITPASSWORD:
+			switch(pop_getmessage()) {
+			case POP_MSG_GOOD:
+				pop_state = POP_LIST;
+				break;
+			case POP_MSG_BAD:
+			case POP_MSG_ERROR:
+				pop_state = POP_CLOSE;
+				break;
+			case POP_MSG_PENDING:
+				break;
+			}
+		
+		break;
+
+	case POP_LIST:
+		pop_msg("LIST", NULL);
+		pop_state = POP_LIST1;
+		pop_msgcount = pop_msgnum;
+		break;
+
+	case POP_LIST1:
+		switch(pop_getmessage()) {
+		case POP_MSG_GOOD:
+			pop_state = POP_LIST2;
+			break;
+		case POP_MSG_BAD:
+		case POP_MSG_ERROR:
+			pop_state = POP_CLOSE;
+		case POP_MSG_PENDING:
+			break;
+		}
+		break;
+
+	case POP_LIST2:
+		if(sock_dataready(pop_s)) {
+			sock_gets(pop_s, pop_line, 512);
+
+#ifdef POP_DEBUG
+			printf("POP_READ> '%s'\n", pop_line);
+#endif
+
+#ifdef POP_NODELETE
+			/* remove the lines we have allready parsed */
+			if(pop_msgcount > 0) {
+				pop_msgcount -= 1;
+				break;
+			}
+#endif
+
+			if((pop_line[0] == '.') && (pop_line[1] == '\0')) {
+				/* no more messages */
+#ifdef POP_DEBUG
+				printf("POP> No more messages\n");
+#endif
+				pop_state = POP_QUIT;
+				break;
+			} else {
+				/* first token in pop_line[] has the next message number */
+				if(NULL == (p = strtok(pop_line, " "))) {
+					pop_state = POP_CLOSE;
+					break;
+				}
+
+				strcpy(pop_tok, p);
+#ifdef POP_DEBUG
+				printf("POP> Next mail is: '%s'\n", pop_tok);
+#endif
+				pop_state = POP_LIST3;
+			}
+		}
+		break;
+
+	case POP_LIST3:
+		if(sock_dataready(pop_s)) {
+			sock_gets(pop_s, pop_line, 512);
+#ifdef POP_DEBUG
+			printf("POP_READ> '%s'\n", pop_line);
+#endif
+			if((pop_line[0] == '.') && (pop_line[1] != '.')) {
+				/* received the entire list */
+				pop_state = POP_RETR;
+			}
+		}
+		break;
+
+	case POP_RETR:
+		/* get the message */
+		pop_msgnum += 1; /* increment how many messages we have seen */
+#ifdef POP_PARSE_EXTRA
+		pop_body = 0;
+		pop_datasent = 0;
+		pop_to[0] = '\0';
+		pop_from[0] = '\0';
+		pop_subject[0] = '\0';
+#endif
+
+		pop_msg("RETR %s", pop_tok);
+		pop_state = POP_RETR1;
+		break;
+
+	case POP_RETR1:
+		switch(pop_getmessage()) {
+		case POP_MSG_GOOD:
+			pop_state = POP_RETR2;
+			break;
+		case POP_MSG_BAD:
+		case POP_MSG_ERROR:
+			pop_state = POP_CLOSE;
+		case POP_MSG_PENDING:
+			break;
+		}
+		break;
+		
+	case POP_RETR2:
+		if(sock_dataready(pop_s)) {
+			sock_gets(pop_s, pop_line, 512);
+#ifdef POP_DEBUG
+			//printf("POP> Line of data read\n");
+#endif
+			if((pop_line[0] == '.') && (pop_line[1] != '.')) {
+				/* all done */
+
+#ifdef POP_PARSE_EXTRA
+				if(0 == pop_datasent) {
+					/* never sent a line to the user - send one now, so they get the headers */
+					pop_line[0] = '\0';
+					(pop_storemail)(pop_msgnum, pop_to, pop_from, pop_subject, pop_line, strlen(pop_line));				
+				}
+#endif
+				
+#ifdef POP_NODELETE
+				pop_state = POP_LIST;
+#else
+				pop_state = POP_DELE;
+#endif
+				break;
+			}
+
+			/* store the line to the user */
+#ifdef POP_PARSE_EXTRA
+			if(pop_body) {
+				/* send the body line to the user */
+				(pop_storemail)(pop_msgnum, pop_to, pop_from, pop_subject, pop_line, strlen(pop_line));
+				pop_datasent = 1;
+			} else {
+				/* are we done with the header? */
+				if(pop_line[0] == '\0') {
+					/* last line in header */
+					pop_body = 1;
+				} else {
+					if(0 == strncmp(pop_line, "From: ", 6)) {
+						strncpy(pop_from, pop_line + 6, POP_BUFFER_SIZE - 6);
+						pop_from[POP_BUFFER_SIZE - 1] = '\0';
+					}
+					if(0 == strncmp(pop_line, "To: ", 4)) {
+						strncpy(pop_to, pop_line + 4, POP_BUFFER_SIZE - 4);
+						pop_to[POP_BUFFER_SIZE - 1] = '\0';
+					}
+					if(0 == strncmp(pop_line, "Subject: ", 9)) {
+						strncpy(pop_subject, pop_line + 9, POP_BUFFER_SIZE - 9);
+						pop_subject[POP_BUFFER_SIZE - 1] = '\0';
+					}
+				}
+			}
+#else
+			(pop_storemail)(pop_msgnum, pop_line, strlen(pop_line));
+#endif
+		}
+		break;
+
+#ifndef POP_NODELETE
+	case POP_DELE:
+		/* remove current message */
+		pop_msg("DELE %s", pop_tok);
+		pop_state = POP_WAITDELE;
+		break;
+
+	case POP_WAITDELE:
+		switch(pop_getmessage()) {
+		case POP_MSG_GOOD:
+			pop_state = POP_LIST;
+			break;
+		case POP_MSG_BAD:
+		case POP_MSG_ERROR:
+			pop_state = POP_CLOSE;
+		case POP_MSG_PENDING:
+			break;
+		}
+		break;
+#endif /* NODELETE */
+		
+	case POP_QUIT:
+		pop_msg("QUIT", NULL);
+		pop_retval = POP_SUCCESS;
+		pop_state = POP_WAITQUIT;
+		break;
+
+	case POP_WAITQUIT:
+		if(POP_MSG_PENDING != pop_getmessage()) {
+			pop_state = POP_CLOSE;
+		}
+		break;
+
+	case POP_CLOSE:
+		sock_close(pop_s);
+		pop_state = POP_WAITCLOSE;
+		break;
+
+	case POP_WAITCLOSE:
+		break;
+		
+	default:
+		/* error */
+		sock_close(pop_s);
+		return POP_ERROR;
+	}
+
+	return POP_PENDING;
+}
+
+/*** BeginHeader */
+#endif /*__POP3_LIB*/
+/*** EndHeader */

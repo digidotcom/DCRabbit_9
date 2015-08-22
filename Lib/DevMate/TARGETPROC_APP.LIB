@@ -1,0 +1,1239 @@
+/* START LIBRARY DESCRIPTION *********************************************
+TARGETPROC_APP.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+	Support routines for Target Side DevMate low level applications.
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#ifndef __TARGETPROC_APP_LIB
+#define __TARGETPROC_APP_LIB
+/*** EndHeader */
+
+/*** BeginHeader */
+
+#ifndef TARGETPROC_SERIAL_SPEED
+	#define TARGETPROC_SERIAL_SPEED	115200
+#endif
+
+#ifndef TC_RW_NUMTRIES
+	// number of times to retry a read or write
+	#define TC_RW_NUMTRIES	5
+#endif
+
+#ifndef TC_RW_TIMEOUT
+	// timeout in ms
+	#define TC_RW_TIMEOUT	100
+#endif
+
+/* select out the appropriate serial port */
+#ifdef TARGETPROC_SERA
+	#define TARGETPROC_SPSR					SASR
+	#define TARGETPROC_SPCR					SACR
+	#define TARGETPROC_SPDR					SADR
+	#define TARGETPROC_VECTOR				0xC0
+	#define TARGETPROC_BAUDTIMER			TAT4R
+	#define TARGETPROC_BAUDTIMER_SHADOW	TAT4RShadow
+#else
+#ifdef TARGETPROC_SERB
+	#define TARGETPROC_SPSR					SBSR
+	#define TARGETPROC_SPCR					SBCR
+	#define TARGETPROC_SPDR					SBDR
+	#define TARGETPROC_VECTOR				0xD0
+	#define TARGETPROC_BAUDTIMER			TAT5R
+	#define TARGETPROC_BAUDTIMER_SHADOW	TAT5RShadow
+#else
+#ifdef TARGETPROC_SERC
+	#define TARGETPROC_SPSR					SCSR
+	#define TARGETPROC_SPCR					SCCR
+	#define TARGETPROC_SPDR					SCDR
+	#define TARGETPROC_VECTOR				0xE0
+	#define TARGETPROC_BAUDTIMER			TAT6R
+	#define TARGETPROC_BAUDTIMER_SHADOW	TAT6RShadow
+#else
+#ifdef TARGETPROC_SERD
+	#define TARGETPROC_SPSR					SDSR
+	#define TARGETPROC_SPCR					SDCR
+	#define TARGETPROC_SPDR					SDDR
+	#define TARGETPROC_VECTOR				0xF0
+	#define TARGETPROC_BAUDTIMER			TAT7R
+	#define TARGETPROC_BAUDTIMER_SHADOW	TAT7RShadow
+#else
+#ifdef TARGETPROC_SERE
+	#define TARGETPROC_SPSR					SESR
+	#define TARGETPROC_SPCR					SECR
+	#define TARGETPROC_SPDR					SEDR
+	#define TARGETPROC_VECTOR				0x1C0
+	#define TARGETPROC_BAUDTIMER			TAT2R
+	#define TARGETPROC_BAUDTIMER_SHADOW	TAT2RShadow
+#else
+#ifdef TARGETPROC_SERF
+	#define TARGETPROC_SPSR					SFSR
+	#define TARGETPROC_SPCR					SFCR
+	#define TARGETPROC_SPDR					SFDR
+	#define TARGETPROC_VECTOR				0x1D0
+	#define TARGETPROC_BAUDTIMER			TAT3R
+	#define TARGETPROC_BAUDTIMER_SHADOW	TAT3RShadow
+#else
+	#error "A serial port for the targetproc lib must be selected with TARGETPROC_SERx!"
+#endif
+#endif
+#endif
+#endif
+#endif
+#endif
+
+/*** EndHeader */
+
+/*** BeginHeader targetproc_init */
+
+void __targetproc_xtc_init();
+void __targetproc_init();
+void __targetproc_tick();
+#makechain __targetproc_xtc_init
+#makechain __targetproc_init
+#makechain __targetproc_tick
+
+void targetproc_init();
+void targetproc_setbaudrate(long baud_rate);
+
+//extern _tc_state TargetprocState;
+_tc_state TargetprocState;
+extern faraddr_t TargetprocRXBufferListStore[TC_MAX_APPLICATIONS];
+extern void *TargetprocCallbackListStore[TC_MAX_APPLICATIONS];
+extern char TargetprocLockTX;
+/*** EndHeader */
+
+/* the actuall state structure */
+
+/* the list of receive buffer queues */
+faraddr_t TargetprocRXBufferListStore[TC_MAX_APPLICATIONS];
+
+/* list of callbacks, indexed by 'type' */
+void *TargetprocCallbackListStore[TC_MAX_APPLICATIONS];
+
+/* a lock indicating if the transmitter should _NOT_ be used!
+	(this is primarily for the ethernet-loader; once this is set,
+	targetproc_init() _MUST_ be called to reset it! */
+char TargetprocLockTX;
+
+
+#asm nodebug
+Targetprocisr_start::
+    jp	TargetprocSerialISR
+    ret
+
+TargetprocSerialISR::
+	;	serial interrupt handler
+	push	ip
+	push	af
+	ex    af,af'
+	push	af
+	ld    a,xpc
+	push	af
+	push	bc
+	push	de
+	push	hl
+	push  ix
+	push	iy
+
+	exx
+	push	bc
+	push	de
+	push	hl
+
+	ld		iy,TargetprocState			; iy == pointer to our state structure
+
+;	ioi 	ld a,(TARGETPROC_SPSR)			;	check the status
+	IOREAD_A(TARGETPROC_SPSR)
+	bit	SS_RRDY_BIT,a			;  was a character received?
+	jr		z,_TargetprocnoRxIntReqNEW
+
+	call	dkcEntryRX			;  handle the RX interrupt
+	jr		_TargetprocreadyToExitNEW		;  all done for now
+
+_TargetprocnoRxIntReqNEW:
+	bit	2,a
+	jr		z,_TargetprocSecondTXInt
+	call	dkcEntryTX			;	handle the TX interrupt
+	jr		_TargetprocreadyToExitNEW
+
+_TargetprocSecondTXInt:
+	ld		a,(TargetprocState+TXBusy)
+	or		a
+	jr		z,_TargetprocSkipInt
+
+	; this really is a good int
+	call	dkcEntryTX
+	jr		_TargetprocreadyToExitNEW
+
+_TargetprocSkipInt:
+	; just clear the int
+;	ioi 	ld (TARGETPROC_SPSR), a
+	IOWRITE_A(TARGETPROC_SPSR)
+
+_TargetprocreadyToExitNEW:
+
+	pop	hl
+	pop	de
+	pop	bc
+	exx
+
+	pop	iy
+	pop   ix
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	ld    xpc,a
+	pop	af
+	ex    af,af'
+	pop	af
+	pop	ip
+	ipres
+	ret
+
+TargetprocReadPort::
+	;	destroys A
+	;	returns byte read (if any) in A
+	;	returns with Z set if nothing is read
+
+	;	check if there is anything available
+;	ioi 	ld a, (TARGETPROC_SPSR)
+	IOREAD_A(TARGETPROC_SPSR)
+	bit	SS_RRDY_BIT,a		;	if a received byte ready?
+	ret	z						;	nope, return with z set
+	;	otherwise, a byte *is* ready, read from data port
+;	ioi 	ld a, (TARGETPROC_SPDR)
+	IOREAD_A(TARGETPROC_SPDR)
+	ret							;	return with z *not* set
+
+TargetprocClearReadInt::
+	ld		a,SS_RRDY_BIT
+;	ioi	ld (TARGETPROC_SPSR),a
+	IOWRITE_A(TARGETPROC_SPSR)
+	ret
+
+TargetprocWritePort::
+	;	assumes byte to transmit is in C
+	;	destroys A
+	;	returns with Z reset if not transmitted
+
+	;	check if the port is ready
+;	ioi 	ld a, (TARGETPROC_SPSR)
+	IOREAD_A(TARGETPROC_SPSR)
+	bit	SS_TFULL_BIT,a		;	can I transmit now?
+	ret	nz						;	nope, return with nz set
+	;	otherwise, the transmit buffer is ready, write to it!
+	ld		a,c					;	move byte to transmit to a
+;	ioi 	ld (TARGETPROC_SPDR), a
+	IOWRITE_A(TARGETPROC_SPDR)
+	ret							;	return with z *not* set
+#endasm
+
+nodebug void targetproc_setbaudrate(long baud_rate)
+{
+   auto long divisor, ta1div;
+
+   ta1div = 0;
+	// (divisor+1) for 19200 baud is stored in BIOS variable "freq_divider"
+	divisor = (long)(freq_divider * 19200.0/(float)baud_rate + 0.5) - 1L;
+	while ((divisor / (1L + ta1div)) > 255L && ta1div < 255L)
+	{
+		++ta1div;
+	}
+
+	if (ta1div)
+	{
+		divisor /= (1L + ta1div);
+   	WrPortI(TAT1R, &TAT1RShadow, (char)ta1div);
+   	WrPortI(TACR, &TACRShadow, TACRShadow | 0x10);  // set 'use port A' bit
+	}
+	else
+	{
+   	WrPortI(TACR, &TACRShadow, TACRShadow & ~0x10); // clear bit
+	}
+	WrPortI(TARGETPROC_BAUDTIMER, &(TARGETPROC_BAUDTIMER_SHADOW), (char)divisor);
+}
+
+nodebug void targetproc_ISR_init()
+{
+   /* unset the lock - the transmitter may run freely! */
+   TargetprocLockTX = 0;
+
+	/* init the low level handlers */
+	TargetprocState.ReadPort = TargetprocReadPort;
+	TargetprocState.WritePort = TargetprocWritePort;
+	TargetprocState.ClearReadInt = TargetprocClearReadInt;
+	TargetprocState.RXBufferList = TargetprocRXBufferListStore;
+	TargetprocState.CallbackList = TargetprocCallbackListStore;
+	TargetprocState.TrapSysWrites = 0;		// sys-writes are normal
+
+	/* init the baud rate */
+	targetproc_setbaudrate(TARGETPROC_SERIAL_SPEED);
+
+#asm nodebug
+ 	ld		iy,TargetprocState
+	call	dkcInit			; init the driver
+	call	dkcSystemINIT	; init the system-type handler
+
+    ; hl=spcisr_start, de={iir,0xe0}
+    ld    de, INTVEC_BASE + TARGETPROC_VECTOR
+    ld    hl,Targetprocisr_start
+    push	 ip
+    ipset 1
+
+    ld    bc,0x0010     ; copy 16 bytes from spcisr_start into interrupt table
+
+#if __SEPARATE_INST_DATA__
+	 call inst2data_ldir
+#else
+	 ldir
+#endif
+
+#ifdef TARGETPROC_SERA
+    ld	 a, (PCDRShadow)
+    set	 6, a    ;Tx should initially be idle high
+    ld	 (PCDRShadow), a
+;	ioi ld	 (PCDR), a
+	IOWRITE_A(PCDR)
+    ld    a,(PCFRShadow)
+    set	 6, a    ;Tx should initially be idle high
+    ld    (PCFRShadow),a
+;	ioi ld    (PCFR),a
+	IOWRITE_A(PCFR)
+    ld    a,0x01
+    ld    (SACRShadow),a
+;	ioi ld    (SACR),a       ; enable interrupts, use parallel port D
+	IOWRITE_A(SACR)
+								 ; for serial port B
+#else
+#ifdef TARGETPROC_SERB
+	#ifdef SERB_USEPORTD
+    ld	 a, (PDDRShadow)
+    set	 4, a    ;Tx should initially be idle high
+    ld	 (PDDRShadow), a
+;	ioi ld	 (PDDR), a
+	IOWRITE_A(PDDR)
+	 ld	 a, (PDDDRShadow)
+	 set	 4, a
+	 ld	 (PDDDRShadow), a
+;	ioi ld	 (PDDDR), a
+	IOWRITE_A(PDDDR)
+    ld    a,(PDFRShadow)
+    set	 4, a    ;Tx should initially be idle high
+    ld    (PDFRShadow),a
+;	ioi ld    (PDFR),a
+	IOWRITE_A(PDFR)
+    ld    a,0x11
+    ld    (SBCRShadow),a
+;	ioi ld    (SBCR),a      ; enable interrupts, use parallel port D for
+	IOWRITE_A(SBCR)
+								; serial port B
+	#else
+    ld	 a, (PCDRShadow)
+    set	 4, a    ;Tx should initially be idle high
+    ld	 (PCDRShadow), a
+;	ioi ld	 (PCDR), a
+	IOWRITE_A(PCDR)
+    ld    a,(PCFRShadow)
+    set	 4, a    ;Tx should initially be idle high
+    ld    (PCFRShadow),a
+;	ioi ld    (PCFR),a
+	IOWRITE_A(PCFR)
+    ld    a,0x01
+    ld    (SBCRShadow),a
+;	ioi ld    (SBCR),a      ; enable interrupts, use parallel port C for
+	IOWRITE_A(SBCR)
+								; serial port B
+	#endif
+#else
+#ifdef TARGETPROC_SERC
+    ld	 a, (PCDRShadow)
+    set	 2, a    ;Tx should initially be idle high
+    ld	 (PCDRShadow), a
+;	ioi ld	 (PCDR), a
+	IOWRITE_A(PCDR)
+    ld    a,(PCFRShadow)
+    set	 2, a	   ;enable serial
+    ld    (PCFRShadow),a
+;	ioi ld    (PCFR),a
+	IOWRITE_A(PCFR)
+    ld    a,0x01        ; enable interrupts for port
+    ld    (SCCRShadow),a
+;	ioi ld    (SCCR),a
+	IOWRITE_A(SCCR)
+#else
+#ifdef TARGETPROC_SERD
+    ld	 a, (PCDRShadow)
+    set	 0, a    ;Tx should initially be idle high
+    ld	 (PCDRShadow), a
+;	ioi ld	 (PCDR), a
+	IOWRITE_A(PCDR)
+    ld    a,(PCFRShadow)
+    set	 0, a    ;Tx should initially be idle high
+    ld    (PCFRShadow),a
+;	ioi ld    (PCFR),a
+	IOWRITE_A(PCFR)
+    ld    a,0x01        ; enable interrupts for port
+    ld    (SDCRShadow),a
+;	ioi ld    (SDCR),a
+	IOWRITE_A(SDCR)
+#else
+#ifdef TARGETPROC_SERE
+    ld	 a, (PGDRShadow)
+    set	 6,a    ;Tx should initially be idle high
+    ld	 (PGDRShadow),a
+;	ioi ld	 (PGDR),a
+	IOWRITE_A(PGDR)
+
+    ld    a,(PGFRShadow)	;set PG6 to serial out
+    set	 6,a
+    ld    (PGFRShadow),a
+;	ioi ld    (PGFR),a
+	IOWRITE_A(PGFR)
+
+    ld    a,(PGDCRShadow)	;set PG6 to be push-pull
+    res	 6,a
+    ld    (PGDCRShadow),a
+;	ioi ld    (PGDCR),a
+	IOWRITE_A(PGDCR)
+
+    ld    a,(PGDDRShadow)	;set PG6 to be output
+    set	 EDRIVE_TXD,a
+    ld    (PGDDRShadow),a
+;	ioi ld    (PGDDR),a
+	IOWRITE_A(PGDDR)
+
+    ld    a,0x01
+    ld    (SECRShadow),a
+;	ioi ld    (SECR),a       ; enable interrupts, use parallel port D
+	IOWRITE_A(SECR)
+
+								 ; for serial port B
+#else
+#ifdef TARGETPROC_SERF
+    ld	 a,(PGDRShadow)
+    set	 2,a    ;Tx should initially be idle high
+    ld	 (PGDRShadow),a
+;	ioi ld	 (PGDR),a
+	IOWRITE_A(PGDR)
+
+    ld    a,(PGFRShadow)	;set PG2 to serial out
+    set	 2,a
+    ld    (PGFRShadow),a
+;	ioi ld    (PGFR),a
+	IOWRITE_A(PGFR)
+
+    ld    a,(PGDCRShadow)	;set PG2 to be push-pull
+    res	 2,a
+    ld    (PGDCRShadow),a
+;	ioi ld    (PGDCR),a
+	IOWRITE_A(PGDCR)
+
+    ld    a,(PGDDRShadow)	;set PG2 to be output
+    set	 2,a
+    ld    (PGDDRShadow),a
+;	ioi ld    (PGDDR),a
+	IOWRITE_A(PGDDR)
+
+    ld    a,0x01
+    ld    (SFCRShadow),a
+;	ioi ld    (SFCR),a
+	IOWRITE_A(SFCR)
+#endif
+#endif
+#endif
+#endif
+#endif
+#endif
+
+	 pop	 ip
+#endasm
+}
+
+nodebug void targetproc_init()
+{
+	/* init the serial ISR */
+	targetproc_ISR_init();
+
+	/* run the init chain */
+	__targetproc_xtc_init();
+	__targetproc_init();
+}
+
+/*** BeginHeader targetproc_tick */
+void targetproc_tick(void);
+/*** EndHeader */
+nodebug void targetproc_tick(void)
+{
+	/* run the tick chain */
+	__targetproc_tick();
+}
+
+/*** BeginHeader targetproc_registercallback */
+int targetproc_registercallback(char type, int (*callback)());
+/*** EndHeader */
+
+nodebug int targetproc_registercallback(char type, int (*callback)())
+{
+	if(type >= TC_MAX_APPLICATIONS) {
+		/* they are trying to register a non-valid type!
+			Increase TC_MAX_APPLICATIONS! */
+		return TC_ERROR;
+	}
+
+	TargetprocState.CallbackList[type] = (int)callback;
+
+	return TC_SUCCESS;
+}
+
+/*** BeginHeader targetproc_send */
+int targetproc_send(char type, char subtype, int length, faraddr_t buffer, long userdata);
+/*** EndHeader */
+nodebug
+root int targetproc_send(char type, char subtype, int length, faraddr_t buffer, long userdata)
+{
+	auto _TCHeader hdr;
+	auto int (*callback)();
+
+	/* is 'type' a sane value? */
+	if(type >= TC_MAX_APPLICATIONS)
+		return TC_ERROR;
+
+	/* did they register a callback properly? */
+	if(NULL == TargetprocState.CallbackList[type])
+		return TC_NOCALLBACK;
+
+	if(TargetprocLockTX) {
+		// just drop the packet - the other side is down anyway
+		return TC_SUCCESS;
+	}
+
+	/* build the last header of the queue */
+	hdr.next = 0;
+	hdr.flags = 0;
+	hdr.type = type;
+	hdr.subtype = subtype;
+	hdr.length = length;
+	hdr.userdata = userdata;
+
+	/* copy the header into the packet */
+	if(0 != root2xmem(buffer, (char *)&hdr, sizeof(hdr)))
+		return TC_ERROR;
+
+	/* add the packet to the end of the chain */
+	if(_tc_queue_buffer(&(TargetprocState.NextPacket),buffer))
+		return TC_ERROR;
+
+#asm
+		push	ip
+		ipset	1
+		ld		a,(TargetprocState+[TargetprocState]+TXBusy)
+		or		a
+		jr		nz,_targetproc_sendNoStart
+
+		; the transmitter was not busy - try and send the packet
+		ld		iy,TargetprocState
+_targetproc_sendFirstByte:
+		call	dkcTXStart
+		;jr		nz,_targetproc_sendFirstByte
+
+_targetproc_sendNoStart:
+		pop	ip
+#endasm
+
+	return TC_SUCCESS;
+}
+
+/*** BeginHeader targetproc_recvbuf */
+int targetproc_recvbuf(char type, int length, faraddr_t buffer, long userdata);
+/*** EndHeader */
+nodebug int targetproc_recvbuf(char type, int length, faraddr_t buffer, long userdata)
+{
+	auto _TCHeader	hdr;
+
+	/* is 'type' a sane value? */
+	if(type >= TC_MAX_APPLICATIONS)
+		return TC_ERROR;
+
+	/* did they register a callback properly? */
+	if(NULL == TargetprocState.CallbackList[type])
+		return TC_NOCALLBACK;
+
+	/* build the new receive header */
+	hdr.next = 0;
+	hdr.flags = 0;
+	hdr.length = length;
+	hdr.userdata = userdata;
+
+	/* copy the header into the packet */
+	if(0 != root2xmem(buffer, (char *)&hdr, sizeof(hdr)))
+		return TC_ERROR;
+
+	/* queue the buffer */
+	if(_tc_queue_buffer(&(TargetprocState.RXBufferList[type]),buffer))
+		return TC_ERROR;
+
+	return TC_SUCCESS;
+}
+
+/*** BeginHeader targetproc_debug_init, targetproc_debug_send */
+
+typedef struct {
+	char	type;				// current transaction type, if one is pending
+	char	txpending;		// is a transmit currently in progress?
+	char	rxfinished;		// true if the rxbuf has a received packet
+	char	rxsubtype;		// subtype of the received packet
+	int	rxlength;		// length of the received packet
+	int	result;			// the result of the transaction. (PENDING, ERROR, or SUCCESS)
+	long	read_dest;		// where to store the read data
+	_TCSystemREADACK *ack_header;	// pointer to storage for the READACK header
+
+	union {
+		_TCSystemREAD		read;
+		_TCSystemREADACK	readACK;
+		_TCSystemWRITE		write;
+	} header;
+
+	long	txbuf;
+	long	rxbuf;
+} _TC_Debug_RWState;
+
+int targetproc_debug_init();
+int targetproc_debug_send(char subtype, int length);
+
+/* forward such that the callback may be overridden, and still entered. */
+root targetproc_debug_callback(int flags, char type, char subtype, int length, long buffer, long userdata);
+
+extern _TC_Debug_RWState _TC_RWState;
+
+#ifndef tcdebug_nodebug
+	#define tcdebug_nodebug	nodebug
+#endif
+
+/*** EndHeader */
+
+long targetproc_debug_rwbuffer;
+_TC_Debug_RWState _TC_RWState;
+
+/*
+ * NOTE - This callback may be overridden, but if you want the READ/WRITE functions
+ * to continue to work, this callback must be called for at least those subtypes.
+ * A global label is provided above, such that you can call this callback from
+ * your own callback, if you override it.
+ */
+nodebug root targetproc_debug_callback(int flags, char type, char subtype, int length, long buffer, long userdata)
+{
+	static char	save_xpc;
+
+	/* FIXME!!! this really should be in asm... */
+	if(flags & TC_TXDONE) {
+		/* TXDONE callback... */
+		_TC_RWState.txpending = 0;			// transmitter is no longer pending
+	} else if(flags & TC_RECEIVE) {
+		/* RECEIVE callback... */
+		// move from the SYSBUF to the local RXBUF - all responses will automaticly be SYSBUFS, as this is type TC_TYPE_SYSTEM
+		xmem2xmem(_TC_RWState.rxbuf,buffer,length+TC_HEADER_RESERVE);
+		_TC_RWState.rxsubtype = subtype;
+		_TC_RWState.rxlength = length;
+		_TC_RWState.rxfinished = 1;		// delay the rx processing untill the tick function
+	}
+}
+
+/* this will expire pending DEBUG requests */
+tcdebug_nodebug void targetproc_debug_tick()
+{
+	if(_TC_RWState.rxfinished) {
+		/* a packet was received - process it now, in userspace, not the interrupt */
+
+		/* what type of packet are we waiting for? */
+		switch(_TC_RWState.type) {
+		case TC_SYSTEM_READ:
+			switch(_TC_RWState.rxsubtype) {
+			case TC_SYSTEM_READ|TC_ACK:
+				/* copy the data! */
+				if(_TC_RWState.ack_header) {
+					// copy the header to the proper storage location, if necessary
+					xmem2root((char *)_TC_RWState.ack_header, _TC_RWState.rxbuf+TC_HEADER_RESERVE, sizeof(_TCSystemREADACK));
+				}
+				xmem2xmem(_TC_RWState.read_dest, _TC_RWState.rxbuf+TC_HEADER_RESERVE+sizeof(_TCSystemREADACK),
+							 _TC_RWState.header.read.length);
+				_TC_RWState.result = TC_SUCCESS;
+				_TC_RWState.type = 0;	// no longer waiting for a packet
+				break;
+
+			case TC_SYSTEM_READ|TC_NAK:
+				_TC_RWState.result = TC_ERROR;
+				_TC_RWState.type = 0;	// no longer waiting for a packet
+				break;
+
+			default:
+				/* wrong packet type - drop it */
+				break;
+			}
+			break;
+
+		case TC_SYSTEM_WRITE:
+			switch(_TC_RWState.rxsubtype) {
+			case TC_SYSTEM_WRITE|TC_ACK:
+				_TC_RWState.result = TC_SUCCESS;
+				_TC_RWState.type = 0;	// no longer waiting for a packet
+				break;
+
+			case TC_SYSTEM_WRITE|TC_NAK:
+				_TC_RWState.result = TC_ERROR;
+				_TC_RWState.type = 0;	// no longer waiting for a packet
+				break;
+
+			default:
+				/* wrong packet type - drop it */
+				break;
+			}
+			break;
+
+		default:
+			/* wha? this is incorrect... */
+			_TC_RWState.type = 0;
+		}
+
+		/* requeue the buffer to receive another packet */
+		_TC_RWState.rxfinished = 0;
+		targetproc_recvbuf(TC_TYPE_SYSTEM, TC_SYSBUF_SIZE - TC_HEADER_RESERVE, _TC_RWState.rxbuf, 0);
+	}
+}
+
+/* put it on the fucchain so it will be called automagically */
+#funcchain __targetproc_tick targetproc_debug_tick
+
+tcdebug_nodebug int targetproc_debug_init()
+{
+#GLOBAL_INIT {
+	/* alloc two buffers to use for this... */
+	_TC_RWState.txbuf = xalloc(TC_SYSBUF_SIZE);
+	_TC_RWState.rxbuf = xalloc(TC_SYSBUF_SIZE);
+}
+
+	/* did the GLOBAL_INIT section succeded in getting the buffers? */
+	if(0 == _TC_RWState.txbuf)
+		return TC_ERROR;
+
+	/* init stuff... */
+	_TC_RWState.type = 0;				// no default type (NULL)
+	_TC_RWState.txpending = 0;			// a transmit is not currently in progress
+
+	if(TC_SUCCESS != targetproc_registercallback(TC_TYPE_SYSTEM, targetproc_debug_callback))
+		return TC_ERROR;
+
+	if(TC_SUCCESS != targetproc_recvbuf(TC_TYPE_SYSTEM, TC_SYSBUF_SIZE - TC_HEADER_RESERVE,
+		_TC_RWState.rxbuf, 0))
+		return TC_ERROR;
+
+	/* init was good */
+	return TC_SUCCESS;
+}
+
+tcdebug_nodebug int targetproc_debug_send(char subtype, int length)
+{
+	/* mark the transmitter as busy */
+	_TC_RWState.txpending = 1;
+	_TC_RWState.result = TC_PENDING;	// we are waiting for a result...
+	return targetproc_send(TC_TYPE_SYSTEM, subtype, length, _TC_RWState.txbuf, 0);
+}
+
+/*** BeginHeader targetproc_debug_sanitycheck */
+int targetproc_debug_sanitycheck(void);
+/*** EndHeader */
+
+/*
+ * returns true if the debugger is not in a sane enough state to be used
+ */
+tcdebug_nodebug int targetproc_debug_sanitycheck(void)
+{
+	if(_TC_RWState.txpending)
+		return 1;
+
+	if(0 == _TC_RWState.txbuf)
+		return 1;
+
+	/* things are sane... */
+	return 0;
+}
+
+/*** BeginHeader targetproc_ReadPhysicalReq */
+int targetproc_ReadPhysicalReq(_TCSystemREADACK *ack_header, long dest, long address, int length);
+/*** EndHeader */
+tcdebug_nodebug int targetproc_ReadPhysicalReq(_TCSystemREADACK *ack_header, long dest, long address, int length)
+{
+	/* sanity check... */
+	if(targetproc_debug_sanitycheck())
+		return TC_ERROR;
+
+	/* mark the current type as a READ, and fill in the header */
+	_TC_RWState.type = TC_SYSTEM_READ;
+	_TC_RWState.header.read.type = TC_SYSREAD_PHYSICAL;
+	_TC_RWState.header.read.address.physical = address;
+	_TC_RWState.header.read.length = length;
+
+	_TC_RWState.read_dest = dest;
+	_TC_RWState.ack_header = ack_header;
+
+	/* build the packet */
+	root2xmem(_TC_RWState.txbuf + TC_HEADER_RESERVE,
+				 (char *)&(_TC_RWState.header), sizeof(_TCSystemREAD));
+
+	/* send it... */
+	return targetproc_debug_send(TC_SYSTEM_READ, sizeof(_TCSystemREAD));
+}
+
+/*** BeginHeader targetproc_ReadLogicalReq */
+int targetproc_ReadLogicalReq(_TCSystemREADACK *ack_header, long dest, char xpc, int offset, int length);
+/*** EndHeader */
+tcdebug_nodebug int targetproc_ReadLogicalReq(_TCSystemREADACK *ack_header, long dest, char xpc, int offset, int length)
+{
+	/* sanity check... */
+	if(targetproc_debug_sanitycheck())
+		return TC_ERROR;
+
+	/* mark the current type as a READ, and fill in the header */
+	_TC_RWState.type = TC_SYSTEM_READ;
+	_TC_RWState.header.read.type = TC_SYSREAD_LOGICAL;
+	_TC_RWState.header.read.address.logical.xpc = xpc;
+	_TC_RWState.header.read.address.logical.offset = offset;
+	_TC_RWState.header.read.length = length;
+
+	_TC_RWState.read_dest = dest;
+	_TC_RWState.ack_header = ack_header;
+
+	/* build the packet */
+	root2xmem(_TC_RWState.txbuf + TC_HEADER_RESERVE,
+				 (char *)&(_TC_RWState.header), sizeof(_TCSystemREAD));
+
+	/* send it... */
+	return targetproc_debug_send(TC_SYSTEM_READ, sizeof(_TCSystemREAD));
+}
+
+/*** BeginHeader targetproc_ReadNoXPCReq */
+int targetproc_ReadNoXPCReq(_TCSystemREADACK *ack_header, long dest, int offset, int length);
+/*** EndHeader */
+tcdebug_nodebug int targetproc_ReadNoXPCReq(_TCSystemREADACK *ack_header, long dest, int offset, int length)
+{
+	/* sanity check... */
+	if(targetproc_debug_sanitycheck())
+		return TC_ERROR;
+
+	/* mark the current type as a READ, and fill in the header */
+	_TC_RWState.type = TC_SYSTEM_READ;
+	_TC_RWState.header.read.type = TC_SYSREAD_NOXPC;
+	_TC_RWState.header.read.address.logical.offset = offset;
+	_TC_RWState.header.read.length = length;
+
+	_TC_RWState.read_dest = dest;
+	_TC_RWState.ack_header = ack_header;
+
+	/* build the packet */
+	root2xmem(_TC_RWState.txbuf + TC_HEADER_RESERVE,
+				 (char *)&(_TC_RWState.header), sizeof(_TCSystemREAD));
+
+	/* send it... */
+	return targetproc_debug_send(TC_SYSTEM_READ, sizeof(_TCSystemREAD));
+}
+
+/*** BeginHeader targetproc_ReadCheck */
+int targetproc_ReadCheck(void);
+/*** EndHeader */
+tcdebug_nodebug int targetproc_ReadCheck(void)
+{
+	/* return the current state of the transaction */
+	return _TC_RWState.result;
+}
+
+/*** BeginHeader targetproc_WritePhysicalReq */
+int targetproc_WritePhysicalReq(long src, long address, int length);
+/*** EndHeader */
+tcdebug_nodebug int targetproc_WritePhysicalReq(long src, long address, int length)
+{
+	/* sanity check... */
+	if(targetproc_debug_sanitycheck())
+		return TC_ERROR;
+
+	/* is the length ok? */
+	if(length > (TC_SYSBUF_SIZE - TC_HEADER_RESERVE - sizeof(_TCSystemWRITE))) {
+		/* length is too long... */
+		return TC_ERROR;
+	}
+
+	/* mark the current type as a READ, and fill in the header */
+	_TC_RWState.type = TC_SYSTEM_WRITE;
+	_TC_RWState.header.read.type = TC_SYSWRITE_PHYSICAL;
+	_TC_RWState.header.write.address.physical = address;
+	_TC_RWState.header.write.length = length;
+
+	/* build the packet */
+	root2xmem(_TC_RWState.txbuf + TC_HEADER_RESERVE,
+				 (char *)&(_TC_RWState.header), sizeof(_TCSystemWRITE));
+	xmem2xmem(_TC_RWState.txbuf + TC_HEADER_RESERVE + sizeof(_TCSystemWRITE),
+				 src, length);
+
+	/* send it... */
+	return targetproc_debug_send(TC_SYSTEM_WRITE, sizeof(_TCSystemWRITE) + length);
+}
+
+/*** BeginHeader targetproc_WriteLogicalReq */
+int targetproc_WriteLogicalReq(long src, char xpc, int offset, int length);
+/*** EndHeader */
+tcdebug_nodebug int targetproc_WriteLogicalReq(long src, char xpc, int offset, int length)
+{
+	/* sanity check... */
+	if(targetproc_debug_sanitycheck())
+		return TC_ERROR;
+
+	/* is the length ok? */
+	if(length > (TC_SYSBUF_SIZE - TC_HEADER_RESERVE - sizeof(_TCSystemWRITE))) {
+		/* length is too long... */
+		return TC_ERROR;
+	}
+
+	/* mark the current type as a READ, and fill in the header */
+	_TC_RWState.type = TC_SYSTEM_WRITE;
+	_TC_RWState.header.read.type = TC_SYSWRITE_LOGICAL;
+	_TC_RWState.header.write.address.logical.xpc = xpc;
+	_TC_RWState.header.write.address.logical.offset = offset;
+	_TC_RWState.header.write.length = length;
+
+	/* build the packet */
+	root2xmem(_TC_RWState.txbuf + TC_HEADER_RESERVE,
+				 (char *)&(_TC_RWState.header), sizeof(_TCSystemWRITE));
+	xmem2xmem(_TC_RWState.txbuf + TC_HEADER_RESERVE + sizeof(_TCSystemWRITE),
+				 src, length);
+
+	/* send it... */
+	return targetproc_debug_send(TC_SYSTEM_WRITE, sizeof(_TCSystemWRITE) + length);
+}
+
+/*** BeginHeader targetproc_WriteNoXPCReq */
+int targetproc_WriteNoXPCReq(long src, int offset, int length);
+/*** EndHeader */
+tcdebug_nodebug int targetproc_WriteNoXPCReq(long src, int offset, int length)
+{
+	/* sanity check... */
+	if(targetproc_debug_sanitycheck())
+		return TC_ERROR;
+
+	/* is the length ok? */
+	if(length > (TC_SYSBUF_SIZE - TC_HEADER_RESERVE - sizeof(_TCSystemWRITE))) {
+		/* length is too long... */
+		return TC_ERROR;
+	}
+
+	/* mark the current type as a READ, and fill in the header */
+	_TC_RWState.type = TC_SYSTEM_WRITE;
+	_TC_RWState.header.read.type = TC_SYSWRITE_NOXPC;
+	_TC_RWState.header.write.address.logical.offset = offset;
+	_TC_RWState.header.write.length = length;
+
+	/* build the packet */
+	root2xmem(_TC_RWState.txbuf + TC_HEADER_RESERVE,
+				 (char *)&(_TC_RWState.header), sizeof(_TCSystemWRITE));
+	xmem2xmem(_TC_RWState.txbuf + TC_HEADER_RESERVE + sizeof(_TCSystemWRITE),
+				 src, length);
+
+	/* send it... */
+	return targetproc_debug_send(TC_SYSTEM_WRITE, sizeof(_TCSystemWRITE) + length);
+}
+
+/*** BeginHeader targetproc_WriteCheck */
+int targetproc_WriteCheck(void);
+/*** EndHeader */
+nodebug int targetproc_WriteCheck(void)
+{
+	/* return the current state of the transaction */
+	return _TC_RWState.result;
+}
+
+/**********************
+ * Blocking wrappers! *
+ **********************/
+
+/*** BeginHeader targetproc_ReadPhysical */
+int targetproc_ReadPhysical(_TCSystemREADACK *ack_header, long dest, long address, int length, long timeout);
+/*** EndHeader */
+tcdebug_nodebug int targetproc_ReadPhysical(_TCSystemREADACK *ack_header, long dest, long address, int length, long timeout)
+{
+	auto long timer;
+
+	if(TC_SUCCESS != targetproc_ReadPhysicalReq(ack_header,dest,address,length)) {
+		return TC_ERROR;
+	}
+
+	timer = MS_TIMER;
+	for(;;) {
+		switch(targetproc_ReadCheck()) {
+		case TC_PENDING:
+			break;
+
+		case TC_SUCCESS:
+			return TC_SUCCESS;
+
+		case TC_TIMEOUT:
+			// retransmit
+			if(TC_SUCCESS != targetproc_ReadPhysicalReq(ack_header,dest,address,length)) {
+				return TC_ERROR;
+			}
+			break;
+
+		case TC_ERROR:
+		default:
+			return TC_ERROR;
+		}
+
+		if(MS_TIMER < timer) {
+			/* MS_TIMER wrapped! */
+			timer = MS_TIMER; // reset the timeout for a while longer
+		}
+		if(MS_TIMER > (timer + timeout)) {
+			/* timeout expired! */
+			return TC_ERROR;
+		}
+
+		/* blocking, so call the tick function */
+		targetproc_tick();
+	}
+}
+
+/*** BeginHeader targetproc_ReadLogical */
+int targetproc_ReadLogical(_TCSystemREADACK *ack_header, long dest, char xpc, int offset, int length, long timeout);
+/*** EndHeader */
+tcdebug_nodebug int targetproc_ReadLogical(_TCSystemREADACK *ack_header, long dest, char xpc, int offset, int length, long timeout)
+{
+	auto long timer;
+
+	if(TC_SUCCESS != targetproc_ReadLogicalReq(ack_header,dest,xpc,offset,length)) {
+		return TC_ERROR;
+	}
+
+	timer = MS_TIMER;
+	for(;;) {
+		switch(targetproc_ReadCheck()) {
+		case TC_PENDING:
+			break;
+
+		case TC_SUCCESS:
+			return TC_SUCCESS;
+
+		case TC_TIMEOUT:
+			// retransmit
+			if(TC_SUCCESS != targetproc_ReadLogicalReq(ack_header,dest,xpc,offset,length)) {
+				return TC_ERROR;
+			}
+			break;
+
+		case TC_ERROR:
+		default:
+			return TC_ERROR;
+		}
+
+		if(MS_TIMER < timer) {
+			/* MS_TIMER wrapped! */
+			timer = MS_TIMER; // reset the timeout for a while longer
+		}
+		if(MS_TIMER > (timer + timeout)) {
+			/* timeout expired! */
+			return TC_ERROR;
+		}
+
+		/* blocking, so call the tick function */
+		targetproc_tick();
+	}
+}
+
+/*** BeginHeader targetproc_ReadNoXPC */
+int targetproc_ReadNoXPC(_TCSystemREADACK *ack_header, long dest, int offset, int length, long timeout);
+/*** EndHeader */
+tcdebug_nodebug int targetproc_ReadNoXPC(_TCSystemREADACK *ack_header, long dest, int offset, int length, long timeout)
+{
+	auto long timer;
+
+	if(TC_SUCCESS != targetproc_ReadNoXPCReq(ack_header,dest,offset,length)) {
+		return TC_ERROR;
+	}
+
+	timer = MS_TIMER;
+	for(;;) {
+		switch(targetproc_ReadCheck()) {
+		case TC_PENDING:
+			break;
+
+		case TC_SUCCESS:
+			return TC_SUCCESS;
+
+		case TC_TIMEOUT:
+			// retransmit
+			if(TC_SUCCESS != targetproc_ReadNoXPCReq(ack_header,dest,offset,length)) {
+				return TC_ERROR;
+			}
+			break;
+
+		case TC_ERROR:
+		default:
+			return TC_ERROR;
+		}
+
+		if(MS_TIMER < timer) {
+			/* MS_TIMER wrapped! */
+			timer = MS_TIMER; // reset the timeout for a while longer
+		}
+		if(MS_TIMER > (timer + timeout)) {
+			/* timeout expired! */
+			return TC_ERROR;
+		}
+
+		/* blocking, so call the tick function */
+		targetproc_tick();
+	}
+}
+
+/*** BeginHeader targetproc_WritePhysical */
+int targetproc_WritePhysical(long src, long address, int length, long timeout);
+/*** EndHeader */
+tcdebug_nodebug int targetproc_WritePhysical(long src, long address, int length, long timeout)
+{
+	auto long timer;
+
+	if(TC_SUCCESS != targetproc_WritePhysicalReq(src,address,length)) {
+		return TC_ERROR;
+	}
+
+	timer = MS_TIMER;
+	for(;;) {
+		switch(targetproc_WriteCheck()) {
+		case TC_PENDING:
+			break;
+
+		case TC_SUCCESS:
+			return TC_SUCCESS;
+
+		case TC_TIMEOUT:
+			// retransmit
+			if(TC_SUCCESS != targetproc_WritePhysicalReq(src,address,length)) {
+				return TC_ERROR;
+			}
+			break;
+
+		case TC_ERROR:
+		default:
+			return TC_ERROR;
+		}
+
+		if(MS_TIMER < timer) {
+			/* MS_TIMER wrapped! */
+			timer = MS_TIMER; // reset the timeout for a while longer
+		}
+		if(MS_TIMER > (timer + timeout)) {
+			/* timeout expired! */
+			return TC_ERROR;
+		}
+
+		/* blocking, so call the tick function */
+		targetproc_tick();
+	}
+}
+
+/*** BeginHeader targetproc_WriteLogical */
+int targetproc_WriteLogical(long src, char xpc, int offset, int length, long timeout);
+/*** EndHeader */
+tcdebug_nodebug int targetproc_WriteLogical(long src, char xpc, int offset, int length, long timeout)
+{
+	auto long timer;
+
+	if(TC_SUCCESS != targetproc_WriteLogicalReq(src,xpc,offset,length)) {
+		return TC_ERROR;
+	}
+
+	timer = MS_TIMER;
+	for(;;) {
+		switch(targetproc_WriteCheck()) {
+		case TC_PENDING:
+			break;
+
+		case TC_SUCCESS:
+			return TC_SUCCESS;
+
+		case TC_TIMEOUT:
+			// retransmit
+			if(TC_SUCCESS != targetproc_WriteLogicalReq(src,xpc,offset,length)) {
+				return TC_ERROR;
+			}
+			break;
+
+		case TC_ERROR:
+		default:
+			return TC_ERROR;
+		}
+
+		if(MS_TIMER < timer) {
+			/* MS_TIMER wrapped! */
+			timer = MS_TIMER; // reset the timeout for a while longer
+		}
+		if(MS_TIMER > (timer + timeout)) {
+			/* timeout expired! */
+			return TC_ERROR;
+		}
+
+		/* blocking, so call the tick function */
+		targetproc_tick();
+	}
+}
+
+/*** BeginHeader targetproc_WriteNoXPC */
+int targetproc_WriteNoXPC(long src, int offset, int length, long timeout);
+/*** EndHeader */
+tcdebug_nodebug int targetproc_WriteNoXPC(long src, int offset, int length, long timeout)
+{
+	auto long timer;
+
+	if(TC_SUCCESS != targetproc_WriteNoXPCReq(src,offset,length)) {
+		return TC_ERROR;
+	}
+
+	timer = MS_TIMER;
+	for(;;) {
+		switch(targetproc_WriteCheck()) {
+		case TC_PENDING:
+			break;
+
+		case TC_SUCCESS:
+			return TC_SUCCESS;
+
+		case TC_TIMEOUT:
+			// retransmit
+			if(TC_SUCCESS != targetproc_WriteNoXPCReq(src,offset,length)) {
+				return TC_ERROR;
+			}
+			break;
+
+		case TC_ERROR:
+		default:
+			return TC_ERROR;
+		}
+
+		if(MS_TIMER < timer) {
+			/* MS_TIMER wrapped! */
+			timer = MS_TIMER; // reset the timeout for a while longer
+		}
+		if(MS_TIMER > (timer + timeout)) {
+			/* timeout expired! */
+			return TC_ERROR;
+		}
+
+		/* blocking, so call the tick function */
+		targetproc_tick();
+	}
+}
+
+/*** BeginHeader */
+#endif /*__TARGETPROC_APP_LIB*/
+/*** EndHeader */

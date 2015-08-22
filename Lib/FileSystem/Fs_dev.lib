@@ -1,0 +1,858 @@
+/*** BeginHeader */
+#ifndef __FS_DEV_LIB
+#define __FS_DEV_LIB
+/*** EndHeader */
+/*
+ * fs_dev.lib
+ *
+ * Copyright (C) Z-World, Inc. All rights reserved.
+ *
+ * Filesystem Mk II: Low-level device interfaces.
+ *
+ * Change History:
+ *  2001 May 07 - SJH - Created
+ *  2002 Jun 05 - SJH - Support 512k devices
+ *  2002 Nov 04 - BRI - Prevent single 256K split-flash DLM check for
+ *                      nonexistent secondary flash chip.  Allow split-
+ *                      flash DLM and two-flash DLP to place FS2 flash
+ *                      extents at the very top of their flash areas.
+ *  2003 Mar 28 - BRI - Separated the fs_savexpc and fs_restorexpc fns
+ *                      into their own module to prevent the gflash_*
+ *                      fns that followed from being loaded into memory
+ *                      when not wanted, as for DLM/DLP applications.
+ *                      Enabled overwrite of the program flash "ID/User
+ *                      Block" area when it is not in the program's
+ *                      flash memory space, also for DLM/DLP.
+ *
+ */
+
+/* START LIBRARY DESCRIPTION *********************************************
+FILESYSTEM.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+	Default filesystem Mk II device interfaces, for devices up to 512K.
+
+	Device driver routines which are required by fs2.lib are implemented
+	here.  Pointers to the routines are placed in the FS_lxd structure.
+	These routines should be used for flash devices which use standard
+	JEDEC programming codes ("Atmel compatible").
+
+	This suite of routines includes flash and RAM access.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#use "fs2.lib"
+/*** EndHeader */
+
+/*** BeginHeader fs_savexpc, fs_restorexpc */
+
+// These update stack pointer!  Do not call from C!
+root void fs_savexpc(void);
+root void fs_restorexpc(void);
+
+/*** EndHeader */
+
+	#asm root
+
+fs_savexpc::
+	ex		de,hl		; DE = xpc parameter
+	pop	hl			; Return address
+	push	ix			; Save caller's IX
+	ld		a,xpc
+	push	af
+	ld		a,e
+	ld		xpc,a
+	jp		(hl)
+
+
+fs_restorexpc::
+	pop	iy			; Return addr
+	pop	af
+	ld		xpc,a
+	pop	ix			; Restore caller's IX
+	jp		(iy)
+
+   #endasm
+
+/*** BeginHeader gflash_unlock, gflash_wait, gflash_id */
+
+// Generic flash unlock routine.  On entry,
+// HL points to list of flash commands in the form { xpc, address, data }... with the
+// list terminated by a zero xpc.  Note that specified addresses are
+// logical addresses in range 0xE000-0xFFFF since the XPC window is used.
+// XPC is saved/restored.  This can be used for any "magic" sequence required to
+// get the flash to do something special.
+root nouseix void gflash_unlock(void * commands);
+
+// Generic flash busy-wait routine.  Returns when the value at (HL) stops toggling
+// its 0x40 bit (bit 6).  HL is a logical address, thus XPC must be set
+// appropriately.
+root nouseix void gflash_wait(void * laddr);
+
+// Generic query flash ID routine.  Returns manufacturer id in H, device code in L.
+root unsigned int gflash_id(int mb1cr);
+
+/*** EndHeader */
+
+	#asm root
+
+gflash_unlock::		; uses AF, AF', HL, DE
+	ld		a,xpc
+	ex		af,af'
+gfu_loop:
+	ld		a,(hl)
+	or		a
+	jr		z,_finish_up
+
+	ld		xpc,a
+	inc	hl
+	ld		e,(hl)
+	inc	hl
+	ld		d,(hl)
+	inc	hl
+	ld		a,(hl)
+	inc	hl
+	ld		(de),a
+	jr		gfu_loop
+
+_finish_up:
+	ex		af,af'
+	ld		xpc,a
+	ret
+
+
+gflash_wait::			; uses AF, BC
+	ld		a,(hl)
+	ld		c,0x40
+gfw_loop:
+	ld		b,(hl)
+	xor	b
+	and	c
+	ld		a,b
+	jr		nz,gfw_loop
+
+	ret
+
+
+gflash_id::
+	ld		a,xpc
+	push	af
+	ld		hl,flash_id_command
+	call	gflash_unlock
+
+	ex		de,hl
+	call	gflash_wait
+
+	ld		a,0x32
+	ld		xpc,a
+	ld		bc,(0xE000)		; Get ID
+	ld		hl,flash_id_exit
+	call	gflash_unlock
+
+	ld		h,c
+	ld		l,b
+	pop	af
+	ld		xpc,a
+	ret
+
+	#endasm
+
+	#asm const
+flash_id_command:
+	db		0x45-0x0E			; 0xAA -> 0x5555
+	dw		0xE555
+	db		0xAA
+
+	db		0x42-0x0E			; 0x55 -> 0x2AAA
+	dw		0xEAAA
+	db		0x55
+
+	db		0x45-0x0E			; 0x90 -> 0x5555
+	dw		0xE555
+	db		0x90
+
+	db		0x00
+flash_id_exit:
+	db		0x45-0x0E			; 0xAA -> 0x5555
+	dw		0xE555
+	db		0xAA
+
+	db		0x42-0x0E			; 0x55 -> 0x2AAA
+	dw		0xEAAA
+	db		0x55
+
+	db		0x45-0x0E			; 0xF0 -> 0x5555
+	dw		0xE555
+	db		0xF0
+
+	db		0x00
+	#endasm
+
+/*** BeginHeader gflash_setup */
+
+// Set up the FS2 logical extent descriptor, based on information
+// extracted from the BIOS.  Calls gflash_id.
+int gflash_setup(FS_lxd * lxd, int mb1cr, word * id);
+
+/*** EndHeader */
+
+
+
+nodebug int gflash_setup(FS_lxd * lxd, int mb1cr, word * idp)
+{
+	auto int id;
+	auto FlashDataStruct flash_data;
+
+	lxd->mb1cr = (byte)mb1cr;
+	lxd->dev_offs = 0x40000;
+	lxd->data = NULL;
+	lxd->wear_leveling = 1;
+	lxd->dummy_lx = 0;
+	lxd->init = NULL;
+	lxd->flush = NULL;
+
+	id = gflash_id(mb1cr);
+	if (idp)
+		*idp = id;
+	if(_GetFlashData(id, &flash_data)) {
+		lxd->ps_size = flash_data.sector_size;
+		lxd->num_ps = flash_data.number_sectors;
+
+		if (flash_data.write_mode == 1) {
+			lxd->dev_class = FSDC_BW;
+			lxd->map = fs_map;
+			lxd->andover = bw_andover;
+			lxd->erase = bw_erase;
+			lxd->write = NULL;
+		}
+		else {
+			lxd->dev_class = FSDC_SSW;
+			lxd->map = fs_map;
+			lxd->andover = NULL;
+			lxd->erase = NULL;
+			lxd->write = ssw_write;
+		}
+
+		return 0;
+	}
+
+	return -1;
+}
+
+
+/*** BeginHeader fs_map */
+long		fs_map(FS_lxd * lxd, long dev_rel);
+
+/*** EndHeader */
+
+/*
+ * This is the standard memory mapping function.  It converts the offset dev_rel
+ * into a segmented address form which is returned.
+ * The return value is in 4 parts:
+ *  [mb1cr value] [xpc value] [logical address]
+ * where the mb1cr value is to be placed in the MMU register, and xpc/logaddr
+ * is used to access the memory mapped device via quadrant 1.  Since the return
+ * value is a longword (BCDE registers) B contains the mb1cr value, C the XPC
+ * value, and DE the logical address (in range 0xE000-0xEFFF).
+ * NOTE: the MB1CR register value is not currently used.
+ */
+
+nodebug long		fs_map(FS_lxd * lxd, long dev_rel)
+{
+	#asm
+	push	ix
+	ld		ix,(sp+@sp+2+lxd)			; IX -> lxd struct
+	ld		hl,(sp+@sp+2+dev_rel)
+	ex		de,hl
+	ld		hl,(sp+@sp+2+dev_rel+2)
+	ld		b,h
+	ld		c,l						; BCDE = dev_rel
+	ld		hl,(ix+1)				; Get device base address (dev_offs)
+	add	hl,de
+	ex		de,hl
+	ld		hl,(ix+3)
+	adc	hl,bc						; HLDE = dev_rel + lxd->dev_offs
+	ex		de,hl
+	ld		a,e
+	_LIN2SEG
+	ex		de,hl						; Logical address in DE
+	ld		c,a						; C = xpc value
+	ld		b,(ix+0)					; Get the mb1cr value in B (currently not used)
+	pop	ix
+	#endasm
+	// Return value in BCDE
+}
+
+
+
+/*** BeginHeader ssw_write */
+
+root short		ssw_write(FS_lxd * lxd, long src_phy, word len, long dest);
+
+
+/*** EndHeader */
+
+/*
+ * Write routine for small-sector flash.  dest is a segmented address as set up
+ * by fs_map().
+ */
+
+nodebug root short	ssw_write(FS_lxd * lxd, long src_phy, word len, long dest)
+{
+	// This routine assumes src_phy is an even address, or the given buffer
+	// does not cross a 64k boundary.  Otherwise ldp wrap problem occurs!
+	// Len must be even.  These conditions are guaranteed by the filesystem.
+	#asm
+	ld		hl,(sp+@sp+dest+2)
+	call	fs_savexpc
+
+	ld		hl,(sp+@sp+4+len)
+	ld		a,h
+	or		l
+	jr		z,_finish_up
+	inc	hl
+	rr		hl					; round up and divide by 2 to get word count (always do even number)
+	ld		c,h				; set up BC for loop count
+	ld		b,l
+	ld		a,b
+	or		a
+	jr		z,ssww_noinc
+	inc	c
+ssww_noinc:
+	ld		hl,ssw_write_command
+	call	gflash_unlock	; using bw_write_command
+	ld		ix,(sp+@sp+4+src_phy)
+	ld		hl,(sp+@sp+4+src_phy+2)
+	ld		a,l
+	ld		iy,(sp+@sp+4+dest)
+	altd ld bc,2
+
+ssww_loop:
+	exx
+	ldp	hl,(ix)			; get source data
+	add	ix,bc
+	adc	a,0
+	ld		(iy),hl			; write to flash
+	add	iy,bc				; next dest address
+	exx
+	djnz	ssww_loop
+	dec	c
+	jr		nz,ssww_loop	; loop until no more data
+	ld		hl,0xE000
+	call	gflash_wait
+	jr		_finish_up
+	#endasm
+
+	#asm const
+ssw_write_command:
+	db		0x45-0x0E			; 0xAA -> 0x5555
+	dw		0xE555
+	db		0xAA
+
+	db		0x42-0x0E			; 0x55 -> 0x2AAA
+	dw		0xEAAA
+	db		0x55
+
+	db		0x45-0x0E			; 0xA0 -> 0x5555
+	dw		0xE555
+	db		0xA0
+
+	db		0x00
+	#endasm
+
+	#asm
+_finish_up:
+	call	fs_restorexpc
+	bool	hl
+	rr		hl					; return 0
+	#endasm
+}
+
+
+/*** BeginHeader bw_andover, bw_erase, bw_init */
+
+// The functions called by fs2.lib...
+root short		bw_andover(FS_lxd * lxd, long src_phy, word len, long dest);
+root short		bw_erase(FS_lxd * lxd, long dest_ps_start);
+short		bw_init(FS_lxd * lxd);
+
+// Data structure specific to this type of device
+typedef struct {
+	int	reserved;
+} FS_bw_data;
+
+
+/*** EndHeader */
+
+
+nodebug root short	bw_andover(FS_lxd * lxd, long src_phy, word len, long dest)
+{
+	#asm
+	ld		hl,(sp+@sp+dest+2)
+	call	fs_savexpc
+
+	ld		hl,(sp+@sp+4+len)
+	ld		a,h
+	or		l
+	jr		z,_finish_up
+	ld		c,h
+	ld		b,l
+	ld		a,b
+	or		a
+	jr		z,bwa_noinc
+	inc	c
+bwa_noinc:
+	ld		ix,(sp+@sp+4+src_phy)
+	ld		hl,(sp+@sp+4+src_phy+2)
+	ld		a,l
+	ld		iy,(sp+@sp+4+dest)
+	altd ld 	bc,1
+bwa_loop:
+	exx
+	ldp	hl,(ix)			; get source data
+	add	ix,bc
+	adc	a,b				; B is zero, add in carry only
+	ld		h,a				; H,A = MSB of next paddr, L = byte to write
+	exx
+	ld		hl,bw_write_command
+	call	gflash_unlock	; using bw_write_command
+	exx
+	ld		(iy),l			; write to flash
+	ld		a,(iy)
+	ld		e,0x40
+bwa_waitloop:
+	ld		d,(iy)
+	xor	d
+	and	e
+	ld		a,d
+	jr		nz,bwa_waitloop		; loop until bit stops toggling
+	ld		a,h				; restore MSB of paddr
+	exx
+	inc	iy					; next dest address
+	djnz	bwa_loop
+	dec	c
+	jr		nz,bwa_loop			; loop until no more data
+	jr		_finish_up
+	#endasm
+
+	#asm const
+bw_write_command:
+	db		0x45-0x0E			; 0xAA -> 0x5555
+	dw		0xE555
+	db		0xAA
+
+	db		0x42-0x0E			; 0x55 -> 0x2AAA
+	dw		0xEAAA
+	db		0x55
+
+	db		0x45-0x0E			; 0xA0 -> 0x5555
+	dw		0xE555
+	db		0xA0
+
+	db		0x00
+	#endasm
+
+	#asm
+_finish_up:
+	call	fs_restorexpc
+	bool	hl
+	rr		hl					; return 0
+	#endasm
+}
+
+
+nodebug root short	bw_erase(FS_lxd * lxd, long dest_ps_start)
+{
+	#asm
+	ld		hl,(sp+@sp+dest_ps_start+2)
+	call	fs_savexpc
+
+	ld		hl,bw_erase_command
+	call	gflash_unlock
+	ld		hl,(sp+@sp+4+dest_ps_start)
+	ld		(hl),0x30			; Final command to specify where to erase
+	call	gflash_wait
+	jr		_finish_up
+	#endasm
+
+	#asm const
+bw_erase_command:
+	db		0x45-0x0E			; 0xAA -> 0x5555
+	dw		0xE555
+	db		0xAA
+
+	db		0x42-0x0E			; 0x55 -> 0x2AAA
+	dw		0xEAAA
+	db		0x55
+
+	db		0x45-0x0E			; 0x80 -> 0x5555
+	dw		0xE555
+	db		0x80
+
+	db		0x45-0x0E			; 0xAA -> 0x5555
+	dw		0xE555
+	db		0xAA
+
+	db		0x42-0x0E			; 0x55 -> 0x2AAA
+	dw		0xEAAA
+	db		0x55
+
+	db		0x00
+	#endasm
+
+	#asm
+_finish_up:
+	call	fs_restorexpc
+	bool	hl						; Return 0
+	rr		hl
+	#endasm
+}
+
+
+nodebug short	bw_init(FS_lxd * lxd)
+{
+	return 0;
+}
+
+
+/*** BeginHeader nvram_setup */
+
+// Set up the FS2 logical extent descriptor, using the specified amount of
+// RAM from the pool reserved by the BIOS (FS2_RAM_RESERVE at FS2_RAM_PHYS).
+int nvram_setup(FS_lxd * lxd, int mb1cr);
+
+#define FS_NVRAM_PS_SHIFT	7		// Nominal NVRAM physical "sector" size
+											// This must be 6, 7 or 8!
+
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+nvram_setup                      <fs_dev.lib>
+
+SYNTAX: int nvram_setup(FS_lxd * lxd, int mb1cr)
+
+KEYWORDS:      file system
+
+DESCRIPTION:   Set up filesystem mk II battery-backed RAM extent.  The
+               BIOS compile-time constant FS2_RAM_RESERVE must be set to
+               a positive number indicating the number of 4096-byte
+               blocks of RAM to reserve.  This constant is
+               defined near the top of LIB\BIOSLIB\STACK.LIB.
+
+               Normally, this routine is invoked automatically.  There
+               is no requirement to call it before calling fs_init().
+
+PARAMETER1:    Point to the entry in the _fs.lx array which is to be
+               initialized.
+PARAMETER2:    Currently not used.
+
+RETURN VALUE:  0 - success
+               non-zero - failure
+
+SEE ALSO:      gflash_setup
+
+END DESCRIPTION **********************************************************/
+
+nodebug int nvram_setup(FS_lxd * lxd, int mb1cr)
+{
+	if (FS2_RAM_RESERVE == 0)
+		return -1;
+
+	lxd->mb1cr = (byte)mb1cr;
+#ifdef FS2_RAM_PHYS
+	lxd->dev_offs = FS2_RAM_PHYS;
+#endif
+	lxd->data = NULL;
+	lxd->wear_leveling = 0;
+	lxd->dummy_lx = 0;
+	lxd->init = NULL;
+	lxd->flush = NULL;
+
+	lxd->ps_size = 1<<FS_NVRAM_PS_SHIFT;	// A nominal value.
+	lxd->num_ps = (word)(FS2_RAM_RESERVE*4096L >> FS_NVRAM_PS_SHIFT);
+
+	lxd->dev_class = FSDC_NVRAM;
+	lxd->map = fs_map;
+	lxd->andover = nvram_andover;
+	lxd->erase = nvram_erase;
+	lxd->write = NULL;
+	return 0;
+}
+
+
+/*** BeginHeader nvram_andover, nvram_erase */
+
+// The functions called by fs2.lib...
+root short		nvram_andover(FS_lxd * lxd, long src_phy, word len, long dest);
+root short		nvram_erase(FS_lxd * lxd, long dest_ps_start);
+
+// Data structure specific to this type of device
+typedef struct {
+	int	reserved;
+} FS_nvram_data;
+
+
+/*** EndHeader */
+
+
+nodebug root short	nvram_andover(FS_lxd * lxd, long src_phy, word len, long dest)
+{
+	//printf("andover: src=%06lx len=%u dest=%06lx\n", src_phy, len, dest);
+	#asm
+	ld		hl,(sp+@sp+dest+2)
+	call	fs_savexpc
+
+	ld		hl,(sp+@sp+4+len)
+	ld		a,h
+	or		l
+	jr		z,_finish_up
+	ld		c,h
+	ld		b,l
+	ld		a,b
+	or		a
+	jr		z,nvra_noinc
+	inc	c
+nvra_noinc:
+	ld		ix,(sp+@sp+4+src_phy)
+	ld		hl,(sp+@sp+4+src_phy+2)
+	ld		a,l
+	ld		iy,(sp+@sp+4+dest)
+	ld 	de,1
+nvra_loop:
+	ldp	hl,(ix)			; get source data (L only)
+	add	ix,de
+	adc	a,d				; D is zero, add in carry only
+	ld		(iy),l			; write to RAM
+	add	iy,de				; next dest address
+	djnz	nvra_loop
+	dec	c
+	jr		nz,nvra_loop	; loop until no more data
+_finish_up:
+	call	fs_restorexpc
+	bool	hl
+	rr		hl					; return 0
+	#endasm
+}
+
+
+nodebug root short	nvram_erase(FS_lxd * lxd, long dest_ps_start)
+{
+	//printf("erase: dest=%06lx\n", dest_ps_start);
+	#asm
+	ld		hl,(sp+@sp+dest_ps_start+2)
+	call	fs_savexpc
+
+	ld		hl,(sp+@sp+4+dest_ps_start)
+	ld		bc,0+(1<<FS_NVRAM_PS_SHIFT)-1	; Bytes to set
+	ld		d,h
+	ld		e,l
+	inc	de
+	ld		(hl),0xFF
+	ldir
+
+	call	fs_restorexpc
+	bool	hl						; Return 0
+	rr		hl
+	#endasm
+}
+
+/*** BeginHeader pflash_setup */
+
+// Set up the FS2 logical extent descriptor, based on
+// information extracted from the BIOS.  This routine sets
+// up the program flash for use as part of the filesystem.  To get
+// included, the application must #define FS2_USE_PROGRAM_FLASH to the
+// number of logical sectors to use.  Set this to a high number to
+// use all available program flash -- which is not used for
+// program or ID block, that is!
+int pflash_setup(FS_lxd * lxd, int mb1cr, word * idp);
+
+/*** EndHeader */
+
+nodebug int pflash_setup(FS_lxd * lxd, int mb1cr, word * idp)
+{
+	auto int id;
+	auto unsigned long low, high, mask, request;
+
+	lxd->mb1cr = (byte)mb1cr;
+	lxd->dev_offs = 0;
+	lxd->data = NULL;
+	lxd->wear_leveling = 1;
+	lxd->dummy_lx = 0;
+	lxd->init = NULL;
+	lxd->flush = NULL;
+
+	#asm
+#if _RK_FIXED_VECTORS && FLASH_COMPILE
+	ld   hl, _GetFlashID
+	lcall _CallRAMFunction
+#else
+	call _GetFlashID
+#endif
+	ld		(sp+@sp+id),hl
+	#endasm
+	if (idp)
+		*idp = id;
+	lxd->ps_size = _FlashInfo.sectorSize;
+	if (!lxd->ps_size)
+		return -1;		// Fail if BIOS doesn't know sector size.
+
+	// FIXME: this is OK for now, but review if we ever use PS size not power of 2.
+	mask = -lxd->ps_size;
+	request = FS2_USE_PROGRAM_FLASH << 10L & mask;
+	if (request > XMEM_RESERVE_SIZE)
+		request = XMEM_RESERVE_SIZE;
+	if (!request)
+		return -1;
+#if FAST_RAM_COMPILE
+#define FLASH_FS_LOWBOUND 0xC0000ul
+
+	if (request > UserBlockAddr - FLASH_FS_LOWBOUND) {
+		request = UserBlockAddr - FLASH_FS_LOWBOUND;
+	}
+	low = (END_OF_FLASH_XMEM+(FLASH_FS_OFFS*0x1000L)) & mask;
+	if (low < (END_OF_FLASH_XMEM+(FLASH_FS_OFFS*0x1000L))) {
+#else
+	low = END_OF_XMEMORY & mask;
+	if (low < END_OF_XMEMORY) {
+#endif
+		low += lxd->ps_size;
+	}
+
+#ifdef	USER_BLOCK_NOT_IN_PROG_SPACE
+	// Either single split-flash DLM with ID/User Blocks in DLP's half of the
+	//  flash, or two-flash DLP with ID/User Blocks in DLM's flash.
+	// Allow this FS2 extent to go to the end of (possibly half of) the flash.
+	high = (FLASH_SIZE * 4096L) & mask;
+#else
+	// Note:  BIOS's UserBlockAddr value adapts for FAST_RAM_COMPILE mode
+	high = UserBlockAddr & mask;
+#endif
+
+	if (low >= high)
+		return -1;		// No space between code and ID block
+
+	// Use the topmost available section (helps prevent having to reformat
+	// flash every time the program size changes).
+	if (high - low > request)
+		low = high - request;
+	else
+		request = high - low;
+
+	lxd->dev_offs = low;
+	lxd->num_ps = (FSPSnum)(request / lxd->ps_size);
+
+#asm
+	// Determine whether program flash is byte or sector writable
+	ld		a,(_FlashInfo+writeMode)
+	bool	hl
+	ld		l,a
+	ld		(sp+@sp+id),hl
+#endasm
+	if (id == 2) {
+		lxd->dev_class = FSDC_SSW;
+		lxd->andover = NULL;
+		lxd->erase = NULL;
+		lxd->write = pflash_write;
+	}
+	else {
+		lxd->dev_class = FSDC_BW;
+		lxd->andover = pflash_write;
+		lxd->erase = pflash_erase;
+		lxd->write = NULL;
+	}
+	lxd->map = fs_map;
+
+	return 0;
+}
+
+/*** BeginHeader pflash_write, pflash_erase */
+
+root short		pflash_write(FS_lxd * lxd, long src_phy, word len, long dest);
+root short		pflash_erase(FS_lxd * lxd, long dest_ps_start);
+
+
+/*** EndHeader */
+
+nodebug root short	pflash_write(FS_lxd * lxd, long src_phy, word len, long dest)
+{
+	// Write to program flash physical sector.  This makes use of the BIOS routine
+	// which is slightly inefficient in that the data is double-handled i.e. moved
+	// to _the_ flash write buffer.  This routine is called for both byte-writable
+	// and small sector flash.  We determine which flavor by checking _FlashInfo.
+	//
+	// We also have to change to use quadrant 0 access (by subtracting 0x40 from the
+	// current XPC).
+	auto short rr;
+
+	xmem2xmem(flash_buf_phys, src_phy, len);
+#asm
+#ifdef USER_BLOCK_NOT_IN_PROG_SPACE
+	bool	hl										; disable
+	inc	hl										;  "ID/User Block"
+	ld		(_overwrite_block_flag), hl	;  write protection
+#endif
+	ld		hl,(sp+@sp+dest+2)
+	call	fs_savexpc
+
+	ld		hl,(sp+@sp+4+len)
+	ld		b,h
+	ld		c,l
+	ld		hl,(sp+@sp+4+dest)
+	ex		de,hl
+	ld		a,xpc
+	call	_WriteFlash
+	ld		(sp+@sp+4+rr),hl
+
+	call	fs_restorexpc
+#ifdef USER_BLOCK_NOT_IN_PROG_SPACE
+	bool	hl										; enable
+	ld		l, h									;  "ID/User Block"
+	ld		(_overwrite_block_flag), hl	;  write protection
+#endif
+#endasm
+	return rr;
+}
+
+nodebug root short	pflash_erase(FS_lxd * lxd, long dest_ps_start)
+{
+	auto short rr;
+
+	// This routine is only called if the program flash is byte-writable.
+	// It erases the specified sector to all 0xFF.
+	#asm
+#ifdef USER_BLOCK_NOT_IN_PROG_SPACE
+	bool	hl										; disable
+	inc	hl										;  "ID/User Block"
+	ld		(_overwrite_block_flag), hl	;  write protection
+#endif
+	; erase the sector!
+	ld		hl,(sp+@sp+dest_ps_start+2)
+	call	fs_savexpc
+
+	ld		hl,(sp+@sp+4+dest_ps_start)
+	ex		de,hl
+	ld		a,xpc
+#if _RK_FIXED_VECTORS && FLASH_COMPILE
+	ld		hl, _EraseFlashSect
+	lcall	_CallRAMFunction
+#else
+	call	_EraseFlashSect
+#endif
+	ld		(sp+@sp+4+rr),hl
+
+	call	fs_restorexpc
+#ifdef USER_BLOCK_NOT_IN_PROG_SPACE
+	bool	hl										; enable
+	ld		l, h									;  "ID/User Block"
+	ld		(_overwrite_block_flag), hl	;  write protection
+#endif
+	#endasm
+	return rr;
+}
+
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

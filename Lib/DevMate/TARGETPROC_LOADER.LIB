@@ -1,0 +1,3014 @@
+/* START LIBRARY DESCRIPTION *********************************************
+TARGETPROC_LOADER.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+	Support routines for Rabbit-to-Rabbit loading.
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#ifndef __TARGETPROC_LOADER_LIB
+#define __TARGETPROC_LOADER_LIB
+/*** EndHeader */
+
+/*** BeginHeader targetproc_loader_init */
+
+/******************************
+ * DEFAULT CONFIGURATION AREA *
+ ******************************/
+
+#ifndef __TARGETPROC_APP_LIB
+	#use "targetproc_app.lib"
+#endif
+
+/* User configurable items */
+//#define TARGETPROC_LOADER_DEBUG
+
+// serial port buffers, durring coldboot
+#define BINBUFSIZE	255
+#define BOUTBUFSIZE	31
+
+// serial port buffers, durring coldboot
+#define FINBUFSIZE	255
+#define FOUTBUFSIZE	31
+
+// a function-hook that is called periodicly - set this to something
+// interesting to make a status-LED blink
+// This function _MUST_ be able to run on an interrupt-callback!
+#ifndef TARGETPROC_LOADER_BLINK
+	#define TARGETPROC_LOADER_BLINK
+#endif
+
+// default TCP port to listen on
+#ifndef TARGETPROC_LOADER_PORT
+	#define TARGETPROC_LOADER_PORT	4244
+#endif
+
+// size of the internal buffers
+#ifndef TARGETPROC_LOADER_BUFSIZE
+	#define TARGETPROC_LOADER_BUFSIZE	256
+#endif
+
+// number of internal buffers
+#ifndef TARGETPROC_LOADER_BUFCOUNT
+	#define TARGETPROC_LOADER_BUFCOUNT	32
+#endif
+
+/* internal configuration */
+// number of buffers (out of the BUFCOUNT pool) that will be used to receive
+// packets form the target
+#define TARGETPROC_LOADER_NUMRXBUFS		4
+
+// size of the buffer pool, to be split into individual buffers
+#define TARGETPROC_LOADER_BUFPOOLSIZE	(TARGETPROC_LOADER_BUFCOUNT * (TARGETPROC_LOADER_BUFSIZE + TC_HEADER_RESERVE))
+
+// size of the large xmem buffer, in total
+#define TARGETPROC_LOADER_BIGBUFSIZE	((TARGETPROC_LOADER_BUFPOOLSIZE < 0x4000) ? 0x4000 : TARGETPROC_LOADER_BUFPOOLSIZE)
+
+// size of the buffer reserved for small packets
+#define TARGETPROC_LOADER_SMALLBUFSIZE	300
+
+// type of challenge/response to perform
+#define TARGETPROC_CHALLENGE_TYPE	TARGETPROC_CHALLENGE_MD5
+//#define TARGETPROC_CHALLENGE_TYPE	TARGETPROC_CHALLENGE_ZERO
+
+// length of time, in ms, to hold the /reset line low durring coldboot
+#define TARGETPROC_LOADER_RESETTIME	250
+
+// length of time, in ms, to give the coldloader to startup
+#define TARGETPROC_LOADER_COLD_STARTTIME	250
+
+// length of time, in ms, to give the pilotbios to startup
+#define TARGETPROC_LOADER_PILOT_STARTTIME	500
+
+// length of time, in ms, to wait for activity from
+// DynamicC, before the socket is booted off
+#define TARGETPROC_LOADER_TIMEOUT			((long)(60000)*3)
+
+// length of time, in ms, to give the user to respond to our CHALLENGE
+#define TARGETPROC_LOADER_CHALLENGE_TIMEOUT	30000
+
+// length of time, in ms, to give the user to choose a protocol version
+#define TARGETPROC_LOADER_VERSION_TIMEOUT	60000
+
+// length of time, in ms, to give the user to send the coldparams, after the coldloader has been sent
+#define TARGETPROC_LOADER_COLDPARAMS_TIMEOUT	60000
+
+// length of time, in ms, to wait for the 0xA5s when talking to the coldloader
+#define TARGETPROC_LOADER_A5_TIMEOUT		500
+
+// length of time, in ms, to give a Read/Write operation to complete
+#define TARGETPROC_LOADER_RWTIMEOUT			10000
+
+// length of time, in ms, to wait after the /res pulse, before the coldloader is sent
+#define TARGETPROC_LOADER_RESETWAIT			750
+
+// length of time, in ms, to give the BIOS to startup
+#define TARGETPROC_LOADER_BIOS_STARTTIME	3000
+
+// length of time, in ms, to wait for the IDREQ from DynamicC
+#define TARGETPROC_LOADER_IDREQ_TIMEOUT	2000
+
+// length of time, in ms, to wait for a response when using the old TC protocol
+#define TARGETPROC_LOADER_OLDTC_TIMEOUT	50
+
+// length of time, in ms, to wait for the socket to close, on a standard QUIT
+#define TARGETPROC_LOADER_CLOSE_TIMEOUT	2000
+
+// baud rate to load the coldloader at
+#define TARGETPROC_LOADER_COLDLOAD_BAUD	2400
+
+// size of a MD5 digest
+#define TARGETPROC_LOADER_MD5SIZE			16
+//#define TARGETPROC_LOADER_MD5SIZE			6
+
+/**************************
+ * END CONFIGURATION AREA *
+ **************************/
+
+/*
+ * SMODE configuration posibilities
+ */
+#define TARGETPROC_SMODE_NORMAL		0x00
+#define TARGETPROC_SMODE_SLAVEPORT	0x01
+#define TARGETPROC_SMODE_SYNCSER		0x02
+#define TARGETPROC_SMODE_SERIAL		0x03
+
+/*****************************************************************
+ * detect the board type, and configure the programming-out port
+ *
+ * The following macros must be defined to have a sane OUT-PORT:
+ *
+ * 	TARGETPROC_LOADER_SMODE:
+ *			The functional equvilant of targetproc_loader_smode(), that
+ *			accepts the TARGETPROC_SMODE_* macros as the only parameter,
+ *			and sets the SMODE lines accordingly.
+ *
+ *		TARGETPROC_LOADER_RESETTARGET:
+ *			The functional equvilant of targetproc_loader_resettarget().
+ *			When called, it should pull the /RES line low. (NON-BLOCKING!)
+ *
+ *		TARGETPROC_LOADER_UNRESETTARGET:
+ *			The functional equvilant of targetproc_loader_unresettarget().
+ *			When called, it should pull the /RES line high. (NON-BLOCKING!)
+ *
+ *	The following functions are equivilant to the ones in RS232.LIB, and any
+ *	replacement should work accordingly.
+ *		TARGETPROC_LOADER_SER_OPEN:
+ *			The function to open the apropriate serial port - it should
+ *			accept the baud rate as the only parameter.
+ *
+ *		TARGETPROC_LOADER_SER_CLOSE:
+ *			Close the serial port.
+ *
+ *		TARGETPROC_LOADER_SER_RDFLUSH:
+ *			Flush any received data, giving a clean buffer.
+ *
+ *		TARGETPROC_LOADER_SER_WRFLUSH:
+ *			Drop any data that is pending to write on the floor, and give
+ *			back any buffer space.
+ *
+ *		TARGETPROC_LOADER_SER_WRFREE:
+ *			Return (as an INT) the number of bytes free in the write buffer.
+ *
+ *		TARGETPROC_LOADER_SER_RDUSED:
+ *			Return (as an INT) the nuber of bytes pending on the read buffer.
+ *
+ *		TARGETPROC_LOADER_SER_PUTC:
+ *			Write the character specified to the serial port (NON-BLOCKING!),
+ *			and return true if it could be done, false otherwise.
+ *
+ *		TARGETPROC_LOADER_SER_READ:
+ *			Read data from the serial port; the same as RS232.LIB's serXread().
+ *
+ *		TARGETPROC_LOADER_SER_WRITE:
+ *			Write data to the serial port; the same as RS232.LIB's serXwrite().
+ *
+ */
+
+/* see if we can automagicaly configure this, based on known board types */
+#if ((_BOARD_TYPE_ == RABLINK) || (_BOARD_TYPE_ == EG2110A))
+	#if (_BOARD_TYPE_ == RABLINK)
+	#define TARGETPROC_LOADER_BOARD_OK	RABLINK
+	#endif
+	#if (_BOARD_TYPE_ == EG2110A)
+	#define TARGETPROC_LOADER_BOARD_OK	EG2110A
+	#endif
+	#define TARGETPROC_LOADER_USE_SERB
+	#ifndef TARGETPROC_LOADER_SMODE
+		#define TARGETPROC_LOADER_SMODE	targetproc_RABLINK_smode
+	#endif
+	#ifndef TARGETPROC_LOADER_RESETTARGET
+		#define TARGETPROC_LOADER_RESETTARGET	targetproc_RABLINK_resettarget
+	#endif
+	#ifndef TARGETPROC_LOADER_UNRESETTARGET
+		#define TARGETPROC_LOADER_UNRESETTARGET	targetproc_RABLINK_unresettarget
+	#endif
+#endif
+#if ((_BOARD_TYPE_ == RCM2200) || (_BOARD_TYPE_ == RCM2250) || \
+     (_BOARD_TYPE_ == RCM2260A))
+	#define TARGETPROC_LOADER_BOARD_OK	RCM2200
+	#define TARGETPROC_LOADER_USE_SERB
+	#ifndef TARGETPROC_LOADER_SMODE
+		#define TARGETPROC_LOADER_SMODE	targetproc_RCM2200_smode
+	#endif
+	#ifndef TARGETPROC_LOADER_RESETTARGET
+		#define TARGETPROC_LOADER_RESETTARGET	targetproc_RCM2200_resettarget
+	#endif
+	#ifndef TARGETPROC_LOADER_UNRESETTARGET
+		#define TARGETPROC_LOADER_UNRESETTARGET	targetproc_RCM2200_unresettarget
+	#endif
+#endif
+#if (_BOARD_TYPE_ == RCM3000)
+	#define TARGETPROC_LOADER_BOARD_OK	RCM3000
+	#define TARGETPROC_LOADER_USE_SERB
+	#ifndef TARGETPROC_LOADER_SMODE
+		#define TARGETPROC_LOADER_SMODE	targetproc_RCM3000_smode
+	#endif
+	#ifndef TARGETPROC_LOADER_RESETTARGET
+		#define TARGETPROC_LOADER_RESETTARGET	targetproc_RCM3000_resettarget
+	#endif
+	#ifndef TARGETPROC_LOADER_UNRESETTARGET
+		#define TARGETPROC_LOADER_UNRESETTARGET	targetproc_RCM3000_unresettarget
+	#endif
+#endif
+
+/* is this an unsupported device? */
+#ifndef TARGETPROC_LOADER_BOARD_OK
+	#warns	"Board type does not have a prog-OUT port; assuming RCM2200 setup"
+	#define TARGETPROC_LOADER_BOARD_OK	RCM2200
+	#define TARGETPROC_LOADER_USE_SERB
+	#ifndef TARGETPROC_LOADER_SMODE
+		#define TARGETPROC_LOADER_SMODE	targetproc_RCM2200_smode
+	#endif
+	#ifndef TARGETPROC_LOADER_RESETTARGET
+		#define TARGETPROC_LOADER_RESETTARGET	targetproc_RCM2200_resettarget
+	#endif
+	#ifndef TARGETPROC_LOADER_UNRESETTARGET
+		#define TARGETPROC_LOADER_UNRESETTARGET	targetproc_RCM2200_unresettarget
+	#endif
+#endif
+
+/* is this a know serial port? If so, pull in standard RS232.LIB routines */
+#ifdef TARGETPROC_LOADER_USE_SERB
+	#ifndef TARGETPROC_LOADER_SER_OPEN
+		#define TARGETPROC_LOADER_SER_OPEN		serBopen
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_CLOSE
+		#define TARGETPROC_LOADER_SER_CLOSE		serBclose
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_RDFLUSH
+		#define TARGETPROC_LOADER_SER_RDFLUSH	serBrdFlush
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_WRFLUSH
+		#define TARGETPROC_LOADER_SER_WRFLUSH	serBwrFlush
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_WRFREE
+		#define TARGETPROC_LOADER_SER_WRFREE	serBwrFree
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_RDUSED
+		#define TARGETPROC_LOADER_SER_RDUSED	serBrdUsed
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_PUTC
+		#define TARGETPROC_LOADER_SER_PUTC		serBputc
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_READ
+		#define TARGETPROC_LOADER_SER_READ		serBread
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_WRITE
+		#define TARGETPROC_LOADER_SER_WRITE		serBwrite
+	#endif
+#endif
+
+#ifdef TARGETPROC_LOADER_USE_SERF
+	#ifndef TARGETPROC_LOADER_SER_OPEN
+		#define TARGETPROC_LOADER_SER_OPEN		serFopen
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_CLOSE
+		#define TARGETPROC_LOADER_SER_CLOSE		serFclose
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_RDFLUSH
+		#define TARGETPROC_LOADER_SER_RDFLUSH	serFrdFlush
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_WRFLUSH
+		#define TARGETPROC_LOADER_SER_WRFLUSH	serFwrFlush
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_WRFREE
+		#define TARGETPROC_LOADER_SER_WRFREE	serFwrFree
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_RDUSED
+		#define TARGETPROC_LOADER_SER_RDUSED	serFrdUsed
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_PUTC
+		#define TARGETPROC_LOADER_SER_PUTC		serFputc
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_READ
+		#define TARGETPROC_LOADER_SER_READ		serFread
+	#endif
+	#ifndef TARGETPROC_LOADER_SER_WRITE
+		#define TARGETPROC_LOADER_SER_WRITE		serFwrite
+	#endif
+#endif
+
+/* detect if the configuration is sane */
+#ifndef TARGETPROC_LOADER_SMODE
+	#error "TARGETPROC_LOADER_SMODE must be defined to the smode-setting function!"
+#endif
+#ifndef TARGETPROC_LOADER_RESETTARGET
+	#error "TARGETPROC_LOADER_RESETTARGET must be defined to the pull-/RES-low function!"
+#endif
+#ifndef TARGETPROC_LOADER_UNRESETTARGET
+	#error "TARGETPROC_LOADER_UNRESETTARGET must be defined to the pull-/RES-high function!"
+#endif
+#ifndef TARGETPROC_LOADER_SER_OPEN
+	#error "TARGETPROC_LOADER_SER_OPEN must be defined to the apropriate serial function!"
+#endif
+#ifndef TARGETPROC_LOADER_SER_CLOSE
+	#error "TARGETPROC_LOADER_SER_CLOSE must be defined to the apropriate serial function!"
+#endif
+#ifndef TARGETPROC_LOADER_SER_WRFREE
+	#error "TARGETPROC_LOADER_SER_WRFREE must be defined to the apropriate serial function!"
+#endif
+#ifndef TARGETPROC_LOADER_SER_RDUSED
+	#error "TARGETPROC_LOADER_SER_RDUSED must be defined to the apropriate serial function!"
+#endif
+#ifndef TARGETPROC_LOADER_SER_RDFLUSH
+	#error "TARGETPROC_LOADER_SER_RDFLUSH must be defined to the apropriate serial function!"
+#endif
+#ifndef TARGETPROC_LOADER_SER_WRFLUSH
+	#error "TARGETPROC_LOADER_SER_WRFLUSH must be defined to the apropriate serial function!"
+#endif
+#ifndef TARGETPROC_LOADER_SER_WRITE
+	#error "TARGETPROC_LOADER_SER_WRITE must be defined to the apropriate serial function!"
+#endif
+#ifndef TARGETPROC_LOADER_SER_READ
+	#error "TARGETPROC_LOADER_SER_READ must be defined to the apropriate serial function!"
+#endif
+#ifndef TARGETPROC_LOADER_SER_PUTC
+	#error "TARGETPROC_LOADER_SER_PUTC must be defined to the apropriate serial function!"
+#endif
+
+/*
+ * packet definitions
+ */
+#define TC_DEBUG_CHALLENGE		0x3f
+typedef struct {
+	char	type;						// type of challenge to do
+#define TARGETPROC_CHALLENGE_ZERO	0		// challenge/response is all zeros (ie: no auth)
+#define TARGETPROC_CHALLENGE_MD5		1		// use the MD5 challenge
+	char	challenge_value[TARGETPROC_LOADER_MD5SIZE];  // challenge data
+} _TC_DBGChallenge;
+#define TC_DEBUG_RESPONSE		0x3e
+typedef struct {
+	char	challenge_response[TARGETPROC_LOADER_MD5SIZE];	// the answer to our challenge
+} _TC_DBGResponse;
+
+#define TC_DEBUG_COLDLOADER	0x3d
+typedef struct {
+	uint16	length;				// length of the coldloader
+	//char	*data;				// the actual coldloader
+} _TC_DBGColdloader;
+#define TC_DEBUG_COLDPARAMS	0x36
+typedef struct {
+	long		baud_rate;			// the baud rate at which to send this data to the coldloader
+	uint16	length;				// length of data to send to the coldloader
+	//char	*data;				// the actual data
+} _TC_DBGCOLDPARAMS;
+#define TC_DEBUG_PILOTBIOS		0x3c
+typedef struct {
+	uint16	length;				// length of the pilotbios
+	//char	*data;				// the actual coldloader
+} _TC_DBGPilotBIOS;
+
+#define TC_DEBUG_GETID			0x3b
+typedef struct {
+	uint16	FlashID;				// 16-bit flash identifier
+	char		RamSize;				// 8-bit code for the ram size
+	char		IDBlock[256];		// the last 256 bytes of FLASH,
+										// containing the System IDBlock.
+} _TC_DBGGetIDACK;
+
+#define TC_DEBUG_BIOS			0x3a
+typedef struct {
+	uint16	length;				// length of the bios
+	//char	*data;				// the actual BIOS
+} _TC_DBGBIOS;
+
+/* the QUIT packet (no body) */
+#define TC_DEBUG_QUIT			0x39
+
+/* the LOADTYPE packet */
+#define TC_DEBUG_LOADTYPE		0x38
+typedef struct {
+	char		flags;
+#define TC_LOADTYPE_VER1		0x01		// old style loading
+#define TC_LOADTYPE_VER2		0x02		// partial old/new style (old for coldloader/pilot)
+#define TC_LOADTYPE_VER3		0x03		// completely transparent rabbitlink
+} _TC_DBGLOADTYPE;
+
+/* the RESETTARGET packet */
+#define TC_DEBUG_RESETTARGET	0x37
+typedef struct {
+	char		flags;
+#define TC_DBG_SMODE0			0x01
+#define TC_DBG_SMODE1			0x02
+#define TC_DBG_RESETTARGET		0x04
+} _TC_DBGRESETTARGET;
+
+/* the local setbaudrate command */
+#define TC_DEBUG_LOADER_SETBAUDRATE	0x35
+typedef struct {
+	long		baud_rate;		// the baud rate to change to
+} _TC_DBGLOADERSETBAUDRATE;
+
+#define TC_SYSTEM_ERROR			0x3f
+typedef struct {
+	uint16	flags;				// the type of the error
+#define TC_ERROR_FATAL			0x0001		// fatal error - devmate is closing the connection!
+#define TC_ERROR_COMMAND		0x0002		// bad command from DynamicC
+#define TC_ERROR_TC				0x0003		// error in target communications
+#define TC_ERROR_AUTH			0x0004		// authentication error
+#define TC_ERROR_TIMEOUT		0x0005		// DC took too long...
+	uint16	msg_length;			// lenght of the text error message, in bytes
+	//char	*message;
+} _TC_ERROR;
+
+
+/*
+ * End packet definitions
+ */
+
+/* define this to nothing to enable debugging of this library */
+#ifndef tcloader_nodebug
+#ifdef __DC__
+	#define tcloader_nodebug	nodebug
+#else
+	#define tcloader_nodebug
+#endif
+#endif
+
+#funcchain __targetproc_init	targetproc_loader_init
+void targetproc_loader_init(void);
+
+typedef struct {
+	int	port;					// TCP port to listen on
+	char	md5password[TARGETPROC_LOADER_MD5SIZE];	// MD5 hash of the password...
+} TargetProcConfig;
+
+typedef struct {
+	int	state;
+/* initial network states */
+#define TARGETPROC_LOADER_INIT				0
+#define TARGETPROC_LOADER_LISTEN				1
+#define TARGETPROC_LOADER_WAITCONNECT		2
+#define TARGETPROC_LOADER_CHALLENGE			3
+#define TARGETPROC_LOADER_RESPONSE			4
+#define TARGETPROC_LOADER_WAITRESPONSE		5
+
+/* coldboot states */
+#define TARGETPROC_LOADER_LOADTYPE			10
+#define TARGETPROC_LOADER_GETLOADTYPE		11
+#define TARGETPROC_LOADER_COLDLOADER		12
+#define TARGETPROC_LOADER_GETCOLDLOADER	13
+#define TARGETPROC_LOADER_DORESETTARGET	14
+#define TARGETPROC_LOADER_DOUNRESETTARGET	15
+#define TARGETPROC_LOADER_RESETDELAY		16
+#define TARGETPROC_LOADER_COLDPARAMS		17
+#define TARGETPROC_LOADER_GETCOLDPARAMS	18
+#define TARGETPROC_LOADER_COLDSTARTDELAY	19
+#define TARGETPROC_LOADER_PILOTBIOS			20
+#define TARGETPROC_LOADER_GETPILOTBIOS		21
+#define TARGETPROC_LOADER_PILOTLOADDELAY	22
+#define TARGETPROC_LOADER_PILOTWAIT			23
+
+/* the steady state */
+#define TARGETPROC_LOADER_STEADYINIT		30
+#define TARGETPROC_LOADER_STEADY				31
+#define TARGETPROC_LOADER_STEADY_STARTNEWRX	32
+#define TARGETPROC_LOADER_RETURNBUF_FIXHEADER	33
+#define TARGETPROC_LOADER_RETURNBUF			34
+
+/* network communication states */
+#define TARGETPROC_LOADER_SENDHEADER		50
+#define TARGETPROC_LOADER_SENDBODY			51
+#define TARGETPROC_LOADER_SENDFOOTER		52
+
+/* close/error states */
+#define TARGETPROC_LOADER_QUIT				89
+#define TARGETPROC_LOADER_CLOSE				90
+#define TARGETPROC_LOADER_SOCKCLOSE			91
+#define TARGETPROC_LOADER_WAITCLOSE			92
+#define TARGETPROC_LOADER_TIMEOUTERROR		93
+#define TARGETPROC_LOADER_AUTHERROR			94
+#define TARGETPROC_LOADER_COMMANDERROR		95
+#define TARGETPROC_LOADER_TCERROR			96
+#define TARGETPROC_LOADER_SOCKERROR			97
+#define TARGETPROC_LOADER_RESET				98
+#define TARGETPROC_LOADER_FATALERROR		99
+
+/* special states */
+#define TARGETPROC_LOADER_NOTHING			100
+
+	int	nextstate;
+	int	idstate;
+
+	char	loadtype;		// protocol to use when talking to the PilotBIOS
+
+	tcp_Socket	sock;		// the actuall socket we are listening on
+	tcp_Socket	*s;		// a pointer to the socket
+
+	long			delay;	// delay timer between states
+
+	_TC_PacketHeader	rxheader;	// header of the received packet
+	_TC_PacketHeader	txheader;	// header of the sending packet
+	_TC_PacketFooter	rxfooter;	// footer of the received packet
+	_TC_PacketFooter	txfooter;	// footer of the sending packet
+
+	faraddr_t	buffer_area;	// physical address of our buffer area
+	faraddr_t	buffer_list;	// a list of avaliable buffers
+
+	char	small_buffer[TARGETPROC_LOADER_SMALLBUFSIZE];	// a small buffer for tiny packet
+
+	int	send_length;	// number of bytes to send to sock_fastwrite
+	int	send_offset;	// current offset into the sock_fastwrite process
+	faraddr_t	send_addr_phys;	// address of the data to be sent (physical)
+
+	int	rx_state;		// sub-state for the receive FSM
+#define TARGETPROC_LOADER_RX_INIT		0
+#define TARGETPROC_LOADER_RX_HEADER		1
+#define TARGETPROC_LOADER_RX_BODY		2
+#define TARGETPROC_LOADER_RX_FOOTER		3
+	int	rx_length;		// number of bytes to receive for the current piece of the packet
+	int	rx_offset;		// current offset into the above
+	int	rx_buflength;	// lenght of the rx buffer (body-portion)
+	faraddr_t	rx_buffer_phy;	// physical address of the rx buffer (body-portion)
+	char	rx_truncated;	// boolean flag indicating if the packet is truncated
+
+	/* for loading the bios... */
+	uint16	bios_length;	// lenght, in bytes, of the BIOS that has been received
+	uint16	bios_offset;	// offset, in bytes, of how much of the BIOS has been sent
+
+	/* return lists - packets come back from the callback through these */
+	faraddr_t	return_list;
+	faraddr_t	finished_list;
+
+	/* other storage used by the steady state */
+	faraddr_t	rx_current_buffer;	// current buffer from DynamicC
+	char		start_new_receive;	// boolean flag for if it is necessary to start a new
+											// packet receiving from DynamicC
+
+	/* IDPROBE stuff (for the old TC protocol) */
+	int		retry_count;	// number of times to retry requests to the target
+	uint16	flash_id;		// the flash id of the target
+	char		ram_size;		// ramsize of the target
+
+	char		md5entropy[TARGETPROC_LOADER_MD5SIZE];	// storage for the MD5 hashing challenge
+
+	long 		timeout;			// general purpose timeout, to boot off the socket
+
+	long		pilot_baud_rate;		// the baud rate the PilotBIOS initiall talks at
+	long		change_baud_rate; 	// the new baud rate queued for when the SET|ACK comes back
+} TargetProcLoader;
+
+TargetProcLoader	TargetProcLoader_state;
+TargetProcConfig	TargetProcConfig_config;
+
+/*
+ * Pull in support libraries
+ */
+#use "MD5.LIB"
+
+/*
+ * Usefull prototypes
+ */
+void targetproc_loader_hash(char *data, int length, char *digest);
+
+/*** EndHeader */
+
+tcloader_nodebug
+void targetproc_loader_init(void)
+{
+#GLOBAL_INIT {
+	/* get the xmem buffer area */
+	TargetProcLoader_state.buffer_area = xalloc(TARGETPROC_LOADER_BIGBUFSIZE);
+
+	/* setup the initial configuration */
+	TargetProcConfig_config.port = TARGETPROC_LOADER_PORT;
+
+#ifdef TARGETPROC_LOADER_PASSWORD
+	// they supplied a compile-time password - fill it in
+	targetproc_loader_hash(TARGETPROC_LOADER_PASSWORD,
+		strlen(TARGETPROC_LOADER_PASSWORD), TargetProcConfig_config.md5password);
+#else
+	// no compile time password was supplied - create a blank password for now
+	targetproc_loader_hash("",0,TargetProcConfig_config.md5password);
+#endif
+}
+
+	/* move to the init state */
+	TargetProcLoader_state.state = TARGETPROC_LOADER_INIT;
+}
+
+/*** BeginHeader targetproc_RABLINK_smode */
+void targetproc_RABLINK_smode(char mode);
+/*** EndHeader */
+/*
+ * Set the SMODE lines on the RABLINK board.
+ *
+ * 'mode' is a bitmask for the mode lines. Use one
+ * of the TARGETPROC_SMODE_* macros!
+ */
+tcloader_nodebug void targetproc_RABLINK_smode(char mode)
+{
+#GLOBAL_INIT {
+	WrPortI(SPCR, &SPCRShadow, 0x84);		// normal functions on port B
+}
+
+	if(mode & 0x01) {
+		// smode0 should be set
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sSetting SMODE0...\n",targetproc_loader_dbgmsg);
+#endif
+		WrPortI(PBDR,&PBDRShadow,PBDRShadow | 0x40); // set PB6
+	} else {
+		// unset smode0
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sUnSetting SMODE0...\n",targetproc_loader_dbgmsg);
+#endif
+		WrPortI(PBDR,&PBDRShadow,PBDRShadow & 0xbf); // unset PB6
+	}
+
+	if(mode & 0x02) {
+		// smode1 should be set
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sSetting SMODE1...\n",targetproc_loader_dbgmsg);
+#endif
+		WrPortI(PBDR,&PBDRShadow,PBDRShadow | 0x80); // set PB7
+	} else {
+		// unset smode1
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sUnSetting SMODE1...\n",targetproc_loader_dbgmsg);
+#endif
+		WrPortI(PBDR,&PBDRShadow,PBDRShadow & 0x7f); // unset PB7
+	}
+}
+
+/*** BeginHeader targetproc_RCM2200_smode */
+void targetproc_RCM2200_smode(char mode);
+/*** EndHeader */
+/*
+ * Set the SMODE lines.
+ *
+ * 'mode' is a bitmask for the mode lines. Use one
+ * of the TARGETPROC_SMODE_* macros!
+ */
+tcloader_nodebug void targetproc_RCM2200_smode(char mode)
+{
+#GLOBAL_INIT {
+	/* prepare PE0&1 */
+	WrPortI(PEFR,&PEFRShadow,PEFRShadow & 0xfc); // PE0&1 are normal I/O
+	WrPortI(PEDDR,&PEDDRShadow,PEDDRShadow | 0x03); // PE0&1 are outputs
+}
+
+	if(mode & 0x01) {
+		// smode0 should be set
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sSetting SMODE0...\n",targetproc_loader_dbgmsg);
+#endif
+		WrPortI(PEDR,&PEDRShadow,PEDRShadow | 0x01); // set PE0
+	} else {
+		// unset smode0
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sUnSetting SMODE0...\n",targetproc_loader_dbgmsg);
+#endif
+		WrPortI(PEDR,&PEDRShadow,PEDRShadow & 0xfe); // unset PE0
+	}
+
+	if(mode & 0x02) {
+		// smode1 should be set
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sSetting SMODE1...\n",targetproc_loader_dbgmsg);
+#endif
+		WrPortI(PEDR,&PEDRShadow,PEDRShadow | 0x02); // set PE1
+	} else {
+		// unset smode1
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sUnSetting SMODE1...\n",targetproc_loader_dbgmsg);
+#endif
+		WrPortI(PEDR,&PEDRShadow,PEDRShadow & 0xfd); // unset PE1
+	}
+}
+
+/*** BeginHeader targetproc_RCM3000_smode */
+void targetproc_RCM3000_smode(char mode);
+/*** EndHeader */
+/*
+ * Set the SMODE lines.
+ *
+ * 'mode' is a bitmask for the mode lines. Use one
+ * of the TARGETPROC_SMODE_* macros!
+ */
+tcloader_nodebug void targetproc_RCM3000_smode(char mode)
+{
+#GLOBAL_INIT {
+	/* prepare PE0&1 */
+	WrPortI(PEFR,&PEFRShadow,PEFRShadow & 0xfc); // PE0&1 are normal I/O
+	WrPortI(PEDDR,&PEDDRShadow,PEDDRShadow | 0x03); // PE0&1 are outputs
+}
+
+	if(mode & 0x01) {
+		// smode0 should be set
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sSetting SMODE0...\n",targetproc_loader_dbgmsg);
+#endif
+		WrPortI(PEDR,&PEDRShadow,PEDRShadow | 0x01); // set PE0
+	} else {
+		// unset smode0
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sUnSetting SMODE0...\n",targetproc_loader_dbgmsg);
+#endif
+		WrPortI(PEDR,&PEDRShadow,PEDRShadow & 0xfe); // unset PE0
+	}
+
+	if(mode & 0x02) {
+		// smode1 should be set
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sSetting SMODE1...\n",targetproc_loader_dbgmsg);
+#endif
+		WrPortI(PEDR,&PEDRShadow,PEDRShadow | 0x02); // set PE1
+	} else {
+		// unset smode1
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sUnSetting SMODE1...\n",targetproc_loader_dbgmsg);
+#endif
+		WrPortI(PEDR,&PEDRShadow,PEDRShadow & 0xfd); // unset PE1
+	}
+}
+
+/*** BeginHeader targetproc_RABLINK_resettarget */
+void targetproc_RABLINK_resettarget(void);
+/*** EndHeader */
+/*
+ * Pull the /reset line low, to reset the target
+ */
+tcloader_nodebug void targetproc_RABLINK_resettarget(void)
+{
+#GLOBAL_INIT {
+	WrPortI(SPCR, &SPCRShadow, 0x84); // prepare the /RESET line (PA0)
+}
+
+#asm nodebug
+	ld		a,(PADRShadow)
+	and	0xFE					; take PA0 low
+	ld		(PADRShadow),a
+;	ioi ld (PADR),a
+	IOWRITE_A(PADR)
+#endasm
+}
+
+/*** BeginHeader targetproc_RCM2200_resettarget */
+void targetproc_RCM2200_resettarget(void);
+/*** EndHeader */
+/*
+ * Pull the /reset line low, to reset the target
+ */
+tcloader_nodebug void targetproc_RCM2200_resettarget(void)
+{
+#GLOBAL_INIT {
+	/* prepare PD3 */
+	WrPortI(PDFR, &PDFRShadow, PDFRShadow  & 0xf7);	// PD3 is a normal I/O
+	WrPortI(PDDCR,&PDDCRShadow,PDDCRShadow & 0xf7); // PD3 is not an open-drain
+	WrPortI(PDDDR,&PDDDRShadow,PDDDRShadow | 0x08); // PD3 is an output
+}
+
+#asm nodebug
+	ld		a,(PDDRShadow)
+	and	0xf7			; force PD3 low
+	ld		(PDDRShadow),a
+;	ioi ld	(PDDR),a
+	IOWRITE_A(PDDR)
+#endasm
+}
+
+/*** BeginHeader targetproc_RCM3000_resettarget */
+void targetproc_RCM3000_resettarget(void);
+/*** EndHeader */
+/*
+ * Pull the /reset line low, to reset the target
+ */
+tcloader_nodebug void targetproc_RCM3000_resettarget(void)
+{
+#GLOBAL_INIT {
+	/* prepare PB0 */
+	WrPortI(PBDDR, &PBDDRShadow, PBDDRShadow | 0x01); // PB0 is an output
+}
+#asm nodebug
+	ld		a,(PBDRShadow)
+	and	0xfe			; force PB0 low
+	ld		(PBDRShadow),a
+;	ioi ld (PBDR),a
+	IOWRITE_A(PBDR)
+#endasm
+}
+
+/*** BeginHeader targetproc_RABLINK_unresettarget */
+void targetproc_RABLINK_unresettarget(void);
+/*** EndHeader */
+/*
+ * Fix the /reset line back to a normal state
+ */
+tcloader_nodebug void targetproc_RABLINK_unresettarget(void)
+{
+#asm tcloader_nodebug
+	ld		a,(PADRShadow)
+	or		0x01			; take PA0 high
+	ld		(PADRShadow),a
+;	ioi ld (PADR),a
+	IOWRITE_A(PADR)
+#endasm
+}
+
+/*** BeginHeader targetproc_RCM2200_unresettarget */
+void targetproc_RCM2200_unresettarget(void);
+/*** EndHeader */
+/*
+ * Fix the /reset line back to a normal state
+ */
+tcloader_nodebug void targetproc_RCM2200_unresettarget(void)
+{
+#asm tcloader_nodebug
+	ld		a,(PDDRShadow)
+	or		0x08			; force PD3 high
+	ld		(PDDRShadow),a
+;	ioi ld	(PDDR),a
+	IOWRITE_A(PDDR)
+#endasm
+}
+
+/*** BeginHeader targetproc_RCM3000_unresettarget */
+void targetproc_RCM3000_unresettarget(void);
+/*** EndHeader */
+/*
+ * Fix the /reset line back to a normal state
+ */
+tcloader_nodebug void targetproc_RCM3000_unresettarget(void)
+{
+#asm
+	ld		a,(PBDRShadow)
+	or		0x01			; force PB0 high
+	ld		(PBDRShadow),a
+;	ioi ld (PBDR),a
+	IOWRITE_A(PBDR)
+#endasm
+}
+
+/*** BeginHeader targetproc_loader_tick */
+#funcchain __targetproc_tick	targetproc_loader_tick
+void targetproc_loader_tick(void);
+/*** EndHeader */
+
+#ifdef TARGETPROC_LOADER_DEBUG
+const char targetproc_loader_dbgmsg[] = "Loader> ";
+#endif
+
+/*************************************************
+ * Timeout helpers
+ */
+tcloader_nodebug void targetproc_loader_ResetTimeout(long *timer)
+{
+	/* reset the timeout interval */
+	*timer = MS_TIMER;
+}
+
+tcloader_nodebug int targetproc_loader_CheckTimeout(long *timer, long timeout_length)
+{
+	/* has the timeout expired? */
+	if(MS_TIMER < *timer) {
+		/* MS_TIMER wrapped around! Just reset the timeout. */
+		/* a slightly longer timeout this time, but it doesn't matter */
+		*timer = MS_TIMER;
+		return 0;
+	}
+	if(MS_TIMER > (*timer + timeout_length)) {
+		/* the timeout expired! */
+		return 1;
+	}
+	/* the timeout has yet to expire */
+	return 0;
+}
+
+/*
+ * handy wrappers for the main global idle timeout
+ */
+
+tcloader_nodebug void targetproc_loader_GlobalResetTimeout(void)
+{
+	targetproc_loader_ResetTimeout(&(TargetProcLoader_state.timeout));
+}
+
+tcloader_nodebug int targetproc_loader_GlobalCheckTimeout(void)
+{
+	return targetproc_loader_CheckTimeout(&(TargetProcLoader_state.timeout),(long)TARGETPROC_LOADER_TIMEOUT);
+}
+
+/*
+ * handy wrappers for timeouts that use the 'delay' field
+ */
+
+tcloader_nodebug void targetproc_loader_ResetDelayTimeout()
+{
+	targetproc_loader_ResetTimeout(&(TargetProcLoader_state.delay));
+}
+
+tcloader_nodebug int targetproc_loader_CheckDelayTimeout(long timeout_len)
+{
+	return targetproc_loader_CheckTimeout(&(TargetProcLoader_state.delay),timeout_len);
+}
+
+/*************************************************
+ * Authentication routines...
+ */
+
+/*
+ * General support routine to do the MD5 hashing.
+ */
+tcloader_nodebug
+void targetproc_loader_hash(char *data, int length, char *digest)
+{
+	auto md5_state_t	md5_state;
+
+	md5_init(&md5_state);
+	md5_append(&md5_state, (md5_byte_t *)data, length);
+	md5_finish(&md5_state, (md5_byte_t *)digest);
+}
+
+/*
+ * Build a challenge packet in the small_buffer of
+ * the specified challenge type.
+ */
+tcloader_nodebug int targetproc_loader_buildchallenge(char type)
+{
+	TargetProcLoader_state.small_buffer[0] = type; // set the challenge type
+	switch(type) {
+	case TARGETPROC_CHALLENGE_ZERO:
+		// only set the challenge to zero - the response should also be zero
+		memset(&(TargetProcLoader_state.small_buffer[1]),0,6);
+		break;
+
+	case TARGETPROC_CHALLENGE_MD5:
+		// get 6 bytes of entropy
+#asm nodebug
+		ld		hl,TargetProcLoader_state+md5entropy
+;		ioi	ld	(RTC0R),a		; transfer the RTC to the holding registers
+		IOWRITE_A(RTCOR)
+;		ioi	ld	a,(RTC0R)
+		IOREAD_A(RTCOR)
+		ld		(hl),a
+;		ioi	ld	a,(RTC1R)
+		IOREAD_A(RTC1R)
+		inc	hl
+		ld		(hl),a
+;		ioi	ld	a,(RTC2R)
+		IOREAD_A(RTC2R)
+		inc	hl
+		ld		(hl),a
+;		ioi	ld	a,(RTC3R)
+		IOREAD_A(RTC3R)
+		inc	hl
+		ld		(hl),a
+;		ioi	ld	a,(RTC4R)
+		IOREAD_A(RTC4R)
+		inc	hl
+		ld		(hl),a
+;		ioi	ld	a,(RTC5R)
+		IOREAD_A(RTC5R)
+		inc	hl
+		ld		(hl),a
+#endasm
+		// MD5 hash them to make the entropy better
+		targetproc_loader_hash(TargetProcLoader_state.md5entropy, 6, TargetProcLoader_state.small_buffer+1);
+		// ...and save it for comparison later
+		memcpy(TargetProcLoader_state.md5entropy, TargetProcLoader_state.small_buffer+1, TARGETPROC_LOADER_MD5SIZE);
+		break;
+
+	default:
+		// unknown type - return error
+		return -1;
+	}
+	return 0; // return success
+}
+
+/*
+ * Check the challenge, from the smallbuf, and return
+ * true if it was good, or false if it was bad.
+ */
+tcloader_nodebug int targetproc_loader_checkchallenge(char type)
+{
+	auto int i;
+	auto char tempbuf[2*TARGETPROC_LOADER_MD5SIZE];
+
+	/* verify the rxheader fields! */
+	if(TargetProcLoader_state.rxheader.type != TC_TYPE_DEBUG)
+		return 0;
+
+	if(TargetProcLoader_state.rxheader.subtype != TC_DEBUG_RESPONSE)
+		return 0;
+
+	switch(type) {
+	case TARGETPROC_CHALLENGE_ZERO:
+		for(i=0;i<6;i++)
+			if(TargetProcLoader_state.small_buffer[i] != 0x00)
+				return 0; // they didn't respond with all zeros!
+		return 1; // the response was correct
+
+	case TARGETPROC_CHALLENGE_MD5:
+		// copy the entropy and the password to a temp buf and MD5 them
+		memcpy(tempbuf, TargetProcLoader_state.md5entropy, TARGETPROC_LOADER_MD5SIZE);
+		memcpy(tempbuf+TARGETPROC_LOADER_MD5SIZE, TargetProcConfig_config.md5password, TARGETPROC_LOADER_MD5SIZE);
+		targetproc_loader_hash(tempbuf, TARGETPROC_LOADER_MD5SIZE*2, TargetProcLoader_state.md5entropy);
+
+		// ...and compare that result w/ what dynamic c sent us
+		if(0 == memcmp(TargetProcLoader_state.md5entropy, TargetProcLoader_state.small_buffer, TARGETPROC_LOADER_MD5SIZE)) {
+			// match! they are authenticated!
+			return 1;
+		} else {
+			// no match!
+			return 0;
+		}
+
+	default:
+		return 0; // bad type
+	}
+}
+
+/**********************************************************************
+ * Coldboot routines for actually talking to the target
+ */
+
+/*
+ * A _BLOCKING_ function to send the coldloader. It waill stop when
+ * it hits the 0x80, 0x24, 0x80, or the end of the file. The standard
+ * coldload baud rate is assumed.
+ */
+tcloader_nodebug void targetproc_loader_sendcoldloader()
+{
+	auto int length;
+	auto char buf[3];
+	auto long p;
+
+	// COLDLOADER! get the length, and assume the normal baud rate
+	xmem2root(&length,TargetProcLoader_state.buffer_area,2);
+
+	TARGETPROC_LOADER_SER_CLOSE(); // kill anything currently using serialB
+	TARGETPROC_LOADER_SER_OPEN(TARGETPROC_LOADER_COLDLOAD_BAUD);
+
+	/* initial pointer to the loader data */
+	p = TargetProcLoader_state.buffer_area + 2;
+	while(length > 0) {
+		TARGETPROC_LOADER_BLINK;
+
+		/* get a tuple from xmem */
+		xmem2root(buf,p,3);
+
+		/* is there room to write the tuple? */
+		while(TARGETPROC_LOADER_SER_WRFREE() < 3)
+			continue; // loop untill there is (BLOCKS!)
+
+		/* send it out the serial port */
+		TARGETPROC_LOADER_SER_WRITE(buf,3);
+
+		if( (buf[0] == 0x80)
+		 && (buf[1] == 0x24)
+		 && (buf[2] == 0x80) ) {
+			// end of the coldloader
+			return;
+		}
+
+		/* move to the next tuple */
+		p += 3;
+		length -= 3;
+	}
+}
+
+/*
+ * Sends the coldparameters, while computing their checksum. The
+ * returned checksum will be compared to the one sent, and if it
+ * matches this will return 0, otherwise -1 will be returned.
+ */
+tcloader_nodebug int targetproc_loader_sendcoldparams(void)
+{
+	auto long baud;
+	auto int length;
+	auto long p;
+	auto char c, checksum;
+	auto long timeout;
+
+	// get the length and the baud rate
+	xmem2root(&baud,TargetProcLoader_state.buffer_area,4);
+	xmem2root(&length,TargetProcLoader_state.buffer_area+4,2);
+
+	// change to the new baud rate
+	TARGETPROC_LOADER_SER_CLOSE();	// kill anything currently using serialB
+	TARGETPROC_LOADER_SER_OPEN(baud);
+	TARGETPROC_LOADER_SER_RDFLUSH();
+	TARGETPROC_LOADER_SER_WRFLUSH();
+
+	p = TargetProcLoader_state.buffer_area + 6;
+	xmem2root(&checksum,p+length-1,1);	// get the checksum out of the data
+	while(length > 0) {
+		xmem2root(&c,p,1);				// get the next character
+
+		/* is there room to write the tuple? */
+		while(TARGETPROC_LOADER_SER_WRFREE() < 1)
+			continue; // loop untill there is (BLOCKS!)
+
+		/* send it out the serial port */
+		TARGETPROC_LOADER_SER_PUTC(c);
+
+		/* move to the next character */
+		p += 1;
+		length -= 1;
+	}
+
+	/* set the timeout */
+	targetproc_loader_ResetTimeout(&timeout);
+
+	/* wait for a character to come in, or the timeout expires */
+	while(TARGETPROC_LOADER_SER_RDUSED() < 1) {
+		if(targetproc_loader_CheckTimeout(&timeout,1000)) {	// only wait one second - that should be more than enough
+			// timeout expired - error
+			return -1;
+		}
+	}
+
+	/* the response has arrived - did it match the checksum? */
+	TARGETPROC_LOADER_SER_READ(&c,1,0);
+	if(c == checksum) {
+		/* they matched! */
+		return 0;
+	} else {
+		/* coldloader didn't receive the data properly */
+		return -1;
+	}
+}
+
+/*
+ * Sends the coldloader out of the BigBuffer. Verify the (complimented)
+ * echoed data and the prepended and appended 0xA5.
+ *
+ * If the echoed data/etc matches, it returns 0, otherwise it returns
+ * a negative error code.
+ */
+tcloader_nodebug
+int targetproc_loader_sendpilot(void)
+{
+	auto int tx_length;
+	auto long baud_rate;
+	auto long tx_p;
+	auto char c;
+	auto long timeout;
+	auto int checksum, reply;
+
+	/* get the length and the baud rate */
+	xmem2root(&baud_rate,TargetProcLoader_state.buffer_area,4);
+	xmem2root(&tx_length,TargetProcLoader_state.buffer_area+4,2);
+
+	/* setup the serial port */
+	TARGETPROC_LOADER_SER_CLOSE();	// kill anything currently using serialB
+	TARGETPROC_LOADER_SER_OPEN(baud_rate);
+	TARGETPROC_LOADER_SER_RDFLUSH();
+	TARGETPROC_LOADER_SER_WRFLUSH();
+	TargetProcLoader_state.pilot_baud_rate = baud_rate;	// tell the STEADY state the initial baud rate to use
+
+	/* setup the pointers and init the checksum */
+	tx_p = TargetProcLoader_state.buffer_area + 6;
+	checksum = 0;
+
+	/* send the actuall pilot bios */
+	while(tx_length > 0) {
+		/* This is guarenteed to terminate - therefor no timeout is necessary! */
+
+		/* try to send a character, if possible */
+		if(TARGETPROC_LOADER_SER_WRFREE() > 0) {
+			xmem2root(&c,tx_p,1);
+			TARGETPROC_LOADER_SER_PUTC(c);
+#asm
+			ld		hl,(sp+@SP+c)
+			ld		a,l						; a has the character to add to the checksum
+			ld		hl,(sp+@SP+checksum)	; hl has the current checksum
+			call	dkcComputeChecksum	; this relys on the TC.LIB checksum code!
+			ld		(sp+@SP+checksum),hl	; store the checksum again
+#endasm
+			tx_p += 1;
+			tx_length -= 1;
+		}
+	}
+
+	/* get the checksum from the target */
+	targetproc_loader_ResetTimeout(&timeout);
+	while(TARGETPROC_LOADER_SER_RDUSED() < 2) {
+		/* have not received the two bytes from the target yet - time this out */
+		if(targetproc_loader_CheckTimeout(&timeout,TARGETPROC_LOADER_A5_TIMEOUT)) {
+			// error - the target died or didn't respond in time
+			return -1;
+		}
+	}
+	if(2 != TARGETPROC_LOADER_SER_READ((char *)&reply, 2, 1)) {
+		/* error - discrepency between RDUSED and READ! */
+		return -1;
+	}
+
+	/* did the checksums match? */
+	if(reply == checksum) {
+		return 0;
+	} else {
+		/* error in checksum */
+		return -1;
+	}
+}
+
+/******************************************************
+ * Ethernet Send-packet routines
+ * (plus the states in the main FSM)
+ */
+
+/*
+ * Start a packet sending. This will change the state to the SEND
+ * state, and then move to 'nextstate' when it is done puting the packet
+ * onto the TCP socket.
+ */
+tcloader_nodebug void targetproc_loader_eth_send(char type, char subtype, int length, long buffer, int nextstate)
+{
+	auto int	temp;
+
+	/* build the header */
+	TargetProcLoader_state.txheader.version = TC_VERSION;
+	TargetProcLoader_state.txheader.flags = 0;
+	TargetProcLoader_state.txheader.type = type;
+	TargetProcLoader_state.txheader.subtype = subtype;
+	TargetProcLoader_state.txheader.length = length;
+#asm nodebug
+	ld		ix,TargetProcLoader_state+txheader
+	call	dkcChecksumTheHeader
+	ld		(sp+@sp+temp),hl
+#endasm
+	TargetProcLoader_state.txheader.header_checksum = temp;
+
+	/* build the footer */
+#asm nodebug
+	; add the header_checksum to the running checksum
+	ld		hl,(sp+@sp+temp)
+	ld		a,l
+	ld		b,h	; save h for later
+	call	dkcComputeChecksum			; add l to the checksum
+	ld		a,b	; restore h
+	call	dkcComputeChecksum			; add h to the checksum
+
+	; add the body of the packet to the checksum
+	push	hl					; save the checksum
+	ld		ix,(sp+@sp+2+buffer)			; offset by two because of the 'push hl' above
+	ld		hl,(sp+@sp+2+buffer+2)
+	ld		a,l				; place l in a for a ldp style load	-- a:ix has the physical address
+	ex		af,af'			; save it in alt-a
+	ld		hl,(sp+@sp+2+length)
+	ld		b,h
+	ld		c,l
+	pop	hl
+_targetproc_loader_send_copyloop:
+	ld		a,b
+	or		c
+	jr		z,_targetproc_loader_send_cpydone
+
+	exx						; save hl
+	ex		af,af'			; restore a, the ldp address
+	ldp	hl,(ix)			; get a byte from the packet
+	ex		af,af'			; save a again
+	ld		a,l				; we want the low byte from the ldp
+	exx						; restore hl, the checksum
+	call	dkcComputeChecksum	; add a to the checksum, hl
+	dec	bc					; decrement the byte count
+
+	jr		_targetproc_loader_send_copyloop
+_targetproc_loader_send_cpydone:
+	ld		(sp+@sp+temp),hl		; the final checksum
+#endasm
+	TargetProcLoader_state.txfooter.checksum = temp;	// store the checksum in the footer
+
+	;
+	/* start the send running */
+	TargetProcLoader_state.send_addr_phys = buffer;
+	TargetProcLoader_state.send_length = sizeof(TargetProcLoader_state.txheader);
+	TargetProcLoader_state.send_offset = 0;
+	TargetProcLoader_state.state = TARGETPROC_LOADER_SENDHEADER;
+	TargetProcLoader_state.nextstate = nextstate;
+}
+
+/* this is a replacement for the sock_fastwrite call in the FSM, as it
+	messes with the XPC */
+tcloader_nodebug root int targetproc_loader_eth_sendbody_helper(void)
+{
+	auto int 	len;
+	auto long	source_addr;
+
+	len = TargetProcLoader_state.send_length - TargetProcLoader_state.send_offset;
+   if(len) {
+		source_addr = TargetProcLoader_state.send_addr_phys + (long)TargetProcLoader_state.send_offset;
+		len = sock_xfastwrite(TargetProcLoader_state.s, source_addr, len);
+   }
+
+	return len; // return the result of the sock_fastwrite
+}
+
+/*************************************************************
+ * Ethernet Receive packet routines
+ */
+
+/*
+ * Start a packet receiving, into the specified buffer. If the
+ * packet is too large for the buffer, it will be truncated!
+ */
+tcloader_nodebug int targetproc_loader_eth_startrx(int length, long buffer)
+{
+	//printf("Starting TCP-RX with buffer 0x%08lx...\n",buffer);
+
+	/* store the length of the buffer */
+	TargetProcLoader_state.rx_buflength = length;
+
+	/* store the address of the buffer */
+	TargetProcLoader_state.rx_buffer_phy = buffer;
+
+	/* move to the initial state */
+	TargetProcLoader_state.rx_state = TARGETPROC_LOADER_RX_INIT;
+}
+
+/*
+ * Helper wrapper for sock_fastread, so it can be in root.
+ */
+tcloader_nodebug root int targetproc_loader_eth_rxhelper(void)
+{
+	auto int		len;
+	auto long	dst;
+
+	len = TargetProcLoader_state.rx_length - TargetProcLoader_state.rx_offset;
+   if(len) {
+		dst = TargetProcLoader_state.rx_buffer_phy + (long)TargetProcLoader_state.rx_offset;
+		len = sock_xfastread(TargetProcLoader_state.s,dst,len);
+   }
+
+	return len; // pass the read length back to the caller
+}
+
+/*
+ * Poll for if a packet has been received yet. This also
+ * drives the receive FSM.
+ *
+ * Return value:
+ * 	TC_PENDING		- Still pending - call it again.
+ *		TC_SUCCESS		- The packet was received successfully.
+ *		TC_TRUNCATED	- The received packet is done, but it was truncated!
+ *		TC_ERROR			- General error - Probably a bad socket!
+ *
+ * Side effects:
+ *		On a socket error, the main state will be changed to TARGETPROC_LOADER_SOCKERROR!
+ */
+tcloader_nodebug int targetproc_loader_eth_rxfinish(void)
+{
+	auto int	temp;
+
+	switch(TargetProcLoader_state.rx_state) {
+	case TARGETPROC_LOADER_RX_INIT:
+		TargetProcLoader_state.rx_offset = 0;
+		TargetProcLoader_state.rx_length = sizeof(TargetProcLoader_state.rxheader);
+		TargetProcLoader_state.rx_truncated = 0; // default to not truncating the packet
+		TargetProcLoader_state.rx_state = TARGETPROC_LOADER_RX_HEADER;
+		// fall through to the HEADER state
+
+	case TARGETPROC_LOADER_RX_HEADER:
+		temp = sock_fastread(TargetProcLoader_state.s,
+									(char *)&(TargetProcLoader_state.rxheader) + TargetProcLoader_state.rx_offset,
+									TargetProcLoader_state.rx_length - TargetProcLoader_state.rx_offset
+								  );
+		if(-1 == temp) {
+			// socket error!
+			TargetProcLoader_state.state = TARGETPROC_LOADER_SOCKERROR;
+			return TC_ERROR;
+
+		} else {
+			TargetProcLoader_state.rx_offset += temp;
+			if(TargetProcLoader_state.rx_offset >= TargetProcLoader_state.rx_length) {
+				// header is done - verify it
+#asm nodebug
+				ld		ix,TargetProcLoader_state+rxheader
+				call	dkcChecksumTheHeader
+				ld		(sp+@sp+temp),hl
+#endasm
+				if(temp != TargetProcLoader_state.rxheader.header_checksum) {
+					// bad checksum!
+					TargetProcLoader_state.state = TARGETPROC_LOADER_SOCKERROR;
+					return TC_ERROR;
+				}
+
+				/* find the length of the body-section */
+				temp = TargetProcLoader_state.rxheader.length;
+				if(temp > TargetProcLoader_state.rx_buflength) {
+					// incoming packet is larger than the avaliable buffer!
+					temp = TargetProcLoader_state.rx_buflength;
+					TargetProcLoader_state.rx_truncated = 1; // flag that the packet will be truncated!
+				}
+
+				/* header was good - move to the body section */
+				TargetProcLoader_state.rx_offset = 0;
+				TargetProcLoader_state.rx_length = temp;
+				TargetProcLoader_state.rx_state = TARGETPROC_LOADER_RX_BODY;
+				// fall through to the body section
+			} else {
+				// still more data to read
+				return TC_PENDING;
+			}
+		}
+
+	case TARGETPROC_LOADER_RX_BODY:
+		temp = targetproc_loader_eth_rxhelper();	// root replacement for sock_fastread()
+		if(-1 == temp) {
+			// socket error!
+			TargetProcLoader_state.state = TARGETPROC_LOADER_SOCKERROR;
+			return TC_ERROR;
+
+		} else {
+			TargetProcLoader_state.rx_offset += temp;
+			if(TargetProcLoader_state.rx_offset >= TargetProcLoader_state.rx_length) {
+				// body is done - move to the footer section
+				TargetProcLoader_state.rx_offset = 0;
+				TargetProcLoader_state.rx_length = sizeof(TargetProcLoader_state.rxfooter);
+				TargetProcLoader_state.rx_state = TARGETPROC_LOADER_RX_FOOTER;
+				// fall through to the footer section
+			} else {
+				// still more data to read
+				return TC_PENDING;
+			}
+		}
+
+	case TARGETPROC_LOADER_RX_FOOTER:
+		temp = sock_fastread(TargetProcLoader_state.s,
+									(char *)&(TargetProcLoader_state.rxfooter) + TargetProcLoader_state.rx_offset,
+									TargetProcLoader_state.rx_length - TargetProcLoader_state.rx_offset
+								  );
+		if(-1 == temp) {
+			// socket error!
+			TargetProcLoader_state.state = TARGETPROC_LOADER_SOCKERROR;
+			return TC_ERROR;
+
+		} else {
+			TargetProcLoader_state.rx_offset += temp;
+			if(TargetProcLoader_state.rx_offset >= TargetProcLoader_state.rx_length) {
+				// footer is done - checksum the packet
+
+				if(TargetProcLoader_state.rx_truncated) {
+					TargetProcLoader_state.state = TARGETPROC_LOADER_SOCKERROR;
+					return TC_TRUNCATED; // don't bother checksuming a truncated packet! (it will always fail)
+				}
+#asm nodebug
+				ld		hl,(TargetProcLoader_state+rxheader+header_checksum)
+				ld		b,h		; save h for later
+				ld		a,l
+				call	dkcComputeChecksum
+				ld		a,b		; now compute h
+				call	dkcComputeChecksum
+
+				; add the body of the packet to the checksum
+				exx						; save the checksum
+				ld		ix,(TargetProcLoader_state+rx_buffer_phy)
+				ld		hl,(TargetProcLoader_state+rx_buffer_phy+2)
+				ld		a,l
+				ex		af,af'
+				ld		hl,(TargetProcLoader_state+rxheader+length)
+				ld		b,h
+				ld		c,l
+
+_targetproc_loader_rx_copyloop:
+				ld		a,b
+				or		c
+				jr		z,_targetproc_loader_rx_cpydone
+
+				ex		af,af'			; restore a, the ldp address
+				ldp	hl,(ix)			; get a byte from the packet
+				ex		af,af'			; save a again
+				ld		a,l				; we want the low byte from the ldp
+				exx						; restore hl, the checksum
+				call	dkcComputeChecksum	; add a to the checksum, hl
+				exx						; save hl
+
+				dec	bc
+				inc	ix					; move to the next byte
+
+				ld		hl,ix
+				ld		a,h
+				or		l
+				jr		nz,_targetproc_loader_rx_copyloop	; did we roll over a boundery?
+
+				ex		af,af'
+				inc	a					; increment the high byte of the address
+				ex		af,af'
+
+				jr		_targetproc_loader_rx_copyloop
+_targetproc_loader_rx_cpydone:
+				exx
+				ld		(sp+@sp+temp),hl		; the final checksum
+#endasm
+				if(temp != TargetProcLoader_state.rxfooter.checksum) {
+					// bad checksum
+					TargetProcLoader_state.state = TARGETPROC_LOADER_SOCKERROR;
+					return TC_ERROR;
+				} else {
+					// success!
+					return TC_SUCCESS;
+				}
+			} else {
+				// still more data to read
+				return TC_PENDING;
+			}
+		}
+
+	default:
+		// fsm error!
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("FSM ERROR - tcp-rx\n");
+#endif
+		TargetProcLoader_state.state = TARGETPROC_LOADER_FATALERROR;
+		return TC_ERROR;
+	}
+}
+
+/**********************************************************
+ * Helpers to guarentee read/write packets to the target
+ */
+
+/*
+ * takes a buffer (w/ TCHeader), extracts the subtype
+ * out of the TCHeader, and returns it.
+ */
+tcloader_nodebug char targetproc_loader_gettype(long buffer)
+{
+	auto char ch;
+
+	if(xmem2root(&ch,buffer + TC_HEADER_TYPE, 1)) {
+		/* error! */
+		return 0xff;
+	}
+
+	return ch;
+}
+
+/*
+ * takes a buffer (w/ TCHeader), extracts the subtype
+ * out of the TCHeader, and returns it.
+ */
+tcloader_nodebug char targetproc_loader_getsubtype(long buffer)
+{
+	auto char ch;
+
+	if(xmem2root(&ch,buffer + TC_HEADER_SUBTYPE, 1)) {
+		/* error! */
+		return 0xff;
+	}
+
+	return ch;
+}
+
+/*
+ * takes a buffer (w/ TCHeader), extracts the length
+ * out of the TCHeader, and returns it.
+ */
+tcloader_nodebug int targetproc_loader_getlength(long buffer)
+{
+	auto int val;
+
+	if(xmem2root(&val,buffer + TC_HEADER_LENGTH, 2)) {
+		/* error! */
+		return 0x0000;
+	}
+
+	return val;
+}
+
+/*
+ * Forward the packet in the current Ethernet RX buffer to the target
+ */
+tcloader_nodebug void targetproc_loader_forwardtotarget(void)
+{
+	targetproc_send(TargetProcLoader_state.rxheader.type,
+						 TargetProcLoader_state.rxheader.subtype,
+						 TargetProcLoader_state.rxheader.length,
+						 TargetProcLoader_state.rx_current_buffer,
+						 0
+						);
+}
+
+/*******************************************************************
+ * Handlers for the various packets that could be received
+ * from DynamicC. (all handlers have the prefix: targetproc_loader_H_)
+ */
+
+// to be used with the read/write routines to give us a root buffer to work with
+char targetproc_loader_rw_buffer[TARGETPROC_LOADER_BUFSIZE];
+
+/*
+ * BLOCKING! Read memory from the target, retrying in necessary.
+ */
+tcloader_nodebug void targetproc_loader_H_readblock(long buffer, int length)
+{
+	auto _TCSystemREAD *ptr;
+	auto int retval;
+	auto int state_backup;
+	auto _TCSystemREADACK	read_ack_header;
+
+	xmem2root(targetproc_loader_rw_buffer, buffer+TC_HEADER_RESERVE, length);
+
+	ptr = (_TCSystemREAD *)targetproc_loader_rw_buffer;
+	//printf("Starting a READ of type 0x%02x\n",ptr->type);
+
+	/*
+	 * Backup the current state and move to the NOTHING state, such
+	 * that the FSM is not reentered.
+	 */
+	state_backup = TargetProcLoader_state.state;
+	TargetProcLoader_state.state = TARGETPROC_LOADER_NOTHING;
+	// select the proper READ type
+	switch(ptr->type) {
+	case TC_SYSREAD_PHYSICAL:
+		retval = targetproc_ReadPhysical(&read_ack_header, paddr(targetproc_loader_rw_buffer + sizeof(_TCSystemREAD)),
+													ptr->address.physical, ptr->length, TARGETPROC_LOADER_RWTIMEOUT);
+		break;
+
+	case TC_SYSREAD_LOGICAL:
+		retval = targetproc_ReadLogical(&read_ack_header, paddr(targetproc_loader_rw_buffer + sizeof(_TCSystemREAD)),
+												  ptr->address.logical.xpc, ptr->address.logical.offset,
+												  ptr->length, TARGETPROC_LOADER_RWTIMEOUT);
+		break;
+
+	case TC_SYSREAD_NOXPC:
+		retval = targetproc_ReadNoXPC(&read_ack_header, paddr(targetproc_loader_rw_buffer + sizeof(_TCSystemREAD)),
+												ptr->address.logical.offset, ptr->length, TARGETPROC_LOADER_RWTIMEOUT);
+		break;
+
+	default:
+		/* not supported */
+		retval = TC_ERROR;
+	}
+	// restore the proper state
+	TargetProcLoader_state.state = state_backup;
+
+	if(TC_SUCCESS == retval) {
+		/* put the data back in the xmem buffer */
+		root2xmem(buffer, (char *)&read_ack_header, sizeof(_TCSystemREADACK));
+		root2xmem(buffer+sizeof(_TCSystemREADACK), targetproc_loader_rw_buffer+sizeof(_TCSystemREAD), ptr->length);
+		targetproc_loader_eth_send(TC_TYPE_SYSTEM,
+									 		TC_SYSTEM_READ | TC_ACK,
+									 		ptr->length + sizeof(_TCSystemREADACK),
+									 		buffer,
+									 		TARGETPROC_LOADER_RETURNBUF
+											);
+	} else {
+		// NAK the ReadBlock request
+		targetproc_loader_eth_send(TC_TYPE_SYSTEM,
+									 		TC_SYSTEM_READ | TC_NAK,
+									 		0,
+									 		buffer,
+									 		TARGETPROC_LOADER_RETURNBUF
+									 		);
+	}
+	// after the READ is done, rx another packet from DC
+	TargetProcLoader_state.start_new_receive = 1;
+}
+
+/*
+ * BLOCKING! Write memory to the target, retrying in necessary.
+ */
+tcloader_nodebug void targetproc_loader_H_writeblock(long buffer, int length)
+{
+	auto _TCSystemWRITE	*ptr;
+	auto int retval;
+	auto int state_backup;
+
+	xmem2root(targetproc_loader_rw_buffer, buffer+TC_HEADER_RESERVE, length);
+
+	ptr = (_TCSystemWRITE *)targetproc_loader_rw_buffer;
+
+	/*
+	 * backup the current state and switch to the NOTHING state, such
+	 * that the FSM is not reentered.
+	 */
+	state_backup = TargetProcLoader_state.state;
+	TargetProcLoader_state.state = TARGETPROC_LOADER_NOTHING;
+	// select the proper WRITE type
+	switch(ptr->type) {
+	case TC_SYSWRITE_PHYSICAL:
+		retval = targetproc_WritePhysical(paddr(targetproc_loader_rw_buffer + sizeof(_TCSystemWRITE)),
+													 ptr->address.physical, ptr->length, TARGETPROC_LOADER_RWTIMEOUT);
+		break;
+
+	case TC_SYSWRITE_LOGICAL:
+		retval = targetproc_WriteLogical(paddr(targetproc_loader_rw_buffer + sizeof(_TCSystemWRITE)),
+													ptr->address.logical.xpc, ptr->address.logical.offset,
+													ptr->length, TARGETPROC_LOADER_RWTIMEOUT);
+		break;
+
+	case TC_SYSWRITE_NOXPC:
+		retval = targetproc_WriteNoXPC(paddr(targetproc_loader_rw_buffer + sizeof(_TCSystemWRITE)),
+												 ptr->address.logical.offset, ptr->length, TARGETPROC_LOADER_RWTIMEOUT);
+		break;
+
+	default:
+		/* not supported */
+		retval = TC_ERROR;
+	}
+	// restore the proper state
+	TargetProcLoader_state.state = state_backup;
+
+	// send the results back to DC
+	targetproc_loader_eth_send(TC_TYPE_SYSTEM,
+								 		TC_SYSTEM_WRITE | ((TC_SUCCESS == retval)?TC_ACK:TC_NAK),
+								 		0,
+								 		buffer,
+								 		TARGETPROC_LOADER_RETURNBUF
+										);
+	// after the READ is done, rx another packet from DC
+	TargetProcLoader_state.start_new_receive = 1;
+}
+
+/*
+ * This will prepare the target for runmode, as specified
+ * by DC.
+ */
+tcloader_nodebug void targetproc_loader_H_resettarget(void)
+{
+	auto char flags;
+	auto long timeout;
+
+	TARGETPROC_LOADER_BLINK;
+
+	xmem2root(&flags,TargetProcLoader_state.rx_current_buffer+TC_HEADER_RESERVE,1);
+
+	/* Set the SMODE lines */
+	if(flags & TC_DBG_SMODE0) {
+		// SMODE0 is high
+		if(flags & TC_DBG_SMODE1) {
+			// SMODE0&1 are high
+			TARGETPROC_LOADER_SMODE(TARGETPROC_SMODE_SERIAL);
+		} else {
+			// SMODE0 is high, SMODE1 is low
+			TARGETPROC_LOADER_SMODE(TARGETPROC_SMODE_SLAVEPORT);
+		}
+	} else {
+		// SMODE0 is low
+		if(flags & TC_DBG_SMODE1) {
+			// SMODE0 is low, SMODE1 is high
+			TARGETPROC_LOADER_SMODE(TARGETPROC_SMODE_SYNCSER);
+		} else {
+			// SMODE0&1 are low
+			TARGETPROC_LOADER_SMODE(TARGETPROC_SMODE_NORMAL);
+		}
+	}
+
+	/* reset the target? */
+	if(flags & TC_DBG_RESETTARGET) {
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sResetting the target!\n",targetproc_loader_dbgmsg);
+#endif
+		// pull /reset low
+		TARGETPROC_LOADER_RESETTARGET();
+
+		// wait for a bit, to let the target reset
+		// **** THIS IS BLOCKING!!! ****
+		targetproc_loader_ResetTimeout(&timeout);
+		while(!targetproc_loader_CheckTimeout(&timeout,TARGETPROC_LOADER_RESETTIME))
+			continue;
+
+		// put the reset line back to normal
+		TARGETPROC_LOADER_UNRESETTARGET();
+		TARGETPROC_LOADER_BLINK;
+	}
+
+	targetproc_loader_eth_send(TC_TYPE_DEBUG,
+								 		TC_DEBUG_RESETTARGET | TC_ACK,
+								 		0,
+								 		TargetProcLoader_state.rx_current_buffer,
+								 		TARGETPROC_LOADER_RETURNBUF
+										);
+	// rx another packet from DC after this send is finished
+	TargetProcLoader_state.start_new_receive = 1;
+}
+
+/*
+ * Echo the ACKed version of the packet back to them
+ */
+tcloader_nodebug void targetproc_loader_H_sysnoop(void)
+{
+	targetproc_loader_eth_send(TC_TYPE_SYSTEM,
+								 		TC_SYSTEM_NOOP | TC_ACK,
+								 		TargetProcLoader_state.rxheader.length,
+								 		TargetProcLoader_state.rx_current_buffer,
+								 		TARGETPROC_LOADER_RETURNBUF
+										);
+	// rx another packet from DC after this send is finished
+	TargetProcLoader_state.start_new_receive = 1;
+}
+
+/*
+ * Conditionally veto the requested baud rate, or forward it on to
+ * the target and queue the change for when the ACK comes back
+ */
+tcloader_nodebug void targetproc_loader_H_setbaudrate(void)
+{
+	auto long new_baud_rate;
+
+	/* is the baud rate acceptable? */
+	xmem2root(&new_baud_rate,TargetProcLoader_state.rx_current_buffer+TC_HEADER_RESERVE,4);
+
+	if((115200 == new_baud_rate)
+	|| (57600  == new_baud_rate)
+	|| (28800  == new_baud_rate)
+	|| (19200  == new_baud_rate)
+	) {
+		/* the baud rate is acceptable - queue the change for when the ACK is received */
+		TargetProcLoader_state.change_baud_rate = new_baud_rate;
+
+		/* and forward the packet to the target */
+		targetproc_loader_forwardtotarget();
+	} else {
+		/* no it's not - veto the request by sending a NAK */
+		targetproc_loader_eth_send(TC_TYPE_SYSTEM,
+									 		TC_SYSTEM_SETBAUDRATE | TC_NAK,
+									 		0,
+									 		TargetProcLoader_state.rx_current_buffer,
+									 		TARGETPROC_LOADER_RETURNBUF
+											);
+		// rx another packet from DC after this send is finished
+		TargetProcLoader_state.start_new_receive = 1;
+	}
+}
+
+/*
+ * Locally (to the loader) set the baud rate. This packet will not
+ * be forwarded to the target at all - use with caution!
+ */
+tcloader_nodebug void targetproc_loader_H_loadersetbaudrate(void)
+{
+	auto long new_baud_rate;
+
+	/* get the requested baud rate;	*/
+	xmem2root(&new_baud_rate,TargetProcLoader_state.rx_current_buffer+TC_HEADER_RESERVE,4);
+	/* set it! */
+	targetproc_setbaudrate(new_baud_rate);
+
+	/* ACK this change */
+	targetproc_loader_eth_send(TC_TYPE_DEBUG,
+								 		TC_DEBUG_LOADER_SETBAUDRATE | TC_ACK,
+								 		0,
+								 		TargetProcLoader_state.rx_current_buffer,
+								 		TARGETPROC_LOADER_RETURNBUF
+										);
+	// rx another packet from DC after this send is finished
+	TargetProcLoader_state.start_new_receive = 1;
+}
+
+/*
+ * The system-type handler. When a TC_TYPE_SYSTEM packet is
+ * received from DynamicC, this function will dispatch it
+ * apropriatly.
+ *
+ * Returns TC_SUCCESS if the packet was handled successfully,
+ * or TC_ERROR if that packet type is not supported.
+ */
+tcloader_nodebug int targetproc_loader_SystemHandler(void)
+{
+	/* sys-read/writes? */
+	TARGETPROC_LOADER_BLINK;
+	switch(TargetProcLoader_state.rxheader.subtype) {
+	case TC_SYSTEM_NOOP:
+		targetproc_loader_H_sysnoop();
+		return TC_SUCCESS;
+
+	case TC_SYSTEM_SETBAUDRATE:
+		targetproc_loader_H_setbaudrate();
+		return TC_SUCCESS;
+
+	case TC_SYSTEM_READ:
+		targetproc_loader_H_readblock(TargetProcLoader_state.rx_current_buffer,
+						 						TargetProcLoader_state.rxheader.length
+									 			);
+		return TC_SUCCESS;
+
+	case TC_SYSTEM_WRITE:
+		targetproc_loader_H_writeblock(TargetProcLoader_state.rx_current_buffer,
+												 TargetProcLoader_state.rxheader.length
+												 );
+		return TC_SUCCESS;
+
+	default:
+		/* no other packet sys-types are supported! */
+		return TC_ERROR;
+	}
+}
+
+/*
+ * Handle the DEBUG type, it works the same as the SYSTEM type above
+ */
+tcloader_nodebug int targetproc_loader_DebugHandler(void)
+{
+	static int temp;
+
+	switch(TargetProcLoader_state.rxheader.subtype) {
+	case TC_DEBUG_QUIT:
+		/* quit request received - move to the CLOSE state */
+		TargetProcLoader_state.state = TARGETPROC_LOADER_QUIT;
+		return TC_SUCCESS;
+
+	case TC_DEBUG_RESETTARGET:
+		TARGETPROC_LOADER_BLINK;
+		targetproc_loader_H_resettarget();
+		return TC_SUCCESS;
+
+	case TC_DEBUG_LOADER_SETBAUDRATE:
+		targetproc_loader_H_loadersetbaudrate();
+		return TC_SUCCESS;
+
+	default:
+		/* no other DEBUG-type packets are supported */
+		return TC_ERROR;
+	}
+}
+
+/*
+ * A packet has been received in the steady-state from DynamicC.
+ * Dispatch it.
+ *
+ * Returns TC_SUCCESS if the packet was handled properly, or
+ * TC_ERROR if that packet type is not supported, and therefor
+ * should be forwarded to the target.
+ */
+tcloader_nodebug int targetproc_loader_HandleRequest(void)
+{
+	switch(TargetProcLoader_state.rxheader.type) {
+	case TC_TYPE_SYSTEM:
+		/* System type - use the sub-handler */
+		return targetproc_loader_SystemHandler();
+
+	case TC_TYPE_DEBUG:
+		return targetproc_loader_DebugHandler();
+
+	default:
+		/* unknown packet type - drop it! */
+		return TC_ERROR;
+	}
+}
+
+/*
+ * Process packets that have been returned by the target.
+ * Returns TC_SUCCESS if the packet should be forwarded back
+ * to DC.
+ */
+tcloader_nodebug int targetproc_loader_process_response(long buffer)
+{
+	auto char type;
+	auto char subtype;
+
+	/* get the packet type */
+	type = targetproc_loader_gettype(buffer);
+	subtype = targetproc_loader_getsubtype(buffer);
+
+	if((TC_TYPE_SYSTEM == type)
+	&& ((TC_SYSTEM_SETBAUDRATE|TC_ACK) == subtype)) {
+		/* the setbaudrate was accepted by the target! */
+		targetproc_setbaudrate(TargetProcLoader_state.change_baud_rate);	// change our baud rate also!
+		TargetProcLoader_state.change_baud_rate = 0;
+		return TC_SUCCESS;
+	}
+
+	if((TC_TYPE_SYSTEM == type)
+	&& ((TC_SYSTEM_SETBAUDRATE|TC_NAK) ==subtype)) {
+		/* Error - the baud rate change was regected */
+		TargetProcLoader_state.change_baud_rate = 0;	// undo the queued change
+		return TC_SUCCESS;
+	}
+
+	// default - just forward it back
+	return TC_SUCCESS;
+}
+
+/*********************************************************
+ * The callbacks for talking to the target
+ */
+tcloader_nodebug root int targetproc_loader_callback(int flags, char type, char subtype, int length, long buffer, long userdata)
+{
+#if 0
+#asm nodebug
+	ld		hl,(sp+@SP+flags)
+	bit	0,l
+	jr		z,targetproc_loader_callback_NoRX
+
+	; RECEIVE flag set - queue the buffer
+	ld		hl,(sp+@SP+buffer)
+	ex		de,hl
+	ld		hl,(sp+@SP+buffer+2)
+	ld		b,h
+	ld		c,l
+	ld		hl,TargetProcLoader_state.return_list
+	call	dkcQueueBuffer
+
+targetproc_loader_callback_NoRX:
+	ld		hl,(sp+@SP+flags)
+	bit	1,l
+	jr		z,targetproc_loader_callback_NoTXDONE
+
+	; TXDONE flag set - queue the buffer
+	ld		hl,(sp+@SP+buffer)
+	ex		de,hl
+	ld		hl,(sp+@SP+buffer+2)
+	ld		b,h
+	ld		c,l
+	ld		hl,TargetProcLoader_state.buffer_list
+	call	dkcQueueBuffer
+
+targetproc_loader_callback_NoTXDONE:
+#endasm
+#else
+
+	if(flags & TC_RECEIVE) {
+		_tc_queue_buffer(&TargetProcLoader_state.return_list,buffer);
+	}
+
+	if(flags & TC_TXDONE) {
+		// put it back on the avaliable-pool
+		_tc_queue_buffer(&TargetProcLoader_state.buffer_list,buffer);
+	}
+#endif
+
+	return 0;
+}
+
+tcloader_nodebug root int targetproc_loader_syscallback(int flags, char type, char subtype, int length, long buffer, long userdata)
+{
+	/* FIXME!!! - this really should be in asm... */
+	static long	buf;
+
+	/* is this our callback? */
+	if(((subtype & 0x3f) == TC_SYSTEM_WRITE)
+	|| ((subtype & 0x3f) == TC_SYSTEM_READ)) {
+		/* this is not our callback - it is intended for the debug system. Forward it on. */
+		return targetproc_debug_callback(flags,type,subtype,length,buffer,userdata);
+	} else {
+		if(flags & TC_RECEIVE) {
+			buf = _tc_get_buffer(&TargetProcLoader_state.buffer_list);
+			if(!buf)
+				return 0;	// error! no buffer!
+
+			xmem2xmem(buf,buffer,length+TC_HEADER_RESERVE);
+			_tc_queue_buffer(&TargetProcLoader_state.return_list,buf);
+			return 0;
+		}
+		if((flags & TC_TXDONE) && !(flags & TC_SYSBUF)) {
+			/* it was our own buffer... */
+			_tc_queue_buffer(&TargetProcLoader_state.buffer_list,buffer);
+		}
+	}
+}
+
+/*********************************************************
+ * Error reporting utility
+ */
+tcloader_nodebug void targetproc_loader_senderror(int flags, char *buf, int nextstate)
+{
+	auto _TC_ERROR	*pkt;
+
+	/* build the error packet */
+	pkt = (_TC_ERROR *)TargetProcLoader_state.small_buffer;
+	pkt->flags = flags;
+	pkt->msg_length = strlen(buf);
+	memcpy((char *)pkt + sizeof(_TC_ERROR), buf, pkt->msg_length);
+
+	/* send the error packet */
+	targetproc_loader_eth_send(TC_TYPE_SYSTEM,
+								 		TC_SYSTEM_ERROR,
+								 		sizeof(_TC_ERROR) + pkt->msg_length,
+								 		paddr(TargetProcLoader_state.small_buffer),
+								 		nextstate
+										);
+}
+
+/*************************************************************
+ * The main FSM that driver the communications with Dynamic C
+ */
+tcloader_nodebug void targetproc_loader_tick(void)
+{
+	static int	temp;
+	static long ltemp;
+
+	switch(TargetProcLoader_state.state) {
+
+	/***********************************
+	 *	Initilization and waiting for a *
+	 * connection states               *
+	 ***********************************/
+
+	case TARGETPROC_LOADER_INIT:
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sMAIN INIT\n",targetproc_loader_dbgmsg);
+#endif
+		/*
+		 * Initilize things.
+		 * Only a minimum of vairables should be
+		 * initilized here! Most should be initilized
+		 * in the WAITCONNECT state, such that they are
+		 * re-initilized properly every time a socket
+		 * is connected.
+		 */
+
+		/* set the shortcut socket pointer */
+		TargetProcLoader_state.s = &TargetProcLoader_state.sock;
+
+#if 0
+		/* reserve the TCP port we will be using */
+		tcp_reserveport(TargetProcConfig_config.port);
+#endif
+
+		TargetProcLoader_state.state = TARGETPROC_LOADER_LISTEN;
+		TARGETPROC_LOADER_BLINK;
+		// Fall through directly to the listen state.
+
+	case TARGETPROC_LOADER_LISTEN:
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sListening for a connection...\n",targetproc_loader_dbgmsg);
+#endif
+		/* undo any current smode settings */
+		TARGETPROC_LOADER_SMODE(TARGETPROC_SMODE_NORMAL);
+
+		/* make sure the target can run */
+		TARGETPROC_LOADER_UNRESETTARGET();
+
+		/* listen for a new connection */
+		if(0 == tcp_listen(&(TargetProcLoader_state.sock),TargetProcConfig_config.port,0,0,NULL,0)) {
+			// error
+#ifdef TARGETPROC_LOADER_DEBUG
+			printf("%sTCP-LISTEN failed!\n",targetproc_loader_dbgmsg);
+#endif
+			TargetProcLoader_state.state = TARGETPROC_LOADER_FATALERROR;
+			return;
+		}
+		TargetProcLoader_state.state = TARGETPROC_LOADER_WAITCONNECT;
+		TARGETPROC_LOADER_BLINK;
+		// Fall through directly to the waitconnect state.
+
+	case TARGETPROC_LOADER_WAITCONNECT:
+		/* wait for a connection to be made */
+		if(sock_established(TargetProcLoader_state.s)) {
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sGot a connection!\n",targetproc_loader_dbgmsg);
+#endif
+			/**************************************
+			 * a connection has been established! *
+			 * Init everything here.              *
+			 **************************************/
+
+			// no queued baud rate change yet
+			TargetProcLoader_state.change_baud_rate = 0;
+
+			TargetProcLoader_state.state = TARGETPROC_LOADER_CHALLENGE;
+		} else if(-1 != sock_bytesready(TargetProcLoader_state.s)) {
+			// fast open/close of the socket - try again
+			TargetProcLoader_state.state = TARGETPROC_LOADER_LISTEN;
+		}
+		break;
+
+	/************************
+	 * Authorization states *
+	 ************************/
+
+	case TARGETPROC_LOADER_CHALLENGE:
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sChallenging the user...\n",targetproc_loader_dbgmsg);
+#endif
+		/* send a challenge to Dynamic C */
+		targetproc_loader_buildchallenge(TARGETPROC_CHALLENGE_TYPE); // no interesting challenge for now
+		targetproc_loader_eth_send(TC_TYPE_DEBUG,
+									 		TC_DEBUG_CHALLENGE,
+									 		sizeof(_TC_DBGChallenge),
+									 		paddr(TargetProcLoader_state.small_buffer),
+									 		TARGETPROC_LOADER_RESPONSE
+									 	  );
+		TARGETPROC_LOADER_BLINK;
+		targetproc_loader_ResetDelayTimeout();	// reset the timeout
+		break;
+
+	case TARGETPROC_LOADER_RESPONSE:
+		/* receive the response packet */
+		targetproc_loader_eth_startrx(TARGETPROC_LOADER_SMALLBUFSIZE,paddr(TargetProcLoader_state.small_buffer));
+		TargetProcLoader_state.state = TARGETPROC_LOADER_WAITRESPONSE;
+		// fall through to the WAITRESPONSE state
+
+	case TARGETPROC_LOADER_WAITRESPONSE:
+		// check the AUTH timeout
+		if(targetproc_loader_CheckDelayTimeout(TARGETPROC_LOADER_CHALLENGE_TIMEOUT)) {
+			// timeout expired - drop them on the floor...
+			TargetProcLoader_state.state = TARGETPROC_LOADER_CLOSE;
+			break;
+		}
+
+		/* wait for the response to our challenge */
+		temp = targetproc_loader_eth_rxfinish();
+		if(TC_PENDING == temp)
+			break;
+
+		if(TC_SUCCESS != temp) {
+			// bad response packet - drop them on the floor...
+			TargetProcLoader_state.state = TARGETPROC_LOADER_CLOSE;
+			break;
+		}
+
+		TARGETPROC_LOADER_BLINK;
+
+		/* verify their response */
+		if(targetproc_loader_checkchallenge(TARGETPROC_CHALLENGE_TYPE)) {
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sAuthentication was good!\n",targetproc_loader_dbgmsg);
+#endif
+			// good response!
+			// set the timeout for getting the LOADTYPE
+			targetproc_loader_ResetDelayTimeout();	// reset the timeout
+
+			TargetProcLoader_state.state = TARGETPROC_LOADER_LOADTYPE;
+			// fall through to the LOADTYPE state
+		} else {
+			// bad response! drop them on the floor...
+			TargetProcLoader_state.state = TARGETPROC_LOADER_AUTHERROR;
+			break;
+		}
+
+	/*****************************
+	 * Coldboot / Loading states *
+	 *****************************/
+	case TARGETPROC_LOADER_LOADTYPE:
+		targetproc_loader_eth_startrx(TARGETPROC_LOADER_SMALLBUFSIZE,
+			paddr(TargetProcLoader_state.small_buffer));
+		TargetProcLoader_state.state = TARGETPROC_LOADER_GETLOADTYPE;
+		// fall through to the GETLOADTYPE state
+
+	case TARGETPROC_LOADER_GETLOADTYPE:
+		// check the timeout on DC specifing the LOADTYPE
+		if(targetproc_loader_CheckDelayTimeout(TARGETPROC_LOADER_VERSION_TIMEOUT)) {
+			// timeout expired - drop them on the floor...
+			TargetProcLoader_state.state = TARGETPROC_LOADER_CLOSE;
+			break;
+		}
+
+		temp = targetproc_loader_eth_rxfinish();
+		if(TC_PENDING == temp)
+			break;
+
+		if(TC_SUCCESS != temp) {
+			TargetProcLoader_state.state = TARGETPROC_LOADER_CLOSE;
+			break;
+		}
+
+		TARGETPROC_LOADER_BLINK;
+
+		/* check the packet type */
+		if(TargetProcLoader_state.rxheader.subtype != TC_DEBUG_LOADTYPE) {
+			// bad packet type!
+			TargetProcLoader_state.state = TARGETPROC_LOADER_CLOSE;
+			break;
+		}
+
+		// get the type of the loading protocol to use
+		TargetProcLoader_state.loadtype = TargetProcLoader_state.small_buffer[0];
+		switch(TargetProcLoader_state.loadtype) {
+		case TC_LOADTYPE_VER3:
+			// these are good - put any load type specific INIT stuff here!
+			targetproc_loader_eth_send(TC_TYPE_DEBUG,
+										 		TC_DEBUG_LOADTYPE | TC_ACK,
+										 		0,
+										 		paddr(TargetProcLoader_state.small_buffer),
+										 		TARGETPROC_LOADER_COLDLOADER
+										 		);
+			break;
+		case TC_LOADTYPE_VER1:
+		case TC_LOADTYPE_VER2:
+			// these are unsupported in this version!
+		default:
+			// unknown loading type! NAK it and let them try again
+			targetproc_loader_eth_send(TC_TYPE_DEBUG,
+										 		TC_DEBUG_LOADTYPE | TC_NAK,
+										 		0,
+										 		paddr(TargetProcLoader_state.small_buffer),
+										 		TARGETPROC_LOADER_LOADTYPE
+										 		);
+			break;
+		}
+		break;
+
+	case TARGETPROC_LOADER_COLDLOADER:
+		/* start receiving the coldloader, into the bigbuffer */
+		targetproc_loader_eth_startrx(TARGETPROC_LOADER_BIGBUFSIZE,TargetProcLoader_state.buffer_area);
+		TargetProcLoader_state.state = TARGETPROC_LOADER_GETCOLDLOADER;
+		// fall through to the GETCOLDLOADER state
+
+	case TARGETPROC_LOADER_GETCOLDLOADER:
+		/* wait for the coldloader to arrive */
+		temp = targetproc_loader_eth_rxfinish();
+		if(TC_PENDING == temp)
+			break;
+
+		if(TC_SUCCESS != temp) {
+			// bad coldloader packet
+			TargetProcLoader_state.state = TARGETPROC_LOADER_CLOSE;
+			break;
+		}
+
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sGot the coldloader!\n",targetproc_loader_dbgmsg);
+#endif
+		/*
+		 * The coldloader has arrived!
+		 *
+		 * Start the coldboot process...
+		 */
+		TargetProcLoader_state.state = TARGETPROC_LOADER_DORESETTARGET;
+		// fall through to the DORESETTARGET state
+
+	case TARGETPROC_LOADER_DORESETTARGET:
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sReseting the target...\n",targetproc_loader_dbgmsg);
+#endif
+		/* lock out the Targetproc transmitter, so nothing else messes with it */
+		TargetprocLockTX = 1;
+
+		/* set the SMODE lines for when the target comes back up */
+		TARGETPROC_LOADER_SMODE(TARGETPROC_SMODE_SERIAL);
+
+		/* pull the /reset line low */
+		TARGETPROC_LOADER_BLINK;
+		TARGETPROC_LOADER_RESETTARGET();
+		targetproc_loader_ResetDelayTimeout();
+		TargetProcLoader_state.state = TARGETPROC_LOADER_DOUNRESETTARGET;
+		// fall through to the DOUNRESETTARGET state
+
+	case TARGETPROC_LOADER_DOUNRESETTARGET:
+		if(!targetproc_loader_CheckDelayTimeout(TARGETPROC_LOADER_RESETTIME))
+			break; // too soon to unreset the target
+
+		/* undo the /reset line */
+		TARGETPROC_LOADER_BLINK;
+		TARGETPROC_LOADER_UNRESETTARGET();
+		targetproc_loader_ResetDelayTimeout();
+		TargetProcLoader_state.state = TARGETPROC_LOADER_RESETDELAY;
+
+	case TARGETPROC_LOADER_RESETDELAY:
+		if(!targetproc_loader_CheckDelayTimeout(TARGETPROC_LOADER_RESETWAIT))
+			break;
+
+		/*
+		 * Send the coldloader!
+		 *
+		 * NOTE - this blocks for a while!
+		 */
+		targetproc_loader_sendcoldloader();
+
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sColdloader was sent.\n",targetproc_loader_dbgmsg);
+#endif
+
+		/* there is no more use for the coldloader binary in
+			RAM - start receiving the ColdParams */
+		targetproc_loader_ResetDelayTimeout();
+		TargetProcLoader_state.state = TARGETPROC_LOADER_COLDPARAMS;
+
+	case TARGETPROC_LOADER_COLDPARAMS:
+		targetproc_loader_eth_startrx(TARGETPROC_LOADER_BIGBUFSIZE,TargetProcLoader_state.buffer_area);
+		TargetProcLoader_state.state = TARGETPROC_LOADER_GETCOLDPARAMS;
+		// fall through to the GETCOLDPARAMS state
+
+	case TARGETPROC_LOADER_GETCOLDPARAMS:
+		// check the timeout
+		if(targetproc_loader_CheckDelayTimeout(TARGETPROC_LOADER_COLDPARAMS_TIMEOUT)) {
+			// timeout expired - drop them
+			TargetProcLoader_state.state = TARGETPROC_LOADER_CLOSE;
+			break;
+		}
+
+		temp = targetproc_loader_eth_rxfinish();
+		if(TC_PENDING == temp)
+			break;
+
+		if(TC_SUCCESS != temp) {
+			// bad packet
+			TargetProcLoader_state.state = TARGETPROC_LOADER_CLOSE;
+			break;
+		}
+
+		if((TC_TYPE_SYSTEM == TargetProcLoader_state.rxheader.type)
+		&& (TC_SYSTEM_NOOP == TargetProcLoader_state.rxheader.subtype)
+		) {
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sNOOP! Resetting timeout\n",targetproc_loader_dbgmsg);
+#endif
+			// NOOP! Reset the timer and do this again...
+			targetproc_loader_ResetDelayTimeout();
+			// ACK the NOOP
+			targetproc_loader_eth_send(TC_TYPE_SYSTEM,
+										 		TC_SYSTEM_NOOP | TC_ACK,
+										 		targetproc_loader_getlength(TargetProcLoader_state.buffer_area),
+										 		TargetProcLoader_state.buffer_area,
+										 		TARGETPROC_LOADER_COLDPARAMS
+										 		);
+			break;
+		} else if((TC_TYPE_DEBUG == TargetProcLoader_state.rxheader.type)
+		       && (TC_DEBUG_COLDPARAMS == TargetProcLoader_state.rxheader.subtype)
+		       ) {
+			// have the COLDPARAMS packet - wait for the coldloader to start...
+#ifdef TARGETPROC_LOADER_DEBUG
+			printf("%sReceived COLDPARAMS...\n",targetproc_loader_dbgmsg);
+#endif
+			TargetProcLoader_state.state = TARGETPROC_LOADER_COLDSTARTDELAY;
+			break;
+		} else {
+			// unknown packet type
+			TargetProcLoader_state.state = TARGETPROC_LOADER_CLOSE;
+			break;
+		}
+		break;
+
+	case TARGETPROC_LOADER_COLDSTARTDELAY:
+		// make sure the coldloader has started properly
+		if(!targetproc_loader_CheckDelayTimeout(TARGETPROC_LOADER_COLD_STARTTIME))
+			break; // give the coldloader time to startup
+
+		// the coldloader has started - send it the coldparams
+		if(targetproc_loader_sendcoldparams()) {
+			// error sending the coldloader parameters
+			targetproc_loader_eth_send(TC_TYPE_DEBUG,
+										 		TC_DEBUG_COLDPARAMS | TC_NAK,
+										 		0,
+										 		TargetProcLoader_state.buffer_area,
+										 		TARGETPROC_LOADER_CLOSE
+										 		);
+		} else {
+			// success! Send the ACK back to DC
+			targetproc_loader_eth_send(TC_TYPE_DEBUG,
+												TC_DEBUG_COLDPARAMS | TC_ACK,
+												0,
+												TargetProcLoader_state.buffer_area,
+												TARGETPROC_LOADER_PILOTBIOS
+												);
+		}
+		// let the sends finish
+		break;
+
+	case TARGETPROC_LOADER_PILOTBIOS:
+		/* start receiving the PilotBIOS, into the bigbuffer */
+		targetproc_loader_eth_startrx(TARGETPROC_LOADER_BIGBUFSIZE,TargetProcLoader_state.buffer_area);
+		TargetProcLoader_state.state = TARGETPROC_LOADER_GETPILOTBIOS;
+		// fall through to the GETPILOTBIOS state
+
+	case TARGETPROC_LOADER_GETPILOTBIOS:
+		/* wait for the PilotBIOS to arrive */
+		temp = targetproc_loader_eth_rxfinish();
+		if(TC_PENDING == temp)
+			break;
+
+		if(TC_SUCCESS != temp) {
+			// bad PilotBIOS packet
+			TargetProcLoader_state.state = TARGETPROC_LOADER_CLOSE;
+			break;
+		}
+
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sGot the PilotBIOS!\n",targetproc_loader_dbgmsg);
+#endif
+
+		/* The PilotBIOS has arrived! */
+		TARGETPROC_LOADER_BLINK;
+		TargetProcLoader_state.state = TARGETPROC_LOADER_PILOTLOADDELAY;
+		// fall through to the PILOTLOADDELAY state
+
+	case TARGETPROC_LOADER_PILOTLOADDELAY:
+		/* send the pilot bios */
+		if(targetproc_loader_sendpilot()) {
+			// error - the pilot couldn't be sent, or coldloader error
+			targetproc_loader_eth_send(TC_TYPE_DEBUG,
+										 		TC_DEBUG_PILOTBIOS | TC_NAK,
+										 		0,
+										 		TargetProcLoader_state.buffer_area,
+										 		TARGETPROC_LOADER_CLOSE
+										 		);
+			break;
+		}
+
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sPilotBIOS was sent.\n",targetproc_loader_dbgmsg);
+#endif
+
+		targetproc_loader_ResetDelayTimeout();
+		TargetProcLoader_state.state = TARGETPROC_LOADER_PILOTWAIT;
+		// fall through to the PILOTWAIT state
+
+	case TARGETPROC_LOADER_PILOTWAIT:
+		if(!targetproc_loader_CheckDelayTimeout(TARGETPROC_LOADER_PILOT_STARTTIME))
+			break; // give the PilotBIOS time to startup
+
+		/*
+		 * The PilotBIOS is running!
+		 * All done with the Bootstraping procedure - DC has control now.
+		 * ACK the PilotBIOS and move to the STEADY state
+		 */
+		targetproc_loader_eth_send(TC_TYPE_DEBUG,
+									 		TC_DEBUG_PILOTBIOS | TC_ACK,
+									 		0,
+									 		TargetProcLoader_state.buffer_area,
+									 		TARGETPROC_LOADER_STEADYINIT
+									 		);
+		break;
+
+	/********************
+	 * The STEADY state *
+	 ********************/
+
+	case TARGETPROC_LOADER_STEADYINIT:
+		TARGETPROC_LOADER_BLINK;
+
+		/*
+		 * prepare things for the steady state
+		 *
+		 * INIT any necessary variables here!
+		 */
+
+		/* Init the i/o lists to empty */
+		TargetProcLoader_state.return_list = 0;
+		TargetProcLoader_state.finished_list = 0;
+
+		/* build the list of buffers */
+		_tc_create_queue(&(TargetProcLoader_state.buffer_list),
+								 TargetProcLoader_state.buffer_area,
+								 TARGETPROC_LOADER_BUFSIZE+TC_HEADER_RESERVE,
+								 TARGETPROC_LOADER_BUFCOUNT);
+
+		/* setup the serial port to talk the new TC protocol */
+		TARGETPROC_LOADER_SER_CLOSE(); // kill any old ISR
+		targetproc_init(); // turn on the new ISR again - NOTE! This causes all DevMate apps to restart!
+		targetproc_debug_init(); // enable readblock/writeblock
+		targetproc_setbaudrate(TargetProcLoader_state.pilot_baud_rate);	// the baud rate the pilotbios is initially using
+
+		/* register the callback-communication w/ the target */
+		targetproc_registercallback(TC_TYPE_DEBUG,targetproc_loader_callback);
+		targetproc_registercallback(TC_TYPE_SYSTEM,targetproc_loader_syscallback);
+
+		/* add a few buffers for the target to use */
+		for(temp = 0; temp < TARGETPROC_LOADER_NUMRXBUFS; temp += 1) {
+			ltemp = _tc_get_buffer(&TargetProcLoader_state.buffer_list);
+			if(ltemp) {
+				targetproc_recvbuf(TC_TYPE_DEBUG,TARGETPROC_LOADER_BUFSIZE,ltemp,0);
+			} else {
+				// error! not enough buffers!
+#ifdef TARGETPROC_LOADER_DEBUG
+				printf("%sNot enough buffers to build the TC-RX queue!\n",targetproc_loader_dbgmsg);
+#endif
+				TargetProcLoader_state.state = TARGETPROC_LOADER_FATALERROR;
+				break;
+			}
+		}
+
+		/* start receiving a packet from DynamicC */
+		ltemp = _tc_get_buffer(&TargetProcLoader_state.buffer_list);
+		if(ltemp) {
+			targetproc_loader_eth_startrx(TARGETPROC_LOADER_BUFSIZE,ltemp+TC_HEADER_RESERVE);
+			TargetProcLoader_state.start_new_receive = 0;
+			TargetProcLoader_state.rx_current_buffer = ltemp;
+		} else {
+			// error! not enough buffers!
+#ifdef TARGETPROC_LOADER_DEBUG
+			printf("%sNot enough buffers to StartRX on the TCP side!\n",targetproc_loader_dbgmsg);
+#endif
+			TargetProcLoader_state.state = TARGETPROC_LOADER_FATALERROR;
+			break;
+		}
+
+		/* reset the timeout... */
+		targetproc_loader_GlobalResetTimeout();
+
+		/* move to the actuall steady-state */
+		TargetProcLoader_state.state = TARGETPROC_LOADER_STEADY;
+		// fall through to the STEADY state
+
+	case TARGETPROC_LOADER_STEADY:
+		/*
+		 * The main steady-state - drive everything
+		 */
+
+		/* check the timeout to see if DC has gone idle */
+		if(targetproc_loader_GlobalCheckTimeout()) {
+			/* DC is idle for too long! boot them off the socket... */
+			TargetProcLoader_state.state = TARGETPROC_LOADER_TIMEOUTERROR;
+			break;
+		}
+
+		/* did the target send a packet? */
+		ltemp = _tc_get_buffer(&TargetProcLoader_state.return_list);
+		if(ltemp) {
+#if 0
+			printf("Returning to DC: type = 0x%02x, subtype = 0x%02x, length = 0x%04x\n",
+				targetproc_loader_gettype(ltemp), targetproc_loader_getsubtype(ltemp),
+				targetproc_loader_getlength(ltemp));
+#endif
+			/* does this packet need to be handled localy first? */
+			if(TC_SUCCESS == targetproc_loader_process_response(ltemp)) {
+				/* pass the buffer back to DynamicC */
+				targetproc_loader_eth_send(targetproc_loader_gettype(ltemp),
+											 		targetproc_loader_getsubtype(ltemp),
+											 		targetproc_loader_getlength(ltemp),
+											 		ltemp + TC_HEADER_RESERVE,
+											 		TARGETPROC_LOADER_RETURNBUF_FIXHEADER
+													);
+			} else {
+				/* process returned error - don't forward it back */
+				_tc_queue_buffer(&TargetProcLoader_state.buffer_list,ltemp);
+			}
+
+			/* give the RX driver another buffer to work with */
+			if(TC_TYPE_SYSTEM != targetproc_loader_gettype(ltemp)) {
+				/* don't do this for SYSTEM packet types */
+				ltemp = _tc_get_buffer(&TargetProcLoader_state.buffer_list);
+				if(ltemp) {
+					targetproc_recvbuf(TC_TYPE_DEBUG,TARGETPROC_LOADER_BUFSIZE,ltemp,0);
+				} else {
+					/* ERROR! not enough buffers! */
+#ifdef TARGETPROC_LOADER_DEBUG
+					printf("%sNot enough buffers to keep the TC-RX queue full!\n",targetproc_loader_dbgmsg);
+#endif
+					TargetProcLoader_state.state = TARGETPROC_LOADER_FATALERROR;
+				}
+			}
+			break; // let the send finish
+		}
+
+		/* check for a packet from DynamicC */
+		switch(targetproc_loader_eth_rxfinish()) {
+		case TC_PENDING:
+			/* do nothing */
+			break;
+
+		case TC_SUCCESS:
+			/* successfully got a packet - reset the timeout! */
+			targetproc_loader_GlobalResetTimeout();
+			TARGETPROC_LOADER_BLINK;
+
+#if 0
+			printf("Got TCP packet: type = 0x%02x, subtype = 0x%02x\n",
+				TargetProcLoader_state.rxheader.type, TargetProcLoader_state.rxheader.subtype);
+#endif
+			if(TC_SUCCESS == targetproc_loader_HandleRequest()) {
+				/* the packet was handled properly */
+			} else {
+				/* this packet type is not handled locally - just forward it on */
+				targetproc_loader_forwardtotarget();
+			}
+			if(TARGETPROC_LOADER_STEADY == TargetProcLoader_state.state) {
+				// no immediate response is necessary - start a new RX now
+				goto TargetProcLoader_StartNewRX;
+			}
+			break;
+
+		case TC_TRUNCATED:
+		case TC_ERROR:
+			/* error! if DC is being nice, this should never happen. let the error fall through */
+			break;
+		}
+		// an error might have been set, so nothing should happen after the switch() statement
+		break;
+
+	case TARGETPROC_LOADER_STEADY_STARTNEWRX:
+TargetProcLoader_StartNewRX:
+		/* start receiving a packet from DynamicC */
+		ltemp = _tc_get_buffer(&TargetProcLoader_state.buffer_list);
+		if(ltemp) {
+			targetproc_loader_eth_startrx(TARGETPROC_LOADER_BUFSIZE,ltemp+TC_HEADER_RESERVE);
+			TargetProcLoader_state.start_new_receive = 0;
+			TargetProcLoader_state.rx_current_buffer = ltemp;
+			TargetProcLoader_state.state = TARGETPROC_LOADER_STEADY; // move back to the steady-state
+		} else {
+			// error! not enough buffers!
+#ifdef TARGETPROC_LOADER_DEBUG
+			printf("%sNot enough buffers to ReStartRX on the TCP side!\n",targetproc_loader_dbgmsg);
+#endif
+			TargetProcLoader_state.state = TARGETPROC_LOADER_FATALERROR;
+			break;
+		}
+		break;
+
+	case TARGETPROC_LOADER_RETURNBUF_FIXHEADER:
+		// the buffer is offset by TC_HEADER_RESERVE - fix that before it is returned!
+		TargetProcLoader_state.send_addr_phys -= TC_HEADER_RESERVE;
+		// now return the buffer like normal (fall through)
+
+	case TARGETPROC_LOADER_RETURNBUF:
+		// return the buffer to the avaliable-pool
+		//printf("SEND: finished - returning the buffer 0x%08lx\n",TargetProcLoader_state.send_addr_phys);
+		_tc_queue_buffer(&TargetProcLoader_state.buffer_list, TargetProcLoader_state.send_addr_phys);
+
+		if(TargetProcLoader_state.start_new_receive) {
+			TargetProcLoader_state.start_new_receive = 0;
+			TargetProcLoader_state.state = TARGETPROC_LOADER_STEADY_STARTNEWRX;
+		} else {
+			TargetProcLoader_state.state = TARGETPROC_LOADER_STEADY;
+		}
+		break;
+
+	/********************************
+	 * Network communication states *
+	 ********************************/
+
+	case TARGETPROC_LOADER_SENDHEADER:
+		temp = sock_fastwrite(TargetProcLoader_state.s,
+									 (char *)&(TargetProcLoader_state.txheader) + TargetProcLoader_state.send_offset,
+									 TargetProcLoader_state.send_length - TargetProcLoader_state.send_offset
+									);
+		if(-1 == temp) {
+			// error!
+			TargetProcLoader_state.state = TARGETPROC_LOADER_SOCKERROR;
+			break;
+		} else {
+			TargetProcLoader_state.send_offset += temp;
+			if(TargetProcLoader_state.send_offset >= TargetProcLoader_state.send_length) {
+				// done with the header
+				TargetProcLoader_state.send_offset = 0;
+				TargetProcLoader_state.send_length = TargetProcLoader_state.txheader.length;
+				TargetProcLoader_state.state = TARGETPROC_LOADER_SENDBODY;
+				// fall through to the SENDBODY state
+			} else {
+				break;
+			}
+		}
+
+	case TARGETPROC_LOADER_SENDBODY:
+		// send the body
+		temp = targetproc_loader_eth_sendbody_helper();
+		if(-1 == temp) {
+			// error!
+			TargetProcLoader_state.state = TARGETPROC_LOADER_SOCKERROR;
+			break;
+		} else {
+			TargetProcLoader_state.send_offset += temp;
+			if(TargetProcLoader_state.send_offset >= TargetProcLoader_state.send_length) {
+				// done with the body
+				TargetProcLoader_state.send_offset = 0;
+				TargetProcLoader_state.send_length = sizeof(TargetProcLoader_state.txfooter);
+				TargetProcLoader_state.state = TARGETPROC_LOADER_SENDFOOTER;
+				// fall through to the SENDFOOTER state
+			} else {
+				break;
+			}
+		}
+
+	case TARGETPROC_LOADER_SENDFOOTER:
+		temp = sock_fastwrite(TargetProcLoader_state.s,
+									 (char *)&(TargetProcLoader_state.txfooter) + TargetProcLoader_state.send_offset,
+									 TargetProcLoader_state.send_length - TargetProcLoader_state.send_offset
+									);
+		if(-1 == temp) {
+			// error!
+			TargetProcLoader_state.state = TARGETPROC_LOADER_SOCKERROR;
+		} else {
+			TargetProcLoader_state.send_offset += temp;
+			if(TargetProcLoader_state.send_offset >= TargetProcLoader_state.send_length) {
+				/* done with the footer */
+				// move to the next state
+				TargetProcLoader_state.state = TargetProcLoader_state.nextstate;
+			}
+		}
+		break;
+
+	/********************************
+	 * Error / Close / Reset states *
+	 ********************************/
+
+	case TARGETPROC_LOADER_QUIT:
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sQUIT request received!\n",targetproc_loader_dbgmsg);
+#endif
+		/* QUIT request received - close the socket */
+		TargetProcLoader_state.state = TARGETPROC_LOADER_SOCKCLOSE;
+		break;
+
+	case TARGETPROC_LOADER_CLOSE:
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sSending a QUIT msg...\n",targetproc_loader_dbgmsg);
+#endif
+		/* send a QUIT packet */
+		targetproc_loader_eth_send(TC_TYPE_DEBUG,
+									 		TC_DEBUG_QUIT,
+									 		0,
+									 		paddr(TargetProcLoader_state.small_buffer),
+									 		TARGETPROC_LOADER_SOCKCLOSE
+											);
+		break;
+
+	case TARGETPROC_LOADER_SOCKCLOSE:
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sClosing the socket...\n",targetproc_loader_dbgmsg);
+#endif
+		/* close the socket, and reset */
+		sock_close(TargetProcLoader_state.s);
+		TargetProcLoader_state.state = TARGETPROC_LOADER_WAITCLOSE;
+		targetproc_loader_ResetDelayTimeout();
+		// fall through to the WAITCLOSE state
+
+	case TARGETPROC_LOADER_WAITCLOSE:
+		/* Wait for the socket to close... */
+		if(tcp_tick(TargetProcLoader_state.s)) {
+			if(targetproc_loader_CheckDelayTimeout(TARGETPROC_LOADER_CLOSE_TIMEOUT)) {
+				// timeout! kill the socket!
+				sock_abort(TargetProcLoader_state.s);
+			} else {
+				break; // socket is not closed yet
+			}
+		}
+
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sRestarting everything.\n\n",targetproc_loader_dbgmsg);
+#endif
+		/* socket is fully closed - restart it all */
+		TargetProcLoader_state.state = TARGETPROC_LOADER_LISTEN;
+		break;
+
+	case TARGETPROC_LOADER_AUTHERROR:
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sAuthentication Error!\n",targetproc_loader_dbgmsg);
+#endif
+		/* bad authentication from DynamicC */
+		targetproc_loader_senderror(TC_ERROR_AUTH,"Authentication error!",TARGETPROC_LOADER_CLOSE);
+		break;
+
+	case TARGETPROC_LOADER_TIMEOUTERROR:
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sTimeout Error!\n",targetproc_loader_dbgmsg);
+#endif
+		/* connection timed out... */
+		targetproc_loader_senderror(TC_ERROR_TIMEOUT,"IDLE Timeout!",TARGETPROC_LOADER_CLOSE);
+		break;
+
+	case TARGETPROC_LOADER_COMMANDERROR:
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sCommand Error!\n",targetproc_loader_dbgmsg);
+#endif
+		/* unexpected command from DynamicC was received */
+		targetproc_loader_senderror(TC_ERROR_COMMAND,"bad command!",TARGETPROC_LOADER_CLOSE);
+		break;
+
+	case TARGETPROC_LOADER_TCERROR:
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sTC Error!\n",targetproc_loader_dbgmsg);
+#endif
+		/* error in target communications */
+		targetproc_loader_senderror(TC_ERROR_TC,"error in target communications",TARGETPROC_LOADER_CLOSE);
+		break;
+
+	case TARGETPROC_LOADER_SOCKERROR:
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sSocket error!\n",targetproc_loader_dbgmsg);
+#endif
+		/* the socket had an error - report it somehow? */
+
+		/* move to the sockclose state */
+		TargetProcLoader_state.state = TARGETPROC_LOADER_SOCKCLOSE;
+		break;
+
+	case TARGETPROC_LOADER_RESET:
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sRESET!\n",targetproc_loader_dbgmsg);
+#endif
+		/*
+		 * reset everything - it's like a fatal error, but it is known
+		 *	that everything should restart ok. Probably user-generated
+		 */
+		if(sock_established(TargetProcLoader_state.s)) {
+			// gracefully close the socket?
+			sock_abort(TargetProcLoader_state.s);
+			tcp_tick(TargetProcLoader_state.s);
+		}
+		TargetProcLoader_state.state = TARGETPROC_LOADER_INIT;
+		break;
+
+	default:	// state machine errors are fatal-errors
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sBAD STATE IN MAIN FSM!\n",targetproc_loader_dbgmsg);
+#endif
+	case TARGETPROC_LOADER_FATALERROR:
+#ifdef TARGETPROC_LOADER_DEBUG
+		printf("%sFATAL ERROR!\n",targetproc_loader_dbgmsg);
+#endif
+		/* an unrecoverable fatal error has happened. deal with it. */
+		if(sock_established(TargetProcLoader_state.s)) {
+			// socket is still established - kill it off
+			sock_close(TargetProcLoader_state.s);
+			tcp_tick(TargetProcLoader_state.s);
+			sock_abort(TargetProcLoader_state.s);
+		}
+		/* signal the user in some way? */
+
+		/* reset everything */
+		TargetProcLoader_state.state = TARGETPROC_LOADER_INIT;
+		break;
+
+	/*
+	 * A special state to force this FSM to stall-out doing nothing...
+	 */
+	case TARGETPROC_LOADER_NOTHING:
+		return;
+	}
+}
+
+/*** BeginHeader targetproc_loader_reset */
+void targetproc_loader_reset(void);
+/*** EndHeader */
+/*
+ * Request a reset of the loader. This is probably usefull to
+ * things like the console for after the config changed.
+ */
+tcloader_nodebug void targetproc_loader_reset(void)
+{
+	TargetProcLoader_state.state = TARGETPROC_LOADER_RESET;
+}
+
+/*** BeginHeader targetproc_loader_setpassword */
+void targetproc_loader_setpassword(char *pword);
+/*** EndHeader */
+tcloader_nodebug void targetproc_loader_setpassword(char *pword)
+{
+	targetproc_loader_hash(pword, strlen(pword), TargetProcConfig_config.md5password);
+}
+
+/*** BeginHeader targetproc_loader_md5setpassword */
+void targetproc_loader_md5setpassword(char *digest);
+/*** EndHeader */
+tcloader_nodebug void targetproc_loader_md5setpassword(char *digest)
+{
+	/* set the allready-hashed password */
+	memcpy(TargetProcConfig_config.md5password,digest,TARGETPROC_LOADER_MD5SIZE);
+}
+
+/*** BeginHeader targetproc_loader_setport */
+void targetproc_loader_setport(int port);
+/*** EndHeader */
+tcloader_nodebug void targetproc_loader_setport(int port)
+{
+	/* set the port */
+	TargetProcConfig_config.port = port;
+	/* force a reset of any current connections to let this take effect */
+	TargetProcLoader_state.state = TARGETPROC_LOADER_RESET;
+}
+
+/*** BeginHeader targetproc_loader_getport */
+int targetproc_loader_getport(void);
+/*** EndHeader */
+int targetproc_loader_getport(void)
+{
+	/* return the TCP port we are listening on */
+	return TargetProcConfig_config.port;
+}
+
+/*** BeginHeader targetproc_loader_getstatus */
+int targetproc_loader_getstatus(void);
+#define TARGETPROC_LOADER_STATUS_ERROR			0xff
+#define TARGETPROC_LOADER_STATUS_RUNNING		0x00
+#define TARGETPROC_LOADER_STATUS_PROGRAMMED	0x01
+#define TARGETPROC_LOADER_STATUS_WAITING		0x02
+/*** EndHeader */
+int targetproc_loader_getstatus(void)
+{
+	/*
+	 * Returns one of the following:
+	 *
+	 *		TARGETPROC_LOADER_STATUS_ERROR		- Something is wrong
+	 *		TARGETPROC_LOADER_STATUS_RUNNING		- Ready for a connection
+	 *		TARGETPROC_LOADER_STATUS_PROGRAMMED	- Currently being programmed
+	 *		TARGETPROC_LOADER_STATUS_WAITING		- not ready for a connection, but things might clear up soon
+	 */
+	if(TargetProcLoader_state.state == TARGETPROC_LOADER_WAITCONNECT) {
+		/* waiting for a connection */
+		return TARGETPROC_LOADER_STATUS_RUNNING;
+	}
+
+	if((TargetProcLoader_state.state > TARGETPROC_LOADER_WAITCONNECT)
+	|| (TargetProcLoader_state.state <= TARGETPROC_LOADER_SENDFOOTER)
+	|| (TargetProcLoader_state.state == TARGETPROC_LOADER_NOTHING)) {
+		/* currently busy */
+		return TARGETPROC_LOADER_STATUS_PROGRAMMED;
+	}
+
+	/* other states - get back to us later... */
+	return TARGETPROC_LOADER_STATUS_WAITING;
+}
+
+/*** BeginHeader */
+#endif /*__TARGETPROC_LOADER_LIB*/
+/*** EndHeader */

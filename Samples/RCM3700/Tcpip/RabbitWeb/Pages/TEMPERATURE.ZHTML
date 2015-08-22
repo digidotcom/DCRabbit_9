@@ -1,0 +1,23 @@
+<!-- This file simply shows how to display a variable in ZHTML files. -->
+
+<HTML>
+<HEAD><TITLE>Current Temperature</TITLE></HEAD>
+<BODY>
+<H1>Current Temperature</H1>
+
+The current temperature is (in Celcius):
+<!-- Note that the following line is a special ZHTML tag.  It calls the print
+     command, which displays the value of the variable $hum.  Also note that,
+     although the variable is "hum" in the C program, in the ZHTML language, you
+     must prepend it with a "$".  It is also possible to prepend with an "@"
+     sign, which can yield different results in certain circumstances (see the
+     documentation for more details). -->
+<?z printf("%6.2f", $curtemperature) ?>
+
+<P>
+<!-- This simply provides a link to the admin page, which is
+     password-protected. -->
+<A HREF="/admin/index.zhtml">Change the temperature settings</A>
+</BODY>
+</HTML>
+

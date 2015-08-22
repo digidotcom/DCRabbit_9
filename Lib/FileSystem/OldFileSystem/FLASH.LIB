@@ -1,0 +1,885 @@
+/* START LIBRARY DESCRIPTION ***************************************************
+flash.lib 
+	Copyright (c) 1999, Z-World.
+
+DESCRIPTION: generic small sector flash routines for the Rabbit
+
+END DESCRIPTION ***************************************************************/
+
+/*** BeginHeader flash_init, flash_gettype, __flash_erasechip,
+	__flash_erasesector,	__flash_writesectorb, __flash_writesectors,
+	flash_sector2xwindow */
+
+// values that depend on the flash system's location	
+#define	FS_BASEADDR		0x00040000ul
+#define	FS_BASEXPC		0x32
+#define	FS_BYTECMD1		FS_BASEXPC+5
+#define	FS_BYTECMD2		FS_BASEXPC+2
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+flash_init                     <FLASH.LIB>
+
+SYNTAX: int flash_init(FlashDescriptor* fd, int mb1cr, int (*fptr)());
+
+KEYWORDS:		flash
+
+DESCRIPTION: 	This function initializes the FlashDescriptor fd with
+               information about the flash pointed to by mb1cr.  mb1cr
+               will be assigned to the MB1CR whenever you call a function
+               that references fd.  See the Rabbit User manual for
+               the correct settings for chip selects and wait states.
+
+               NOTE: !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+               Improper use of this function can cause your program to
+               be overwritten or for your program to operate incorrectly.
+
+               This function and the other flash functions should not be
+               used on the same flash that your program resides on.
+
+               NOTE: !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+PARAMETER1:    flash descriptor
+PARAMETER2:    value to set mb1cr to when the flash descriptor is
+               referenced.
+PARAMETER3:    pointer to a function to change the bank.  Use of this
+               function is not currently implemented
+
+RETURN VALUE:  0  - success,
+               1  - invalid flash type
+               -1 - attempt to work with primary flash
+               
+SEE ALSO:      flash_gettype, flash_sector2xwindow, flash_erasechip,
+               flash_erasesector, flash_read, flash_readsector,
+               flash_writesector
+
+END DESCRIPTION **********************************************************/
+
+	
+/* START FUNCTION DESCRIPTION ********************************************
+flash_gettype                  <FLASH.LIB>
+
+SYNTAX: int flash_gettype(FlashDescriptor* fd);
+
+KEYWORDS:		flash
+
+DESCRIPTION: 	This function returns the 16 bit flash type associated
+               with the flash pointed at by fd.  NOTE:  flash_init
+               must be called on fd before using this function.
+
+PARAMETER1:    flash descriptor
+
+RETURN VALUE:  flash id
+               
+SEE ALSO:      flash_init, flash_sector2xwindow, flash_erasechip,
+               flash_erasesector, flash_read, flash_readsector,
+               flash_writesector
+
+END DESCRIPTION **********************************************************/
+
+	
+/* START FUNCTION DESCRIPTION ********************************************
+flash_sector2xwindow           <FLASH.LIB>
+
+SYNTAX: void* flash_sector2xwindow(FlashDescriptor* fd, word sector);
+
+KEYWORDS:		flash
+
+DESCRIPTION: 	This function sets the MB1CR and XPC value so the requested
+               sector falls within the XPC window. See flash_init description
+               for restrictions.
+
+PARAMETER1:    flash descriptor
+PARAMETER2:    sector
+
+RETURN VALUE:  logical offset of sector.
+               
+SEE ALSO:      flash_init, flash_gettype, flash_erasechip,
+               flash_erasesector, flash_read, flash_readsector,
+               flash_writesector
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+flash_erasechip                <FLASH.LIB>
+
+SYNTAX: void flash_erasechip(FlashDescriptor* fd);
+
+KEYWORDS:		flash
+
+DESCRIPTION:   This function erases the chip that is referenced by fd.
+               NOTE:  flash_init needs to be called on fd before using
+               this function. See flash_init description for restrictions.
+
+PARAMETER1:    flash descriptor of chip to erase
+
+RETURN VALUE:  none
+               
+SEE ALSO:      flash_init, flash_gettype, flash_sector2xwindow,
+               flash_erasesector, flash_read, flash_readsector,
+               flash_writesector
+
+END DESCRIPTION **********************************************************/
+
+/*
+ *      FlashDescriptor
+ *
+ *      This data structure maintains information about a specific flash.
+ *      It is initialized by the flash_init function.
+ *
+ */
+typedef struct
+{
+	int	mb1cr;
+	int	sector_size;
+	char	sector_bits;					// 2^sector_bits==sector_size
+	int	number_sectors;
+	int	byte_writable;
+	int	(*fptr)();						// function to change/unchange bank
+	int	(*flash_write)();
+	void	(*flash_erasechip)();
+	int	(*flash_erasesector)();
+} FlashDescriptor;
+
+int flash_init(FlashDescriptor* fd, int mb1cr, int (*fptr)());
+
+root int flash_gettype(FlashDescriptor* fd);
+
+root void flash_erasechip(FlashDescriptor* fd);
+
+root int __flash_erasesector(FlashDescriptor* fd, unsigned long which);
+
+root int __flash_writesectorb(FlashDescriptor* fd, word sector,
+	unsigned	long buffer, int length);
+
+root int __flash_writesectors(FlashDescriptor* fd, word sector,
+	unsigned long buffer, int length);
+
+root void* flash_sector2xwindow(FlashDescriptor* fd, word sector);
+
+/*** EndHeader */
+#if(_BOARD_TYPE_ == 0x1300)
+	#error "OLD FILESYSTEM will not work with RCM 3200 Boards."
+#endif
+#asm
+;
+;	int flash_getttype(FlashDescriptor* fd);
+;	get the two byte identifier for the flash type
+;
+
+flash_gettype::
+		;
+		; change memory bank 3 for second flash
+		;
+
+		ld		a,(MB1CRShadow)				; save the third bank
+		push	af
+		
+		ld		hl,(sp+4)						; load with the flash's bank
+		ld		a,(hl)
+ioi	ld		(MB1CR),a
+		ld		(MB1CRShadow),a
+
+		ld		a,xpc								; save the xpc
+		push	af
+		
+		;
+		; check flash type
+		;
+		
+		;
+		; enter product identification mode
+		;
+		
+		ld		hl,0xe555
+		ld		de,0xeaaa
+
+		ld		a,FS_BYTECMD1							; 5555=aa
+		ld		xpc,a
+		ld		(hl),e
+		
+		ex		de,hl
+		
+		ld		a,FS_BYTECMD2							; 2AAA=55
+		ld		xpc,a
+		ld		(hl),e
+		
+		ex		de,hl
+
+		ld		a,FS_BYTECMD1							; 5555=90
+		ld		xpc,a
+		ld		(hl),0x90
+
+		push	ip								; block interrupts so no one else interrupts
+		ipset	1								; our bit toggling (by reading 2nd flash)
+
+		ld		a,(hl)
+fgt_loop:
+		ld		b,(hl)
+		xor	b
+		and	0x40
+		ld		b,a
+		jr		nz,fgt_loop
+
+		pop	ip
+		
+		ld		a,FS_BASEXPC							; bc=flash type
+		ld		xpc,a
+		ld		bc,(0xe000)
+
+		ld		a,FS_BYTECMD1							; 5555=aa
+		ld		xpc,a
+		ld		(hl),e
+		
+		ex		de,hl
+		
+		ld		a,FS_BYTECMD2							; 2AAA=55
+		ld		xpc,a
+		ld		(hl),e
+		
+		ex		de,hl
+
+		ld		a,FS_BYTECMD1							; 5555=f0
+		ld		xpc,a
+		ld		(hl),0xf0
+		
+		ld		h,c
+		ld		l,b
+		
+		pop	af									; restore the xpc
+		ld		xpc,a
+		
+		pop	af									; restore the third bank
+ioi	ld		(MB1CR),a
+		ld		(MB1CRShadow),a
+		ret
+		
+;
+; flash_erasechip
+;
+
+flash_erasechip::
+		ld		a,(MB1CRShadow)				; save the third bank
+		push	af
+		
+		ld		hl,(sp+4)						; load with the flash's bank
+		ld		a,(hl)
+ioi	ld		(MB1CR),a
+		ld		(MB1CRShadow),a
+
+		ld		a,xpc
+		push	af
+		
+		ld		hl,0xe555
+		ld		de,0xeaaa
+
+		ld		a,FS_BYTECMD1							; 5555=aa
+		ld		xpc,a
+		ld		(hl),e
+		
+		ex		de,hl
+		
+		ld		a,FS_BYTECMD2							; 2AAA=55
+		ld		xpc,a
+		ld		(hl),e
+		
+		ex		de,hl
+
+		ld		a,FS_BYTECMD1							; 5555=80
+		ld		xpc,a
+		ld		(hl),0x80
+		
+		ld		(hl),e							; 5555=aa
+		
+		ex		de,hl
+		
+		ld		a,FS_BYTECMD2							; 2AAA=55
+		ld		xpc,a
+		ld		(hl),e
+		
+		ex		de,hl
+
+		ld		a,FS_BYTECMD1							; 5555=10
+		ld		xpc,a
+		ld		(hl),0x10
+		
+fec_loop:
+		bit	7, (hl)							; bit 7 is NOT final value while writing
+		jr		z, fec_loop						; for chip erase, bit should be 1		
+
+		pop	af
+		ld		xpc,a
+
+		pop	af									; restore the third bank
+ioi	ld		(MB1CR),a
+		ld		(MB1CRShadow),a
+		
+		ret
+
+;
+; __flash_erasesector
+;
+
+__flash_erasesector::
+		ld		a,(MB1CRShadow)				; save the third bank
+		push	af
+		
+		ld		hl,(sp+4)						; load with the flash's bank
+		ld		a,(hl)
+ioi	ld		(MB1CR),a
+		ld		(MB1CRShadow),a
+
+		ld		a,xpc
+		push	af
+		
+		ld		hl,0xe555
+		ld		de,0xeaaa
+
+		ld		a,FS_BYTECMD1							; 5555=aa
+		ld		xpc,a
+		ld		(hl),e
+		
+		ex		de,hl
+		
+		ld		a,FS_BYTECMD2							; 2AAA=55
+		ld		xpc,a
+		ld		(hl),e
+		
+		ex		de,hl
+
+		ld		a,FS_BYTECMD1							; 5555=80
+		ld		xpc,a
+		ld		(hl),0x80
+		
+		ld		(hl),e							; 5555=aa
+		
+		ex		de,hl
+		
+		ld		a,FS_BYTECMD2							; 2AAA=55
+		ld		xpc,a
+		ld		(hl),e
+		
+		ex		de,hl
+
+		ld		hl,(sp+10)						; specify the sector
+		ld		a,l
+		ld		xpc,a
+		ld		hl,(sp+8)
+		ld		(hl),0x30
+		
+fes_loop:
+		bit	7, (hl)							; bit 7 is NOT final value while writing
+		jr		z, fes_loop						; for sector erase, bit should be 1		
+
+		pop	af
+		ld		xpc,a
+
+		pop	af									; restore the third bank
+ioi	ld		(MB1CR),a
+		ld		(MB1CRShadow),a
+		ret
+
+;
+; __flash_writesectors(FlashDescriptor* fd, word sector,
+;		unsigned long buffer, int length);
+;
+;	write a sector to the flash on a sector based flash.
+;
+
+__flash_writesectors::
+		ld		a,(MB1CRShadow)				; save the third bank
+		push	af
+		
+		ld		hl,(sp+4)						; load with the flash's bank
+		ld		a,(hl)
+ioi	ld		(MB1CR),a
+		ld		(MB1CRShadow),a
+
+		ld		a,xpc
+		push	af
+		push	ix
+
+		;
+		; unlock flash sector
+		;
+
+		ld		hl,0xe555
+		ld		de,0xeaaa
+
+		ld		a,FS_BYTECMD1							; 5555=aa
+		ld		xpc,a
+		ld		(hl),e
+		
+		ex		de,hl
+		
+		ld		a,FS_BYTECMD2							; 2AAA=55
+		ld		xpc,a
+		ld		(hl),e
+		
+		ex		de,hl
+
+		ld		a,FS_BYTECMD1							; 5555=A0
+		ld		xpc,a
+		ld		(hl),0xA0
+
+		;
+		; place destination in the xpc window
+		;
+
+		ld		hl,(sp+10)						; flash_sector2xwindow(fd,which)
+		push	hl
+		ld		hl,(sp+10)
+		push	hl
+		call	flash_sector2xwindow
+		add	sp,4
+		ld		ix,hl
+
+		ld		hl,(sp+16)						; c:b=length>>2
+		rr		hl
+		ld		c,h
+		ld		b,l
+
+		ld		a,b								; predecrement c if b==0 (256)
+		or		a
+		jr		nz,fws_loadfrom
+		dec	c
+
+fws_loadfrom:
+		ld		hl,(sp+14)						; a:iy=from
+		ld		a,l
+		ld		iy,(sp+12)
+
+		;
+		; write things out a word at a time
+		;
+
+		ld		de,0x0002
+fws_loop:
+		ldp	hl,(iy)
+		ld		(ix),hl
+		add	ix,de
+		add	iy,de
+		djnz	fws_loop
+		dec	c
+		jp		p,fws_loop
+
+		;
+		; wait until flash is ready again.
+		;
+
+		ld		hl,0xe000
+		ld		a,(hl)
+fws_loop2:
+		ld		b,(hl)
+		xor	b
+		and	0x40
+		ld		a,b
+		jr		nz,fws_loop2
+		
+		pop	ix		
+		pop	af
+
+		ld		xpc,a
+
+		pop	af									; restore the third bank
+ioi	ld		(MB1CR),a
+		ld		(MB1CRShadow),a
+
+		bool	hl
+		ld		l,h
+		ret
+
+;
+; __flash_writesectorb
+;
+
+__flash_writesectorb::
+		ld		a,(MB1CRShadow)				; save the third bank
+		push	af
+		
+		ld		hl,(sp+4)						; load with the flash's bank
+		ld		a,(hl)
+ioi	ld		(MB1CR),a
+		ld		(MB1CRShadow),a
+
+		ld		a,xpc
+		push	af
+		push	ix
+
+		ld		hl,0xe555						; addresses for flash unlocking
+		ld		de,0xeaaa
+
+		exx
+
+		ld		hl,(sp+10)						; xpc,ix=to
+		push	hl
+		ld		hl,(sp+10)
+		push	hl
+		call	flash_sector2xwindow
+		add	sp,4
+		ld		ix,hl
+
+		ld		hl,(sp+16)						; c:b
+		ld		b,l
+		ld		c,h
+
+		ld		a,b								; predecrement c if b==0 (256)
+		or		a
+		jr		nz,fwsb_loadfrom
+		dec	c
+
+fwsb_loadfrom:
+		ld		hl,(sp+14)						; a:iy=from
+		ld		a,l
+		ld		iy,(sp+12)
+		ex		af,af'							; save msb of source
+
+fwsb_loop:
+		exx										; save registers and xpc
+		ld		a,xpc
+		ld		b,a
+		
+		ld		a,FS_BYTECMD1							; 5555=aa
+		ld		xpc,a
+		ld		(hl),e
+		
+		ex		de,hl
+		
+		ld		a,FS_BYTECMD2							; 2AAA=55
+		ld		xpc,a
+		ld		(hl),e
+		
+		ex		de,hl
+
+		ld		a,FS_BYTECMD1							; 5555=A0
+		ld		xpc,a
+		ld		(hl),0xA0
+
+		ld		a,b
+		ld		xpc,a
+
+		exx										; restore registers and xpc
+		ex		af,af'							; restore the msb of source
+
+		ldp	hl,(iy)
+		ld		(ix),l
+
+		ex		af,af'							; save msb of source
+		ld		a, l								; L contains byte written
+		and	0x80
+		ld		h, a
+fwsb_loop2:
+		ld		a, (ix)
+		and	0x80
+		xor	h
+		jr		nz, fwsb_loop2	
+
+		inc	ix
+		inc	iy
+
+		djnz	fwsb_loop
+		dec	c
+		jp		p,fwsb_loop
+
+		pop	ix		
+		pop	af
+
+		ld		xpc,a
+
+		pop	af									; restore the third bank
+ioi	ld		(MB1CR),a
+		ld		(MB1CRShadow),a
+
+		bool	hl
+		ld		l,h
+		ret
+
+;
+; flash_sector2xwindow
+;
+
+flash_sector2xwindow::
+		ld		hl,(sp+2)						; hl=fd
+		ld		hl,(hl+4)						; a=fd->sector_bits
+		ld		a,l
+		
+		ld		de,0x0000						; de:hl=sector
+		ld		hl,(sp+4)
+
+		;
+		; de:hl = sector<<fd->sector_bits
+		;
+
+		cp		a,0x08							; sector_size < 256?
+		jr		c,fs2x_shiftby1
+		ld		e,h								; optimized shift by 8
+		ld		h,l
+		ld		l,d
+
+		sub	a,0x08
+		jr		z,fs2x_shiftdone
+
+fs2x_shiftby1:
+		add	hl,hl								; shift by one
+		rl		de
+		dec	a
+		jr		nz,fs2x_shiftby1
+
+fs2x_shiftdone:
+		ld		bc,0x2000
+		add	hl,bc
+		ex		de,hl
+		ld		bc,FS_BASEXPC>>4
+		adc	hl,bc
+
+		ld		h,l								; calculate the xpc
+		ld		l,d
+		rr		hl
+		rr		hl
+		rr		hl
+		rr		hl
+		ld		a,l
+
+		ld		xpc,a
+
+		ld		a,d								; return the offset
+		and	0x0f
+		or		0xe0
+		ld		d,a
+		ex		de,hl
+		ret
+#endasm
+
+nodebug
+int flash_init(FlashDescriptor* fd, int mb1cr, int (*fptr)())
+{
+	auto int x,type;
+	auto FlashDataStruct flash_data;
+
+	if((mb1cr&0x03)==0) return -1;			// make sure they are not using the primary flash
+
+	fd->mb1cr=mb1cr;
+	fd->fptr=fptr;
+		
+	type=flash_gettype(fd);
+	
+	if(_GetFlashData(type, &flash_data)) {
+		fd->sector_size=flash_data.sector_size;
+
+		switch(fd->sector_size) {
+			case 128:	fd->sector_bits=7;	break;
+			case 256:	fd->sector_bits=8;	break;
+			case 512:	fd->sector_bits=9;	break;
+			case 1024:	fd->sector_bits=10;	break;
+			case 2048:	fd->sector_bits=11;	break;
+			case 4096:	fd->sector_bits=12;	break;
+
+			default:
+				exit(-1);					// invalid sector size
+				return 1;
+		}
+			
+		fd->number_sectors=flash_data.number_sectors;
+
+		if(flash_data.write_mode==1) {
+			fd->flash_write=__flash_writesectorb;
+			fd->byte_writable=1;
+		} else {
+			fd->flash_write=__flash_writesectors;
+			fd->byte_writable=0;
+		}
+				
+		fd->flash_erasechip=flash_erasechip;
+		fd->flash_erasesector=flash_erasesector;
+		return 0;
+	}
+
+	return 1;
+}
+
+
+/*** BeginHeader flash_erasesector */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flash_erasesector              <FLASH.LIB>
+
+SYNTAX: int flash_erasesector(FlashDescriptor* fd, word which);
+
+KEYWORDS:		flash
+
+DESCRIPTION:   This function erases the chip that is referenced by fd.
+               NOTE:  flash_init needs to be called on fd before using
+               this function. See flash_init description for restrictions.
+
+PARAMETER1:    flash descriptor
+PARAMETER2:    sector
+
+RETURN VALUE:  0 - success
+               
+SEE ALSO:      flash_init, flash_gettype, flash_sector2xwindow,
+               flash_erasechip, flash_read, flash_readsector,
+               flash_writesector
+
+END DESCRIPTION **********************************************************/
+
+void flash_erasesector(FlashDescriptor* fd, word sector);
+
+/*** EndHeader */
+
+nodebug
+void flash_erasesector(FlashDescriptor* fd, word sector)
+{
+	auto unsigned long addr;
+
+	addr=(((long)sector)<<fd->sector_bits)+FS_BASEADDR-0xe000L;
+	addr=((addr<<4)&0xff0000)|((addr&0x0fff)|0xe000);
+	__flash_erasesector(fd,addr);
+}
+
+/*** BeginHeader flash_readsector */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flash_readsector               <FLASH.LIB>
+
+SYNTAX: int flash_readsector(FlashDescriptor* fd, word sector, unsigned long buffer);
+
+KEYWORDS:		flash
+
+DESCRIPTION:   This function reads the contents of the sector into buffer
+               from flash referenced by fd.  buffer is the physical
+               address of the source.  If you have a logical address and
+               want to convert it to a physical use paddr.  NOTE:
+               flash_init needs to be called on fd before using this
+               function.  See flash_init description for restrictions.
+
+PARAMETER1:    flash descriptor
+PARAMETER2:    source sector
+PARAMETER3:    physical address of destination
+
+RETURN VALUE:	0 - success
+               
+SEE ALSO:      flash_init, flash_gettype, flash_sector2xwindow,
+               flash_erasesector, flash_erasechip, flash_read, 
+               flash_writesector, paddr
+
+END DESCRIPTION **********************************************************/
+
+int flash_readsector(FlashDescriptor* fd, word sector, unsigned long buffer);
+
+/*** EndHeader */
+
+nodebug
+int flash_readsector(FlashDescriptor* fd, word sector, unsigned long buffer)
+{
+	auto char mb1cr;
+	auto int rval;
+
+	mb1cr=MB1CRShadow;
+	WrPortI(MB1CR,&MB1CRShadow,fd->mb1cr);
+	
+	rval=xmem2xmem(buffer,(((long)sector)<<fd->sector_bits)+FS_BASEADDR,
+		fd->sector_size);
+
+	WrPortI(MB1CR,&MB1CRShadow,mb1cr);
+
+	return rval;
+}
+
+/*** BeginHeader flash_read */
+/* START FUNCTION DESCRIPTION ********************************************
+flash_read                     <FLASH.LIB>
+
+SYNTAX: int flash_read(FlashDescriptor* fd, word sector, word offset,
+            unsigned long buffer, word length);
+
+KEYWORDS:		flash
+
+DESCRIPTION:   This function reads length bytes from the flash into the
+               buffer to sector on the flash referenced by fd.  buffer
+               is the physical address of the source.  If you have a
+               logical address and want to convert it to a physical use
+               paddr.  NOTE:  flash_init needs to be called on fd before
+               using this function.  See flash_init description for
+               restrictions.
+
+PARAMETER1:    flash descriptor
+PARAMETER2:    source sector
+PARAMETER3:    offset within sector to read
+PARAMETER4:    physical address of destination
+PARAMETER5:    number of bytes to read
+
+
+RETURN VALUE:	0 - success
+               
+SEE ALSO:      flash_init, flash_gettype, flash_sector2xwindow,
+               flash_erasesector, flash_erasechip, flash_read, 
+               flash_writesector, paddr
+
+END DESCRIPTION **********************************************************/
+
+int flash_read(FlashDescriptor* fd, word sector, word offset,
+	unsigned long buffer, word length);
+/*** EndHeader */
+
+nodebug
+int flash_read(FlashDescriptor* fd, word sector, word offset,
+	unsigned long buffer, word length)
+{
+	auto char mb1cr;
+	auto int rval;
+
+	mb1cr=MB1CRShadow;
+	WrPortI(MB1CR,&MB1CRShadow,fd->mb1cr);
+	
+	rval=xmem2xmem(buffer,(((long)sector)<<fd->sector_bits)+
+		offset+FS_BASEADDR,length);
+
+	WrPortI(MB1CR,&MB1CRShadow,mb1cr);
+
+	return rval;
+}
+
+/*** BeginHeader flash_writesector */
+
+/* START FUNCTION DESCRIPTION ********************************************
+flash_writesector               <FLASH.LIB>
+
+SYNTAX: int flash_writesector(FlashDescriptor* fd, word sector,
+            unsigned long buffer);
+
+KEYWORDS:		flash
+
+DESCRIPTION:   This function writes the contents of buffer to sector on
+               flash referenced by fd.  buffer is the physical address
+               of the source.  If you have a logical address and want to
+               convert it to a physical use paddr.  NOTE:  flash_init
+               needs to be called on fd before using this function. See
+               flash_init description for restrictions.
+
+PARAMETER1:    flash descriptor
+PARAMETER2:    destination sector
+PARAMETER3:    physical address of source
+
+RETURN VALUE:	0 - success
+               
+SEE ALSO:      flash_init, flash_gettype, flash_sector2xwindow,
+               flash_erasesector, flash_erasechip, flash_read, 
+               flash_readsector, paddr
+
+END DESCRIPTION **********************************************************/
+
+int flash_writesector(FlashDescriptor* fd, word sector,
+	unsigned long buffer);
+	
+/*** EndHeader */
+
+nodebug
+int flash_writesector(FlashDescriptor* fd, word sector, 
+	unsigned long buffer)
+{
+	if(fd->byte_writable)
+		flash_erasesector(fd,sector);
+		
+	return fd->flash_write(fd,sector,buffer,fd->sector_size);
+}

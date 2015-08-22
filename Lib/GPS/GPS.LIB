@@ -1,0 +1,373 @@
+/*** BeginHeader */
+#ifndef __GPS_LIB
+#define __GPS_LIB
+/*** EndHeader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+gps.lib
+ZWorld, 2001
+
+functions for parsing NMEA-0183 location data from a GPS receiver.
+Also has functions for computing distances.
+
+gps_get_position
+gps_get_utc
+gps_ground_distance
+
+END DESCRIPTION *********************************************************/
+
+/*** BeginHeader */
+
+//This structure holds geographical position as reported by a GPS receiver
+//use the gps_get_position function below to set the fields
+typedef struct {
+	int lat_degrees;
+	int lon_degrees;
+	float lat_minutes;
+	float lon_minutes;
+	char lat_direction;
+	char lon_direction;
+	} GPSPosition;
+
+//in km
+#define GPS_EARTH_RADIUS 6371
+
+/*** EndHeader */
+
+/*** BeginHeader gps_parse_coordinate */
+int gps_parse_coordinate(char *coord, int *degrees, float *minutes);
+/*** EndHeader */
+
+//helper function for splitting xxxxx.xxxx into degrees and minutes
+//returns 0 if succeeded
+nodebug int gps_parse_coordinate(char *coord, int *degrees, float *minutes)
+{
+	auto char *decimal_point;
+	auto char temp;
+	auto char *dummy;
+	
+	decimal_point = strchr(coord, '.');
+	if(decimal_point == NULL)
+		return -1;
+	temp = *(decimal_point - 2);
+	*(decimal_point - 2) = 0; //temporary terminator
+	*degrees = atoi(coord);
+	*(decimal_point - 2) = temp; //reinstate character
+	*minutes = strtod(decimal_point - 2, &dummy);
+	return 0;
+}
+
+/*** BeginHeader gps_get_position */
+int gps_get_position(GPSPosition *newpos, char *sentence);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+gps_get_position		                  <gps.lib>
+
+SYNTAX: 			int gps_get_position(GPSPositon *newpos, char *sentence);
+
+KEYWORDS:      gps
+
+DESCRIPTION:   Parses a sentence to extract position data.
+					This function is able to parse any of the following
+					GPS sentence formats: GGA, GLL, RMC
+
+PARAMETER1:    newpos - a GPSPosition structure to fill
+PARAMETER2:		sentence - a string containing a line of GPS data
+					in NMEA-0183 format
+
+RETURN VALUE:  0 - success
+					-1 - parsing error
+					-2 - sentence marked invalid
+					
+SEE ALSO:
+
+END DESCRIPTION **********************************************************/
+
+//can parse GGA, GLL, or RMC sentence
+nodebug int gps_get_position(GPSPosition *newpos, char *sentence)
+{
+	auto int i;
+			
+	if(strlen(sentence) < 4)
+		return -1;
+	if(strncmp(sentence, "$GPGGA", 6) == 0)
+	{
+		//parse GGA sentence
+		for(i = 0;i < 11;i++)
+		{
+			sentence = strchr(sentence, ',');
+			if(sentence == NULL)
+				return -1;
+			sentence++; //first character in field
+			//pull out data
+			if(i == 1) //latitude
+			{
+				if( gps_parse_coordinate(sentence,
+											    &newpos->lat_degrees,
+											    &newpos->lat_minutes)
+				  ) 
+				{
+					return -1; //get_coordinate failed 
+				}
+			}
+			if(i == 2) //lat direction
+			{
+				newpos->lat_direction = *sentence;
+			}
+			if(i == 3) // longitude
+			{	
+				if( gps_parse_coordinate(sentence,
+											  	 &newpos->lon_degrees,
+											  	 &newpos->lon_minutes)
+				  )
+				{
+					return -1; //get_coordinate failed 
+				}
+			}
+			if(i == 4) //lon direction
+			{
+				newpos->lon_direction = *sentence;
+			}		
+			if(i == 5) //link quality
+			{
+				if(*sentence == '0')
+					return -2;
+			}				
+		}
+	}
+	else if(strncmp(sentence, "$GPGLL", 6) == 0)
+	{
+		//parse GLL sentence
+		for(i = 0;i < 6;i++)
+		{
+			sentence = strchr(sentence, ',');
+			if(sentence == NULL)
+			{
+				//handle short GLL sentences from Garmin receivers
+				if(i > 3) break;	
+				return -1;
+			}
+			sentence++; //first character in field
+			//pull out data
+			if(i == 0) //latitude
+			{
+				if( gps_parse_coordinate(sentence,
+											    &newpos->lat_degrees,
+											    &newpos->lat_minutes)
+				  ) 
+				{
+					return -1; //get_coordinate failed 
+				}
+			}
+			if(i == 1) //lat direction
+			{
+				newpos->lat_direction = *sentence;
+			}
+			if(i == 2) // longitude
+			{	
+				if( gps_parse_coordinate(sentence,
+											  	 &newpos->lon_degrees,
+											  	 &newpos->lon_minutes)
+				  )
+				{
+					return -1; //get_coordinate failed 
+				}
+			}
+			if(i == 3) //lon direction
+			{
+				newpos->lon_direction = *sentence;
+			}		
+			if(i == 5) //link quality
+			{
+				if(*sentence != 'A')
+					return -2;
+			}				
+		}
+	}
+	else if(strncmp(sentence, "$GPRMC", 6) == 0)
+	{
+		//parse RMC sentence
+		for(i = 0;i < 11;i++)
+		{
+			sentence = strchr(sentence, ',');
+			if(sentence == NULL)
+				return -1;
+			sentence++; //first character in field
+			//pull out data
+			if(i == 1) //link quality
+			{
+				if(*sentence != 'A')
+					return -2;
+			}				
+			if(i == 2) //latitude
+			{
+				if( gps_parse_coordinate(sentence,
+											    &newpos->lat_degrees,
+											    &newpos->lat_minutes)
+				  ) 
+				{
+					return -1; //get_coordinate failed 
+				}
+			}
+			if(i == 3) //lat direction
+			{
+				newpos->lat_direction = *sentence;
+			}
+			if(i == 4) // longitude
+			{	
+				if( gps_parse_coordinate(sentence,
+											  	 &newpos->lon_degrees,
+											  	 &newpos->lon_minutes)
+				  )
+				{
+					return -1; //get_coordinate failed 
+				}
+			}
+			if(i == 5) //lon direction
+			{
+				newpos->lon_direction = *sentence;
+			}		
+		}
+	}
+	else
+	{
+		return -1; //unknown sentence type
+	}
+	return 0;	
+}
+
+/*** BeginHeader gps_get_utc */
+int gps_get_utc(struct tm *newtime, char *sentence);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+gps_get_utc		                  <gps.lib>
+
+SYNTAX: 			int gps_get_utc(struct tm *newtime, char *sentence);
+
+KEYWORDS:      gps
+
+DESCRIPTION:   Parses an RMC sentence to extract time data            
+
+PARAMETER1:		newtime - tm structure to fill with new UTC time
+PARAMETER2:		sentence - a string containing a line of GPS data
+					in NMEA-0183 format(RMC sentence)
+					
+RETURN VALUE:  0 - success
+					-1 - parsing error
+					-2 - sentence marked invalid
+					
+SEE ALSO:
+
+END DESCRIPTION **********************************************************/
+
+nodebug int gps_get_utc(struct tm *newtime, char *sentence)
+{
+	int i;
+	char temp_str[3];
+	unsigned long epoch_sec;
+	temp_str[2] = 0; //2 character string
+	if(strncmp(sentence, "$GPRMC", 6) == 0)
+	{
+		//parse RMC sentence
+		for(i = 0;i < 11;i++)
+		{
+			sentence = strchr(sentence, ',');
+			if(sentence == NULL)
+				return -1;
+			sentence++; //first character in field
+			//pull out data
+			if(i == 0)
+			{
+				strncpy(temp_str, sentence, 2);
+				newtime->tm_hour = atoi(temp_str);
+				strncpy(temp_str, sentence+2, 2);
+				newtime->tm_min = atoi(temp_str);
+				strncpy(temp_str, sentence+4, 2);
+				newtime->tm_sec = atoi(temp_str);
+			}
+			if(i == 1) //link quality
+			{
+				if(*sentence != 'A')
+					return -2;
+			}				
+			if(i == 8) //lon direction
+			{
+				strncpy(temp_str, sentence, 2);
+				newtime->tm_mday = atoi(temp_str);
+				strncpy(temp_str, sentence+2, 2);
+				newtime->tm_mon = atoi(temp_str);
+				strncpy(temp_str, sentence+4, 2);
+				newtime->tm_year = 100 + atoi(temp_str);
+			}		
+		}
+		//convert back and forth to get weekday
+		epoch_sec = mktime(newtime);
+		mktm(newtime, epoch_sec);
+		return 0;		
+	}
+	else
+	{
+		return -1; //unknown sentence type
+	}
+}
+
+/*** BeginHeader gps_ground_distance */
+float gps_ground_distance(GPSPosition *a, GPSPosition *b);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+gps_ground_distance		               <gps.lib>
+
+SYNTAX: float gps_ground_distance(GPSPosition *a, GPSPosition *b);
+
+KEYWORDS:      gps
+
+DESCRIPTION:   Calculates ground distance(in km) between to
+               geographical points. (Uses spherical earth model)            
+
+PARAMETER1:		a - first point
+PARAMETER2:		b - second point
+					
+RETURN VALUE:  distance in kilometers
+					
+SEE ALSO:
+
+END DESCRIPTION **********************************************************/
+
+nodebug float gps_ground_distance(GPSPosition *a, GPSPosition *b)
+{
+	float angle;
+	float lat_a, lon_a, lat_b, lon_b;
+
+	lat_a = a->lat_degrees + a->lat_minutes/60;
+	if(a->lat_direction == 'S')
+		lat_a = -lat_a;
+	lat_a = lat_a * PI / 180;
+	lon_a = a->lon_degrees + a->lon_minutes/60;
+ 	if(a->lon_direction == 'W')
+		lon_a = -lon_a;
+	lon_a = lon_a * PI / 180;
+
+	lat_b = b->lat_degrees + b->lat_minutes/60;
+	if(b->lat_direction == 'S')
+		lat_b = -lat_b;
+	lat_b = lat_b * PI / 180;
+	lon_b = b->lon_degrees + b->lon_minutes/60;
+ 	if(b->lon_direction == 'W')
+		lon_b = -lon_b;
+	lon_b = lon_b * PI / 180;
+	
+	angle = sqrt(
+		cos(lat_a)*cos(lat_b)*pow(sin((lon_a - lon_b)/2), 2) +
+		pow(sin((lat_a - lat_b)/2), 2)
+		);
+	angle = 2*asin(angle);
+	
+	return angle * GPS_EARTH_RADIUS;		 
+}
+	
+/*** BeginHeader */
+#endif
+/*** EndHeader */

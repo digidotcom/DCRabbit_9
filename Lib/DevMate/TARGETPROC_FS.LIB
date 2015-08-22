@@ -1,0 +1,1252 @@
+/* START LIBRARY DESCRIPTION *********************************************
+TARGETPROC_VAR.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+	This library contains DeviceMate-side routines for providing a
+	filessytem to the target processor.  The DeviceMate can use these
+	files with an HTTP or FTP server to provide content to the internet.
+
+CONFIGURATION MACROS:
+	TARGETPROC_FS_NUMTXBUFS
+	TARGETPROC_FS_NUMRXBUFS
+		The number of Transmit and Receive buffers to use at
+		the low-level communications layer. These default to
+		2 for both direction.
+
+	TARGETPROC_FS_TXSTREAMSIZE
+	TARGETPROC_FS_RXSTREAMSIZE
+		The size of the Transmit and Receive streams. This is
+		the ammount of data that can be pending on the network
+		at any given time, and therefor should be at least as big
+		as the largest packet sent. They both default to 256 bytes.
+
+	TARGETPROC_FS_MAXTRANSACTIONS
+		This is the maximum number of allowed simultanious
+		transactions allowed. A transaction is an open/close
+		command pair. This defaults to 4.
+
+	TARGETPROC_FS_SERVERMASK
+		The servers that will be allowed to use the files uploaded
+		from the target may be specified here, as done in zserver.lib.
+		This defaults to (SERVER_HTTP|SERVER_FTP).
+
+	TARGETPROC_FS_BACKUP_FILE1
+		The filenumber used to store the sspec table. This should not
+		conflict with any user specified file numbers. The default
+		value is 254.
+
+	TARGETPROC_FS_BACKUP_FILE2
+		Same as above. This is a mirror of the sspec backup, so a known
+		good value can be maintained at all times. The default value is
+		254.
+
+	SSPEC_MAXSPEC
+		Defaults to 10.  This macro is actually located in ZSERVER.LIB,
+		but you may want to modify it to allow more variables and files
+		(files from the DeviceMate filesystem support also take up sspec
+		entries).  You may want to change other ZSERVER.LIB macros--see
+		the TCP/IP User's Manual on ZSERVER.LIB for more information.
+
+API FUNCTIONS:
+   This library is intended to operate entirely in the "background".  Its
+   functionality is provided merely by adding #use "targetproc_fs.lib"
+   in the main program and ensuring that all of the DeviceMate state
+   machines are driven by periodically calling targetproc_tick(),
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#ifndef __TARGETPROC_FS_LIB
+#define __TARGETPROC_FS_LIB
+/*** EndHeader */
+
+/*** BeginHeader */
+
+/* enable debug messages */
+//#define TC_FS_DEBUG
+
+#ifndef TARGETPROC_XTC_H
+	#use "targetproc_xtc.lib"
+#endif
+
+#ifndef __TC_FS_LIB
+	#use "tc_fs.lib"
+#endif
+
+#ifndef __ZSERVER_LIB
+	#use "zserver.lib"
+#endif
+
+#ifndef tcfs_nodebug
+	#define tcfs_nodebug nodebug
+#endif
+
+/* number of tx/rx buffers for the TC layer */
+#ifndef TARGETPROC_FS_NUMTXBUFS
+	#define TARGETPROC_FS_NUMTXBUFS	2
+#endif
+#ifndef TARGETPROC_FS_NUMRXBUFS
+	#define TARGETPROC_FS_NUMRXBUFS	2
+#endif
+
+/* size of the tx/rx stream buffers */
+#ifndef TARGETPROC_FS_TXSTREAMSIZE
+	#define TARGETPROC_FS_TXSTREAMSIZE	256
+#endif
+#ifndef TARGETPROC_FS_RXSTREAMSIZE
+	#define TARGETPROC_FS_RXSTREAMSIZE	256
+#endif
+
+/* number of allowed simultanious transactions */
+#ifndef TARGETPROC_FS_MAXTRANSACTIONS
+	#define TARGETPROC_FS_MAXTRANSACTIONS	4
+#endif
+
+/* the servers that the target is uploading files for */
+#ifndef TARGETPROC_FS_SERVERMASK
+	#define TARGETPROC_FS_SERVERMASK	(SERVER_HTTP|SERVER_FTP)
+#endif
+
+/* file numbers for the backup files */
+#ifndef TARGETPROC_FS_BACKUP_FILE1
+	#define TARGETPROC_FS_BACKUP_FILE1 254
+#endif
+
+#ifndef TARGETPROC_FS_BACKUP_FILE2
+	#define TARGETPROC_FS_BACKUP_FILE2 255
+#endif
+
+#define CONSOLE_TARGETPROC_FS_BACKUP { server_spec, \
+                                       sizeof(server_spec), \
+                                       targetproc_fs_backup_postload, \
+                                       NULL }
+#define CONSOLE_TARGETPROC_FS_WITH_HTTP_BACKUP { &console_http_backup_info, \
+                                                 sizeof(ConsoleHTTPBackupInfo), \
+                                                 con_http_backup_info_postload, \
+                                                 con_http_backup_info_presave }, \
+                                               { server_spec, \
+                                                 sizeof(server_spec), \
+                                                 targetproc_fs_backup_postload, \
+                                                 NULL }
+
+#ifdef TC_FS_DEBUG
+	/* pull in the dbg string */
+const char tc_fs_dbgmsg[] = "targetproc_fs: ";
+#endif
+
+/*
+ * Storage for each concurrent transaction
+ */
+typedef struct {
+	File		file;
+	FNumber	id;
+	int		transaction_token;
+	int		flags;	// flags, as passed to open
+
+	FNumber	old_sspec_entry;	// old file to remove after the transaction, if REPLACE is set	
+} _TC_FSTransaction;
+
+/* the actual state structure */
+_TC_FSStateType 	_FSState;
+_TC_FSPacketBody	_FSBody;
+_TC_FSTransaction	_FSTransactions[TARGETPROC_FS_MAXTRANSACTIONS];
+FileNumber __tc_fs_nextbackupfile;
+unsigned long __tc_fs_backupversion;
+int __tc_fs_loadedspec;
+
+/*** EndHeader */
+
+/*** BeginHeader targetproc_fs_init */
+void targetproc_fs_init(void);
+#funcchain __targetproc_xtc_init targetproc_fs_init
+/*** EndHeader */
+
+tcfs_nodebug void targetproc_fs_init(void)
+{
+	auto int rc;
+
+	_FSState.app.appno = TC_TYPE_FS;
+	_FSState.app.numchans = 1;
+	_FSState.app.chans = _FSState.chans;
+	_FSState.app.txbufsize = TC_FS_TCBUFSIZE;
+	_FSState.app.rxbufsize = TC_FS_TCBUFSIZE;
+	if(rc = targetproc_xtc_register(&_FSState.app, TARGETPROC_FS_TXSTREAMSIZE, TARGETPROC_FS_RXSTREAMSIZE)) {
+#ifdef TC_FS_DEBUG
+		printf("%sinit: targetproc_xtc_register failed with %d!\n",tc_fs_dbgmsg,rc);
+#endif
+		exit(TC_TYPE_FS);
+	}
+	_FSState.app.numtxbufs = TARGETPROC_FS_NUMTXBUFS;
+	_FSState.app.numrxbufs = TARGETPROC_FS_NUMRXBUFS;
+	_FSState.app.aflags = XTC_AF_CONTROL;	// listen on channel 0 automatically
+	_FSState.app.reqpacing = 10;		// 10ms transmit pacing from peer.
+
+	memset(&_FSState.rxstate, 0, &_FSState.isnotreadyyet - &_FSState.state);
+	_FSState.state = TC_FS_INIT;
+	__tc_fs_nextbackupfile = TARGETPROC_FS_BACKUP_FILE1;
+	__tc_fs_backupversion = 1;
+#ifdef TARGETPROC_FS_ENABLE_BACKUP
+	rc = targetproc_fs_loadspec();
+	if (rc == 1) {
+		__tc_fs_loadedspec = 0;
+#ifdef TC_FS_DEBUG
+		printf("%sinit: targetproc_fs_loadspec() could not load spec table\n",
+		       tc_fs_dbgmsg);
+#endif
+	} else {
+		sspec_removebytype(SSPEC_XMEMVAR);
+		__tc_fs_loadedspec = 1;
+	}	
+#endif
+}
+
+/*** BeginHeader targetproc_fs_backup_postload */
+void targetproc_fs_backup_postload(void* dataptr);
+/*** EndHeader */
+
+tcfs_nodebug void targetproc_fs_backup_postload(void* dataptr)
+{
+	sspec_removebytype(SSPEC_XMEMVAR);
+}
+
+/*** BeginHeader targetproc_fs_backup_loaded */
+int targetproc_fs_backup_loaded(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+targetproc_fs_backup_loaded      <TARGETPROC_FS.LIB>
+
+SYNTAX: int targetproc_fs_backup_loaded(void)
+
+KEYWORDS:      DeviceMate
+
+DESCRIPTION:	Indicates if the backup spec table (that is, the index
+					of file names) has been successfully loaded.  This function
+					should be called after targetproc_init (to give the
+					filesystem subsystem an opportunity to load the spec
+					table).  If it returns 0, then the user code may want to
+					take some action, such as reformatting the filesystem.
+
+					Note that this function will always return 0 if
+					TARGETPROC_FS_ENABLE_BACKUP has not been defined.
+
+RETURN VALUE:  0 if the spec table was not successfully loaded
+					1 if the spec table was successfully loaded
+
+END DESCRIPTION **********************************************************/
+
+tcfs_nodebug int targetproc_fs_backup_loaded(void)
+{
+#ifdef TARGETPROC_FS_ENABLE_BACKUP
+	return (__tc_fs_loadedspec);
+#else
+	return (0);
+#endif
+}
+
+/*** BeginHeader targetproc_fs_backup_bytes */
+int targetproc_fs_backup_bytes(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+targetproc_fs_backup_bytes       <TARGETPROC_FS.LIB>
+
+SYNTAX: int targetproc_fs_backup_bytes(void)
+
+KEYWORDS:      DeviceMate
+
+DESCRIPTION:	Returns the number of bytes that the filesystem
+					subsystem needs for a spec table backup file (that
+					is, the table that maps file names to numbers).
+					Note that _two_ of these files will be used, so
+					space must be reserved in the filesystem for both
+					of these files.
+
+RETURN VALUE:  >= 0	Number of bytes in a spec table backup file
+					-1		Backing up of the spec table has not been enabled
+							(TARGETPROC_FS_ENABLE_BACKUP is not defined)
+
+END DESCRIPTION **********************************************************/
+
+tcfs_nodebug int targetproc_fs_backup_bytes(void)
+{
+#ifdef TARGETPROC_FS_ENABLE_BACKUP
+	return (SSPEC_MAXSPEC * sizeof(ServerSpec));
+#else
+	return (-1);
+#endif
+}
+
+/*** BeginHeader targetproc_fs_tick */
+void targetproc_fs_tick(void);
+#funcchain __targetproc_tick targetproc_fs_tick
+/*** EndHeader */
+
+/* load the SPEC table from the specified file */
+tcfs_nodebug int targetproc_fs_loadspec_file(File *F)
+{
+	auto unsigned long spec_len;
+	auto unsigned long offset;
+	auto int retval;
+
+#ifdef TC_FS_DEBUG
+	printf("%sloadspec_file: Reading old config table...\n", tc_fs_dbgmsg);
+#endif
+	/* read out the version number */
+	if(4 != fread(F, (char *)&__tc_fs_backupversion, 4)) {
+		/* error */
+		return 1;
+	}
+#ifdef TC_FS_DEBUG
+	printf("%sloadspec_file: __tc_fs_backupversion == %ld\n", tc_fs_dbgmsg,
+	       __tc_fs_backupversion);
+#endif
+
+	/* read out the length of the main config region */
+	if(4 != fread(F, (char *)&spec_len, 4)) {
+		/* error */
+		return 1;
+	}
+#ifdef TC_FS_DEBUG
+	printf("%sloadspec_file: Length of SPEC table == %ld\n", tc_fs_dbgmsg,
+	       spec_len);
+#endif
+	if(spec_len != (SSPEC_MAXSPEC * sizeof(ServerSpec))) {
+#ifdef TC_FS_DEBUG
+		printf("%sloadspec_file: ERROR: Filesystem contains SPEC table of incorrect size!\n",
+		       tc_fs_dbgmsg);
+#endif
+		return 1;
+	}
+	
+	offset = 0;
+	while(offset < spec_len) {
+		retval = fread(F, (char *)&(server_spec[0]) + (int)offset,
+		               (int)(spec_len - offset));
+		if(retval < 1) {
+			/* not enough data in file! */
+			return 1;
+		}
+		offset += retval;
+	}
+
+	return 0;
+}
+
+/* load the SPEC table */
+tcfs_nodebug int targetproc_fs_loadspec(void)
+{
+	auto FileNumber fname1, fname2;
+	auto File *F1, *F2;
+	auto File f1, f2;
+	auto unsigned long v1, v2;
+	auto int errcode;
+
+	errcode = 0;
+	F1 = &f1;
+	F2 = &f2;
+	fname1 = TARGETPROC_FS_BACKUP_FILE1;
+	fname2 = TARGETPROC_FS_BACKUP_FILE2;
+
+	if(fopen_rd(F1, fname1)) {
+		/* no file 1 */
+		if(fopen_rd(F2, fname2)) {
+			/* we have neither file! Error! format the fs! */
+			return 1;
+		} else {
+			if(errcode = targetproc_fs_loadspec_file(F2)) {
+				goto __targetproc_load_error;
+			}
+			__tc_fs_nextbackupfile = TARGETPROC_FS_BACKUP_FILE1;
+			fclose(F2);
+		}
+	} else {
+		if(fopen_rd(F2, fname2)) {
+			/* have file 1, but no file 2 */
+			if(errcode = targetproc_fs_loadspec_file(F1)) {
+				goto __targetproc_load_error;
+			}
+			__tc_fs_nextbackupfile = TARGETPROC_FS_BACKUP_FILE2;
+			fclose(F1);
+		} else {
+			/* both exist! check the version numbers */
+			if(4 != fread(F1, (char *)&v1, 4)) {
+				/* error in read! try the other one */
+				if(errcode = targetproc_fs_loadspec_file(F2)) {
+					/* error in send file as well - format everything! */
+					goto __targetproc_load_error;
+				}
+				fclose(F1);
+				fclose(F2);
+				fdelete(fname1); /* kill the first file - it was incorrect */
+				__tc_fs_nextbackupfile = TARGETPROC_FS_BACKUP_FILE1;
+				return 0;
+			}
+			if(4 != fread(F2, (char *)&v2, 4)) {
+				/* error in read! try the other one */
+				if(errcode = targetproc_fs_loadspec_file(F1)) {
+					/* error in send file as well - format everything! */
+					goto __targetproc_load_error;
+				}
+				fclose(F1);
+				fclose(F2);
+				fdelete(fname2); /* kill the first file - it was incorrect */
+				__tc_fs_nextbackupfile = TARGETPROC_FS_BACKUP_FILE2;
+				return 0;
+			}
+
+			/* got two version numbers - compare them */
+			if(v1 < v2) {
+				/* v1 is older - keep it */
+				fseek(F1,0,SEEK_SET);
+				if(errcode = targetproc_fs_loadspec_file(F1)) {
+					goto __targetproc_load_error;
+				}
+				fclose(F1);
+				__tc_fs_nextbackupfile = TARGETPROC_FS_BACKUP_FILE2;
+
+				/* delete the incorrect one */
+				fclose(F2);
+				fdelete(fname2);
+			} else {
+				/* v2 is older - keep it */
+				fseek(F2,0,SEEK_SET);
+				if(errcode = targetproc_fs_loadspec_file(F2)) {
+					goto __targetproc_load_error;
+				}
+				fclose(F2);
+				__tc_fs_nextbackupfile = TARGETPROC_FS_BACKUP_FILE1;
+
+				/* delete the incorrect one */
+				fclose(F1);
+				fdelete(fname1);
+			}			
+		}
+	}
+	/* all done */
+	return 0;
+	
+__targetproc_load_error:
+	fclose(F1); /* make sure the files are closed */
+	fclose(F2);
+	return errcode;
+}
+
+/* backup the SPEC table to someplace safe */
+tcfs_nodebug int targetproc_fs_backupspec(void)
+{
+#ifdef TARGETPROC_FS_ENABLE_ZCONSOLE
+	con_backup();
+#else
+	#ifdef TARGETPROC_FS_ENABLE_BACKUP
+
+	auto int offset, len, retval;
+	auto unsigned long temp;
+	auto File f, *F;
+	auto FSLXnum meta_lx;
+	auto FSLXnum data_lx;
+	F = &f;
+
+	meta_lx = fs_get_lx(1);
+	data_lx = fs_get_lx(0);
+	fs_set_lx(TARGETPROC_FS_USEBACKUPLX, TARGETPROC_FS_USEBACKUPLX);
+#ifdef TC_FS_DEBUG
+	printf("%sbackup: targetproc_fs_backupspec()...\n", tc_fs_dbgmsg);
+#endif
+	if(fcreate(F, __tc_fs_nextbackupfile)) {
+		/* Error! File already exists? */
+		fs_set_lx(meta_lx, data_lx);
+		goto __targetproc_backup_error;
+	}
+	fs_set_lx(meta_lx, data_lx);
+
+	/* write out the new version number */
+	__tc_fs_backupversion++;
+#ifdef TC_FS_DEBUG
+	printf("%sbackup: __tc_fs_backupversion == %ld\n", tc_fs_dbgmsg,
+	       __tc_fs_backupversion);
+#endif
+	if(4 != fwrite(F, (char *)&__tc_fs_backupversion, 4)) {
+		goto __targetproc_backup_error;
+	}
+
+	/* write out the length of the spec table */
+	temp = SSPEC_MAXSPEC * sizeof(ServerSpec);
+#ifdef DBG_BACKUP
+	printf("\tsizeof(ServerSpec[]) == %ld\n",temp);
+#endif
+	if(4 != fwrite(F, (char *)&temp, 4)) {
+		goto __targetproc_backup_error;
+	}
+
+	/* write the actual spec table */
+	offset = 0;
+	len = SSPEC_MAXSPEC * sizeof(ServerSpec);
+	while(offset < len) {
+		retval = fwrite(F, (char *)&(server_spec[0]) + offset, len - offset);
+		if(retval < 1) {
+			/* error - no room */
+			goto __targetproc_backup_error;
+		}
+		offset += retval;
+	}
+
+	fclose(F);
+	/* remove the old file, if it exists */
+	if(TARGETPROC_FS_BACKUP_FILE1 == __tc_fs_nextbackupfile) {
+		fdelete(TARGETPROC_FS_BACKUP_FILE2);
+		__tc_fs_nextbackupfile = TARGETPROC_FS_BACKUP_FILE2;
+	} else {
+		fdelete(TARGETPROC_FS_BACKUP_FILE1);
+		__tc_fs_nextbackupfile = TARGETPROC_FS_BACKUP_FILE1;
+	}
+
+	return 0;
+
+__targetproc_backup_error:
+	fclose(F);
+	
+	/* should we format the fs here? */
+#ifdef TC_FS_DEBUG
+	printf("%sbackup: ERROR: No room to backup config table in flash FS!\n",
+	       tc_fs_dbgmsg);
+#endif
+	return 1;
+
+	#endif // TARGETPROC_FS_ENABLE_BACKUP
+#endif
+}
+
+tcfs_nodebug void targetproc_fs_cleanup_transactions(void)
+{
+	static int i;
+#GLOBAL_INIT {
+	/* set them all to BAD initially... */
+	for(i=0;i<TARGETPROC_FS_MAXTRANSACTIONS;i+=1) {
+		_FSTransactions[i].transaction_token = TC_FS_TOKEN_BAD;
+	}
+}
+
+	/* rollback any current transactions */
+	for(i=0;i<TARGETPROC_FS_MAXTRANSACTIONS;i+=1) {
+		if(TC_FS_TOKEN_BAD != _FSTransactions[i].transaction_token) {
+			/* a transaction is still in progress, and a new SYNC packet was received! roll it back! */
+			fclose(&(_FSTransactions[i].file));
+			fdelete(_FSTransactions[i].id);
+			_FSTransactions[i].transaction_token = TC_FS_TOKEN_BAD;
+		}
+	}
+}
+
+tcfs_nodebug _TC_FSTransaction *targetproc_fs_create_transaction(FNumber id, int transaction_token)
+{
+	static int i;
+
+	/* verify it is not allready stored! */
+	for(i=0;i<TARGETPROC_FS_MAXTRANSACTIONS;i+=1) {
+		if(_FSTransactions[i].transaction_token == transaction_token) {
+			/* allready exists! */
+			return NULL;
+		}
+	}
+	/* find an empty slot for the transaction */
+	for(i=0;i<TARGETPROC_FS_MAXTRANSACTIONS;i+=1) {
+		if(TC_FS_TOKEN_BAD == _FSTransactions[i].transaction_token) {
+			/* empty slot found */
+			_FSTransactions[i].id = id;
+			_FSTransactions[i].transaction_token = transaction_token;
+			return &(_FSTransactions[i]);
+		}
+	}
+	/* no empty slots! */
+	return NULL;
+}
+
+tcfs_nodebug _TC_FSTransaction *targetproc_fs_find_transaction(int transaction_token)
+{
+	static int i;
+	for(i=0;i<TARGETPROC_FS_MAXTRANSACTIONS;i+=1) {
+		if(_FSTransactions[i].transaction_token == transaction_token) {
+			/* found the token */
+			return &(_FSTransactions[i]);
+		}
+	}
+	/* not found! */
+	return NULL;
+}
+
+tcfs_nodebug void targetproc_fs_remove_transaction(int transaction_token)
+{
+	auto int i;
+	for(i=0;i<TARGETPROC_FS_MAXTRANSACTIONS;i+=1) {
+		if(_FSTransactions[i].transaction_token == transaction_token) {
+			_FSTransactions[i].transaction_token = TC_FS_TOKEN_BAD;
+		}
+	}
+}
+
+/*
+ * receive one packet from the target
+ *
+ * returns true if the packet arrived, and false if more
+ * processing is necessary
+ */
+tcfs_nodebug int targetproc_fs_getpacket(void)
+{
+	static int	retval;
+
+	retval = xtc_error(&_FSState.app,0); // is our channel still open?
+	if(retval) {
+__targetproc_fs_notreadable:
+		/* target was reset - handle this error */
+		_FSState.state = TC_FS_RESET;
+		return 0;
+	}
+	
+	switch(_FSState.rxstate) {
+	case TC_FS_RXINIT:
+		_FSState.offset = 0;
+		_FSState.length = sizeof(_FSState.header);
+		_FSState.rxstate = TC_FS_RXHEADER;
+		// fall through to the RXHEADER state
+
+	case TC_FS_RXHEADER:
+		retval = xtc_read(&_FSState.app, 0, (char *)&_FSState.header + _FSState.offset, _FSState.length - _FSState.offset);
+		if(-1 == retval) {
+			/* error! */
+			goto __targetproc_fs_notreadable;
+		}
+		_FSState.offset += retval;	// move the offset
+		if(_FSState.offset >= _FSState.length) {
+			/* header is finished - verify it */
+			if(TC_FS_STARTBYTE != _FSState.header.start_byte) {
+				/* bad start byte */
+#ifdef TC_FS_DEBUG
+				printf("%s bad start byte!\n",tc_fs_dbgmsg);
+#endif
+				xtc_abort(&_FSState.app,0);
+				return 0;
+			}
+			
+			_FSState.length = _FSState.header.length;
+			if(_FSState.length > sizeof(_FSBody)) {
+				/* incoming packet is too big */
+#ifdef TC_FS_DEBUG
+				printf("%s incoming packet too big!\n",tc_fs_dbgmsg);
+#endif
+				xtc_abort(&_FSState.app,0);
+				return 0;
+			}
+			
+			_FSState.offset = 0;
+			_FSState.rxstate = TC_FS_RXBODY;
+			// fall through to the RXBODY state
+		} else {
+			/* still more data to receive */
+			break;
+		}
+
+	case TC_FS_RXBODY:
+		/* receive the body of the packet */
+		retval = xtc_read(&_FSState.app, 0, (char *)&_FSBody + _FSState.offset, _FSState.length - _FSState.offset);
+		if(-1 == retval) {
+			/* error! */
+			goto __targetproc_fs_notreadable;
+		}
+		_FSState.offset += retval;	// move the offset
+		if(_FSState.offset >= _FSState.length) {
+			/* received the body! packet is done! return true */
+			return 1;
+		} else {
+			/* still more data to receive */
+			break;
+		}
+
+	default:
+		/* internal error! */
+#ifdef TC_FS_DEBUG
+		printf("%sRX State machine error!!!\n",tc_fs_dbgmsg);
+#endif
+		/* kill everything */
+		exit(TC_TYPE_FS);	
+	}
+
+	return 0;
+}
+
+/*
+ * sends a packet from the header/body buffers
+ *
+ * returns true if the packet is done transmitting,
+ * and false if more processing is necessary
+ */
+tcfs_nodebug int targetproc_fs_sendpacket(void)
+{
+	static int retval;
+	
+	retval = xtc_error(&_FSState.app,0); // is our channel still open?
+	if(retval) {
+__targetproc_fs_notwriteable:
+		/* target was reset - handle this error */
+		_FSState.state = TC_FS_RESET;
+		return 0;
+	}
+	
+	switch(_FSState.txstate) {
+	case TC_FS_TXINIT:
+		/* start sending the packet */
+		_FSState.offset = 0;
+		_FSState.length = sizeof(_FSState.header);
+		_FSState.txstate = TC_FS_TXHEADER;
+		// fall through to the TXHEADER state
+
+	case TC_FS_TXHEADER:
+		retval = xtc_write(&_FSState.app, 0, (char *)&_FSState.header + _FSState.offset, _FSState.length - _FSState.offset);
+		if(-1 == retval) {
+			/* error in write */
+			goto __targetproc_fs_notwriteable;
+		}
+		_FSState.offset += retval;	// move the offset
+		if(_FSState.offset >= _FSState.length) {
+			/* header is sent! move to the body */
+			_FSState.offset = 0;
+			_FSState.length = _FSState.header.length;
+			_FSState.txstate = TC_FS_TXBODY;
+			// fall through to the TXBODY state
+		} else {
+			/* still more data to write */
+			break;
+		}
+
+	case TC_FS_TXBODY:
+		retval = xtc_write(&_FSState.app, 0, (char *)&_FSBody + _FSState.offset, _FSState.length - _FSState.offset);
+		if(-1 == retval) {
+			/* error in write */
+			goto __targetproc_fs_notwriteable;
+		}
+		_FSState.offset += retval;	// move the offset
+		if(_FSState.offset >= _FSState.length) {
+			/* body is sent! return true! */
+			return 1;
+		} else {
+			/* still more data to write */
+			break;
+		}
+	
+	default:
+		/* internal error! */
+#ifdef TC_FS_DEBUG
+		printf("%sTX State machine error!!!\n",tc_fs_dbgmsg);
+#endif
+		/* kill everything */
+		exit(TC_TYPE_FS);	
+	}
+
+	return 0;
+}
+
+/*
+ * process a received packet, and put the response in
+ * the header/body buffers to be transmitted to the target
+ *
+ * returns true if the packet is done being processed,
+ * and false if more processing is necessary
+ */
+tcfs_nodebug int targetproc_fs_processpacket(void)
+{
+	static int i, temp;
+	static _TC_FSTransaction *tr;
+	static FSLXnum meta_lx;
+	static FSLXnum data_lx;
+	
+	switch(_FSState.header.packet_type) {
+	/*
+	 * The SYNC command
+	 */
+	case TC_FS_SYNC:
+		/*
+		 * make sure the filesystem is initilized, including any local structures
+		 */
+		targetproc_fs_cleanup_transactions();
+
+		/* check for options */
+		if(_FSBody.Sync.flags & TC_FS_FORMAT) {
+			/* erase the entire filesystem! */
+#ifdef TC_FS_DEBUG
+			printf("%sFormating the filesystem... ",tc_fs_dbgmsg);
+#endif
+			if(lx_format(TARGETPROC_FS_USELX,0)) {
+#ifdef TC_FS_DEBUG
+				printf("%sFormat of FS failed! errno = %d\n",tc_fs_dbgmsg,errno);
+#endif
+				_FSState.header.packet_type |= TC_NAK;
+				_FSState.header.length = 0;
+				return 1;
+			}
+
+			/* remove any fs entries from the sspec table */
+			sspec_removebytype(SSPEC_FSFILE);
+			targetproc_fs_backupspec();
+			
+#ifdef TC_FS_DEBUG
+			printf("done!\n");
+#endif
+		}
+
+		/* formulate a reply */
+		_FSState.header.packet_type |= TC_ACK;
+		_FSState.header.length = sizeof(_TC_FSSync);
+		break;
+
+	/*
+	 * The TRANSACTION_OPEN command
+	 */
+	case TC_FS_TRANSACTION_OPEN:
+		tr = targetproc_fs_create_transaction(_FSBody.TransactionOpen.id, _FSBody.TransactionOpen.transaction_token);
+		if(tr) {
+			/* allocated a transaction correctly! */
+#ifdef TC_FS_DEBUG
+			printf("%sStarting an OPEN (transaction #%d)...\n",tc_fs_dbgmsg,tr->transaction_token);
+#endif
+
+			if(_FSBody.TransactionOpen.name_length != strlen(_FSBody.TransactionOpen.name)) {
+				/* the name they gave us was bad! */
+				goto __targetproc_fs_badopen;
+			}
+
+			if((TC_FS_FLAGS_NEWID|TC_FS_FLAGS_REPLACE) & _FSBody.TransactionOpen.flags) {
+				/* create a new file ID */
+				meta_lx = fs_get_lx(1);
+				data_lx = fs_get_lx(0);
+				fs_set_lx(TARGETPROC_FS_USELX, TARGETPROC_FS_USELX);
+				tr->id = fcreate_unused(&(tr->file));
+				fs_set_lx(meta_lx, data_lx);
+				if(!tr->id)
+					goto __targetproc_fs_badopen;	// error creating the file
+
+#ifdef TC_FS_DEBUG
+				printf("%sOPEN: Creating a new file with ID:%d\n",tc_fs_dbgmsg,tr->id);
+#endif
+				/* are we replacing an old file? */
+				if(TC_FS_FLAGS_REPLACE & _FSBody.TransactionOpen.flags) {
+#ifdef TC_FS_DEBUG
+					printf("%sOPEN: Replacing the old file '%s'...",tc_fs_dbgmsg,_FSBody.TransactionOpen.name);
+#endif
+					/* yes, we are - find the old ID so it can be removed later */
+					temp = sspec_findname(_FSBody.TransactionOpen.name,TARGETPROC_FS_SERVERMASK);
+					if(-1 == temp) {
+						/* the old file doesn't exist! undo the REPLACE flag! */
+						_FSBody.TransactionOpen.flags &= ~TC_FS_FLAGS_REPLACE;
+#ifdef TC_FS_DEBUG
+						printf("The file doesn't exist!\n");
+#endif
+					} else {
+						/* the old file exists! */
+						tr->old_sspec_entry = temp;
+#ifdef TC_FS_DEBUG
+						printf("OK!\n");
+#endif
+					}
+				}
+			} else {
+				/* create the specified file ID */
+				tr->id = _FSBody.TransactionOpen.id;
+				meta_lx = fs_get_lx(1);
+				data_lx = fs_get_lx(0);
+				fs_set_lx(TARGETPROC_FS_USELX, TARGETPROC_FS_USELX);
+				if(fcreate(&(tr->file), tr->id)) {
+					fs_set_lx(meta_lx, data_lx);
+					goto __targetproc_fs_badopen;	// error creating the file
+				}
+				fs_set_lx(meta_lx, data_lx);
+#ifdef TC_FS_DEBUG
+				printf("%sOPEN: Creating ID:%d\n",tc_fs_dbgmsg,tr->id);
+#endif
+			}
+			
+			/* store the flags for later */
+			tr->flags = _FSBody.TransactionOpen.flags;
+			
+			/* register the filename in the spec table */
+			if(!(tr->flags & TC_FS_FLAGS_REPLACE)) {
+				/* don't register the filename if REPLACE is set - it will be done later */
+				if(-1 == sspec_addfsfile(_FSBody.TransactionOpen.name,tr->id,TARGETPROC_FS_SERVERMASK)) {
+					/* sspec add failed! */
+					fclose(&(tr->file));
+					fdelete(tr->id);
+					goto __targetproc_fs_badopen;
+				}
+				targetproc_fs_backupspec();
+			}
+#ifdef TC_FS_DEBUG
+			printf("%sOPEN: Done!\n",tc_fs_dbgmsg);
+#endif
+			
+			/* file is created successfully! respond with an ACK */
+			_FSBody.TransactionOpenACK.transaction_token = tr->transaction_token;
+			_FSState.header.packet_type |= TC_ACK;
+			_FSState.header.length = sizeof(_TC_FSTransactionOpenACK);
+		} else {
+__targetproc_fs_badopen:
+#ifdef TC_FS_DEBUG
+			printf("%sOPEN failed!\n",tc_fs_dbgmsg);
+#endif
+			/* error creating transaction! */
+			_FSBody.TransactionOpenNAK.transaction_token = _FSBody.TransactionOpen.transaction_token;
+			_FSState.header.packet_type |= TC_NAK;
+			_FSState.header.length = sizeof(_TC_FSTransactionOpenNAK);
+		}
+		break;
+		
+	/*
+	 * The TRANSACTION_CLOSE command
+	 */
+	case TC_FS_TRANSACTION_CLOSE:
+		tr = targetproc_fs_find_transaction(_FSBody.TransactionClose.transaction_token);
+		if(tr) {
+#ifdef TC_FS_DEBUG
+			printf("%sCLOSING a transaction (transaction #%d)\n",tc_fs_dbgmsg,tr->transaction_token);
+#endif
+			/* transaction found successfully */
+			if(fclose(&(tr->file))) {
+				/* error closing the file - try and roll it back */
+				fdelete(tr->id);
+				targetproc_fs_remove_transaction(tr->transaction_token);
+				goto __targetproc_fs_badclose;
+			}
+
+			/* was this a REPLACE? */
+			if(TC_FS_FLAGS_REPLACE & tr->flags) {
+#ifdef TC_FS_DEBUG
+				printf("%sCLOSE: Replacing the old file!\n",tc_fs_dbgmsg);
+#endif
+
+				/* get the name of the old file - store it in _FSBody for a while */
+				strcpy((char *)&_FSBody, sspec_getname(tr->old_sspec_entry));
+				/* find the ID of the old file */
+				temp = (int)sspec_getfileloc(tr->old_sspec_entry);
+
+				/* remove the old file */
+				fdelete(temp);
+				sspec_remove(tr->old_sspec_entry);
+
+				/* associate the old name with the new file */
+				sspec_addfsfile((char *)&_FSBody, tr->id, TARGETPROC_FS_SERVERMASK);
+				targetproc_fs_backupspec();
+			}
+
+#ifdef TC_FS_DEBUG
+			printf("%sCLOSE: Done!\n",tc_fs_dbgmsg);
+#endif
+			/* build the ACK packet */
+			_FSBody.TransactionCloseACK.transaction_token = tr->transaction_token;
+			_FSBody.TransactionCloseACK.id = tr->id & 0xff; // only return the low byte - not the LX portion
+			_FSState.header.packet_type |= TC_ACK;
+			_FSState.header.length = sizeof(_TC_FSTransactionCloseACK);
+
+			/* this transaction is finished - remove it from the active-list */
+			targetproc_fs_remove_transaction(tr->transaction_token);
+		} else {
+__targetproc_fs_badclose:
+#ifdef TC_FS_DEBUG
+			printf("%sCLOSE failed!\n",tc_fs_dbgmsg);
+#endif
+			/* transaction not found! */
+			_FSBody.TransactionCloseNAK.transaction_token = _FSBody.TransactionClose.transaction_token;
+			_FSState.header.packet_type |= TC_NAK;
+			_FSState.header.length = sizeof(_TC_FSTransactionCloseNAK);
+		}
+		break;
+
+	/*
+	 * The TRANSACTION_APPEND command
+	 */
+	case TC_FS_TRANSACTION_APPEND:
+		tr = targetproc_fs_find_transaction(_FSBody.TransactionAppend.transaction_token);
+		if(tr) {
+#ifdef TC_FS_DEBUG
+			printf("%sStarting an APPEND of %d bytes (transaction #%d)\n",
+				tc_fs_dbgmsg,_FSBody.TransactionAppend.length,tr->transaction_token);
+#endif
+			/* found the transaction! append the data... */
+			if(_FSBody.TransactionAppend.length !=
+				fwrite(&(tr->file),_FSBody.TransactionAppend.data,_FSBody.TransactionAppend.length)
+			  ) {
+				/* error - write failed! rollback the file... */
+				fclose(&(tr->file));
+				fdelete(tr->id);
+				targetproc_fs_remove_transaction(tr->transaction_token);
+				goto __targetproc_fs_badappend;
+			} else {
+#ifdef TC_FS_DEBUG
+				printf("%sAPPEND: Done!\n",tc_fs_dbgmsg);
+#endif
+				/* append was successfull - build an ACK */
+				_FSBody.TransactionAppendACK.transaction_token = tr->transaction_token;
+				_FSState.header.packet_type |= TC_ACK;
+				_FSState.header.length = sizeof(_TC_FSTransactionAppendACK);
+			}
+		} else {
+			/* transaction not found! */
+__targetproc_fs_badappend:
+#ifdef TC_FS_DEBUG
+			printf("%sAPPEND failed!\n",tc_fs_dbgmsg);
+#endif
+			_FSBody.TransactionAppendNAK.transaction_token = _FSBody.TransactionAppend.transaction_token;
+			_FSState.header.packet_type |= TC_NAK;
+			_FSState.header.length = sizeof(_TC_FSTransactionAppendNAK);
+		}
+		break;
+
+	/*
+	 * The RENAME command
+	 */
+	case TC_FS_RENAME:
+		if(_FSBody.Rename.name_length != strlen(_FSBody.Rename.name)) {
+			/* the name they gave us was bad! */
+__targetproc_fs_badrename:
+#ifdef TC_FS_DEBUG
+			printf("%sRENAME failed!\n",tc_fs_dbgmsg);
+#endif
+			_FSBody.RenameNAK.id = _FSBody.Rename.id;
+			_FSState.header.packet_type |= TC_NAK;
+			_FSState.header.length = sizeof(_TC_FSRenameNAK);
+		} else {
+#ifdef TC_FS_DEBUG
+			printf("%sStarting a RENAME (id#%d to '%s')\n",tc_fs_dbgmsg,_FSBody.Rename.id,_FSBody.Rename.name);
+#endif
+			/* name length is ok - try and find that name in the spec table */
+			temp = sspec_findfsname(_FSBody.Rename.id,TARGETPROC_FS_SERVERMASK);
+			if(-1 == temp)
+				goto __targetproc_fs_badrename; // not found!
+
+#ifdef TC_FS_DEBUG
+			printf("%sRENAME: removing the old sspec entry...\n",tc_fs_dbgmsg);
+#endif
+			/* temp now has the sspec entry of the old ID<->name mapping */
+			if(-1 == sspec_remove(temp)) { // remove the old entry
+				goto __targetproc_fs_badrename; // remove failed!
+			}
+#ifdef TC_FS_DEBUG
+			printf("%sRENAME: adding the new sspec entry...\n",tc_fs_dbgmsg);
+#endif
+			if(-1 == sspec_addfsfile(_FSBody.Rename.name, _FSBody.Rename.id, TARGETPROC_FS_SERVERMASK)) { // and the new entry
+				goto __targetproc_fs_badrename; // add failed!
+			}
+			targetproc_fs_backupspec();
+
+			/* all done - build the response */
+#ifdef TC_FS_DEBUG
+			printf("%sRENAME: Done!\n",tc_fs_dbgmsg);
+#endif
+			_FSBody.RenameACK.id = _FSBody.Rename.id;
+			_FSState.header.packet_type |= TC_ACK;
+			_FSState.header.length = sizeof(_TC_FSRenameACK);
+		}
+		break;
+
+	/*
+	 * The IDLOOKUP command
+	 */
+	case TC_FS_IDLOOKUP:
+		if(_FSBody.IDLookup.name_length != strlen(_FSBody.IDLookup.name)) {
+			/* the name they gave us was bad! */
+__targetproc_fs_badidlookup:
+#ifdef TC_FS_DEBUG
+			printf("%sIDLOOKUP failed!\n",tc_fs_dbgmsg);
+#endif
+			_FSBody.IDLookupNAK.transaction_token = _FSBody.IDLookup.transaction_token;
+			_FSState.header.packet_type |= TC_NAK;
+			_FSState.header.length = sizeof(_TC_FSIDLookupNAK);
+		} else {
+#ifdef TC_FS_DEBUG
+			printf("%sStarting an IDLOOKUP of '%s'\n",tc_fs_dbgmsg,_FSBody.IDLookup.name);
+#endif
+			/* name is good - search for it in the spec table */
+			temp = sspec_findname(_FSBody.IDLookup.name, TARGETPROC_FS_SERVERMASK);
+			if(-1 == temp)
+				goto __targetproc_fs_badidlookup;	// name was not in the sspec table!
+			_FSBody.IDLookupACK.transaction_token = _FSBody.IDLookup.transaction_token;
+			_FSBody.IDLookupACK.id = (FNumber)sspec_getfileloc(temp);	// get the actuall id
+			if(-1 == _FSBody.IDLookupACK.id)
+				goto __targetproc_fs_badidlookup;
+
+#ifdef TC_FS_DEBUG
+			printf("%sIDLOOKUP: Done!\n",tc_fs_dbgmsg);
+#endif
+			/* build the response */
+			_FSState.header.packet_type |= TC_ACK;
+			_FSState.header.length = sizeof(_TC_FSIDLookupACK);
+		}
+		break;
+
+	/*
+	 * The DELETE command
+	 */
+	case TC_FS_DELETE:
+#ifdef TC_FS_DEBUG
+		printf("%sStarting a DELETE of ID#%d\n",tc_fs_dbgmsg,_FSBody.Delete.id);
+#endif
+		if(fdelete(_FSBody.Delete.id)) {
+			/* delete failed! */
+#ifdef TC_FS_DEBUG
+			printf("%sDELETE failed!\n",tc_fs_dbgmsg);
+#endif
+			_FSBody.DeleteNAK.id = _FSBody.Delete.id; // move the ID into the proper reply format
+			_FSState.header.packet_type |= TC_NAK;
+			_FSState.header.length = sizeof(_TC_FSDeleteNAK);
+		} else {
+#ifdef TC_FS_DEBUG
+			printf("%sDELETE: fs remove was successfull - clearing the sspec entry\n",tc_fs_dbgmsg);
+#endif
+			/* delete succeded! - try and remove the entry from the spec table! */
+			sspec_remove(sspec_findfsname(_FSBody.Delete.id, TARGETPROC_FS_SERVERMASK));
+			targetproc_fs_backupspec();
+
+#ifdef TC_FS_DEBUG
+			printf("%sDELETE: Done!\n",tc_fs_dbgmsg);
+#endif
+			/* build the response */
+			_FSBody.DeleteACK.id = _FSBody.Delete.id; // move the ID into the proper reply format
+			_FSState.header.packet_type |= TC_ACK;
+			_FSState.header.length = sizeof(_TC_FSDeleteACK);
+		}
+		break;
+		
+	default:
+#ifdef TC_FS_DEBUG
+		printf("%sUnknown packet type 0x%02x\n",tc_fs_dbgmsg,_FSState.header.packet_type);
+#endif
+		/* unknown packet type! NAK it! */
+		_FSState.header.packet_type |= TC_NAK;
+		_FSState.header.length = 0;
+		return 1;
+	}
+
+	/* normal return */
+	return 1;
+}
+
+/*
+ * The main TICK function
+ */
+tcfs_nodebug void targetproc_fs_tick(void)
+{
+	static int retval;
+	
+	switch(_FSState.state) {
+	case TC_FS_INIT:
+		/* wait for the other side to be ready */
+#ifdef TC_FS_DEBUG
+		printf("%sWaiting for XTC to be ready...\n",tc_fs_dbgmsg);
+#endif
+		_FSState.state = TC_FS_WAITREADY;
+		// fall through to the WAITREADY state
+
+	case TC_FS_WAITREADY:
+		/* wait for the target to startup */
+		retval = targetproc_xtc_ready(&_FSState.app);
+		if(retval) {
+			if(retval < 0) {
+				/* error starting XTC */
+#ifdef TC_FS_DEBUG
+				printf("%sError starting XTC!\n",tc_fs_dbgmsg);
+#endif
+			} else {
+				/* target is ready */
+#ifdef TC_FS_DEBUG
+				printf("%sXTC is ready! Waiting for a connection...\n",tc_fs_dbgmsg);
+#endif
+				_FSState.state = TC_FS_WAITESTAB;
+			}
+		} else {
+			/* still not ready */
+		}
+		break;
+
+	case TC_FS_WAITESTAB:
+		switch(xtc_estab(&_FSState.app,0)) {
+		case -1:
+			/* error in socket */
+			_FSState.state = TC_FS_RESET;
+			break;
+
+		case 0:
+			/* still waiting for a connection... */
+			break;
+
+		default:
+			/* connection established! */
+#ifdef TC_FS_DEBUG
+			printf("%sConnection established!\n",tc_fs_dbgmsg);
+#endif
+			_FSState.state = TC_FS_GETPACKET;
+		}
+		break;
+
+	case TC_FS_GETPACKET:
+		/* start receiving a packet from the target */
+		_FSState.state = TC_FS_PACKETRECEIVE;
+		_FSState.rxstate = TC_FS_RXINIT;
+		// fall through to the PACKETRECEIVE state
+
+	case TC_FS_PACKETRECEIVE:
+		if(targetproc_fs_getpacket()) {
+			/* the packet arrived! */
+			_FSState.state = TC_FS_PROCESSPACKET;
+			_FSState.pstate = TC_FS_PROCESSINIT;
+			// fall through to the PROCESSPACKET state
+		} else {
+			/* not done receiving a packet */
+			break;
+		}
+
+	case TC_FS_HAVEPACKET:
+		/* have a packet! */
+		if(targetproc_fs_processpacket()) {
+			/* done processing the packet - start transmitting the response */
+			_FSState.state = TC_FS_SENDPACKET;
+			_FSState.txstate = TC_FS_TXINIT;
+			// fall through to the SENDPACKET state
+		} else {
+			/* not done processing the packet */
+			break;
+		}
+
+	case TC_FS_SENDPACKET:
+		if(targetproc_fs_sendpacket()) {
+			/* done sending the packet! - get another packet from the target */
+			_FSState.state = TC_FS_GETPACKET;
+			break;
+		} else {
+			/* not done sending the packet */
+			break;
+		}
+
+	case TC_FS_RESET:
+		/* the target reset! cleanup any pending operations... */
+#ifdef TC_FS_DEBUG
+		printf("%sReset of XTC channel!\n",tc_fs_dbgmsg);
+#endif
+
+		/* fixup channel 0 */
+		xtc_listen(&_FSState.app, 0, NULL);
+
+		/* go back to waiting for requests */
+		_FSState.state = TC_FS_WAITESTAB;
+		break;
+
+	default:
+		/* internal error! */
+#ifdef TC_FS_DEBUG
+		printf("%sState machine error!!!\n",tc_fs_dbgmsg);
+#endif
+		/* kill everything */
+		exit(TC_TYPE_FS);
+	}
+}
+
+/*** BeginHeader */
+#endif /*__TARGETPROC_FS_LIB*/
+/*** EndHeader */

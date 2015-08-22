@@ -1,0 +1,348 @@
+/* START LIBRARY DESCRIPTION *********************************************
+LOW_POWER.LIB
+Copyright (c) 2005, Z-World
+
+DESCRIPTION:	Routines for controlling power consumption rate.
+
+REVISION HISTORY:
+	04/01/05	omid	Reworked for operation on all core modules & boards.
+
+END DESCRIPTION **********************************************************/
+
+/*** Beginheader */
+#ifndef __LOW_POWER_LIB
+	#define __LOW_POWER_LIB
+
+//#define HIT_WATCHDOG
+//#define LOWPOWER_VERBOSE
+//#define LOWPOWER_DEBUG
+
+#ifdef LOWPOWER_DEBUG
+	#define _LowPower_nodebug debug
+#else
+	#define _LowPower_nodebug nodebug
+#endif
+
+#define NUM_POWER_MODES 10
+
+#if _CPU_ID_ < R3000
+   #error "This library currently only supports Rabbit 3000 or higher CPU's."
+#endif
+
+#if _USER
+	#error "RabbitSys does not support low-power mode."
+#endif
+/*** Endheader */
+
+/*** BeginHeader set_cpu_power_mode */
+
+#define	CLKDOUBLER_OFF		0
+#define	CLKDOUBLER_ON		1
+#define	SHORTCS_OFF			0
+#define	SHORTCS_ON			1
+
+int set_cpu_power_mode(int mode, char clkDoubler, char shortChipSelect);
+
+/*** EndHeader */
+
+#define	_GCSRCLKDIV_1		0x08
+#define	_GCSRCLKDIV_2		0x0C
+#define	_GCSRCLKDIV_4		0x18
+#define	_GCSRCLKDIV_6		0x1C
+//#define	_GCSRCLKDIV_8		0x04	//periph clock=main osc, proc clock=mainosc/8
+#define	_GCSRCLKDIV_8		0x00		//periph clock=proc clock=mainosc/8
+
+#define _GPSCR32CLKDIV_1	0x00
+#define _GPSCR32CLKDIV_2	0x04
+#define _GPSCR32CLKDIV_4	0x05
+#define _GPSCR32CLKDIV_8	0x06
+#define _GPSCR32CLKDIV_16	0x07
+
+char  _GCSRCurrent;
+char  _saved_freq_divider;
+char  _saved_TAT4;
+char  _savedGCDR;
+const char osctable[NUM_POWER_MODES+1] = {0x00,_GCSRCLKDIV_1,_GCSRCLKDIV_2,_GCSRCLKDIV_4,_GCSRCLKDIV_6,_GCSRCLKDIV_8,
+										_GPSCR32CLKDIV_1,_GPSCR32CLKDIV_2,_GPSCR32CLKDIV_4,_GPSCR32CLKDIV_8,_GPSCR32CLKDIV_16};
+
+_LowPower_nodebug
+int _mainOscDivider3000(char newGCSR)
+{
+   auto int clockDivider;
+
+#GLOBAL_INIT {
+	_GCSRCurrent = _GCSRCLKDIV_1;
+   _saved_freq_divider = freq_divider;
+   _saved_TAT4 = TAT4RShadow;
+}
+
+	switch(newGCSR)
+   {
+      case _GCSRCLKDIV_1:
+         clockDivider = 1;
+         break;
+      case _GCSRCLKDIV_2:
+         clockDivider = 2;
+         break;
+      case _GCSRCLKDIV_4:
+         clockDivider = 4;
+         break;
+      case _GCSRCLKDIV_6:
+         clockDivider = 6;
+         break;
+      case _GCSRCLKDIV_8:
+         clockDivider = 8;
+         break;
+      default:
+         return -1;
+	}
+
+   _GCSRCurrent = newGCSR;
+	TAT4RShadow = ((_saved_TAT4+1)/clockDivider) - 1;
+	freq_divider = _saved_freq_divider/clockDivider;
+
+   if(GCDRShadow != _savedGCDR) //take status of clock doubler into consideration
+   {
+   	TAT4RShadow /= 2;
+      freq_divider /= 2;
+   }
+
+#asm
+/**/
+	push	ip
+	ipset	3
+
+	ld		a, (_GCSRCurrent)
+	ld		(GCSRShadow), a
+;	ioi	ld (GCSR), a		; set new oscillator vals
+	IOWRITE_A(GCSR)
+
+	call	updateTimers
+
+	ld		a, (_GCSRCurrent)
+	or		0x01					; enable periodic interrupt
+	ld		(GCSRShadow), a
+;	ioi	ld (GCSR), a		; set new oscillator newvals
+	IOWRITE_A(GCSR)
+
+	ld		a, (TAT4RShadow)
+;	ioi	ld (TAT4R), a		; update debug serial baud on port A
+	IOWRITE_A(TAT4R)
+
+	pop	ip
+/**/
+#endasm
+
+	return(0);
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+set_cpu_power_mode						<LOW_POWER.LIB>
+
+SYNTAX:			int set_cpu_power_mode(int mode, char clkDoubler, char shortChipSelect);
+
+DESCRIPTION:	Sets operating power of the controller.  Suspend serial
+					communication and other data transmission activity
+					prior to calling this function, which sets higher
+					priority interrupt while switching clock frequencies.
+
+					This function is non-reentrant.
+
+PARAMETER1:		Mode operation. Use the following table values below.
+					(The higher the value the lower the power consumption of controller.)
+
+PARAMETER2:    Clock doubler setting. Use CLKDOUBLER_ON, or CLKDOUBLER_OFF.
+					CPU will operate at half selected speed when turned off.
+               This parameter only affects main oscillator modes, not 32 kHZ
+               oscillator modes. Turning Clock doubler off reduces power consumption.
+
+PARAMETER3:		Short Chip Select setting. Use SHORTCS_OFF, or SHORTCS_ON.
+					Note: When short chip select is on, make sure that interrupts
+               are disabled during I/O operations. Turning Short Chip Select
+               on may reduce power consumption.
+               (See pg. 87 of Rabbit 3000 processor manual for more information).
+
+Mode	Description								Comments
+====	================================	==========================
+ 1 	Cclk=Pclk=MainOsc   					Debug capable
+ 2		Cclk=Pclk=MainOsc/2 					Debug capable (19200 baud)
+ 3 	Cclk=Pclk=MainOsc/4 					Debug capable (9600 baud)
+ 4		Cclk=Pclk=MainOsc/6
+ 5		Cclk=Pclk=MainOsc/8
+
+ 6		Cclk=Pclk 			  = 32.768KHz	Periodic Int disabled; hitwd()
+ 7		Cclk=Pclk=32KHz/2   = 16.384KHz	Periodic Int disabled; hitwd()
+ 8		Cclk=Pclk=32KHz/4   =  8.192KHz	Periodic Int disabled; hitwd()
+ 9		Cclk=Pclk=32KHz/8   =  4.096KHz	Periodic Int disabled; hitwd()
+10		Cclk=Pclk=32kHz/16  =  2.048KHz	Periodic Int disabled; hitwd()
+
+RETURN VALUE:	0 if valid parameter,
+					-1 if invalid parameter,
+
+END DESCRIPTION **********************************************************/
+
+_LowPower_nodebug
+int set_cpu_power_mode(int mode, char clkDoubler, char shortChipSelect)
+{
+
+#GLOBAL_INIT {
+	_savedGCDR = GCDRShadow;
+}
+
+#ifdef LOWPOWER_VERBOSE
+	printf("\n Switching to mode %d.", mode);
+   printf("\n Using %s clock.", mode < 6 ? "main CPU":"32 KHZ");
+#endif
+
+   //decide whether or not clock doubler should be turned on
+	GCDRShadow = (clkDoubler && mode < 6) ? _savedGCDR : (_savedGCDR&0xf0);
+	//setup shortChipSelect as a register mask
+   shortChipSelect = (shortChipSelect) ? 0x10:0x00;
+
+#asm
+
+#ifdef HIT_WATCHDOG
+	ld		a,0x5a
+;  	ioi 	ld (WDTCR),a			  	;hit watchdog
+	IOWRITE_A(WDTCR)
+#endif
+
+	ld		hl,(sp+@sp+mode)
+	ld		de,08001h					;check range less than 1
+	add	hl,hl
+	ccf
+	rr		hl
+	sbc	hl,de							;less than one is invalid
+	jp		c,.errormsg
+
+	ld		hl,(sp+@sp+mode)
+	ld		de,0800Bh					;check range greater than 10
+	add	hl,hl
+	ccf
+	rr		hl
+	sbc	hl,de							;greater than ten is also invalid
+	jp		nc,.errormsg
+
+   ld    a,(GCDRShadow)          ;set clock doubler on or off
+;   ioi   ld (GCDR),a
+	IOWRITE_A(GCDR)
+
+	ld		hl,(sp+@sp+mode)			;process power mode request
+	ld		a,l
+	cp		6
+	jp		nc,.set32khz				;if greater than power mode 5 set 32khz operations
+
+.setmainosc:
+;; mode 1  Cclk = Pclk = MainOsc/1
+;; mode 2  Cclk = Pclk = MainOsc/2
+;; mode 3  Cclk = Pclk = MainOsc/4
+;; mode 4  Cclk = Pclk = MainOsc/6
+;; mode 5  Cclk = Pclk = MainOsc/8
+
+ 	ld		a,(GPSCRShadow)
+	and	0f8h							;disables 32khz divider
+	ld		(GPSCRShadow),a
+;	ioi	ld (GPSCR),a
+	IOWRITE_A(GPSCR)
+
+   ld		a,(GPSCRShadow)         ;set short chip select on or off
+   and	0xef
+   ld		hl,(sp+@sp+shortChipSelect)
+   or		l
+  	ld		(GPSCRShadow),a
+;  	ioi	ld (GPSCR),a
+	IOWRITE_A(GPSCR)
+
+	ld		a,010h						;set main osc on
+	ld		(GCSRShadow),a
+;	ioi	ld (GCSR),a
+	IOWRITE_A(GCSR)
+	call	updateTimers
+	ld		a,009h						;set to main osc with periodic int
+	ld		(GCSRShadow),a
+;	ioi	ld (GCSR),a
+	IOWRITE_A(GCSR)
+
+	ld		a,(GCM0RShadow)
+	and	07eh							;set to normal spreading
+	ld		(GCM0RShadow),a
+;	ioi	ld (GCM0R),a
+	IOWRITE_A(GCM0R)
+
+	ld		a,(GCM1RShadow)
+	or		080h							;enable spreader
+	ld		(GCM1RShadow),a
+;	ioi	ld (GCM1R),a
+	IOWRITE_A(GCM1R)
+
+	ld		bc,osctable					;get register settings from table
+	ld		hl,(sp+@sp+mode)
+	add	hl,bc
+	ld		hl,(hl)
+	ld		h,0
+	push	hl
+	call	_mainOscDivider3000
+	add	sp,2
+	jp		_oscdelay
+
+.set32khz:
+;; do not change sequence
+;; mode 6 Cclk = Pclk = 32768Hz
+;;	mode 7 Cclk = Pclk = 32KHz/2 = 16.384KHz
+;;	mode 8 Cclk = Pclk = 32KHz/4 =  8.192KHz
+;;	mode 9 Cclk = Pclk = 32KHz/8 =  4.096KHz
+;;	mode 10 Cclk = Pclk = 32kHz/16 = 2.048KHz
+	ld		a,(GCM1RShadow)
+	and	07eh							;disable spreader
+	ld		(GCM1RShadow),a
+;	ioi	ld (GCM1R),a
+	IOWRITE_A(GCM1R)
+
+	ld		bc,osctable					;get register settings from table
+	ld		hl,(sp+@sp+mode)
+	add	hl,bc
+	ld		hl,(hl)
+
+	ld		a,(GPSCRShadow)
+	and	0f8h							;clear out bits 2-0
+	or		l								;set 32khz undivided
+	ld		(GPSCRShadow),a
+;	ioi	ld (GPSCR),a
+	IOWRITE_A(GPSCR)
+
+	ld		a,(GPSCRShadow)         ;set short chip select
+   and	0xef
+   ld		hl,(sp+@sp+shortChipSelect)
+	or		l
+	ld		(GPSCRShadow),a
+;	ioi	ld (GPSCR),a
+	IOWRITE_A(GPSCR)
+
+	ld		a,014h						;use 32khz osc, disable main osc
+	ld		(GCSRShadow),a
+;	ioi	ld (GCSR),a
+	IOWRITE_A(GCSR)
+
+_oscdelay:								;provides delay to set oscillators
+	ld		a,0x5a
+	ld		b,180							;180 approx. 25 usec @ 7.3728MHz
+.oscloop:
+#ifdef HIT_WATCHDOG
+;  	ioi 	ld (WDTCR),a			  	;hit watchdog
+	IOWRITE_A(WDTCR)
+#endif
+	djnz	.oscloop
+	ld		hl,0
+	jp		.done
+
+.errormsg:
+	ld		hl,0ffffh
+.done:
+	;return hl
+#endasm
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

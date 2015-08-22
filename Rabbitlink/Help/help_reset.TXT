@@ -1,0 +1,8 @@
+
+RESET
+   Usage: "reset [ALL|FILES|VARIABLES]"
+   The following data can be reset with this command:
+   all        - Reset the internal configuration to factory defaults and
+                remove all web pages and variables.
+   files      - Remove all web pages.
+   variables  - Remove all web variables.

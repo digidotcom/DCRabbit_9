@@ -1,0 +1,1564 @@
+/*** BeginHeader */
+#ifndef __CLONE_LIB
+#define __CLONE_LIB
+/*** EndHeader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+CLONE.LIB
+	Copyright (c) 2002, ZWorld.
+	Last revised:  01/07/2004
+
+DESCRIPTION:
+	Functions used to "clone" boards, i.e. copy BIOS and programs from
+	one board to another via a special cloning board and cable. After
+	cloning begins, the cloning board LED toggles about once per second.
+	When cloning is completed successfully, the LED lights up continuously.
+	If an error occurs the LED starts blinking.
+
+	General Algorithm, M=master, S=Slave:
+
+M1    Via triplet coldboot mode:
+      Set up slave MMU.
+      Copy a loader to a high location in the slave RAM
+      Place jump to loader at 0000 on slave.
+		Write total count of chunks to be transmitted.
+		Intialize current count in slave RAM.
+		Turn off LED on clone board
+		Reset slave to run code.
+
+S1    Initialize serial port. If autobauding (not assuming same
+       crystal speed), do handshaking with master.
+
+M2    Initialize serial port. If autobauding , do handshaking
+       with slave. Lower speed if necessary.
+
+M3		Transmit the low 16K of the master's flash.
+		This contains the code to copy from RAM to flash.
+		If checksumming enabled, compute CS while transmitting.
+
+M4		If checksumming enabled, transmit checksum.
+
+M5    Wait for signal from slave.
+
+S2    Receive low 16 from the master and copy to low RAM (0000)
+
+S3		If checksumming enabled, receive checksum.
+
+S4    Jump to code in low RAM.
+
+S5    Adjust bytes if necessary for crystal speed, clone flags,
+       and possibly different ID block. Compute checksum adjustment
+       if checksumming enabled.
+
+S6    Copy 16K from low RAM to low flash.
+
+S7		If checksumming enabled, verify checksum.
+
+S8		If more to copy, signal master to send,
+       else if run after clone enable jump to cloned program
+       else light clone board LED and just loop.
+
+M6    Send next 8K chunk and checksum if needed
+
+M7    Wait for signal from slave.
+
+S9    Receive 8K and copy to 4000k in RAM
+
+S10   If checksumming enabled, receive checksum.
+
+S11   Jump to code in low RAM.
+
+S12   Copy 8K from 4000k RAM to correct flash address.
+
+S13   Goto S7
+
+	The first chunk is 16K to ensure all flash drivers and other necessary
+	code fits in. The rest of the chunks are 8K so that they don't overlap
+	the loader in high RAM in case a 32K RAM is used.
+
+   Program size and chosen options are used by simple states machines in
+   both the high slave code and low slave code to determine whether the
+   whole process should repeated for other flash sections such as the
+   user and system ID block areas.
+
+END DESCRIPTION **********************************************************/
+
+/************************************************************************
+**   BEGIN MASTER CODE  *************************************************
+*************************************************************************/
+
+/*** BeginHeader	CloneMode */
+xmem void CloneMode();
+extern char number8_16Kchunks;
+extern char current8_16Kchunk;
+extern char currentState;
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+CloneMode							<CLONE.LIB>
+
+SYNTAX: void CloneMode();
+
+DESCRIPTION:	This function is called from the Master's BIOS if a
+cloning cable is detected. It does the following:
+
+ * Disable interrupts
+ *	Disable the watchdog timer
+ * Set the baud rate to 2400 for the programming port
+ *	Turn off cloning board LED
+ * Reset the slave
+ * Set up clone MMU/MIU for RAM in quadrant 0
+ * Send the initial loader to physical address bee00h
+ * Put jump to initial loader at address 0000
+ * Call function to send BIOS and application to clone RAM
+
+END DESCRIPTION **********************************************************/
+
+char number8_16Kchunks;
+char current8_16Kchunk;
+char currentState;
+
+#define CLONESPOT		0x7e00     // logical addr. of slv loader
+#define CLONESPOTDATASEG 0x77
+#define CLONESPOTL16	0xee00     // xmem addr. of
+#define CLONESPOTXPC	0x70       //   slv loader
+#define CLONESPOTH4	0x07       // bits 16-19 of phys addr.
+                                //   of slv loader
+#define LOADTRIPLET(x,y,z) $\
+		  ld	d,x				$\
+		  ld	e,y				$\
+		  ld	c,z
+
+#asm xmem nodebug
+CloneMode::
+	ipset 3							; disable all interrupts
+	ld    a, 0x51
+	ioi 	ld (WDTTR),a
+	ld    a, 0x54
+	ioi 	ld (WDTTR),a			; disable watchdog
+#if FAST_RAM_COMPILE == 1
+	; The following code changes the memory so that we switch back to running in flash
+	; to ensure the cloned flash is identical to the original.  The code relocates
+	; the data segment to ensure that it is still in view in the logical space
+	; after the swap.  Any battery backed memory is ignored.
+#if __SEPARATE_INST_DATA__
+	ld 	a, CLONE_MMIDR_VALUE				; Invert A16 in the data segment so that the current dataseg is still in view as we switch to flash
+	ioi	ld	(MMIDR), a
+#else
+	#pragma nowarn warnt	// suppress following line's trivial demotion warning
+   ld    a, CLONE_DATASEGVAL 				; Special cloning dataseg value to keep logical data space in view when cloning.
+   ioi    ld (DATASEG), a
+#endif
+	ld  	a, CLONE_MEMBREAK					; load special segsize value so we can locate
+	ioi 	ld (SEGSIZE), a 		 			; data segment in fast ram mode while running in flash
+	ld  	a, CS_RAM|RAM_WSTATES 			; move the dataseg to the fast/primary RAM
+	ioi 	ld (MB2CR), a
+	ld    a, FLASH_WSTATES|CS_FLASH		; map lower two quadrants to flash
+	ioi 	ld (MB0CR),a
+	ioi 	ld (MB1CR),a
+#endif
+	lcall	Set2400Baud
+	lcall	ResetClone				; pulse reset
+
+	;******** Start loading clone's internal registers
+	LOADTRIPLET(0x80,GCSR,0x08)		; undivided clock on clone
+	call	SendTriplet
+
+	LOADTRIPLET(0x80,GOCR,0x30)
+	call	SendTriplet
+
+	;******** Set up clone's memory
+	LOADTRIPLET(0x80,MMIDR,0x00)
+	call	SendTriplet
+	LOADTRIPLET(0x80,MB0CR,CS_RAM|RAM_WSTATES)		; RAM, 0 wait states
+	call	SendTriplet
+	LOADTRIPLET(0x80,MB1CR,CS_RAM|RAM_WSTATES)		; RAM, 0 wait states
+	call	SendTriplet
+	LOADTRIPLET(0x80,MB2CR,CS_RAM|RAM_WSTATES)		; RAM, 0 wait states
+	call	SendTriplet
+	LOADTRIPLET(0x80,MB3CR,CS_RAM|RAM_WSTATES)		; RAM, 0 wait states
+	call	SendTriplet
+	LOADTRIPLET(0x80,DATASEG,CLONESPOTDATASEG)
+	call	SendTriplet
+	LOADTRIPLET(0x80,SEGSIZE,0xD7)
+	call	SendTriplet
+
+	;******* Set clone's TXA high
+	LOADTRIPLET(0x80,PCDR,0x40)
+	call	SendTriplet
+
+  ;******** Disable clone's watchdog
+	LOADTRIPLET(0x80,WDTTR,0x51)
+	call	SendTriplet
+	LOADTRIPLET(0x80,WDTTR,0x54)
+	call	SendTriplet
+
+	;******* Copy coldloader to clone here
+	ld    iy,CloneProgram		 ; start of initial loader
+	ld		bc, init_loader_size
+	ld    de, CLONESPOT         ; destination
+.coldload_loop:
+	push	bc
+	xor a
+	ldp   hl, (iy)
+	ld    c, L
+	call	SendTriplet  ; (already loaded to d,e,c)
+	inc   de
+	inc   iy
+	pop	bc
+	djnz  .coldload_loop
+
+
+	LOADTRIPLET(0x80,GOCR,0x20)
+	call	SendTriplet
+
+	;******* put in jump to intial loader @ 0
+	LOADTRIPLET(0x00,0x00,0xc3)
+	call	SendTriplet
+	LOADTRIPLET(0x00,0x01,0x00)
+	call	SendTriplet
+	LOADTRIPLET(0x00,0x02,CLONESPOT>>8)
+	call	SendTriplet
+
+	;******* initialize count of 8/16K chunks to -1
+	ld		de, CLONESPOT-4
+   ld    c,0xff
+	call	SendTriplet
+   inc   de
+   ld    c,0
+	call	SendTriplet
+
+	;******* put # of 16/8K Chunks in RAM
+#if (CLONE_WHOLE_FLASH==0)
+c  &prog_param.HPA.aaa.a.base;
+	ld    a,(hl)
+c  &prog_param.HPA.aaa.a.addr;
+	ld    hl,(hl)
+	srl   h
+	srl   h
+	srl   h
+	srl   h
+	add   a,h
+	srl   a
+	cp    _FLASH_SIZE_>>1
+	jr    c,.noSpan
+#endif
+	; This may unnecessarily, but harmlessly, attempt cloning of up to 0x1FFF
+	;  extra bytes (located in the ID/User blocks' reserved area) when the value
+	;  of MAX_USERBLOCK_SIZE is not an even multiple of 8 KB.
+	ld		a, -1+(_FLASH_SIZE_>>1)-(MAX_USERBLOCK_SIZE>>13)
+.noSpan:
+
+	ld		de, CLONESPOT-2
+   ld    c,a
+	ld    (number8_16Kchunks),a
+	call	SendTriplet             ; store 8/16K chunk count on slv
+   inc   de
+   ld    c,0
+	call	SendTriplet
+	xor   a
+   ld    (current8_16Kchunk),a     ; initialize current chunk count
+
+	ld		de, CLONESPOT-6
+   ld    c,0
+	call	SendTriplet             ; initialize current state
+	xor   a
+	ld    (currentState),a
+
+	LOADTRIPLET(0x80,0x24,0x80)	; start cold loader on clone running
+	call	SendTriplet
+
+	ld		b, 0xf0						; wait about 240 milliseconds
+	lcall	Delayms
+
+	call  sendBIOSandProgram      ; does not return
+#endasm
+
+
+/* START _FUNCTION DESCRIPTION ********************************************
+sendBIOSandProgram					<CLONE.LIB>
+
+SYNTAX: void sendBIOSandProgram();
+
+DESCRIPTION:	This function sends the BIOS and user program to
+RAM on the cloned board.
+END DESCRIPTION **********************************************************/
+
+int CheckSumWord;
+
+#asm nodebug
+sendBIOSandProgram::
+	;**** Initialize Internet one's cpl checksum
+	;**** Most of the checksum is computed in SendProgChunk
+	ld    hl',0xffff
+	xor   a                   ; Use af' for carries, don't mess
+	ex    af,af'              ;  with  af'/hl' until transmission done!
+
+	ld    a,(current8_16Kchunk) ; Skip port initialization if already done
+
+	cp    0
+   jp    nz,.BeginSend
+
+	;**** Init serialport
+	ld	   a,0xCC
+	ioi   ld (PCFR), a			; serial ports A,C output on port C
+	ld		a, (GCDRShadow)
+	ioi	ld (GCDR), a		   ; enable clock doubler
+	ld    a,01h           		; enable mainclk/2 for timer A
+	ioi 	ld (TACSR),a
+	xor   a
+	ioi 	ld (SACR),a    		; set serial port A async, 8 bit, pport C input
+	ioi   ld (TAT4R), a			; set baud rate for serial port A
+	ioi 	ld (TACR),a
+	ld    hl,SASR
+	ld    ix,SADR
+	ld    b,1
+	lcall  Delayms
+
+#if (CL_ASSUME_SAME_CRYSTAL==0)
+	;**** Begin autobaud
+	ld    d,0
+	ld    b,10
+
+.autoBaudLoop:
+   djnz .retry
+	inc   d
+	jp    z,blinkLED           ; if it reaches zero again, we're hosed
+
+	;***** Initialize serial port
+	ld		a, d
+	ioi   ld (TAT4R), a			; set baud rate for serial port A
+	ld    b,10
+	push  bc
+	ld    b,1
+	lcall  Delayms
+	pop   bc
+
+.retry:
+	xor   a
+	cp    d
+	jr    nz,.beginAutoBaud    ; clear rx first time thru
+	ioi 	ld a, (ix)
+
+.beginAutoBaud:
+	ioi   bit 7, (hl)
+	jr    z, .beginAutoBaud
+	ioi 	ld a, (ix)
+	cp    0xf0                ; wait for byte 0xf0 received
+	jr    nz,.autoBaudLoop
+
+.autoBaudDone:
+	ld    a,0x5a              ; send ack
+	call  SendByte
+#endif
+
+.BeginSend:
+	ld    L,0xf2
+	ld    h,4                 ; send 4 1000h pieces if first chunk
+	ld    a,(current8_16Kchunk)
+	inc   a
+	ld    (current8_16Kchunk),a
+   cp    1
+   jr    z,.send4KPageLoop   ; ready to start if first time
+   sla   a                  ; adjust xpc to copy to 4000h
+	add   a,L
+	ld    L,a
+	ld    h,2                ; send 2 1000h pieces if not first chunk
+.send4KPageLoop:
+	dec   h
+	push  hl
+	ld    de,0xe000		    ; normalize all chunks to start at e000
+	ld    bc,0x1000
+	ld		a,L
+
+	; The first chunk goes to 0 in RAM, subsequent chunks go to 4000h or 5000h.
+	; This is so the code that copies to Flash doesn't get overwritten.
+	cp		0xF6
+	jr		nc, .doAdjust
+	cp		0xF2
+	jr		nc, .noAdjust
+.doAdjust:
+	and	0x01
+	add	a, 0xf6			; tell slave to copy to either 4000h or 5000h
+
+.noAdjust:
+	call  SendByte       ; Send (possibly adjusted) XPC as destination
+
+	ld    a,L            ; use unadjusted XPC for source
+	ld    xpc,a
+	ex    de,hl          ; put addr. in HL
+
+.sendByteLoop:
+	ld    a,(hl)
+   call  SendByte
+	dec   bc
+	xor   a
+	cp    b
+	jr    nz,.DoCheckSum
+	cp    c
+	jr    z,.chunkFinished
+
+.DoCheckSum:
+	bit   0,L            ; On even addresses
+	jr    nz, .oddAddr    ;   do check sum
+	call  GetCheckSumForWord
+
+.oddAddr:
+	inc   hl
+	jr    .sendByteLoop
+
+.chunkFinished:
+	pop   hl
+	inc   L					; adjust xpc
+	xor   a
+	cp    h
+	jr    nz,.send4KPageLoop
+
+#if (CL_CHECKSUM_ENABLED==1)
+	;**** Send Checksum
+	ex    de,hl'         ; Get checksum
+	ex    de,hl
+	ld    de,0
+	ex    af,af'
+   adc   hl,de
+   xor   a
+   cp    h
+   jr    nz,.not_zero
+   cp    L
+   jr    nz,.not_zero
+   ld    hl,0xffff
+.not_zero:
+	ld    a,L            ; CS LSB
+	call  SendByte
+	ld    a,h            ; CS MSB
+	call  SendByte
+#endif
+
+	ioi 	ld a, (SADR)	; clear RX
+
+	//*** wait for go signal ***
+	ld    hl,SASR
+	ld    ix,SADR
+.waitAck:
+	ioi   bit 7, (hl)
+	jr    z, .waitAck
+	ioi 	ld a, (SADR)
+   call  SendByte        ; send answer
+	ld    a,(current8_16Kchunk)
+	ld    d,a
+	ld    a,(number8_16Kchunks)
+	cp    d
+	jp    nz, sendBIOSandProgram
+
+.nextState:
+	ld		a, (currentState)
+
+#if (CL_INCLUDE_ID_BLOCKS==1)
+	cp		1
+	jr		nc, .nextStateIsntOne
+	; this state (one) is the new current state!
+	ld		a, 1
+	ld		(currentState), a
+	; Adjust numbers to make it look like there are MAX_USERBLOCK_SIZE / 8KB
+	;  more blocks to copy, starting at MAX_USERBLOCK_SIZE bytes below the top
+	;  of the first flash.
+	ld		a, _FLASH_SIZE_>>1
+	dec	a
+	ld		(number8_16Kchunks), a
+	#if (0x1FFF & MAX_USERBLOCK_SIZE)
+	; Start one 8 KB block lower when the value of MAX_USERBLOCK_SIZE is not an
+	;  even multiple of 8 KB.  This may unnecessarily, but harmlessly, cause
+	;  recloning of up to 0x1FFF bytes below the ID/User blocks' reserved area.
+	sub	a, 1+(MAX_USERBLOCK_SIZE>>13)
+	#else
+	sub	a, MAX_USERBLOCK_SIZE>>13
+	#endif
+	ld		(current8_16Kchunk), a
+	jp		sendBIOSandProgram
+.nextStateIsntOne:
+#endif
+
+#ifdef USE_2NDFLASH_CODE
+	cp		2
+	jr		nc, .nextStateIsntTwo
+	; this state (two) is the new current state!
+	ld		a, 2
+	ld		(currentState), a
+	ld		a, _FLASH_SIZE_
+	dec	a
+	ld		(number8_16Kchunks), a
+	ld		a, _FLASH_SIZE_>>1
+	dec	a
+	ld		(current8_16Kchunk), a
+	jp		sendBIOSandProgram
+.nextStateIsntTwo:
+#else
+	#if (CL_COPY_2NDFLASH==1)
+	cp		2
+	jr		nc, .nextStateIsntTwo
+	; this state (two) is the new current state!
+	ld		a, 2
+	ld		(currentState), a
+	ld		a, _FLASH_SIZE_
+	dec	a
+	ld		(number8_16Kchunks), a
+	ld		a, _FLASH_SIZE_>>1
+	dec	a
+	ld		(current8_16Kchunk), a
+	jp		sendBIOSandProgram
+.nextStateIsntTwo:
+	#endif
+#endif
+
+.justLoop:
+	; no more states, just loop forever
+	jr		.justLoop
+#endasm
+
+/*** BeginHeader	SendTriplet,SendByte, Delayms, Set2400Baud ******/
+root void SendTriplet();
+root void SendByte();
+xmem void Delayms();
+xmem void Set2400Baud();
+/*** EndHeader */
+
+/***********************************************************
+	Function to send triplet of data to coldloader on clone.
+	Load triplet into (d,e,c) using the LOADTRIPLET macro.
+***********************************************************/
+#asm root nodebug
+SendTriplet::
+	ld		a,d
+	call SendByte
+	ld		a,e
+	call SendByte
+	ld		a,c
+	call SendByte
+	ret
+#endasm
+
+/***********************************************************
+	Function to send Byte in register A to clone.
+***********************************************************/
+#asm root nodebug
+SendByte::
+	push hl
+	ld    hl,SASR
+.SendByteWait:
+	ioi 	bit 3,(hl)
+	jr		nz, .SendByteWait	; wait for serial port A not busy
+	ioi 	ld (SADR), a		; send byte in register A
+	pop   hl
+	ret
+#endasm
+
+/***********************************************************
+ Delay function - put 1/1024 sec (~1 ms) into b
+***********************************************************/
+#asm xmem nodebug
+Delayms::
+	push  hl
+	push  de
+	push  iy
+	push  af
+	ld    de, 0e0h			; the lower 3 bits turn over every 1/1024 s
+	ld    h, 0
+.dmsloop0:
+	ld		a, 0ffh			; write any value to RTC0R to load RTC register
+	ioi	ld (RTC0R),a
+	ld		iy, RTC0R
+	ioi	ld l, (iy)
+	and   hl, de
+.dmsloop:
+	ld		a, 0ffh			; capture and compare
+	ioi	ld (RTC0R),a
+	ld		iy, RTC0R
+	ioi	ld a, (iy)
+	and   e
+	cp    L
+	jr    z, .dmsloop
+	djnz  .dmsloop0			; loop until the first value reached
+	pop   af
+	pop   iy
+	pop   de
+	pop   hl
+	lret
+#endasm
+
+/***********************************************************
+ Function to reset clone via programming cable
+***********************************************************/
+#asm xmem nodebug
+ResetClone::
+	ld    a,0x20
+	ioi   ld (GOCR),a				; take master's STATUS pin low
+	ld 	b,100
+	lcall 	Delayms					; wait ~100 msec (b is units of 1/1024 sec)
+	ld    a, 0x30
+	ioi   ld (GOCR), a			; take master's STATUS pin high
+	ld 	b,0ffh
+	lcall 	Delayms					; wait ~512 msec
+	ld 	b,0ffh
+	lcall 	Delayms
+	lret
+#endasm
+
+/***********************************************************
+ Function to set 2400 baud
+***********************************************************/
+#asm xmem nodebug
+Set2400Baud::
+	ld		a, 0x0
+	ioi 	ld (SACR), a			; serial port A: async, 8-bit, no intr
+	ld		a, (freq_divider)
+	cp		64
+jr		c, .s24noScaling64
+	push	af
+	ld		a, 0x03
+	ioi	ld (TAT1R), a			; divide timer A1 by two
+	ld		a, 0x10
+	ioi	ld (TACR), a			; run timer A4 off timer A1 output
+	pop	af
+	jr .s24scaling64
+.s24noScaling64:
+	cp		32							; if CPU freq > 19.584KHz, need to rescale A1
+	jr		c, .s24noScaling32	;		to get A4 divider < 256
+	push	af
+	ld		a, 0x01
+	ioi	ld (TAT1R), a			; divide timer A1 by two
+	ld		a, 0x10
+	ioi	ld (TACR), a			; run timer A4 off timer A1 output
+	pop	af
+	jr		.s24scaling32
+.s24noScaling32:
+	sla	a
+.s24scaling32:
+	sla	a							; multiply 19200 divider by 8 to get 2400 divider
+.s24scaling64:
+	sla	a
+	dec	a
+	ioi 	ld (TAT4R), a			; serial port A:  2400 baud
+	ld		a,0xCC
+	ioi 	ld (PCFR), a			; serial ports A,C output on port C
+	lret
+#endasm
+
+/*** BeginHeader GetCheckSumForWord */
+root void GetCheckSumForWord();
+/*** EndHeader */
+
+/***********************************************************
+ Function to compute intermediate Internet Checksum for word
+ in (HL). Partial sum is input and output in HL'. This method
+ of  doing one word at a time is used because it can be done
+ during  program transmission with no loss of speed. This
+ function finishes in way less time a than it takes to send a
+ byte.
+
+ Called by master as each word is sent.
+ Assumes no other routine is changing AF' or HL' !!!
+ The carry flag in the alternate flag register should be
+ cleared and HL' should be set to 0xFFFF before calling
+ for the first time for sequence to be summed.
+***********************************************************/
+#asm nodebug root
+GetCheckSumForWord::
+#if (CL_CHECKSUM_ENABLED==1)
+	push  hl
+	push  af
+	ld    hl,(hl)			;  Get current word
+	ex    de,hl'         ;  Put sum in DE
+	ex    af,af'         ;  get stored carry flag
+	adc   hl,de    	   ;  Put new sum in HL
+	ex    af,af'         ;  save carry flag for next time in
+	xor   a
+	cp    L
+	jr    nz	, .NotZero
+	cp    h
+	jr    nz	, .NotZero
+	ld    hl,0xffff	   ; If zero set to one
+.NotZero:
+	ex    de,hl
+	ex    de,hl'         ; Keep running sum in HL'
+	pop   af
+	pop   hl
+	ret
+#else
+	ret
+#endif
+#endasm
+
+
+/************************************************************************
+**   BEGIN SLAVE CODE   *************************************************
+*************************************************************************/
+
+/*** BeginHeader InRAMNowClone,  blinkLED, CloneProgram ***/
+root void InRAMNowClone();
+root void blinkLED();
+root void CloneProgram();
+/*** EndHeader  ****************/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+CloneProgram						<CLONE.LIB>
+
+SYNTAX: void CloneProgram();
+
+DESCRIPTION:	This function is copied over to the clone byte by byte
+and executed there only. It is assumed that the BIOS will copied to 0000.
+
+Note that this function needs to be relocatable -- do not add any
+absolute jumps or function calls.
+
+This function writes 16K or 8K chunks at a time that are received over
+the cloning cable to RAM. All quadrants are mapped to RAM when this runs.
+The first 16K chunk is placed at 0000h, all subsequently received chunks
+are 8K and are copied to 4000h. The first 16K chunk contains the code
+necessary to copy sections of RAM to flash.
+
+The total number of chunks and the initial value of the current
+chunk count, -1, are sent via triplet to fixed, out of the way RAM
+locations by the master before the first time this function runs.
+
+The algorithm works as follows:
+
+1. Increment chunk count
+2. If first chunk && CL_ASSUME_SAME_CRYSTAL==0
+     autobaud with master to set up baud rate
+3. Receive XPC value for 4K chunk.
+4. Receive 4K bytes if in first chunk, copy to 0000h + 1000h*n,
+   else copy to 4000h + 1000h*n
+5. Repeat 3,4 3 or 1 more times
+6. Receive checksum from master and store in RAM
+   if checksumming enabled.
+7. Jump down to flash copying function, when finished this function will
+   jump back to 1., or run the program in flash if finished
+
+END DESCRIPTION **********************************************************/
+
+#asm nodebug
+CloneProgram::
+	ld		a, 0x51
+ioi	ld	(WDTTR), a
+	ld		a, 0x54
+ioi	ld	(WDTTR), a				; disable watchdog
+	ld		ix, SADR					; set up this function's access to serial port
+	ld		hl, SASR					;  A's data and status registers, also including
+	ld		hl', SASR				;  HL' for use within the EXX'd block below!
+	ld		b, 2						; receive 2 4K chunks if not first time
+	ld		a, (CLONESPOT-4)
+	inc	a
+	ld		(CLONESPOT-4), a		; this RAM spot now tracks current 8/16K chunk count
+	cp		0x00
+	jr		nz, .notFirstEntry
+	ld		b, 4						; receive 4 4K chunks if first time
+
+	;*** Initialize serial port only on first entry
+	;***** init serial port
+	ld		a, 0xCC
+ioi	ld	(PCFR), a				; Serial ports A,C output on port C
+#if (CL_DOUBLE_CLONE_CLOCK==1)
+	ld		a, 0x07
+#else
+	xor	a
+#endif
+ioi	ld	(GCDR), a				; enable clock doubler
+	ld		a, INITIAL_SLV_BAUD_DIV
+ioi	ld	(TAT4R), a				; set max baud rate for serial port A
+	ld		a, 01h					; enable mainclk/2 for timer A
+ioi	ld	(TACSR),a
+	xor	a
+ioi	ld	(TACR), a
+ioi	ld	(SACR), a				; serial port A async, 8 bit, pport C input
+
+#if (CL_ASSUME_SAME_CRYSTAL==0)
+ioi	ld	a, (ix)					; clear rx
+.BeginW:
+ioi	bit	3, (hl)
+	jr		nz, .BeginW				; wait for serial port A not busy
+ioi	ld	(ix), 0xf0				; send byte in a to autobaud
+
+ioi	bit	7, (hl)
+ioi	ld	a, (ix)					; get ack, just any byte
+	cp		0x5a
+	jr		nz, .BeginW
+#endif
+
+.notFirstEntry:
+
+	;***** Get XPC of program chunk start addr.
+.GetXPC:
+ioi	bit	7, (hl)
+	jr		z, .GetXPC
+ioi	ld	a, (ix)
+	ld		xpc, a
+
+	;***** Get all the program bytes in chunk
+	exx
+	ld		de, 0xe000
+	ld		bc, 0x1000
+.GetByte:
+ioi	bit	7, (hl)
+	jr		z, .GetByte
+ioi	ld	a, (ix)					; grab the byte
+	ld		(de), a					; store it in memory
+	inc	de
+	dec	bc
+	xor	a
+	cp		b
+	jr		nz, .GetByte
+	cp		c
+	jr		nz, .GetByte
+	exx
+	djnz	.GetXPC					; start next chunk
+
+.EndofMegaChunk:
+
+#if (CL_CHECKSUM_ENABLED==1)
+	;**** Receive checksum and store it at 0xefff0
+.GetCS_LSB:
+ioi	bit	7, (hl)
+	jr		z, .GetCS_LSB
+ioi	ld	e, (ix)
+.GetCS_MSB:
+ioi	bit	7, (hl)
+	jr		z, .GetCS_MSB
+ioi	ld	d, (ix)
+	ex		de, hl
+	ld		a, 0x07					; addr bits [19:16]
+	ldp	(0xeff0), hl
+#endif
+	jp		InRAMNowClone
+
+EndCloneProgram::
+init_loader_size:: EQU EndCloneProgram-CloneProgram
+#endasm
+
+int CheckSumAdjustment;
+#if _FLASH_SIZE_ < 0x80
+char SavedCloneFlashXPC;
+#endif
+
+#asm nodebug
+
+;****  clone BIOS entry point *****************************
+;**** This will definitely need reworking for large sector flash
+InRAMNowClone::
+	ipset	3
+
+	;**** Read reset status bits now so later they'll be cleared
+ioi	ld	a, (GCSR)
+
+	ld		a, 0x51
+ioi	ld	(DATASEG), a
+//	ld		a, 0x51
+ioi	ld	(STACKSEG), a
+	ld		a, 0xD9
+ioi	ld	(SEGSIZE), a
+
+	;**** Map lower two quadrants to RAM, top two to flash
+	ld		a, RAM_WSTATES | CS_RAM
+ioi	ld	(MB0CR), a
+	ld		(MB0CRShadow), a
+//	ld		a, RAM_WSTATES | CS_RAM
+ioi	ld	(MB1CR), a
+	ld		(MB1CRShadow), a
+	ld		a, FLASH_WSTATES | CS_FLASH	; map upper two quadrants to flash
+ioi	ld	(MB2CR), a
+	ld		(MB2CRShadow), a
+//	ld		a, FLASH_WSTATES | CS_FLASH
+ioi	ld	(MB3CR), a
+	ld		(MB3CRShadow), a
+
+	;**** Initialize CheckSum corrections
+	ld		hl, 0xffff
+	ld		(CheckSumAdjustment), hl
+
+	;**** Set up temporary BIOS stack
+	ld		hl, BiosStack			; Set up a temporary stack to perform call.  Note
+	ld		de, BIOSSTACKSIZE-1	;  that stack segment register is not set up here,
+	add	hl, de					;  but in _ProgStkSwitch, which is normally called
+	ld		sp, hl					;  in premain after stack alloc init.
+
+	;*** if first chunk, do crystal speed measurement
+	ld		a, CLONESPOTH4
+	ldp	hl, (CLONESPOTL16-4)
+	bool	hl
+	jp		nz, .CopyInit
+
+	;**** Look for ID block on flash
+	ld		hl, 0x0C
+	call	_readIDBlock
+
+	bool	hl
+	jr		z, .idBlockOk01
+
+	;**** Erase SysIDBlock if error retured
+	ld		hl, SysIDBlock
+	ld		b, SysIDBlock+marker+6-SysIDBlock
+	xor	a
+.blockEraseLoop01:
+	ld		(hl), a
+	inc	hl
+	djnz	.blockEraseLoop01
+
+.idBlockOk01:
+	;**** Set up bitmap of flash quadrants to top 512k,
+	;**** setup flash transfer buffer in first quadrant, and
+	;**** initialize flash driver.
+	ld		hl, 0x10C
+	call	_InitFlashDriver
+
+#if CL_INCLUDE_ID_BLOCKS==1
+	ld		a, 1								; tell the flash driver not to protect the
+	ld		(_overwrite_block_flag), a	;  top (non-existent ID/User) blocks
+#endif
+	ld		a, (_FlashInfo+writeMode)
+	cp		002h
+	jr		z, .sectorMode
+	ld		bc, 0
+	call	_EraseFlashChip
+.sectorMode:
+
+#if (STERILE_CLONES==1)
+	;**** sterilize clone
+	ld		a, 1
+	ld		hl, I_am_a_sterile_clone
+	call	AdjustCheckSumByte		; Adjust checksum for change
+	ld		(hl), a
+#endif
+
+#if FAST_RAM_COMPILE
+	ld		a, 0
+	ld		hl, FastRAM_InRAM
+	call	AdjustCheckSumByte
+	ld		(hl), a
+#endif
+
+	;**** set clone flag before copying to flash
+	ld		a, 1
+	ld		hl, I_am_a_clone
+	call	AdjustCheckSumByte		; Adjust checksum for change
+	ld		(hl), a
+
+#if (CL_ASSUME_SAME_CRYSTAL==0)
+	;**** measure crystal speed using coldloader algorithm
+	ld		a, CS_RAM					; 4 waitstates
+ioi	ld	(MB0CR), a
+	xor	a
+ioi	ld	(GCDR), a					; Disable clock doubler
+	ld		bc, 0000h					; init counter
+	ld		de, 07FFh					; mask for RTC bits
+.waitForZero:
+ioi	ld	(RTC0R), a					; Fill RTC registers
+ioi	ld	hl, (RTC0R)					; get lowest two RTC regs
+	and	hl, de						; mask off bits
+	jr		nz, .waitForZero			; wait until bits 0-9 are zero
+.timingLoop:
+	inc	bc								; Increment counter
+	push	bc								; save counter
+	ld		b, 0x20
+	ld		hl, WDTCR
+.delayLoop:
+ioi	ld	(hl), 0x5A					; Hit watchdog
+	djnz	.delayLoop
+	pop	bc								; Restore counter
+ioi   ld	(RTC0R), a					; Fill RTC registers
+ioi   ld	hl, (RTC0R)					; Get lowest two RTC regs
+	bit	2, h							; Test bit 10
+	jr		z, .timingLoop				; Repeat until bit set
+	ld		h, b
+	ld		l, c
+	ld		de, 8
+	add	hl, de						; Add 8 (equiv. to rounding up later)
+	rr		hl
+	rr		hl
+	rr		hl
+	rr		hl								; Divide by 16
+	ld		a, l							;  this is our divider
+	ld		hl, divider19200
+#if (CL_CHECKSUM_ENABLED==1)
+	call	AdjustCheckSumByte		; Adjust checksum for changed divider
+#endif
+	ld		(divider19200), a			; store new freq.
+	ld		a, RAM_WSTATES | CS_RAM	; restore wait states
+ioi	ld	(MB0CR), a
+
+#if (CLOCK_DOUBLED == 1)
+	ld		a, (divider19200)
+	cp		22								; 21 * 0.6144 = 12.9MHz (doubling cutoff)
+	jr		c, .CcanDouble
+	xor	a
+	jr		.CsetGCDR
+.CcanDouble:
+	ld		a, 07h						; 20ns nominal Low time, best for osc < 14MHz
+.CsetGCDR:
+#else
+	xor	a								; user says clock not doubled
+#endif
+ioi	ld	(GCDR), a					; if nonzero, clock is doubled
+#endif
+
+.CopyInit:
+	ld		ix, RTC0R					; address of base register
+.read_rtc0:
+	ld		a, 0
+ioi	ld	(ix), a						; copy to holding registers
+ioi	ld	c, (ix)						; save lowest byte
+ioi	ld	e, (ix+2)					; low bit contains seconds
+ioi	ld	(ix), a						; copy to holding registers again
+ioi	ld	a, (ix)						; get least again
+	cp		c								; must not have changed
+	jr		nz, .read_rtc0				; if changed do it all again
+	ld		a, e
+	and	1
+	sla	a
+	sla	a
+	sla	a
+	sla	a
+	or		0x20
+ioi	ld	(GOCR), a					; Toggle LED on cloning board
+
+#if CL_INCLUDE_ID_BLOCKS==1
+	ld		a, 1								; tell the flash driver not to protect the
+	ld		(_overwrite_block_flag), a	;  top (non-existent ID/User) blocks
+#endif
+
+	;**** initialize xpc to start at 0
+	ld		a, CLONESPOTH4
+	ldp	hl, (CLONESPOTL16-4)		; get current chunk number
+
+	xor	a								; zero a
+	cp		L
+	jr		z, .FirstTime
+	ld		ix, 2							; times to loop
+	dec	L
+	sla	L
+	ld		a, 0xf6
+	add	a, L
+	jr		.pageLoop
+.FirstTime:
+#if _FLASH_SIZE_ < 0x80
+	ld		a, (_FlashInfo+flashXPC)	; preserve first (base) flash access XPC
+	ld		(SavedCloneFlashXPC), a		;  for restoration later
+#endif
+	ld		ix, 4							; times to loop
+	ld		a, 0xF2						; start with 0000h based XPC value
+
+.pageLoop:
+	ld		de, 0xe000
+	ld		iy, 0xe000
+
+.sectorLoop:
+	;**** Copy sector to flash
+	push	af
+	cp		0xF6
+	jr		nc, .doAdjust
+	cp		0xF2
+	jr		nc, .noAdjust
+.doAdjust:
+	and	0x01							; If past the first 16K chunk, adjust XPC
+	add	a, 0xF6						;  to get code starting at 4000h, not 0000h.
+
+.noAdjust:
+	ld		xpc, a
+	ld		bc, (_FlashInfo+sectorSize)
+	push	iy
+	push	ix
+	push	de
+	call	_copyToFlashBuf
+	pop	de
+	pop	ix
+	pop	iy
+	pop	af								; Get destination xpc
+	ld		xpc, a
+	push	af
+
+	push	iy
+	push	ix
+	push	de
+	ld		b, 0x80						; default to MB2CR quadrant flash XPC base
+	push	af
+#if _FLASH_SIZE_ < 0x80
+	add	a, 0x0E
+	and	0x40
+	jr		z, .nochangexpc				; in second flash?
+	ld		a, (_FlashInfo+flashXPC)	; get first (base) flash access XPC
+	add	a, 0x40							; change to second flash access XPC
+	ld		(_FlashInfo+flashXPC), a	;  (assumed to be in the following quadrant)
+	ld		a, FLASH_WSTATES|CS_FLASH2
+	ld		(MB3CRShadow), a
+ioi	ld	(MB3CR), a
+	ld		a, 1								; tell the flash driver not to protect the
+	ld		(_overwrite_block_flag), a	;  top (non-existent ID/User) blocks
+	jr		.end2ndFCheck
+.nochangexpc:
+#endif
+	ld		a, FLASH_WSTATES|CS_FLASH
+	ld		(MB3CRShadow), a
+ioi	ld	(MB3CR), a
+.end2ndFCheck:
+	pop   af
+   add   a,b		; this assumes MB2CR/MB3CR quadrants for flash access
+   ld		bc,(_FlashInfo+sectorSize)
+   call	_WriteFlash
+	bool  hl
+	jp		nz, blinkLED					; Write failure?
+#if _FLASH_SIZE_ < 0x80
+	ld		a, (SavedCloneFlashXPC)		; recover first (base) flash access XPC
+	ld		(_FlashInfo+flashXPC), a	;  and restore it
+#endif
+	pop   de
+	pop   ix
+	pop   iy
+	pop   af
+	call  bioshitwd
+
+	;**** Bump up destination by sector size
+	ld		hl,(_FlashInfo+sectorSize)
+	add   hl,de
+	ld    d,h
+	ld    e,L
+
+.continueCopy:
+	;**** Roll address back to E000 if F000
+	push  de
+	ld    hl,0x0fff
+	and   hl,de
+	pop   hl
+	jr    nz,.noRollOver
+	inc   a
+	dec   ix
+	push  ix
+   bool  ix
+   pop   ix
+	jp    nz,.pageLoop
+	jr    .CopyDone
+.noRollOver:
+	ld    iy,hl
+	ex    de,hl
+   jp    .sectorLoop
+
+.CopyDone:
+
+#if CL_INCLUDE_ID_BLOCKS==0
+	xor	a									; re-enable the flash driver's top
+	ld		(_overwrite_block_flag), a	;  (ID/User) blocks protection
+#endif
+
+#if (CL_CHECKSUM_ENABLED==1)
+
+	//*** initialize HL' with transmitted Checksum
+	ld    a,0x07
+	ldp   hl,(0xeff0)
+	ld    de,0
+	ex    de,hl
+   xor   a                ; clear CF
+	sbc   hl,de
+	push  hl
+	pop   hl'
+	call GetCheckSumForChunk
+
+	xor   a                ; clear CF
+	ld    de,0xffff
+	sbc   hl,de
+	jp    nz,blinkLED      ; Sum mismatch?
+#endif
+//*** see if there is another chunk to receive
+	ld    a,CLONESPOTH4
+	ldp   hl,(CLONESPOTL16-4)
+	ld    b,L
+	inc   b
+	ld    a,CLONESPOTH4
+	ldp   hl,(CLONESPOTL16-2)
+	ld    a,L
+	cp    b
+   jp    nz,._continue
+
+.NextState:
+	ld    a,CLONESPOTH4
+	ldp   hl,(CLONESPOTL16-6)
+	ld    a,L
+
+#if (CL_INCLUDE_ID_BLOCKS==1)
+	cp		1
+	jr		nc, .NextStateIsntOne
+	; this state (one) is the new current state!
+	ld		hl, 1
+	ld		a, CLONESPOTH4
+	ldp	(CLONESPOTL16-6), hl
+	; Adjust numbers to make it look like there are MAX_USERBLOCK_SIZE / 8KB
+	;  more blocks to copy, starting at MAX_USERBLOCK_SIZE bytes below the top
+	;  of the first flash.  (Using _FlashInfo's information will relocate the
+	;  ID/User blocks correctly on a master/clone pair with dissimilar sized
+	;  flash chips, but all bets are off if the master's code overlaps the
+	;  clone's relocated ID/User blocks area!)
+	ld		h, 0								; The ID/User blocks
+	ld		a, (_FlashInfo+flashSize)	;  chunks end count is
+	ld		L, a								;  the number of 8 KB
+	srl	L									;  blocks, adjusted for
+	dec	L									;  a zero based count
+	ld		a, CLONESPOTH4					;  and the initial
+	ldp	(CLONESPOTL16-2), hl			;  16 KB chunk.
+	ld		a, L
+	#if (0x1FFF & MAX_USERBLOCK_SIZE)
+	; Start one 8 KB block lower when the value of MAX_USERBLOCK_SIZE is not an
+	;  even multiple of 8 KB.  This may unnecessarily, but harmlessly, cause
+	;  recloning of up to 0x1FFF bytes below the ID/User blocks' reserved area.
+	sub	a, 2+(MAX_USERBLOCK_SIZE>>13)
+	#else
+	sub	a, 1+(MAX_USERBLOCK_SIZE>>13)
+	#endif
+	ld		L, a
+	ld		a, CLONESPOTH4
+	ldp	(CLONESPOTL16-4), hl
+	jp		._continue
+.NextStateIsntOne:
+#endif
+
+#ifdef USE_2NDFLASH_CODE
+// This could use optimizing.  It works the same as the
+// else block and copies the whole 2nd flash now.
+	cp		2
+	jr		nc, .NextStateIsntTwo
+	; this state (two) is the new current state!
+	ld		hl, 2
+	ld		a, CLONESPOTH4
+	ldp	(CLONESPOTL16-6), hl
+	ld		hl, _FLASH_SIZE_		; The 2nd flash chunks end count is the same as
+	dec	L							;  the number of 4 KB blocks, adjusted for a zero
+	ldp	(CLONESPOTL16-2), hl	;  based count and the initial 16 KB chunk.
+	ld		L, _FLASH_SIZE_>>1	; The 2nd flash chunks start count is
+	dec	L							;  the number of 8K chunks, adjusted
+	dec	L							;  for a "minus one" based count and
+	ldp	(CLONESPOTL16-4), hl	;  and the initial 16 KB chunk.
+	ld		a, (_FlashInfo+writeMode)
+	cp		002h
+	jr		z, .sectorMode2
+	ld		a, 0x51
+ioi	ld	(WDTTR), a
+	ld		a, 0x54
+ioi	ld	(WDTTR), a
+	ld		a, FLASH_WSTATES|0x02
+	ld		(MB3CRShadow), a
+ioi	ld	(MB3CR), a
+	ld		bc, 0
+	call	_EraseFlashChip2
+.sectorMode2:
+	jr		._continue
+.NextStateIsntTwo:
+#else
+	#if CL_COPY_2NDFLASH
+	cp		2
+	jr		nc, .NextStateIsntTwo
+	; this state (two) is the new current state!
+	ld		hl, 2
+	ld		a, CLONESPOTH4
+	ldp	(CLONESPOTL16-6), hl
+	ld		hl, _FLASH_SIZE_		; The 2nd flash chunks end count is the same as
+	dec	L							;  the number of 4 KB blocks, adjusted for a zero
+	ldp	(CLONESPOTL16-2), hl	;  based count and the initial 16 KB chunk.
+	ld		L, _FLASH_SIZE_>>1	; The 2nd flash chunks start count is
+	dec	L							;  the number of 8K chunks, adjusted
+	dec	L							;  for a "minus one" based count and
+	ldp	(CLONESPOTL16-4), hl	;  and the initial 16 KB chunk.
+	ld		a, (_FlashInfo+writeMode)
+	cp		002h
+	jr		z, .sectorMode2
+	ld		a, 0x51
+ioi	ld	(WDTTR), a
+	ld		a, 0x54
+ioi	ld	(WDTTR), a
+	ld		a, FLASH_WSTATES|0x02
+	ld		(MB3CRShadow), a
+ioi	ld	(MB3CR), a
+	ld		bc, 0
+	call	_EraseFlashChip2
+.sectorMode2:
+	jr		._continue
+.NextStateIsntTwo:
+	#endif
+#endif
+
+.justLoop:
+#if CL_RUN_AFTER_COPYING==1
+	jp		z, .RunProg
+#else
+	; no more states, just loop forever
+	jr		.justLoop
+#endif
+
+._continue:
+
+//*** reset memory map and jump
+   ld		a, 0xd7
+ioi	ld	(SEGSIZE), a
+	ld		a, CLONESPOTDATASEG
+ioi	ld	(DATASEG), a
+
+	ld		a, 0x51
+ioi	ld	(WDTTR), a
+	ld		a, 0x54
+ioi	ld	(WDTTR), a
+	ld		a, 0x00
+ioi	ld	(MMIDR), a
+	ld		a, CS_RAM | RAM_WSTATES
+ioi	ld	(MB0CR), a
+ioi	ld	(MB1CR), a
+ioi	ld	(MB2CR), a
+ioi	ld	(MB3CR), a
+
+#if (CL_DOUBLE_CLONE_CLOCK==1)
+	ld		a, 0x07						; get enable clock doubler value
+#else
+	xor	a								; get disable clock doubler value
+#endif
+ioi	ld	(GCDR), a
+
+	//*** send go signal ***
+	ld		a, 0xa5
+	call	SendByte
+	ld		hl, SASR
+.waitReply:
+ioi	bit	7, (hl)
+	jr		z, .waitReply
+ioi	ld	a, (SADR)
+	jp		CLONESPOT					; do next chunk
+
+.RunProg:
+
+#if ENABLE_ERROR_LOGGING
+	call	ResetErrorLog
+#endif
+
+#if (CL_RUN_AFTER_COPYING==1)
+	ld		a, 0x51
+ioi	ld	(WDTTR), a
+	ld		a, 0x54
+ioi	ld	(WDTTR), a
+	ipset	3
+	ld		a, 0x00 | FLASH_WSTATES
+ioi	ld	(MB0CR), a
+	lcall	__dkinit__
+#else
+.JustLoop:
+	call	bioshitwd
+	jr		.JustLoop
+#endif
+#endasm
+
+/**********************************************************
+ Function to blink LED on cable continuously
+***********************************************************/
+#asm nodebug
+blinkLED::
+	call  bioshitwd
+	ld		a, 1
+	ioi	ld (RTC0R), a
+	ioi	ld a, (RTC1R)
+	and	0x10
+	or		0x20
+	ioi	ld (GOCR), a
+   jr    blinkLED
+#endasm
+
+
+/*** BeginHeader	GetCheckSumForChunk */
+root void GetCheckSumForChunk();
+/*** EndHeader */
+
+/***********************************************************
+ Function to compute Internet Checksum for chunk.
+ Called by slave after each 8/16K is copied to flash to
+ compare flash contents to checksum transmitted by the master.
+
+	Input:
+	  HL' - transmitted checksum
+	Output:
+	  HL - checksum verification results. Should be 0xffff.
+	       See RFCs 1071,1624.
+	 Physical start address is assumed to be 00000h
+***********************************************************/
+#asm nodebug
+#if (CL_CHECKSUM_ENABLED==1)
+
+GetCheckSumForChunk::
+	ld    a, FLASH_WSTATES | CS_FLASH
+	ioi 	ld (MB3CR),a
+	xor   a              ; clear CF'
+	ex    af,af'
+	ld    a,CLONESPOTH4
+	ldp   hl,(CLONESPOTL16-4)
+	xor   a
+	cp    L
+   jr    nz,.notFirst
+	ld    b,4
+	ld    a,0x72
+	jr    .Begin
+.notFirst:
+	ld    b,2
+	ld    a,0xf6
+	dec   L
+	sla   L					; multiply by 2
+	add   a,L
+#if _FLASH_SIZE_ < 0x80
+   ld    c,a
+	add   a,0x0E
+	and   0x40
+	ld    a,c
+	jr    z,.Begin
+	sub    a,0x40
+	push  af
+	ld    a, FLASH_WSTATES | CS_FLASH2
+	ioi 	ld (MB2CR),a
+	pop   af
+#endif
+.Begin:
+	add   a,0x80
+.PageLoop:
+	ld    xpc,a
+	ld    hl,0xe000      ; new page address
+
+.WordLoop:
+	push  hl             ; Save address
+	ld    hl,(hl)			; Get current word
+	ex    de,hl'         ; Put sum in DE
+	ex    af,af'         ; get stored carry flag
+	adc   hl,de    	   ; Put new sum in HL
+	ex    af,af'         ; save carry flag for next time in AF'
+	xor   a
+	cp    L
+	jr    nz, .NotZero
+	cp    h
+	jr    nz, .NotZero
+	ld    hl,0xffff	   ; If zero set to FFFF
+.NotZero:
+	ex    de,hl
+	ex    de,hl'         ; Keep running sum in HL'
+   pop   hl             ; restore address
+	inc   hl		         ; Increment address
+	inc   hl		         ;  by word
+	push  hl             ; see if page rolled over
+	ld   	de,0x0fff
+	and   hl,de
+	pop   hl
+	jr    nz, .WordLoop
+
+	ld    a,xpc
+	inc   a               ; Increment page
+	djnz  .PageLoop
+
+.SumDone:
+	ex    de,hl'          ; Put sum in de
+	ex    af,af'
+	ld    hl,(CheckSumAdjustment)
+	adc   hl,de           ; HL has adjusted checksum now
+   xor   a
+   cp    h
+   jr    nz,.not_zero
+   cp    L
+   jr    nz,.not_zero
+   ld    hl,0xffff
+.not_zero:
+	ret
+
+#endif
+#endasm
+
+/*** BeginHeader	AdjustCheckSumByte */
+root void AdjustCheckSumByte();
+/*** EndHeader */
+#asm nodebug
+AdjustCheckSumByte::
+/**********************************************************
+	Function to adjust checksum for a byte that is about
+	to change.
+
+	Input:
+		HL - Address of byte
+		A  - new value of byte
+**********************************************************/
+#if (CL_CHECKSUM_ENABLED==1)
+	push  de
+	push  hl
+	push  af
+	bit   0,L               ; address odd?
+	jr    nz,.oAddress
+	ld    hl,(hl)           ; old value to HL
+	ld    d,h
+	ld    e,L               ; old value in DE
+	ld    L,a               ; new value in HL
+	jr    .getDiff
+.oAddress:
+	dec   hl
+	ld    hl,(hl)           ; old value to HL
+	ld    d,h
+	ld    e,L               ; old value in DE
+	ld    H,a               ; new value in HL
+.getDiff:
+	xor   a                 ; clear CF'
+	ex    de,hl
+	sbc   hl,de
+	ex    de,hl
+	ld    hl,(CheckSumAdjustment)
+	add   hl,de
+	ld    (CheckSumAdjustment),hl
+	pop   af
+	pop   hl
+	pop   de
+	ret
+#else
+	ret
+#endif
+
+#endasm
+
+/*** BeginHeader _copyToFlashBuf */
+root void _copyToFlashBuf();
+/*** EndHeader */
+
+#asm root nodebug
+_copyToFlashBuf::
+	;
+	;	Copies [bc] bytes from address [iy] to the flash buffer in XMEM.
+	;	Note that bc must be even!
+	;
+
+	push	af
+	push	ix								; save registers
+	push	hl
+	push	bc
+
+	srl	b
+	rr		c								; divide bc by two
+	ld		ix, (flash_buf_0015)
+
+.loop:
+	ld		a, (flash_buf_1619)		; ensure it gets put in lower two quadrants
+	ld		hl, (iy)						; get values
+	ldp	(ix), hl						; save in flash buffer
+
+	inc	ix
+	inc	ix
+	inc	iy
+	inc	iy
+
+	dec	bc
+
+	ld		a, b
+	or		a
+	jr		nz, .loop
+	cp		c
+	jr		nz, .loop
+
+	pop	bc
+	pop	hl
+	pop	ix								; restore registers
+	pop	af
+
+	ret
+#endasm
+
+/*** BeginHeader  ********************************************/
+#endif
+/*** EndHeader ***********************************************/

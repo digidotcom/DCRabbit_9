@@ -1,0 +1,3184 @@
+/*** Beginheader */
+#ifndef __SMRTSTAR_LIB
+#define __SMRTSTAR_LIB
+
+#if (((_BOARD_TYPE_ < 0x0500) || (_BOARD_TYPE_ > 0x0502)) \
+	&& ((_BOARD_TYPE_ < SR9150) || (_BOARD_TYPE_ > (SR9150+0xFF))))
+#error "SMRTSTAR.LIB supports Smart Star boards only."
+#endif
+/*** endheader */
+
+
+/* START LIBRARY DESCRIPTION ***************************************************
+SMRTSTAR.LIB
+Copyright (c) 2000, Z-World
+
+DESCRIPTION:	Support for the Smart Star systems including
+					digital I/O boards, relay	boards, analog input and output,
+					serial communications, display/keypad module and ethernet.
+
+SUPPORT LIBS:
+
+REVISION HISTORY:
+
+	10/22/02 pel	Modified cases to accomodate ID block table versions 3 and
+						above	in the functions anaSaveCalib() and anaLoadCalib().
+	09/12/02	pel	Additional support for LCD/Keypad.
+
+END DESCRIPTION ****************************************************************/
+
+
+/*** BeginHeader	SlotAddr, _SlotAddr, ChanAddr, BankAddr */
+
+/*=============================================================
+ The following macros are used throughout Smart Star libraries
+ to calculate addressing.
+=============================================================*/
+
+#define SlotAddr(x)	(0x6000 + 0x40*(x))
+
+#define _SlotAddr(x)	$\
+	ld		h, 60h		$\
+	ld		a, l			$\
+	and	07h			$\
+	rla					$\
+	rla					$\
+	rla					$\
+	rla					$\
+	rla					$\
+	rla					$\
+	and	a, 0F0h		$\
+	ld		l, a
+
+#define ChanAddr(slot,slot_chan)		((slot)*128 + (slot_chan))
+
+#define BankAddr(slot,bank)			((slot)*16 + (bank))
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+SlotAddr                   <SMRTSTAR.LIB>
+
+SYNTAX:			SlotAddr(x)
+
+DESCRIPTION:	This is a macro expanded as a C instruction.
+					Determines external register address for a given card
+					slot number.
+					Address is calculated as 0x6000 + 0x40*(x)
+
+PARAMETER1:		Slot number, 0-6 for long backplanes.
+					0-2 for short backplanes.
+
+RETURN VALUE:	None
+
+SEE ALSO:		_SlotAddr
+
+END DESCRIPTION **********************************************************/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_SlotAddr                   <SMRTSTAR.LIB>
+
+SYNTAX:			SlotAddr(x)
+
+DESCRIPTION:	This is a macro expanded as assembly instructions.
+					Determines external register address for a given card
+					slot number.
+					Address is calculated as 0x6000 + 0x40*(x)
+
+PARAMETER1:		Slot number, 0-6 for long backplanes.
+					0-2 for short backplanes.
+
+RETURN VALUE:	None
+
+SEE ALSO:		SlotAddr
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+ChanAddr                   <SMRTSTAR.LIB>
+
+SYNTAX:			ChanAddr(slot, slot_chan)
+
+DESCRIPTION:	This is a macro expanded as a C instruction.
+					Determines external channel address from the given card
+					slot number and given channel number.
+					Address is calculated as (slot)*128 + (slot_chan)
+
+PARAMETER1:		Slot number, 0-6 for long backplanes.
+					0-2 for short backplanes.
+
+PARAMETER2:		Channel number on card.
+
+RETURN VALUE:	None
+
+SEE ALSO:		BankAddr
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+BankAddr                   <SMRTSTAR.LIB>
+
+SYNTAX:			BankAddr(slot, bank)
+
+DESCRIPTION:	This is a macro expanded as a C instruction.
+					Determines external bank address from the given card
+					slot number and given bank number.
+					Address is calculated as (slot)*16 + (bank)
+
+PARAMETER1:		Slot number, 0-6 for long backplanes.
+					0-2 for short backplanes.
+
+PARAMETER2:		Bank number on card.
+
+RETURN VALUE:	None
+
+SEE ALSO:		ChanAddr
+
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader brdResetBus */
+
+void brdResetBus();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+brdResetBus                   <SMRTSTAR.LIB>
+
+SYNTAX:			void brdResetBus();
+
+DESCRIPTION:	Resets all cards on the bus.
+
+PARAMETER1:		None
+
+RETURN VALUE:	None
+
+END DESCRIPTION **********************************************************/
+nodebug
+void brdResetBus()
+{
+	// drop PD7 then raise it again to reset cards on bus
+	BitWrPortI(PDDR, &PDDRShadow, 0x00, 7);
+	BitWrPortI(PDDR, &PDDRShadow, 0xFF, 7);
+}
+
+
+/*** BeginHeader	_SlotShadow, WrSlot, BitWrSlot, RdSlot, BitRdSlot */
+
+int WrSlot(int, int, int);
+int BitWrSlot(int, int, int, int);
+int RdSlot(int, int);
+int BitRdSlot(int, int, int);
+
+extern char	_SlotShadow[8][16];			// shadow regs for values written to slots
+
+/*** EndHeader */
+
+char	_SlotShadow[8][16];			// shadow regs for values written to slots
+
+/* START _FUNCTION DESCRIPTION ********************************************
+WrSlot                   <SMRTSTAR.LIB>
+
+SYNTAX:			int WrSlot(int slot, int addr, int value);
+
+DESCRIPTION:	Writes a value to given slot and address.
+
+PARAMETER1:		Slot number, 0-6 for long backplanes.
+					0-2 for short backplanes.
+PARAMETER2:		Address or channel number.
+PARAMETER3:		Value to write.
+
+RETURN VALUE:	None
+
+SEE ALSO:		BitWrSlot, RdSlot, BitRdSlot
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int WrSlot(int slot, int addr, int value)
+{
+	// if you access a slot > 7, you're out of luck...
+	// only 4 address lines go to each slot,
+	// so addresses > 15 will be wrapped around
+	//
+
+	WrPortE(SlotAddr(slot) + addr, &_SlotShadow[slot][addr], value);
+}
+
+
+/* START _FUNCTION DESCRIPTION ********************************************
+BitWrSlot                   <SMRTSTAR.LIB>
+
+SYNTAX:			int BitWrSlot(int slot, int addr, int value, int bit);
+
+DESCRIPTION:	Writes a value to indicated bit, given slot and address.
+
+PARAMETER1:		Slot number, 0-6 for long backplanes.
+					0-2 for short backplanes.
+PARAMETER2:		Address or channel number.
+PARAMETER3:		Value to write.
+PARAMETER4:		Bit to change.
+
+RETURN VALUE:	None
+
+SEE ALSO:		WrSlot, RdSlot, BitRdSlot
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int BitWrSlot(int slot, int addr, int value, int bit)
+{
+	addr &= 0x0F;		// only 16 addresses per slot
+	bit &= 0x07;		// only 8 bits!
+
+	BitWrPortE(SlotAddr(slot) + addr, &_SlotShadow[slot][addr], value, bit);
+}
+
+
+/* START _FUNCTION DESCRIPTION ********************************************
+RdSlot                   <SMRTSTAR.LIB>
+
+SYNTAX:			int RdSlot(int slot, int addr);
+
+DESCRIPTION:	Writes a value to given slot and address.
+
+PARAMETER1:		Slot number, 0-6 for long backplanes.
+					0-2 for short backplanes.
+PARAMETER2:		Address or channel number.
+
+RETURN VALUE:	Value from given slot address.
+
+SEE ALSO:		BitWrSlot, WrSlot, BitRdSlot
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int RdSlot(int slot, int addr)
+{
+	slot &= 0x07;		// only 8 slots allowed
+	addr &= 0x0F;		// only 16 addresses per slot
+
+	return( RdPortE(SlotAddr(slot) + addr) );
+}
+
+
+/* START _FUNCTION DESCRIPTION ********************************************
+BitRdSlot                   <SMRTSTAR.LIB>
+
+SYNTAX:			int BitRdSlot(int slot, int addr, int bit);
+
+DESCRIPTION:	Writes a value to given slot and address.
+
+PARAMETER1:		Slot number, 0-6 for long backplanes.
+					0-2 for short backplanes.
+PARAMETER2:		Address or channel number.
+PARAMETER3:		Bit to read.
+
+RETURN VALUE:	Bit value from given slot address.
+
+SEE ALSO:		BitWrSlot, WrSlot, BitRdSlot
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int BitRdSlot(int slot, int addr, int bit)
+{
+	slot &= 0x07;		// only 8 slots allowed
+	addr &= 0x0F;		// only 16 addresses per slot
+	bit  &= 0x07;		// only 8 bits!
+
+	return( BitRdPortE(SlotAddr(slot) + addr, bit) );
+}
+
+
+/*** BeginHeader _ERROR_BAD_CHANNEL, _ERROR_BAD_VALUE, _handleFatal */
+
+// fatal error hander for Smart Star I/O
+#define _ERROR_BAD_CHANNEL		15				// invalid channel
+#define _ERROR_BAD_VALUE		16				// invalid input value
+#define _ERROR_BAD_BANK			17				// invalid bank
+
+void _handleFatal(int);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_handleFatal				<SMRTSTAR.LIB>
+
+SYNTAX:			void _handleFatal()
+
+DESCRIPTION:	Low-level routine to handle fatal errors in Smart Star I/O calls.
+It passes the errorcode to the ERROR_EXIT routine.
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+void _handleFatal(int errorcode)
+{
+#asm xmemok
+	pop	hl
+	push	hl							; save PC as arg
+	push	hl
+
+	ld		hl, sp+@SP+errorcode
+	add	hl, sp
+	ld		hl, (hl+2)				; get errorcode (but we've pushed an extra word on the stack!)
+	push	hl							; save errorcode
+
+	ld		iy, (ERROR_EXIT)
+	jp		(iy)						; call ERROR_EXIT
+#endasm
+}
+
+
+/*** BeginHeader	_digOut */
+
+void _digOut(int, int);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_digOut							<SMRTSTAR.LIB>
+
+SYNTAX:			void _digOut(int channel, int value)
+
+PARAMETER1:		The digital output channel to set.
+PARAMETER2:		The output value, 0 or 1.
+
+DESCRIPTION:	Sets the value of a digital output channel.
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+void _digOut(int channel, int value)
+{
+#asm
+	;; calculate bit
+	ld		hl, (sp+@sp+channel)			; get channel from stack
+	ld		a, 07h
+	and	l
+	ld		h, 00h
+	ld		l, a
+	push	hl								; save bit on stack
+
+	;; set up value correctly
+	ld		hl, (sp+@sp+value+2)			; get value from stack
+	ld		a, 0xFF						; new value if set
+	bool	hl
+	jr		nz, .doneVal
+	xor	a								; new value if cleared
+.doneVal:
+	ld		h, 00h
+	ld		l, a
+	push	hl								; save value on stack
+
+	;; calculate device address
+	ld		a,02h
+	ld		hl, (sp+@sp+channel+4)		; get channel from stack
+	bit	3,l
+	jr		z,.doneAddr
+	set	0,a
+
+;	ld		a, 078h
+;	and	a, l
+;	rrca									; 4 * (channel >> 3) & 0x0F
+;	set	1, a							; add two
+;	bit	2, a
+;	jr		z, .doneAddr
+;	set	0, a							; add one if (chan>>3) is odd
+.doneAddr:
+	ld		h, 00h
+	ld		l, a
+	push	hl								; save address on stack
+
+	;; calculate slot number
+	ld		hl, (sp+@sp+channel+6)		; get channel from stack
+	rl		l								; put bit 7 into carry flag
+	rl		h								; put carry flag into bit 0
+	ld		a, 07h
+	and	h
+	ld		h, 00h
+	ld		l, a
+	push	hl								; save slot on stack
+
+	call	BitWrSlot					; call slot write function
+	add	sp, 08h						; restore stack ptr
+#endasm
+}
+
+/*** BeginHeader	digOut */
+
+void digOut(int, int);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+digOut							<SMRTSTAR.LIB>
+
+SYNTAX:			void digOut(int channel, int value)
+
+
+DESCRIPTION:	Writes a value to an output channel, HVOUT0-HVOUT7,
+					I/O8-I/O15 (if installed). This function is non-reentrant.
+
+PARAMETER1:		The digital output channel to write.  channel should be
+					passed as:
+
+							channel = (slotnumber*128)+channelnumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	channelnumber is a value of 0-15.
+					Or use the following macro:
+
+							channel = ChanAddr(slotnumber, channelnumber)
+
+PARAMETER2:		The output value, 0 or 1.
+
+RETURN VALUE:	None
+
+SEE ALSO:		digBankOut, digBankIn, digIn
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+void digOut(int channel, int value)
+{
+	///hard coded max channel calculated as 6*128+15=783
+	if ((channel < 0) || (channel > 783) || (value < 0) || (value > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	_digOut(channel, value);
+}
+
+/*** BeginHeader	_digBankOut */
+
+void _digBankOut(int, int);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_digBankOut						<SMRTSTAR.LIB>
+
+SYNTAX:			void _digBankOut(int bank, int value)
+
+PARAMETER1:		The bank of digital outputs to set.
+PARAMETER2:		The output value, where each bit corresponds to one channel.
+
+DESCRIPTION:	Sets the values of one bank of digital output channels.
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+void _digBankOut (int bank, int value)
+{
+#asm
+	;; push value on stack
+	ld		hl, (sp+@sp+value)		// get value from stack
+	push	hl					// save value on stack
+
+	// calculate address
+	ld		hl, (sp+@sp+bank+2)		// get bank from stack
+	ld		a, 07h
+	and	l
+;	inc	a
+;	rla
+	ld		h, 00h
+	ld		l, a
+	push	hl					// save addr on stack
+
+	;; calculate slot number
+	ld		hl, (sp+@sp+bank+4)		// get bank from stack
+	ld		h, 00h
+	ld		a, l
+	rra
+	rra
+	rra
+	rra
+	and	07h
+	ld		l, a
+	push	hl					// save slot on stack
+
+	call	WrSlot			// call slot write function
+	add	sp, 06h
+#endasm
+}
+
+/*** BeginHeader	digBankOut */
+
+void digBankOut(int, int);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+digBankOut						<SMRTSTAR.LIB>
+
+SYNTAX:			void digBankOut(int bank, int value)
+
+DESCRIPTION:	Writes a byte value to Bank1 or Bank2 (if installed) of digital
+					output channels.  Bank 1 consist of HVOUT0-HVOUT7.  Bank 2 consists
+					of I/O8-I/O15. This function is non-reentrant.
+
+PARAMETER1:		The bank of digital outputs channels to write.  bank should be
+					passed as:
+
+							bank = (slotnumber*16)+banknumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 banknumber is a value of
+					1 or 2.  Or use the following macro:
+
+							bank = BankAddr(slotnumber, banknumber)
+
+PARAMETER2:		An 8-bit output value, where each bit corresponds to one channel.
+
+RETURN VALUE:	None
+
+SEE ALSO:		digOut, digBankIn, digIn
+
+END DESCRIPTION ***************************************************************/
+nodebug
+void digBankOut (int bank, int value)
+{
+	///hard coded max bank calculated as 6*16+2=98
+	if ((bank < 0) || (bank > 98) || (value < 0) || (value > 255))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	_digBankOut(bank+1, value);		//address 0xXXX2 or 0xXXX3
+}
+
+
+/*** BeginHeader	_digIn */
+
+int _digIn(int);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_digIn							<SMRTSTAR.LIB>
+
+SYNTAX:			int _digIn(int channel)
+
+PARAMETER1:		The digital input channel to read.
+
+DESCRIPTION:	Measures the state of a digital input channel.
+
+RETURN VALUE:	The state of the digital input channel, 0 or 1.
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int _digIn(int channel)
+{
+#asm
+	;; calculate bit
+	ld		hl, (sp+@sp+channel)			// get channel off stack
+	ld		h, l
+	ld		a, 03h
+	and	l
+	bit	3, h
+	jr		z, .bitDone
+	add	a, 04h
+.bitDone:
+	ld		h, 00h
+	ld		l, a
+	push	hl					// save bit on stack
+
+	;; calculate address
+	ld		hl, (sp+@sp+channel+2)		// get channel off stack
+	ld		h, l				// only need bottom part!
+	srl	h
+	srl	h
+	ld		a, 01Ch
+	and	h					// ~ 0x04 * ((channel>>4) & 0x07)
+	bit	2, l
+	jr		z, .addrDone
+	inc	a
+.addrDone:
+	ld		h, 00h
+	ld		l, a
+	push	hl					// save addr on stack
+
+	;; calculate slot number
+	ld		hl, (sp+@sp+channel+4)		// get channel off stack
+	rl		l					// put bit 7 of l into carry flag
+	rl		h					// put carry flag into bit 0 of h
+	ld		a, 07h
+	and	h
+	ld		l, a
+	ld		h, 00h
+	push	hl					// save slot on stack
+
+	call	BitRdSlot		// call slot read function
+	add	sp, 06h			// restore stack ptr
+#endasm
+}
+
+/*** BeginHeader	digIn */
+
+int digIn(int);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+digIn							<SMRTSTAR.LIB>
+
+SYNTAX:			int digIn(int channel)
+
+DESCRIPTION:	Reads the state a digital input channel, DIGIN0-DIGIN7 and
+					I/08-I/015 (if installed). This function is non-reentrant.
+
+PARAMETER1:		The digital input channel to read.  channel should be
+					passed as:
+
+							channel = (slotnumber*128)+channelnumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 channelnumber is a value of
+					0-15.  Or use the following macro:
+
+							channel = ChanAddr(slotnumber, channelnumber)
+
+RETURN VALUE:	The state of the digital input channel, 0 or 1.
+
+SEE ALSO:		digOut, digBankIn, digBankOut
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int digIn(int channel)
+{
+	auto int bitvalue;
+
+	///hard coded max channel calculated as 6*128+15=783
+	if ((channel < 0) || (channel > 783))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	bitvalue = _digIn(channel);
+
+	return bitvalue;
+}
+
+
+/*** BeginHeader	_digBankIn */
+
+int _digBankIn(int);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_digBankIn						<SMRTSTAR.LIB>
+
+SYNTAX:			int _digBankIn(int bank)
+
+PARAMETER1:		The bank of digital input channels to read.
+
+DESCRIPTION:	Reads the state of one bank of digital input channels.
+
+RETURN VALUE:	The input values, where each bit corresponds to one channel.
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int _digBankIn(int bank)
+{
+#asm
+	;; calculate addr
+	ld		hl, (sp+@sp+bank)		// load bank from stack
+	ld		h, l
+	ld		a, 01h
+	and	h
+	ld		h, a				// h now contains 1 if bank is odd, 0 if even
+	ld		a, l
+	res	0, a
+	rla
+	add	a, h
+	ld		l, a
+	ld		h, 00h
+	push	hl					// save addr on stack
+
+	;; calculate slot number
+	ld		hl, (sp+@sp+bank+2)		// get bank from stack
+	ld		h, 00h
+	ld		a, l
+	rra
+	rra
+	rra
+	rra
+	ld		l, a
+	push	hl					// save slot on stack
+
+	call	RdSlot
+	add	sp, 04h
+#endasm
+}
+
+/*** BeginHeader	digBankIn */
+
+int digBankIn(int);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+digBankIn						<SMRTSTAR.LIB>
+
+SYNTAX:			int digBankIn(int bank)
+
+DESCRIPTION:	Reads the state of Bank0 or Bank2 (if installed) of digital
+					input channels.  Bank 0 consists of DIGIN0-DIGIN7.  Bank 2 consists
+					of I/O8-I/O15. This function is non-reentrant.
+
+PARAMETER1:		The bank of digital input channels to read.  bank should be
+					passed as:
+
+							bank = (slotnumber*16)+banknumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 banknumber is a value of
+					0 or 2.  Or use the following macro:
+
+							bank = BankAddr(slotnumber, banknumber)
+
+RETURN VALUE:	An input value in the lower byte, where each bit corresponds
+					to one channel.
+
+SEE ALSO:		digOut, digBankOut, digIn
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int digBankIn(int bank)
+{
+	auto int read1, read2;
+
+	///hard coded max bank calculated as 6*16+2=98
+	if ((bank < 0) || (bank > 98))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	read1 = _digBankIn(bank&0xfff8);				//address 0xXXX0
+	read2 = _digBankIn((bank&0xfff8)+1);		//address 0xXXX1
+
+	// read inputs 0 thru 7
+	if ((bank&0x0007)==0)
+		read2 <<= 4;
+	// read inputs 8 thru 15
+	if ((bank&0x0007)==2)
+		read1 >>= 4;
+	return ((read1 & 0x000f) | (read2 & 0x00f0));
+}
+
+
+/*** BeginHeader	relayOut */
+
+void relayOut(int, int);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+relayOut						<SMRTSTAR.LIB>
+
+SYNTAX:			void relayOut(int relay, int value)
+
+DESCRIPTION:	Sets the state of a relay. This function is non-reentrant.
+
+PARAMETER1:		The relay to set.  relay should be passed as:
+
+							relay = (slotnumber*128)+relaynumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 relaynumber is a value of
+					0-7, depending on the number of relays on the board.
+					Or use the following macro:
+
+							relay = ChanAddr(slotnumber, relaynumber)
+
+PARAMETER2:		The value to set the relay to, 0 or 1.
+
+RETURN VALUE:	None
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+void relayOut(int relay, int value)
+{
+
+	///hard coded max bank calculated as 6*128+7=775
+	if ((relay < 0) || (relay > 775) || (value < 0) || (value > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	WrSlot((relay>>7)&7, relay&7, value);
+
+}
+
+
+/*** BeginHeader ADC_CALIB_ADDR, _adcCalib */
+
+#define ADCHANNELS 11
+// flash offset address to save calibrations into user block
+#define ADC_CALIB_ADDR	(DAC_CALIB_ADDR+sizeof(_dacCalib))
+
+///// id block table version 1 only
+#define _ADC_CALIB_ADDR	0x0003E1D0	// flash physical address to save calibration
+
+extern float _adcCalib[77][2];	 //totalslots*channels=7*11=77, [0]=gain,[1]=offset
+
+/*** EndHeader */
+
+float _adcCalib[77][2];	 //totalslots*channels=7*11=77, [0]=gain,[1]=offset
+
+/*** BeginHeader anaInCalib */
+
+int anaInCalib(int, int, float, int, float);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaInCalib						<SMRTSTAR.LIB>
+
+SYNTAX:			int anaInCalib(int channel, int value1, float f1,
+							int value2, float f2)
+
+DESCRIPTION:	Calibrates the response of the ADC channel desired as a linear
+					function using the two conversin points provided.  Gain and
+					offset constants are calculated and placed into global table
+					_adcInCalib.  This function is non-reentrant.
+
+					Note:  Factory calibrations are in unit amperes.
+
+PARAMETER1:		The ADC input channel.  channel should be
+					passed as:
+
+							channel = (slotnumber*128)+channelnumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 channelnumber is a value of
+					0-10.  Or use the following macro:
+
+							channel = ChanAddr(slotnumber, channelnumber)
+
+PARAMETER2:		The first ADC value.
+
+PARAMETER3:		The voltage/current corresponding to the first ADC value.
+					Current values entered as milli-Amp will produce milli-Amp
+					values. Amp values entered will produce Amp values.
+
+PARAMETER4:		The second ADC value.
+
+PARAMETER5:		The voltage/current corresponding to the second ADC value.
+					Current values entered as milli-Amp will produce milli-Amp
+					values. Amp values entered will produce Amp values.
+
+RETURN VALUE:	0, if sucessful.
+					-1, if not able to make calibration constants.
+
+SEE ALSO:		anaIn, anaInVolts, anaInmAmps
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int anaInCalib(int channel, int value1, float f1, int value2, float f2)
+{
+	static float gain, offset;
+	static int chan;
+
+	///hard coded max channel calculated as 6*128+10=778
+	if ((channel < 0) || (channel > 778))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if( (f1 == f2) || (value1 == value2) ) return -1;
+
+	chan = ((channel>>7) & 0x0007)*11 + (channel & 0x000F);
+
+	offset = (f2*value1 - f1*value2)/(f2-f1);
+	if (offset == value1)
+		gain = f2/(offset-value2);
+	else
+		gain = f1/(offset-value1);
+
+	memset(_adcCalib[chan], 0, sizeof(_adcCalib[chan]));
+	_adcCalib[chan][0] = gain;
+	_adcCalib[chan][1] = offset;
+
+	return 0;
+}
+
+/*** BeginHeader anaIn, ADCLDADDR, ADCSHADDR */
+
+#define ADCLDADDR 0	   	//adc load/read address select
+#define ADCSHADDR 1	   	//adc shift address select
+
+unsigned int anaIn(unsigned int channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaIn								<SMRTSTAR.LIB>
+
+SYNTAX:			unsigned int anaIn(unsigned int channel)
+
+DESCRIPTION:	Reads the state of an analog input channel and converts to a
+					digital value. A 15 microsecond timeout will occur if
+					end-of-conversion is not detected.
+					This function is non-reentrant.
+
+
+PARAMETER1:		The analog input channel to read.  channel should be
+					passed as:
+
+							channel = (slotnumber*128)+channelnumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 channelnumber is a value of
+					0-10.  Or use the following macro:
+
+							channel = ChanAddr(slotnumber, channelnumber)
+
+RETURN VALUE:	A value corresponding to the voltage on the analog input
+					channel, 0-4095.
+					Any other value indicates timeout or unsuccessful conversion.
+
+SEE ALSO:		anaInVolts, anaInmAmps, anaInCalib
+
+END DESCRIPTION ***************************************************************/
+
+//	int _reverseBits(unsigned int x)
+#asm
+;nodebug
+_reverseBits::
+	ex		de, hl		; source
+	ld		hl, 0000h	; destination
+.bit11:
+	bit	0, e
+	jr		z, .bit10
+	set	3, h
+.bit10:
+	bit	1, e
+	jr		z, .bit9
+	set	2, h
+.bit9:
+	bit	2, e
+	jr		z, .bit8
+	set	1, h
+.bit8:
+	bit	3, e
+	jr		z, .bit7
+	set	0, h
+.bit7:
+	bit	4, e
+	jr		z, .bit6
+	set	7, l
+.bit6:
+	bit	5, e
+	jr		z, .bit5
+	set	6, l
+.bit5:
+	bit	6, e
+	jr		z, .bit4
+	set	5, l
+.bit4:
+	bit	7, e
+	jr		z, .bit3
+	set	4, l
+.bit3:
+	bit	0, d
+	jr		z, .bit2
+	set	3, l
+.bit2:
+	bit	1, d
+	jr		z, .bit1
+	set	2, l
+.bit1:
+	bit	2, d
+	jr		z, .bit0
+	set	1, l
+.bit0:
+	bit	3, d
+	jr		z, .done
+	set	0, l
+.done:
+	ret					; return value is in hl
+#endasm
+
+
+nodebug
+unsigned int anaIn(unsigned int channel)
+{
+	static unsigned int boardchan, baseaddr, rawvalue;
+
+	///hard coded channel bank calculated as 6*128+10=778
+	if ((channel < 0) || (channel > 778))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+#asm
+	ld		hl,(sp+@sp+channel)			; get channel from stack
+	ld		a,07fh							; want only board's channel number
+	and	l
+	sla	a									; move it to upper nybble
+	sla	a
+	sla	a
+	sla	a
+	or		0ch								; configure for 16-bit shift
+	ld		(boardchan),a
+
+	ld		hl,(sp+@sp+channel)			; get channel from stack
+	ld		de,0780h							; use bits 10-7 to
+	and	hl,de								;   get slot number
+	or		a									; clear carry flag for rr instruction
+	rr		hl
+	ld		de,06000h						; make address
+	add	hl,de
+	ld		(baseaddr),hl					; baseaddr = 0x6000+(0x40*slotnumber)
+#if (_BOARD_TYPE_ == SR9100)
+	ld		a,6								; 25MHz cpu boards
+#else
+	ld		a,5								; 22MHz cpu boards
+#endif
+;	ioi	ld	(TAT5R),a					; ensure 115200 baud with CPU clock...
+	IOWRITE_A(TAT5R)
+;	ioi	ld a,(SBDR)						;	clear data register
+	IOREAD_A(SBDR)
+	ld		iy,hl
+	ld		a,(boardchan)					;load data for 16-bit shift
+	ioe	ld (iy+ADCLDADDR),a			;parallel load address=SlotAddr(slot)+<addr select>
+	ld		a,0h								;enable adc to shift
+	ioe	ld (iy+ADCSHADDR),a			;shift address=SlotAddr(slot)+<addr select>
+
+	ld		a,04ch
+	ld		(SBCRShadow),a
+;	ioi	ld (SBCR),a						;shift 8-bits datain, garbage out
+	IOWRITE_A(SBCR)
+.serwait1:
+;	ioi	ld	a,(SBSR)
+	IOREAD_A(SBSR)
+	bit	7,a
+	jr		z,.serwait1						;	wait for serial to finish
+
+	ld		a,04ch
+;	ioi	ld (SBCR),a						;	shift rest of 8-bits
+	IOWRITE_A(SBCR)
+.serwait2:
+;	ioi	ld	a,(SBSR)
+	IOREAD_A(SBSR)
+	bit	7,a
+	jr		z,.serwait2						;	wait for serial to finish
+
+.clrovrun:
+;	ioi	ld	a,(SBSR)
+	IOREAD_A(SBSR)
+	bit	5,a
+	jr		z,.clrovrun						;	clear buffer overrun
+.clrdatareg:
+;	ioi	ld	a,(SBSR)
+	IOREAD_A(SBSR)
+	bit	7,a
+	jr		z,.clrdatareg					;	wait for serial to finish
+;	ioi	ld a,(SBDR)						;	clear data register
+	IOREAD_A(SBDR)
+												; for TLC2543 devices,
+#if (_BOARD_TYPE_ == SR9100)			; time for EOC is 12.2usec max
+	ld		b,9								; 25MHz cpu boards, timeout in ~15usec
+#else
+	ld		b,8								; 22Mhz, timeout in ~15usec
+#endif
+.eocwait:
+	ioe	ld a,(iy)
+	bit	1,a
+;	jr		z,.eocwait						; wait for eoc high
+	jr		nz,.eocdone
+	djnz	.eocwait
+	ld		hl,0f000h
+	jp		.timeout
+
+.eocdone:
+	ld		a,0ech							;load data for low-power mode
+	ioe	ld (iy+ADCLDADDR),a			;parallel load address=SlotAddr(slot)+<addr select>
+	ld		a,0h								;enable adc to shift
+	ioe	ld (iy+ADCSHADDR),a			;shift address=SlotAddr(slot)+<addr select>
+	ld		a,04ch
+;	ioi	ld (SBCR),a						;	shift 8-bits datain, good data out
+	IOWRITE_A(SBCR)
+.serwait3:
+;	ioi	ld	a,(SBSR)
+	IOREAD_A(SBSR)
+	bit	7,a
+	jr		z,.serwait3						;	wait for serial to finish
+
+;	ioi	ld a,(SBDR)						; 	first byte
+	IOREAD_A(SBDR)
+	ld		l,a
+
+	ld		a,04ch
+;	ioi	ld (SBCR),a						;	shift rest of 8-bits
+	IOWRITE_A(SBCR)
+.serwait4:
+;	ioi	ld	a,(SBSR)
+	IOREAD_A(SBSR)
+	bit	7,a
+	jr		z,.serwait4						;	wait for serial to finish
+
+;	ioi	ld a,(SBDR)						;	next byte
+	IOREAD_A(SBDR)
+	ld		h,a
+	call	_reverseBits					;	reverse bits and use only most sig 12-bits
+												;	return rawvalue in hl
+.timeout:
+	ld		iy,(baseaddr)
+	ld		a,01h								;disable adc shift
+	ioe	ld (iy+ADCSHADDR),a			;shift address=SlotAddr(slot)+<addr select>
+#endasm
+}
+
+
+/*** BeginHeader anaInVolts */
+
+float anaInVolts(unsigned int channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaInVolts						<SMRTSTAR.LIB>
+
+SYNTAX:			float anaInVolts(unsigned int channel)
+
+DESCRIPTION:	Reads the state of an analog input channel and uses the
+					previously set calibration constants to convert it to volts.
+					This function is non-reentrant.
+
+PARAMETER1:		The ADC input channel.  channel should be
+					passed as:
+
+							channel = (slotnumber*128)+channelnumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 channelnumber is a value of
+					0-10.  Or use the following macro:
+
+							channel = ChanAddr(slotnumber, channelnumber)
+
+
+RETURN VALUE:	A voltage value corresponding to the voltage on the analog
+					input channel.
+					0.0 to 10 V for SR9300.
+					-10.0 to 10 V for SR9310.
+
+SEE ALSO:		anaIn, anaInmAmps, anaInCalib
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+float anaInVolts(unsigned int channel)
+ {
+	static int value1, chan;
+
+	///hard coded max channel calculated as 6*128+10=778
+	if ((channel < 0) || (channel > 778))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	chan = ((channel>>7) & 0x0007)*ADCHANNELS + (channel & 0x000F);
+
+	value1 = anaIn(channel);
+	if (value1 > 4095)
+		value1 = 4095;
+	if (value1 < 0)
+		value1 = 0;
+	return (_adcCalib[chan][0] * (_adcCalib[chan][1] - value1));
+
+}
+
+/*** BeginHeader anaInmAmps */
+
+float anaInmAmps(unsigned int channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaInmAmps					<SMRTSTAR.LIB>
+
+SYNTAX:			int anaInmAmps(unsigned int channel)
+
+DESCRIPTION:	Reads the state of an analog input channel and uses the
+					previously set calibration constants to convert it to current.
+					This function is non-reentrant.
+
+PARAMETER1:		The ADC input channel.  channel should be
+					passed as:
+
+							channel = (slotnumber*128)+channelnumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 channelnumber is a value of
+					0-10.  Or use the following macro:
+
+							channel = ChanAddr(slotnumber, channelnumber)
+
+
+RETURN VALUE:	A current value corresponding	to the current on	the analog
+					input channel of range 4 to 20 milli-Amps (0.004 to 0.020 A)
+
+					Note:  Factory calibrations are in unit amperes.
+
+SEE ALSO:		anaIn, anaInCalib, anaInVolts
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+float anaInmAmps(unsigned int channel)
+{
+	///hard coded max channel calculated as 6*128+10=778
+	if ((channel < 0) || (channel > 778))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	return (anaInVolts(channel));
+}
+
+
+/*** BeginHeader DAC_CALIB_ADDR, _dacCalib */
+
+#define DACHANNELS 8
+// flash offset address to save calibrations into user block
+#define DAC_CALIB_ADDR	(4096*GetIDBlockSize()-0x400)	 //replaces #define DAC_CALIB_ADDR 0x1C00
+
+//// id block version 1 only
+#define _DAC_CALIB_ADDR	0x0003E000	// flash physical address to save calibrations
+
+extern float _dacCalib[7*DACHANNELS][2];	 //totalslots*channels=7*8=56, [0]=gain,[1]=offset
+
+/*** EndHeader */
+
+float _dacCalib[7*DACHANNELS][2];	 //totalslots*channels=7*8=56, [0]=gain,[1]=offset
+
+/*** BeginHeader anaOutCalib */
+
+int anaOutCalib(int channel, int value1, float voltamp1, int value2, float voltamp2);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaOutCalib						<SMRTSTAR.LIB>
+
+SYNTAX:			int anaOutCalib(int channel, int value1, float voltamp1,
+						int value2, float voltamp2);
+
+DESCRIPTION:	Calibrates the response of the DAC channel desired as a linear
+					function using the two conversion points provided.  Gain and
+					offset constants are calculated and placed into global table
+					_dacCalib.  This function is non-reentrant.
+
+					Note:  Factory calibrations are unit amperes.
+
+PARAMETER1:		The DAC output channel.  channel should be
+					passed as:
+
+							channel = (slotnumber*128)+channelnumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 channelnumber is a value of
+					0-7.  Or use the following macro:
+
+							channel = ChanAddr(slotnumber, channelnumber)
+
+PARAMETER2:		The first DAC conversion data point. Use a value near 4095
+					to produce a lower output measurement.
+
+PARAMETER3:		The voltage or current measurement corresponding to the
+					first DAC conversion point.
+					Current values entered as milli-Amp will produce milli-Amp
+					values. Amp values entered will produce Amp values.
+
+PARAMETER4:		The second DAC conversion data point.  Use value near 0
+					to produce a higher output measurement.
+
+PARAMETER5:		The voltage or current measurement corresponding to the
+					second DAC conversion point.
+					Current values entered as milli-Amp will produce milli-Amp
+					values. Amp values entered will produce Amp values.
+
+RETURN VALUE:	0, if sucessful.
+					-1, if not able to make calibration constants.
+
+SEE ALSO:		anaOut, anaOutVolts, anaOutmAmps
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int anaOutCalib(int channel, int value1, float voltamp1, int value2, float voltamp2)
+{
+	static float gain, offset;
+	static int chan;
+
+	///hard coded max channel calculated as 6*128+7=775
+	if ((channel < 0) || (channel > 775))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if( (voltamp1 == voltamp2) || (value1 == value2) ) return -1;
+
+	chan = ((channel>>7) & 0x0007)*DACHANNELS + (channel & 0x000F);
+
+	offset = (voltamp2*value1 - voltamp1*value2)/(voltamp2-voltamp1);
+	if (offset == value1)
+		gain = voltamp2/(offset-value2);
+	else
+		gain = voltamp1/(offset-value1);
+
+	memset(_dacCalib[chan], 0, sizeof(_dacCalib[chan]));
+	_dacCalib[chan][0] = gain;
+	_dacCalib[chan][1] = offset;
+
+	return 0;
+}
+
+/*** BeginHeader anaOut, DACShadow */
+
+#define DACSCB 6				//speed control bit, 1=fast mode, 0=slow mode
+#define DACPCB 5				//power control bit, 1=power down, 0=normal operation
+#define WRDACB 0x00			//write data to dac B and buffer mask
+#define WRDACBUF 0x10		//write buffer mask
+#define WRDACA 0x80			//write data to dac A and update dac B with buffer content mask
+
+#define DACCLK 0			//dac clock bit
+#define DACDATA 1			//dac data bit
+#define DACCS0 2			//dac chan 0,1 bit
+#define DACCS1 3			//dac chan 2,3 bit
+#define DACCS2 4			//dac chan 4,5 bit
+#define DACCS3 5			//dac chan 6,7 bit
+
+extern unsigned int DACShadow;
+
+int anaOut(unsigned int channel, unsigned int rawcount);
+
+/*** EndHeader */
+
+unsigned int DACShadow;
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaOut								<SMRTSTAR.LIB>
+
+SYNTAX:			int anaOut(unsigned int channel, unsigned int rawcount)
+
+DESCRIPTION:	Sets the voltage of an analog output channel by serial clocking
+in 16-bits to a DAC device of the following format:
+
+	D15 D14 D13	D12 D11-D0
+    |   |   |   |   |  |
+	 |   |   |   |   +--+---- data bits, msb-lsb (0-4095)
+    |   |   |   |
+    |   |   +---|----------- power control, 1=power down, 0=normal (default)
+    |   |       |
+    |   +-------|----------- speed control, 1=fast (default), 0=slow
+    |           |
+    |           +----------- Register 0 --------+
+    |                                           |
+    +----------------------- Register 1 -----+  |
+                                             |  |
+    														0  0  write data to dacB
+                                             0  1  write data to buffer
+                                             1  0  write data to dacA
+                                             1  1  reserved
+
+This function is non-reentrant.
+
+PARAMETER1:		The analog output channel to write.  channel should be
+					passed as:
+
+							channel = (slotnumber*128)+channelnumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 channelnumber is a value of
+					0-7.  Or use the following macro:
+
+							channel = ChanAddr(slotnumber, channelnumber)
+
+PARAMETER2:		A data value corresponding to the voltage on the analog output
+					channel, 0-4095.  A data value near 0 produces a higher output
+					measurement while a value near 4095 produces a lower output
+					measurement.
+
+RETURN VALUE:	0 if successful
+					-1 if rawcount parameter is greater than 4095
+
+SEE ALSO:		anaOutVolts, anaOutCalib
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int anaOut(unsigned int channel, unsigned int rawcount)
+{
+	static unsigned int slot, boardchan, baseaddr;
+
+	///hard coded max channel calculated as 6*128+7=775
+	if ((channel < 0) || (channel > 775))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	slot = ((channel >> 7) & 0x0F);
+	boardchan = channel & 0x0F;
+	baseaddr = SlotAddr(slot);
+
+#asm
+	ld		a,0ffh							;clear lines
+	ld		iy,(baseaddr)
+	ioe	ld (iy),a
+
+	ld		hl,(sp+@sp+rawcount)			;;;setup data format for shift
+	set	DACSCB,h							;set fast speed
+	res	DACPCB,h							;set normal operation
+	ld		a,(boardchan)
+	ld		e,a
+	ld		a,h
+	bit	0,e								;determine which out	from bit 0
+	jr		z,.wrtoa
+	or		WRDACB							;dac out b
+	jp		.dataset
+.wrtoa:
+	or		WRDACA							;dac out a
+.dataset:
+	ld		h,a								;;;data format in hl for shift
+
+	ld		a,(DACShadow)
+	ld		e,a
+	ld		a,(boardchan)					;;;determine which chip select
+	srl	a
+	cp		0									;select dac 0
+	jr		nz,.cs1
+	res	DACCS0,e
+.cs1:
+	cp		1									;select dac 1
+	jr		nz,.cs2
+	res	DACCS1,e
+.cs2:
+	cp		2									;select dac 2
+	jr		nz,.cs3
+	res	DACCS2,e
+.cs3:
+	cp		3									;select dac 3
+	jr		nz,.startshift
+	res	DACCS3,e
+.startshift:
+	ld		a,e
+
+	ld		b,8								;;;;first 8 most sig bits
+.loop1:
+	set	DACCLK,a							;clock high
+	sla	h
+	jr		nc,.clrbit
+	set	DACDATA,a						;data is high
+	jp		.wrdata
+.clrbit:
+	res	DACDATA,a						;data is low
+.wrdata:
+	ioe	ld (iy),a						;latch
+	nop										;need 25ns delay for clock?
+	res	DACCLK,a							;clock low
+	ioe	ld (iy),a						;latch
+	djnz	.loop1
+
+	ld		b,8								;;;;next 8 bits
+.loop2:
+	set	DACCLK,a							;clock high
+	sla	l
+	jr		nc,.clrbit2
+	set	DACDATA,a						;data is high
+	jp		.wrdata2
+.clrbit2:
+	res	DACDATA,a						;data is low
+.wrdata2:
+	ioe	ld (iy),a						;latch
+	nop										;need 25ns delay for clock?
+	res	DACCLK,a							;clock ,low
+	ioe	ld (iy),a						;latch
+	djnz	.loop2
+
+	set	DACCLK,a							;clock high
+	ioe	ld (iy),a						;latch
+
+	ld		a,(DACShadow)
+	ioe	ld (iy),a						;;;disable all lines, is voltage still on?
+#endasm
+
+	return 0;
+}
+
+
+/*** BeginHeader anaOutDisable*/
+
+void anaOutDisable(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaOutDisable						<SMRTSTAR.LIB>
+
+SYNTAX:			void anaOutDisable(void);
+
+DESCRIPTION:	Disables all DAC boards from driving voltage or current to
+					its output channels.
+
+					A dedicated port bit, PE7, disables ON/*OFF line to LM2675
+					devices. This type of disabling allows output channels to float
+					at high impedance state.
+
+					This function is non-reentrant.
+
+RETURN VALUE:	None
+
+SEE ALSO:		anaOutEnable, anaOut, anaOutVolts, anaOutmAmps
+
+END DESCRIPTION ***************************************************************/
+nodebug
+void anaOutDisable(void)
+{
+	BitWrPortI(PEDR, &PEDRShadow, 0, 7);
+}
+
+
+/*** BeginHeader anaOutEnable*/
+
+void anaOutEnable(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaOutEnable						<SMRTSTAR.LIB>
+
+SYNTAX:			void anaOutEnable(void);
+
+DESCRIPTION:	Enables all DAC boards to drive voltage or current to	its
+					output channels by using a dedicated port bit, PE7, to enable
+					ON/*OFF line to LM2675 devices.
+
+		Warning: This function should be called after configuring ALL
+					output channels to the required voltage or current outputs.
+					Unconfigured channels will automatically set to +10V or +20mA
+					output.
+
+					This function is non-reentrant.
+
+RETURN VALUE:	None
+
+SEE ALSO:		anaOutDisable, anaOut, anaOutVolts, anaOutmAmps
+
+END DESCRIPTION ***************************************************************/
+nodebug
+void anaOutEnable(void)
+{
+	BitWrPortI(PEDR, &PEDRShadow, 1, 7);
+}
+
+
+/*** BeginHeader anaOutVolts */
+
+void anaOutVolts(unsigned int channel, float voltage);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaOutVolts						<SMRTSTAR.LIB>
+
+SYNTAX:			void anaOutVolts(unsigned int channel, float voltage)
+
+PARAMETER1:		The DAC output channel.  channel should be
+					passed as:
+
+							channel = (slotnumber*128)+channelnumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 channelnumber is a value of
+					0-7.  Or use the following macro:
+
+							channel = ChanAddr(slotnumber, channelnumber)
+
+PARAMETER2:		The voltage desired on the output channel.
+					0.0 to 10.0 V on SR9400.
+					-10.0 to 10.0 V on SR9410.
+
+DESCRIPTION:	Sets the voltage of an analog output channel and by using the
+					previously set calibration constants to calculate correct data
+					values.  This function is non-reentrant.
+
+RETURN VALUE:	None
+
+SEE ALSO:		anaOut, anaOutCalib, anaOutmAmps
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+void anaOutVolts(unsigned int channel, float voltage)
+ {
+	auto int value1, chan;
+
+	///hard coded max channel calculated as 6*128+7=775
+	if ((channel < 0) || (channel > 775))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	chan = ((channel>>7) & 0x0007)*DACHANNELS + (channel & 0x000F);
+
+	//calculate rawcount value
+	value1 = (int)(_dacCalib[chan][1] - (voltage / _dacCalib[chan][0]));
+	if (value1 > 4095)
+		value1 = 4095;
+	if (value1 < 0)
+		value1 = 0;
+
+	anaOut(channel, value1);
+}
+
+
+/*** BeginHeader anaOutmAmps */
+
+void anaOutmAmps(unsigned int channel, float current);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaOutmAmps						<SMRTSTAR.LIB>
+
+SYNTAX:			void anaOutmAmps(unsigned int channel, float current);
+
+DESCRIPTION:	Outputs the current to a D/A channel and using
+					previously set calibration constants to convert it to current.
+					This function is non-reentrant.
+
+PARAMETER1:		The DAC output channel.  channel should be
+					passed as:
+
+							channel = (slotnumber*128)+channelnumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 channelnumber is a value of
+					0-7.  Or use the following macro:
+
+							channel = ChanAddr(slotnumber, channelnumber)
+
+PARAMETER2:		The current range of 4-20 milli-Amps (0.004 to 0.020 A) desired
+					on the output channel.
+
+					Note:  Factory calibrations are in unit amperes.
+
+RETURN VALUE:	0, if sucessful.
+					-1, if not able to make calibration constants.
+
+SEE ALSO:		anaOut, anaOutCalib, anaOutVolts
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+void anaOutmAmps(unsigned int channel, float current)
+{
+	///hard coded max channel calculated as 6*128+7=775
+	if ((channel < 0) || (channel > 775))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	anaOutVolts(channel, current);
+}
+
+
+/*===================================================================
+	The following functions are for the EEPROM (24C04A) on
+	the ADC and DAC board.
+===================================================================*/
+
+/*** BeginHeader */
+
+/*** EECLK, EEDATA, EEACK, EERDADDR, EECLKADDR, EEDATADDR,
+ADCBOARD, DACEECLK, DACEEDATA, DACACK, DACRDADDR, DACCLKADDR, DACDATADDR */
+
+#define ADCBOARD 1			//board type
+#define EECLK 0				//eeprom clock bit
+#define EEDATA 0				//eeprom data bit
+#define EEACK 2				//eeprom ack bit
+#define EERDADDR 0	   	//eeprom read address select
+#define EECLKADDR 2			//eeprom clock address select
+#define EEDATADDR 3			//eeprom data address select
+
+#define DACBOARD 0			//board type
+#define DACEECLK 6			//dac eeprom clock bit
+#define DACEEDATA 7			//dac eeprom write/read data bit
+#define DACEEACK 7			//dac eeprom ack bit
+#define DACRDADDR 0	   	//dac eeprom read address select
+#define DACCLKADDR 0			//dac eeprom clock address select
+#define DACDATADDR 0			//dac eeprom data address select
+
+/*** EndHeader */
+
+/*** BeginHeader usDelay */
+
+void usDelay();
+
+/*** EndHeader */
+#asm nodebug
+usDelay::
+#if (_BOARD_TYPE_ == SR9100)			; need min 4.7 microsecond
+	ld		c,12								; 25MHz cpu boards
+#else
+	ld		c,10								; 22Mhz cpu boards
+#endif
+.usdelay1:						; delay to latch
+	dec	c
+	jr		nz,.usdelay1
+	ret
+#endasm
+
+/*** BeginHeader _adcEEStandby */
+
+void _adcEEStandby(unsigned int addr, int boardtype);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_adcEEStandby					<SMRTSTAR.LIB>
+
+SYNTAX:			void _adcEEStandby(unsigned int addr, int boardtype);
+
+DESCRIPTION:	Puts EEPROM into standby by forcing SDA line high and giving
+					it 9 clocks.
+
+PARAMETER1:		addr - the ADC base address, 0x6000 + 0x40*slotnumber
+PARAMETER2:		boardtype - if board is ADC or DAC
+
+RETURN VALUE:	None
+
+SEE ALSO:		_adcEEStart, _adcEEStop
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+void _adcEEStandby(unsigned int addr, int boardtype)
+{
+	if (boardtype)
+	{
+#asm  									;;;ADC board
+	ld		iy,(sp+@sp+addr)
+	set	EEDATA,a						;data high
+	ioe	ld (iy+EEDATADDR),a
+	ld		b,9
+.loop1:
+	res	EECLK,a						;clock low
+	ioe	ld (iy+EECLKADDR),a		;latch
+	call	usDelay						;need min 4.7 usec delay to latch
+
+	set	EECLK,a						;clock high
+	ioe	ld (iy+EECLKADDR),a		;latch
+	call	usDelay						;need min 4.7 usec delay to latch
+
+	djnz	.loop1
+#endasm
+	}
+	else
+	{
+#asm  									;;;DAC board
+	ld		iy,(sp+@sp+addr)
+	set	DACEEDATA,a					;data high
+	ioe	ld (iy+DACDATADDR),a
+	ld		b,9
+.loop2:
+	res	DACEECLK,a					;clock low
+	ioe	ld (iy+DACCLKADDR),a		;latch
+	call	usDelay						;need min 4.7 usec delay to latch
+
+	set	DACEECLK,a					;clock high
+	ioe	ld (iy+DACCLKADDR),a		;latch
+	call	usDelay						;need min 4.7 usec delay to latch
+
+	djnz	.loop2
+#endasm
+	}
+}
+
+/*** BeginHeader _adcEEStart */
+
+void _adcEEStart(unsigned int addr, int boardtype);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_adcEEStart					<SMRTSTAR.LIB>
+
+SYNTAX:			void _adcEEStart(unsigned int addr, int boardtype);
+
+DESCRIPTION:	Sends start command to EEPROM
+
+PARAMETER1:		addr - the ADC or DAC base address, 0x6000 + 0x40*slotnumber
+PARAMETER2:		boardtype - if board is ADC or DAC
+
+RETURN VALUE:	None
+
+SEE ALSO:		_adcEEStop
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+void _adcEEStart(unsigned int addr, int boardtype)
+{
+	if (boardtype)
+	{
+#asm									//ADC board
+	ld		iy,(sp+@sp+addr)
+										;get eeprom attention
+	res	EECLK,a					;
+	;res	EEDATA,a					;
+	ioe	ld (iy+EECLKADDR),a	;clock latch
+	ioe	ld (iy+EEDATADDR),a	;data latch
+
+	;set	EECLK,a					;clock line high
+	set	EEDATA,a					;data line high
+	ioe	ld (iy+EECLKADDR),a	;clock latch
+	ioe	ld (iy+EEDATADDR),a	;data latch
+	call	usDelay					;need min 4.7 microsec delay to latch
+
+	res	EEDATA,a					;data line low request
+	ioe	ld (iy+EEDATADDR),a	;data latch
+	call	usDelay					;need min 4.7 microsec delay to latch
+#endasm
+	}
+	else
+	{
+#asm
+	ld		iy,(sp+@sp+addr)		;;;DAC board
+										;get eeprom attention
+	res	DACEECLK,a
+	res	DACEEDATA,a
+	ioe	ld (iy+DACCLKADDR),a	;clock latch
+	;ioe	ld (iy+DACDATADDR),a	;data latch
+
+	set	DACEECLK,a				;clock line high
+	ioe	ld (iy+DACCLKADDR),a	;clock latch
+	set	DACEEDATA,a				;data line high
+	ioe	ld (iy+DACDATADDR),a	;data latch
+	call	usDelay					;need min 4.7 microsec delay to latch
+
+	res	DACEEDATA,a				;data line low request
+	ioe	ld (iy+DACDATADDR),a	;data latch
+	call	usDelay					;need min 4.7 microsec delay to latch
+#endasm
+	}
+}
+
+
+/*** BeginHeader _adcEEStop */
+
+void _adcEEStop(unsigned int addr, int boardtype);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_adcEEStop					<SMRTSTAR.LIB>
+
+SYNTAX:			void _adcEEStop(unsigned int addr, int boardtype);
+
+DESCRIPTION:	Sends stop command to EEPROM
+
+PARAMETER1:		addr - the ADC or DAC base address, 0x6000 + 0x40*slotnumber
+PARAMETER2:		boardtype - if board is ADC or DAC
+
+RETURN VALUE:	None
+
+SEE ALSO:		_adcEEStart
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+void _adcEEStop(unsigned int addr, int boardtype)
+{
+	if (boardtype)
+	{
+#asm
+	ld		iy,(sp+@sp+addr)
+
+	res	EECLK,a					;clock line low
+	ioe	ld (iy+EECLKADDR),a	;clock latch
+	ioe	ld (iy+EEDATADDR),a	;clock latch
+	call	usDelay					;need min 4.7 usec delay to latch
+
+	set	EECLK,a					;clock line high
+	ioe	ld (iy+EECLKADDR),a	;clock latch
+	call	usDelay					;need min 4.7 usec delay to latch
+
+	set	EEDATA,a					;data line high
+	ioe	ld (iy+EEDATADDR),a	;clock latch
+	call	usDelay					;need min 4.7 usec delay to latch
+#endasm
+	}
+	else
+	{
+#asm
+	ld		iy,(sp+@sp+addr)
+
+	res	DACEECLK,a				;clock line low
+	ioe	ld (iy+DACCLKADDR),a	;clock latch
+	res	DACEEDATA,a
+	ioe	ld (iy+DACDATADDR),a	;clock latch
+	call	usDelay					;need min 4.7 usec delay to latch
+
+	set	DACEECLK,a				;clock line high
+	ioe	ld (iy+DACCLKADDR),a	;clock latch
+	call	usDelay					;need min 4.7 usec delay to latch
+
+	set	DACEEDATA,a				;data line high
+	ioe	ld (iy+DACDATADDR),a	;clock latch
+	call	usDelay					;need min 4.7 usec delay to latch
+#endasm
+	}
+}
+
+
+/*** BeginHeader _adcEEGetAck */
+
+int _adcEEGetAck(unsigned int addr, int boardtype);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_adcEEGetAck					<SMRTSTAR.LIB>
+
+SYNTAX:			int _adcEEGetAck(unsigned int addr, int boardtype);
+
+DESCRIPTION:	Checks for pull-down EEPROM acknowledgement.
+
+PARAMETER1:		addr - the ADC or DAC base address, 0x6000 + 0x40*slotnumber
+PARAMETER2:		boardtype - if board is ADC or DAC
+
+RETURN VALUE:	0, acknowledge success
+					1,	unsuccessful
+
+SEE ALSO:		_adcEEWrByte
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int _adcEEGetAck(unsigned int addr, int boardtype)
+{
+	if (boardtype)
+	{
+#asm
+	ld		iy,(sp+@sp+addr)
+
+	res	EECLK,a					;clock line low
+	ioe	ld (iy+EECLKADDR),a	;clock latch
+
+	set	EEDATA,a					;data line high releases bus
+	ioe	ld (iy+EEDATADDR),a	;data latch
+	call	usDelay					;need min 4.7 usec delay to latch
+
+	set	EECLK,a					;clock line high
+	ioe	ld (iy+EECLKADDR),a	;clock latch
+
+	ioe	ld d,(iy+EERDADDR)
+
+	bit	EEACK,d
+	jr		z,.itszero1
+	ld		hl,1
+	jp		.done1
+.itszero1:
+	ld		hl,0
+.done1:
+#endasm
+	}
+	else
+	{
+#asm
+	ld		iy,(sp+@sp+addr)
+
+	res	DACEECLK,a				;clock line low
+	ioe	ld (iy+DACCLKADDR),a	;clock latch
+
+	set	DACEEDATA,a				;data line high releases bus
+	ioe	ld (iy+DACDATADDR),a	;data latch
+	call	usDelay					;need min 4.7 usec delay to latch
+
+	set	DACEECLK,a				;clock line high
+	ioe	ld (iy+DACCLKADDR),a	;clock latch
+
+	ioe	ld d,(iy+DACRDADDR)
+
+	bit	DACEEACK,d
+	jr		z,.itszero2
+	ld		hl,1
+	jp		.done2
+.itszero2:
+	ld		hl,0
+.done2:
+#endasm
+	}
+}
+
+
+/*** BeginHeader _adcEEWrByte */
+
+void _adcEEWrByte(unsigned int addr, unsigned int value, int boardtype);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_adcEEWrByte					<SMRTSTAR.LIB>
+
+SYNTAX:			void _adcEEWrByte(unsigned int addr, unsigned int value,
+											int boardtype);
+
+DESCRIPTION:	Clocks in eight bits to EEPROM.
+
+PARAMETER1:		addr - the ADC or DAC base address, 0x6000 + 0x40*slotnumber
+PARAMETER2:		value - data byte.
+PARAMETER3:		boardtype - if board is ADC or DAC
+
+RETURN VALUE:	None
+
+SEE ALSO:		_adcEERdByte
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+void _adcEEWrByte(unsigned int addr, unsigned int value, int boardtype)
+{
+	if (boardtype)
+	{
+#asm
+	ld		hl,(sp+@sp+value)
+	ld		iy,(sp+@sp+addr)
+
+	ld		b,8
+.loop1:
+	res	EECLK,a					;clock low
+	ioe	ld (iy+EECLKADDR),a	;clock latch
+
+	sla	l
+	jr		nc,.clrbit
+	set	EEDATA,a					;data is high
+	jp		.wrdata
+.clrbit:
+	res	EEDATA,a					;data is low
+.wrdata:
+	ioe	ld (iy+EEDATADDR),a	;data latch
+	call	usDelay					;need min 4.7 usec delay to latch
+
+	set	EECLK,a					;clock high
+	ioe	ld (iy+EECLKADDR),a	;clock latch
+	call	usDelay					;need min 4.7 usec delay to latch
+
+	djnz	.loop1
+#endasm
+	}
+	else
+	{
+#asm
+	ld		hl,(sp+@sp+value)
+	ld		iy,(sp+@sp+addr)
+
+	ld		b,8
+.loop2:
+	;res	DACEECLK,a				;clock low
+	;ioe	ld (iy+DACCLKADDR),a	;clock latch
+
+	sla	l
+	jr		nc,.clrbit2
+	set	DACEEDATA,a				;data is high
+	jp		.wrdata2
+.clrbit2:
+	res	DACEEDATA,a				;data is low
+.wrdata2:
+	res	DACEECLK,a				;clock low
+	ioe	ld (iy+DACCLKADDR),a	;clock latch
+
+	ioe	ld (iy+DACDATADDR),a	;data latch
+	call	usDelay					;need min 4.7 usec delay to latch
+
+	set	DACEECLK,a				;clock high
+	ioe	ld (iy+DACCLKADDR),a	;clock latch
+	call	usDelay					;need min 4.7 usec delay to latch
+
+	djnz	.loop2
+#endasm
+	}
+}
+
+
+/*** BeginHeader _adcEERdByte */
+
+unsigned int _adcEERdByte(unsigned int addr, int boardtype);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_adcEERdByte					<SMRTSTAR.LIB>
+
+SYNTAX:			unsigned int _adcEERdByte(unsigned int addr, int boardtype);
+
+DESCRIPTION:	Clocks out eight bits from EEPROM.
+
+PARAMETER1:		addr - the ADC or DAC base address, 0x6000 + 0x40*slotnumber
+PARAMETER2:		boardtype - if board is ADC or DAC
+
+RETURN VALUE:	Byte value from eeprom.
+
+SEE ALSO:		_adcEEWrByte
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+unsigned int _adcEERdByte(unsigned int addr, int boardtype)
+{
+	if (boardtype)
+	{
+#asm
+	ld		iy,(sp+@sp+addr)
+
+	ld		l,0
+	ld		b,8
+.loop1:
+	res	EECLK,a					;clock line low
+	ioe	ld (iy+EECLKADDR),a	;clock latch
+
+	set	EEDATA,a					;data line high to release bus
+	ioe	ld (iy+EEDATADDR),a	;data latch
+	call	usDelay					;need a couple microsec delay to latch
+
+	set	EECLK,a					;clock high
+	ioe	ld (iy+EECLKADDR),a	;clock latch
+
+	ioe	ld d,(iy+EERDADDR)
+	sla	l
+	bit	EEACK,d
+	jr		z,.itszero
+	set	0,l
+.itszero:
+	call	usDelay					;need a couple microsec delay to latch
+	djnz	.loop1
+
+	ld		h,0
+#endasm
+	}
+	else
+	{
+#asm
+	ld		iy,(sp+@sp+addr)
+
+	ld		l,0
+	ld		b,8
+.loop2:
+	res	DACEECLK,a					;clock line low
+	ioe	ld (iy+DACCLKADDR),a	;clock latch
+
+	set	DACEEDATA,a				;data line high to release bus
+	ioe	ld (iy+DACDATADDR),a	;data latch
+	call	usDelay					;need a couple microsec delay to latch
+
+	set	DACEECLK,a					;clock high
+	ioe	ld (iy+DACCLKADDR),a	;clock latch
+
+	ioe	ld d,(iy+DACRDADDR)
+	sla	l
+	bit	DACEEACK,d
+	jr		z,.itszero2
+	set	0,l
+.itszero2:
+	call	usDelay					;need a couple microsec delay to latch
+	djnz	.loop2
+
+	ld		h,0
+#endasm
+	}
+}
+
+
+/*** BeginHeader _anaInEERd */
+
+int _anaInEERd(unsigned int adcaddr, unsigned int eeaddrs, int boardtype);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_anaInEERd					<SMRTSTAR.LIB>
+
+SYNTAX:			int _anaInEERd(unsigned int adcaddr, unsigned int eeaddrs,
+										int boardtype);
+
+DESCRIPTION:	Reads a byte from EEPROM on ADC board.
+
+PARAMETER1:		adcaddr - the ADC or DAC base address, 0x6000 + 0x40*slotnumber
+PARAMETER2:		eeaddrs - EEPROM address of 0x000 to 0xFFF.
+PARAMETER3:		boardtype - if board is ADC or DAC
+
+RETURN VALUE:	Byte value from eeprom address.
+					-1, control commmand unacceptable.
+					-2, eeprom address unacceptable.
+
+SEE ALSO:		anaInEERd, _anaInEEWr
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int _anaInEERd(unsigned int adcaddr, unsigned int eeaddrs, int boardtype)
+{
+	static unsigned int eecmd, value;
+	static int ack;
+
+	if (eeaddrs > 255)		// eeprom control command
+		eecmd = 0xA2;			// upper eeprom 100-FFF
+	else
+		eecmd = 0xA0;			// lower eeprom 00-FF
+
+//	_adcEEStandby(adcaddr, boardtype);
+	_adcEEStart(adcaddr, boardtype);
+	_adcEEWrByte(adcaddr, eecmd, boardtype);		// send write command to slave
+	if (ack = _adcEEGetAck(adcaddr, boardtype))
+		return -1;
+
+	_adcEEWrByte(adcaddr, eeaddrs, boardtype);			// send address to slave
+	if (ack = _adcEEGetAck(adcaddr, boardtype))
+		return -2;
+
+	_adcEEStart(adcaddr, boardtype);
+	_adcEEWrByte(adcaddr, eecmd|0x01, boardtype);	// send read command to slave
+	if (ack = _adcEEGetAck(adcaddr, boardtype))
+		return -1;
+	value = _adcEERdByte(adcaddr, boardtype);		// read one byte from slave
+	_adcEEStop(adcaddr, boardtype);
+
+	return value;
+}
+
+/*** BeginHeader anaInEERd */
+
+int anaInEERd(unsigned int channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaInEERd					<SMRTSTAR.LIB>
+
+SYNTAX:			int anaInEERd(unsigned int channel);
+
+DESCRIPTION:	Reads the calibration constants, gain and offset, from
+					upper half EEPROM on ADC board.  This function is non-reentrant.
+
+					Note:  Factory calibrations are in unit amperes.
+
+PARAMETER1:		The ADC input channel.  channel should be
+					passed as:
+
+							channel = (slotnumber*128)+channelnumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 channelnumber is a value of
+					0-10.  Or use the following macro:
+
+							channel = ChanAddr(slotnumber, channelnumber)
+
+RETURN VALUE:	 0, If successful.
+					-1, control commmand unacceptable.
+					-2, eeprom address unacceptable.
+					-3, eeprom unreadable
+
+SEE ALSO:		anaInEEWr, _anaInEERd
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int anaInEERd(unsigned int channel)
+{
+	auto int i;
+	static unsigned int eeaddrs, adcaddr, chan;
+	static int msgcode;
+	static char *byteaddr;
+	auto char tempaddr[8];
+
+	///hard coded max channel calculated as 6*128+10=778
+	if ((channel < 0) || (channel > 778))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	memset(tempaddr, 0, sizeof(tempaddr));
+
+	chan = ((channel>>7) & 0x0007)*ADCHANNELS + (channel & 0x000F);
+	adcaddr = SlotAddr((channel>>7) & 0x0007);	//define slot plus device address
+	eeaddrs = 0x0100 + ((channel & 0x000F)<<4);	//define upper half eeprom address
+
+	memset(_adcCalib[chan], 0, sizeof(_adcCalib[chan]));
+	byteaddr = (char*)(_adcCalib[chan]);
+
+	for (i=0; i<8; i++) {
+		if ((msgcode =_anaInEERd(adcaddr, eeaddrs++, ADCBOARD)) < 0)
+			return msgcode;
+		else
+			*byteaddr++ = (char)msgcode;
+		}
+
+	if (memcmp(_adcCalib[chan], tempaddr, sizeof(_adcCalib[chan])))
+		return 0;
+	else
+		return -3;
+}
+
+
+/*** BeginHeader _anaInEEWr */
+
+int _anaInEEWr(unsigned int adcaddr, unsigned int eeaddrs,
+					unsigned int value, int boardtype);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION *************************************************
+_anaInEEWr					<SMRTSTAR.LIB>
+
+SYNTAX:			int _anaInEEWr(unsigned int adcaddr, unsigned int eeaddrs,
+										unsigned int value, int boardtype);
+
+DESCRIPTION:	Writes a byte to EEPROM on ADC board.
+
+PARAMETER1:		adcaddr - the ADC or DAC base address, 0x6000 + 0x40*slotnumber
+PARAMETER2:		eeaddrs - EEPROM address of 0x000 to 0xFFF.
+PARAMETER3:		value - data byte to write
+PARAMETER4:		boardtype - if board is ADC or DAC
+
+RETURN VALUE:	 0, successful write to eeprom.
+					-1, control commmand unacceptable.
+					-2, eeprom address unacceptable.
+					-3, data value unacceptable.
+
+SEE ALSO:		anaInEEWr, _anaInEERd
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int _anaInEEWr(unsigned int adcaddr, unsigned int eeaddrs,
+					unsigned int value, int boardtype)
+{
+	static unsigned int eecmd;
+	static int ack;
+
+	if (eeaddrs > 255)			// eeprom control command
+		eecmd = 0xA2;			// upper eeprom 100-FFF
+	else
+		eecmd = 0xA0;			// lower eeprom 00-FF
+
+//	_adcEEStandby(adcaddr, boardtype);
+	_adcEEStart(adcaddr, boardtype);
+	_adcEEWrByte(adcaddr, eecmd, boardtype);		// send write command to slave
+	if (ack = _adcEEGetAck(adcaddr, boardtype))
+		return -1;
+	_adcEEWrByte(adcaddr, eeaddrs, boardtype);			// send address to slave
+	if (ack = _adcEEGetAck(adcaddr, boardtype))
+		return -2;
+	_adcEEWrByte(adcaddr, value, boardtype);			// send value to slave
+	if (ack = _adcEEGetAck(adcaddr, boardtype))
+		return -3;
+	_adcEEStop(adcaddr, boardtype);
+
+	// wait until a start/eeAddr sequence produces an ACK...
+	do {
+		_adcEEStart(adcaddr, boardtype);
+		_adcEEWrByte(adcaddr, eecmd, boardtype);
+		ack = _adcEEGetAck(adcaddr, boardtype);
+	} while (ack != 0);
+
+	return ack;
+}
+
+
+/*** BeginHeader anaInEEWr */
+
+int anaInEEWr(unsigned int channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaInEEWr					<SMRTSTAR.LIB>
+
+SYNTAX:			int anaInEEWr(unsigned int channel);
+
+
+DESCRIPTION:	Writes the calibration constants, gain and offset, to
+					upper half of EEPROM on ADC board. This function is non-reentrant.
+
+					Note:  Factory calibrations are in unit amperes.
+
+PARAMETER1:		The ADC input channel.  channel should be
+					passed as:
+
+							channel = (slotnumber*128)+channelnumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 channelnumber is a value of
+					0-10.  Or use the following macro:
+
+							channel = ChanAddr(slotnumber, channelnumber)
+
+
+RETURN VALUE:	 0, successful write to eeprom.
+					-1, control commmand unacceptable.
+					-2, eeprom address unacceptable.
+					-3, data value unacceptable.
+
+SEE ALSO:		anaInEERd, _anaInEEWr
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int anaInEEWr(unsigned int channel)
+{
+	auto int i;
+	static int eeaddrs, adcaddr, chan;
+	static int msgcode;
+	static char *byteaddr;
+
+	///hard coded max channel calculated as 6*128+10=778
+	if ((channel < 0) || (channel > 778))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	chan = ((channel>>7) & 0x0007)*ADCHANNELS + (channel & 0x000F);
+	adcaddr = SlotAddr((channel>>7) & 0x0007);	//define slot plus device address
+	eeaddrs = 0x0100 + ((channel & 0x000F)<<4);	//define eeprom address
+
+	byteaddr = (char*)(_adcCalib[chan]);
+
+	for (i=0; i<8; i++) {
+		if ((msgcode = _anaInEEWr(adcaddr, eeaddrs++, *byteaddr++, ADCBOARD)) != 0)
+			return msgcode;
+		}
+}
+
+/*** BeginHeader anaOutEERd */
+
+int anaOutEERd(unsigned int channel);
+
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaOutEERd					<SMRTSTAR.LIB>
+
+SYNTAX:			int anaOutEERd(unsigned int channel);
+
+DESCRIPTION:	Reads the calibration constants, gain and offset, from
+					upper half EEPROM on DAC board. This function is non-reentrant.
+
+					Note:  Factory calibrations are in unit amperes.
+
+PARAMETER1:		The DAC input channel.  channel should be
+					passed as:
+
+							channel = (slotnumber*128)+channelnumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 channelnumber is a value of
+					0-7.  Or use the following macro:
+
+							channel = ChanAddr(slotnumber, channelnumber)
+
+RETURN VALUE:	 0, If successful.
+					-1, control commmand unacceptable.
+					-2, eeprom address unacceptable.
+					-3, eeprom unreadable.
+
+SEE ALSO:		anaOutEEWr
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int anaOutEERd(unsigned int channel)
+{
+	auto int i;
+	static unsigned int eeaddrs, adcaddr, chan;
+	static int msgcode;
+	static char *byteaddr;
+	auto char tempaddr[8];
+
+	///hard coded max channel calculated as 6*128+7=775
+	if ((channel < 0) || (channel > 775))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	memset(tempaddr, 0, sizeof(tempaddr));
+
+	chan = ((channel>>7) & 0x0007)*DACHANNELS + (channel & 0x000F);
+	adcaddr = SlotAddr((channel>>7) & 0x0007);	//define slot plus device address
+	eeaddrs = 0x0100 + ((channel & 0x000F)<<4);	//define upper half eeprom address
+
+	memset(_dacCalib[chan], 0, sizeof(_dacCalib[chan]));
+	byteaddr = (char*)(_dacCalib[chan]);
+
+	for (i=0; i<8; i++) {
+		if ((msgcode =_anaInEERd(adcaddr, eeaddrs++, DACBOARD)) < 0)
+			return msgcode;
+		else
+			*byteaddr++ = (char)msgcode;
+		}
+
+	if (memcmp(_dacCalib[chan], tempaddr, sizeof(_dacCalib[chan])))
+		return 0;
+	else
+		return -3;
+}
+
+
+/*** BeginHeader anaOutEEWr */
+
+int anaOutEEWr(unsigned int channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaOutEEWr					<SMRTSTAR.LIB>
+
+SYNTAX:			int anaOutEEWr(unsigned int channel);
+
+
+DESCRIPTION:	Writes the calibration constants, gain and offset, to
+					upper half of EEPROM on DAC board. This function is non-reentrant.
+
+					Note:  Factory calibrations are in unit amperes.
+
+PARAMETER1:		The DAC output channel.  channel should be
+					passed as:
+
+							channel = (slotnumber*128)+channelnumber
+
+					where slotnumber is a value of 0-6 for long backplanes,
+					0-2 for short backplanes.	 channelnumber is a value of
+					0-7.  Or use the following macro:
+
+							channel = ChanAddr(slotnumber, channelnumber)
+
+
+RETURN VALUE:	 0, successful write to eeprom.
+					-1, control commmand unacceptable.
+					-2, eeprom address unacceptable.
+					-3, data value unacceptable.
+
+SEE ALSO:		anaOutEERd
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int anaOutEEWr(unsigned int channel)
+{
+	auto int i;
+	static int eeaddrs, adcaddr, chan;
+	static int msgcode;
+	static char *byteaddr;
+
+	///hard coded max channel calculated as 6*128+7=775
+	if ((channel < 0) || (channel > 775))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	chan = ((channel>>7) & 0x0007)*DACHANNELS + (channel & 0x000F);
+	adcaddr = SlotAddr((channel>>7) & 0x0007);	//define slot plus device address
+	eeaddrs = 0x0100 + ((channel & 0x000F)<<4);	//define eeprom address
+
+	byteaddr = (char*)(_dacCalib[chan]);
+
+	for (i=0; i<8; i++) {
+		if ((msgcode = _anaInEEWr(adcaddr, eeaddrs++, *byteaddr++, DACBOARD)) != 0)
+			return msgcode;
+		}
+}
+
+
+/*** BeginHeader anaSaveCalib */
+
+int anaSaveCalib(int boardtype);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaSaveCalib					<SMRTSTAR.LIB>
+
+SYNTAX:			int anaSaveCalib(int boardtype);
+
+DESCRIPTION:	Saves the current set of calibration constants for the analog
+input or output channels in the Smart Star flash memory.  These should first be
+set using the anaInCalib or anaInEERd function for ADC boards.  Use anaOutCalib or
+anaOutEERd for DAC boards.   Use anaLoadCalib function to read constants.
+This function is non-reentrant.
+
+NOTE:  This function must be compiled in flash.
+=====
+
+Depending on the board's system ID block table version, calibration constants
+will be stored at the following addresses:
+
+For System ID block table version 2 and above
+================================================
+Description 	User Block Logical address offset
+-----------		---------------------------------
+DAC card 		DAC_CALIB_ADDR = 0x1C00
+ADC card			ADC_CALIB_ADDR = DAC_CALIB_ADDR+sizeof(_dacCalib)
+
+
+For System ID block table version 1 (no user block)
+===================================================
+Description 	Physical address offset
+-----------		----------------------------
+DAC card 		_DAC_CALIB_ADDR = 0x0003E000
+ADC card			_ADC_CALIB_ADDR = 0x0003E1D0
+
+
+PARAMETER1:		The type of board, 0 or 1, for an ADC or DAC card.
+
+boardtype	Macro			Description
+---------	--------		-----------
+	0			DACBOARD		DAC card
+	1			ADCBOARD		ADC card
+
+
+RETURN VALUE:	0 - success
+				  -1 - invalid address range, nothing written
+				  -2 - rootSrc not in root
+				  -3 - timeout while writing flash
+				  -4 - attempt to write to ID block sector(s)
+				  -5 - incorrect ID block version
+
+SEE ALSO:		anaLoadCalib, anaInCalib, anaInEERd, anaOutCalib, anaOutEERD
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int anaSaveCalib(int boardtype)
+{
+	auto int	err;
+
+	switch (SysIDBlock.tableVersion)
+	{
+		case 0:
+		case 1:
+			if (boardtype)
+			{
+				err = WriteFlash(_ADC_CALIB_ADDR, _adcCalib, sizeof(_adcCalib));
+			}
+			else
+			{
+				err = WriteFlash(_DAC_CALIB_ADDR, _dacCalib, sizeof(_dacCalib));
+			}
+			break;
+		default:
+			if (boardtype)
+			{
+				err = writeUserBlock(ADC_CALIB_ADDR, _adcCalib, sizeof(_adcCalib));
+			}
+			else
+			{
+				err = writeUserBlock(DAC_CALIB_ADDR, _dacCalib, sizeof(_dacCalib));
+			}
+			if (err == -2)
+				err = -5;
+			break;
+	}
+
+	return err;
+}
+
+
+/*** BeginHeader anaLoadCalib */
+
+int anaLoadCalib(int boardtype);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+anaLoadCalib					<SMRTSTAR.LIB>
+
+SYNTAX:			int anaLoadCalib(int boardtype);
+
+DESCRIPTION:	Reads a complete set of calibration constants for the analog
+input or output channels from the Smart Star flash memory previously saved
+to flash with the anaSaveCalib function.
+This function is non-reentrant.
+
+NOTE:  This function must be compiled in flash.
+=====
+
+Depending on the board's system ID block table version, calibration constants
+will be read from the following addresses:
+
+For System ID block table version 2 and above
+================================================
+Description 	User Block Logical address offset
+-----------		---------------------------------
+DAC card 		DAC_CALIB_ADDR = 0x1C00
+ADC card			ADC_CALIB_ADDR = DAC_CALIB_ADDR+sizeof(_dacCalib)
+
+
+For System ID block table version 1 (no user block)
+===================================================
+Description 	Physical address offset
+-----------		----------------------------
+DAC card 		_DAC_CALIB_ADDR = 0x0003E000
+ADC card			_ADC_CALIB_ADDR = 0x0003E1D0
+
+
+RETURN VALUE:  0 - success
+				  -1 - invalid address range, nothing written
+				  -2 - dest not all in in root
+				  -5 - incorrect ID block version
+
+SEE ALSO:		anaSaveCalib
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+int anaLoadCalib(int boardtype)
+{
+	auto int	err;
+
+	switch (SysIDBlock.tableVersion)
+	{
+		case 0:
+		case 1:
+			if (boardtype)
+			{
+				err= xmem2root( _adcCalib, _ADC_CALIB_ADDR, sizeof(_adcCalib));
+			}
+			else
+			{
+				err= xmem2root(_dacCalib, _DAC_CALIB_ADDR, sizeof(_dacCalib));
+			}
+			break;
+		default:
+			if (boardtype)
+			{
+				err = readUserBlock(_adcCalib, ADC_CALIB_ADDR, sizeof(_adcCalib));
+			}
+			else
+			{
+				err = readUserBlock(_dacCalib, DAC_CALIB_ADDR, sizeof(_dacCalib));
+			}
+			if (err == -2)
+				err = -5;
+			break;
+	}
+
+	return err;
+}
+
+
+
+/*** Beginheader serMode */
+int serMode(int mode);
+
+//defaults for flow control RTS/CTS
+#define SERC_RTS_PORT PDDR
+#define SERC_RTS_SHADOW PDDRShadow
+#define SERC_RTS_BIT 0			//PD0
+#define SERC_CTS_PORT PDDR
+#define SERC_CTS_BIT 2			//PC2
+
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+serMode                   <SMRTSTAR.LIB>
+
+SYNTAX:	      int serMode(int mode);
+
+DESCRIPTION:   User interface to setup up serial communication.
+					Call this function after serXOpen(). This function is
+					non-reentrant.
+
+PARAMETER1:    mode - defined serial port configuration.  See table.
+
+Processor
+Port Pins		PC2, PC3						PC0, PC1				PD0, PD2
+-----------		-----------		------------------------	--------
+CPU Board
+Label				TxC, RxC			TxD, RxD			485+,485-	TxD, RxD
+===========		===========		===========		=========	========
+mode = 0			RS232,3wire		---				RS485			---
+mode = 1			RS232,3wire		RS232,3wire		---			---
+mode = 2			RS232,5wire		---				---			RTS, CTS
+mode = 3			RS232,5wire		---				RS485			RTS, CTS
+
+NOTE:
+Although PC0 and PC1 can be configured	as RTS and CTS, it is
+not provided here as a mode option because RS485 also uses PC0 and
+PC1.  Processor port pins PD0 and PD2 are	provided as RTS and CTS.
+3- or 5-wire and RS232 or RS485 serial communication are configured
+by PD1 and PD3.
+
+RETURN VALUE:	0 if correct mode; 1 if not.
+
+SEE ALSO:
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int serMode(int mode)
+{
+	auto int themode;
+
+	themode = 0;
+	switch (mode)
+		{
+		case 0:
+			// rs232-3w TxC, RxC all ready set by serCopen
+
+			// rs485 serial port TxD, RxD baud set by serDopen
+			BitWrPortI(PDDR, &PDDRShadow, 0x00, 0);			// clear PD0 to ensure rts low
+			BitWrPortI(PDDR, &PDDRShadow, 0xFF, 1);			// set PD1 to disable rs232
+			BitWrPortI(PDDR, &PDDRShadow, 0x00, 3);			// clear PD3 to enable rs485
+			break;
+		case 1:
+			// rs232-3w TxC, RxC all ready set by serCopen
+
+			// rs485 serial port TxD, RxD baud set by serDopen
+			BitWrPortI(PDDR, &PDDRShadow, 0x00, 1);			// clear PD1 to enable rs232
+			BitWrPortI(PDDR, &PDDRShadow, 0xFF, 3);			// set PD3 to disable rs485
+																			//   data will also appear on cts line
+			break;
+		case 2:
+			// rs232-5w TxC, RxC all ready set by serCopen
+
+			// setup for RTS, CTS
+			BitWrPortI(PDFR, &PDFRShadow, 0x00, 0);			// clear PD0 for normal output
+			BitWrPortI(PDFR, &PDFRShadow, 0x00, 2);			// clear PD2 for normal output
+			BitWrPortI(PDDR, &PDDRShadow, 0xFF, 1);			// set PD1 to enable rts
+			BitWrPortI(PDDR, &PDDRShadow, 0xFF, 3);			// set PD3 to enable cts
+																			//   data will appear on rxd line
+			break;
+		case 3:
+			// rs232-5w TxC, RxC all ready set by serCopen
+
+			// setup for RTS, CTS
+			// rs485 serial port TxD, RxD baud set by serDopen
+			BitWrPortI(PDDR, &PDDRShadow, 0xFF, 1);			// set PD1 to enable rts
+			BitWrPortI(PDDR, &PDDRShadow, 0x00, 3);			// clear PD3 to enable rs485 and enable cts
+																			//   data will appear on rxd line
+			break;
+		default:
+			// unsupported mode
+			themode = 1;
+			break;
+		}
+	return themode;
+}
+
+
+/*** BeginHeader	ser485Tx */
+
+void ser485Tx();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Tx()       					<SMRTSTAR.LIB>
+
+SYNTAX:	      ser485Tx();
+
+DESCRIPTION:   Enables RS485 (disabling receive) transmission on port D.
+					This function is non-reentrant.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		ser485Rx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void ser485Tx()
+{
+	// set port D bit 4 high
+	BitWrPortI(PDDR, &PDDRShadow, 0xFF, 4);
+}
+
+
+/*** BeginHeader	ser485Rx */
+
+void ser485Rx();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Rx()       					<SMRTSTAR.LIB>
+
+SYNTAX:	      ser485Rx();
+
+DESCRIPTION:   Disables RS485 (enabling receive) transmission on port D.
+					This function is non-reentrant.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		ser485Tx
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void ser485Rx()
+{
+	// set port D bit 4 low
+	BitWrPortI(PDDR, &PDDRShadow, 0x00, 4);
+}
+
+
+/*** BeginHeader LEDShadow */
+
+extern char LEDShadow;
+/*** EndHeader */
+
+// Shadow register for external LED's
+char LEDShadow;
+
+/////////////////////////////////////////////////////////////
+// Addressing for LCD and Keypad operations
+// for 122x32 pixel LCD and 1x7 keypad assembly with leds
+/////////////////////////////////////////////////////////////
+/*** BeginHeader */
+// LCD Register addresses
+#define LCDBASEADDR		0x61C0
+
+#define LCDMREADSTATUS	LCDBASEADDR+0x0002
+#define LCDMWRITEINSTR	LCDBASEADDR+0x0000
+
+#define LCDSREADSTATUS	LCDBASEADDR+0x0006
+#define LCDSWRITEINSTR	LCDBASEADDR+0x0004
+
+#define LCDMREADDATA		LCDBASEADDR+0x0003
+#define LCDMWRITEDATA	LCDBASEADDR+0x0001
+
+#define LCDSREADDATA		LCDBASEADDR+0x0007
+#define LCDSWRITEDATA	LCDBASEADDR+0x0005
+
+#define LCDBACKLIGHT		LCDBASEADDR+0x000B
+
+// LCD LED
+#define LCDLEDADDR		LCDBASEADDR+0x000B
+#define LCDLED0ADDR		LCDBASEADDR+0x0004
+#define LCDLEDREG			LCDBASEADDR+0x0008
+
+// Use Port E bit 3 for LCD strobe
+#define LCDSTROBE			0x08
+#define LCDCSREGISTER	IB3CR
+#define LCDCSSHADOW		IB3CRShadow
+#define LCDCSCONFIG		0x78
+
+// Use Port E bit 3 for keypad strobe
+#define KEYADDR			LCDBASEADDR+0x000A
+#define KEYSTROBE			0x08
+#define KEYCSREGISTER	IB3CR
+#define KEYCSSHADOW		IB3CRShadow
+#define KEYCSCONFIG		0x78
+/*** EndHeader */
+
+/*** BeginHeader	ledOut */
+void ledOut(int led, int value);
+
+#define dispLedOut ledOut
+#define dispInit()  {glInit();	keyInit();}
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ledOut						<SMRTSTAR.LIB>
+
+SYNTAX:			void ledOut(int led, int value)
+
+DESCRIPTION:	LED ON/OFF control. This function is non-reentrant.
+
+PARAMETER1:		LED to control.
+
+					0  = LED DS1
+					1  = LED DS2
+					2  = LED DS3
+					3  = LED DS4
+					4  = LED DS5
+					5  = LED DS6
+					6  = LED DS7
+
+					Note: This function is only valid if the LCD display module
+					      is installed on your controller.
+
+PARAMETER2:		value used to control LED (0 or 1).
+					0 = OFF
+					1 = ON
+
+RETURN VALUE:	None
+
+SEE ALSO:		brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void ledOut(int led, int value)
+{
+	auto unsigned char outputBit;
+
+	if ((led < 0) || (led > 7) || (value < 0) || (value > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	outputBit = 0x01 << led;
+	if (value == 0)
+	{	// turn-on the specified LED
+		WrPortE(LCDLEDADDR, &LEDShadow, (LEDShadow & ~outputBit));
+	}
+	else
+	{	// turn-off the specified LED
+		WrPortE(LCDLEDADDR, &LEDShadow, (LEDShadow | outputBit));
+	}
+}
+
+/*** BeginHeader brdInit, ADCSHADOW */
+void brdInit();
+extern int ADCSHADOW;
+/*** EndHeader */
+
+int ADCSHADOW;
+
+/* START FUNCTION DESCRIPTION ********************************************
+brdInit                   <SMRTSTAR.LIB>
+
+SYNTAX:	      void brdInit();
+
+DESCRIPTION:   Call this function at the beginning of application code.
+					This function is non-reentrant.
+
+Initializes the following:
+	1.  Slot addressing
+	2.  Disables card enable/disable line.
+	3.	 Resets card slot bus and LED latch
+	4.  Sets LED's off.
+
+	Port  I/O state after brdInit()
+	Pin	SR9150					SR9160		SR9100
+	----  ---------------  		------		------
+	PA0  	In,pull-up				same			same
+	PA0  	In,pull-up				same			same
+	PA0  	In,pull-up				same			same
+	PA0  	In,pull-up				same			same
+	PA0  	In,pull-up				same			same
+	PA0  	In,pull-up				same			same
+	PA0  	In,pull-up				same			same
+	PA0  	In,pull-up				same			same
+
+	PB0	In,pull-up				same			same
+	PB1	CLKA						same			same
+	PB2  	In,pull-up				same			same
+	PB3  	In,pull-up				same			same
+	PB4  	In,pull-up				same			same
+	PB5  	In,pull-up				same			same
+	PB6  	Out,inactive-high		same			same
+	PB7  	Out,inactive-high		same			same
+
+	PC0	Out,inactive-high		same			same
+	PC1	In,inactive-high		same			same
+	PC2	Out,inactive-high		same			same
+	PC3	In,inactive-high		same			same
+	PC4	Out,inactive-high		same			same
+	PC5	In,inactive-high		same			same
+	PC6	TXA						same			same
+	PC7	RXA						same			same
+
+	PD0	Out,low					same			same
+	PD1	Out,high					same			same
+	PD2	In,inactive-high		same			same
+	PD3	Out,low					same			same
+	PD4	Out,low					same			same
+	PD5	Out,low 					same			same
+	PD6	Out,high					Out,low		Out,low
+	PD7  	Out,high					same			same
+
+	PE0 	In,pull-up				same			same
+	PE1 	In,pull-up				same			same
+	PE2	Out,low					same			same
+	PE3	I/O Strobe 				same			same
+	PE4	In,pull-up				In,pull-up	Out,low
+	PE5	In,pull-up				In,pull-up	Out,low
+	PE6	Out,low					same			same
+	PE7	Out,low					same			same
+
+PARAMETER1:		None
+
+RETURN VALUE:	None
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void brdInit()
+{
+	WrPortI(SPCR, &SPCRShadow, 0x80);		//port A input
+
+	WrPortI(PDFR, &PDFRShadow, 0x00);		//port D as normal io
+	WrPortI(PDDCR, &PDDCRShadow, 0x00);		//port D driven high/low
+	WrPortI(PDCR, &PDCRShadow, 0x00);		//no clocked outputs
+	WrPortI(PDDDR, &PDDDRShadow, 0xFB);		//bit 2 should be an input (CTS)
+#if (_BOARD_TYPE_==SR9150)
+	WrPortI(PDDR, &PDDRShadow, 0xC2);		//set bit 1(rs485), bit 6 (cpu link off), bit 7 (/ZBUSRESET)
+#else
+	WrPortI(PDDR, &PDDRShadow, 0x82);		//set bit 1(rs485), bit 7 (/ZBUSRESET)
+#endif
+
+	WrPortI(PEFR, &PEFRShadow, 0x08);		// bit 3 is an I/O strobe
+	WrPortI(IB3CR, &IB3CRShadow, 0xC8);		// I/O strobe:  address 0x6000, allow writes,
+														//   1 wait state, CS signal
+	WrPortI(PECR, &PECRShadow, 0x00);		// no clocked outputs
+	WrPortI(PEDR, &PEDRShadow, 0x00);		// all outputs are low, dac drivers disabled
+	WrPortI(PEDDR, &PEDDRShadow, 0xFC);		// bits 0-1 are inputs
+
+	// clear out Smart Star slot writes shadow registers
+	memset(_SlotShadow, 0x00, 8*16);
+	ADCSHADOW = 0x00;
+	DACShadow = 0xff;
+	// load set and unset calibrations from flash
+	memset(_adcCalib, 0, sizeof(_adcCalib));
+	memset(_dacCalib, 0, sizeof(_dacCalib));
+
+	brdResetBus();    		//resets card slots and LED latch
+
+	//// Enable LED control register
+	WrPortE(LCDLEDADDR, &LEDShadow, 0x00);		//all LED's off
+	WrPortE(LCDLEDREG, NULL, 0x00);				//set LED latch
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

@@ -1,0 +1,6010 @@
+/*
+ *    net.lib
+ *    Copyright (C) Z-World, Inc. All rights reserved.
+ *    Portions used with permission of Erick Engelke.
+ *
+ * General networking API.  This is the "top-level" library
+ * for the networking library suite.  It also includes the
+ * packet driver interface.
+ *
+ * Relevant RFCs:
+ *
+ *   1122, 1123:	Host requirements (Internet standard 0003)
+ *
+ */
+
+/* START LIBRARY DESCRIPTION *********************************************
+NET.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This is the top-level library for inclusion of networking code.
+
+	Control Macros
+	--------------
+
+	#define USE_ETHERNET      0x01
+	#define USE_PPP_SERIAL    0x04
+	#define USE_PPPOE         0x01
+
+	  Specify the interface(s) to be supported for TCP/IP networking,
+	  and the number of such interfaces.  Define to '0' to disable
+	  support for that interface.  Non-zero values are a bitmask
+	  which indicates the hardware interface(s) to be used for the
+	  specified protocol:
+
+	  USE_ETHERNET can be set to 0x01, 0x02 or 0x03.  Most boards
+	  only support 0x01, meaning the "first" ethernet device.  Boards
+	  with two ethernet devices can set 0x02 to mean _only_ use the
+	  second device, or 0x03 to allow use of both devices for normal
+	  networking.
+
+	  USE_PPP_SERIAL can only be set to 0x01, 0x02, 0x04 or 0x08, or
+	  a bitwise OR combination of those values.  This maps PPP over
+	  serial to one or more of the 4 on-board serial
+	  ports.  0x01 = SERA, 0x02 = SERB, 0x04 = SERC, 0x08 = SERD.
+	  See ifconfig() documentation for details about setting up
+	  serial ports and their flow control pins.
+
+	  Note: on the Rabbit 3000 and above, 0x10 (SERE) and 0x20 (SERF)
+     are also available.
+
+	  USE_PPPOE is set in the same way as USE_ETHERNET.  The bitmask
+	  in this case indicates which of the ethernet device(s) are to
+	  be used for PPP over Ethernet.
+
+	  If none of these macros are defined, then the old behavior is used,
+	  which is to include one (and only one) of the link-layer drivers.
+	  If any are defined, whether or not to zero, then you should NOT
+	  define PKTDRV, PPPOE or MULTI_IF.
+
+	#define VIRTUAL_ETH			0
+
+     Define to a positive number (1-6) to allow additional 'virtual'
+     ethernet interfaces to be added dynamically after sock_init.
+     Virtual ethernets allow the ethernet interface to pretend to be
+     several hosts (each with unique IP address, netmask etc.).  All
+     VE's have the same MAC address, however, so DHCP can only be
+     used on the 'real' ethernet interface.
+
+     If this is defined non-zero, then USE_ETHERNET must also be
+     defined non-zero.
+
+     This macro is intended to allow for official support of multi-
+     homing i.e. one Rabbit device pretending to be several host
+     IP addresses.  This can be useful for some embedded applications
+     and network setups, but is not recommended unless there is
+     a very good reason.
+
+     Currently, broadcast packets received on the real ethernet
+     interface are not distributed to any of the virtual i/f's.  The
+     demultiplexing occurs only at the unicast IP level.
+
+	#define PKTDRV "realtek.lib"
+
+	  Specify the packet driver (hardware interface) library to use.
+	  Set to either "realtek.lib" (the default) for ethernet, or "ppp.lib"
+	  for Point-to-Point Protocol (serial line or PPP over Ethernet).
+
+	  Do _not_ define this if defining any of the above USE_* macros.
+
+	#define PPPOE
+
+	  If you define PKTDRV to be "ppp.lib", then you can also define this
+	  to use PPP over Ethernet.  For other packet drivers, this define has
+	  no effect.
+
+	  Do _not_ define this if defining any of the above USE_* macros.
+
+	#define DISABLE_ARP
+
+	  This does not completely disable ARP, since it is essential for
+	  ethernet.  ARP is not required for PPP (Point to Point Protocol).
+	  If defined, a very simplified ARP will be generated.  This version does
+	  not do things like refresh the ARP cache or select the best router.
+
+	  -- Note: this flag not implemented; you always get full ARP.
+
+	#define DISABLE_DNS
+
+	  Do not include Domain Name Server functions.  You will not be able to
+	  resolve hostnames; you will only be able to specify dotted decimal
+	  IP addresses.  DNS requires UDP, thus if you define DISABLE_UDP, you
+	  must also define this macro.
+
+	#define USE_DHCP
+
+	  Include BOOTP/DHCP code.  Allows dynamic configuration of IP addresses
+	  etc.  See BOOTP.LIB for details.  DHCP requires UDP, thus if you define
+	  this macro you must _not_ define DISABLE_UDP.
+
+	#define USE_SNMP  1
+
+	  Include SNMP code.  See SNMP.LIB for details.  SNMP requires UDP, thus
+	  if you define this macro you must _not_ define DISABLE_UDP.
+
+	#define DISABLE_UDP
+
+	  Do not include UDP (User Datagram Protocol) functions.  If this is defined,
+	  then you will not be able to use DNS or DHCP.  You will get a compiler
+	  warning if there is a conflict with the above macro definitions.
+
+	#define DISABLE_TCP
+
+	  Do not include TCP (Transmission Control Protocol).  If this is defined,
+	  then you will not be able to use many of the TCP-based servers and/or
+	  clients such as FTP, HTTP, mail etc.  If your application only needs UDP,
+	  then you can save quite a lot of code by not including TCP.
+
+   Global Variables
+   ----------------
+
+
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader */
+#ifndef NET_H
+#define NET_H
+
+// Set flag for backward compatibility.  This is "advanced networking".
+#define NET_ENHANCED
+
+#define DCRTCP
+#ifdef SLICING
+	#undef SLICING
+#endif
+
+#ifdef MCOS
+	#define MCOS_LOCKS
+
+   #define NET_COARSELOCK
+   #define NET_COMMON_DNS_LOCK
+#endif
+
+#ifdef NET_DEBUG
+	#define _net_nodebug
+#else
+	#define _net_nodebug nodebug
+#endif
+
+/* For RabbitSys, the network xmit/recv buffers are dynamically
+ * allocated.  The following #define's configure the user side
+ * of the RabbitSys networking software.
+ */
+#if _USER
+
+	#define _stub	__lcall__  nodebug       // Stub attributes
+   #define _NET_SYSCALL(x) \
+   	asm ld hl,_SYS_NET_INTERFACE $ ld bc,x $ syscall;
+
+	// User compile with RabbitSys
+	#define tcp_Socket	int
+	#define udp_Socket	int
+	#define sock_type		int
+
+	#define _rs_tcp_Socket	_sys_tcp_Socket
+	#define _rs_udp_Socket	_sys_tcp_Socket
+	#define _rs_sock_type	_sys_tcp_Socket
+
+	#ifndef TCP_BUF_SIZE
+	   #define TCP_BUF_SIZE    4096
+	#endif
+	#ifndef UDP_BUF_SIZE
+	   #define UDP_BUF_SIZE    4096
+	#endif
+	#ifndef MAX_TCP_SOCKET_BUFFERS
+	   #define MAX_TCP_SOCKET_BUFFERS 3
+	#endif
+	#ifndef MAX_UDP_SOCKET_BUFFERS
+	   #define MAX_UDP_SOCKET_BUFFERS 3
+	#endif
+
+   #define _if_tab (get_if_tab_addr())
+
+#endif //_USER
+
+
+/*
+ *		basic configuration options
+ */
+
+
+#ifndef MY_DOMAIN
+	#define MY_DOMAIN			NULL
+	#define MY_DOMAINNULL
+#endif
+
+/* maximum size of any one domain name to be looked up,
+	including any global domain concatenated to the requested domain. */
+#ifndef MAX_DOMAIN_LENGTH
+	#define MAX_DOMAIN_LENGTH	128
+#endif
+
+/*
+ *		defines the input and output buffer sizes for a socket
+ */
+
+//sockets connected to reserved ports can be closed
+//without the 2MSL delay period
+#ifndef TCP_FASTSOCKETS
+	#define TCP_FASTSOCKETS 1
+#endif
+
+/*
+ * This determines the size of the TCP buffers.  If not specified,
+ * but SOCK_BUF_SIZE is, then TCP_BUF_SIZE takes on the value of
+ * SOCK_BUF_SIZE.  It also has further backwards compatibility with
+ * tcp_MaxBufSize.
+ */
+#ifndef TCP_BUF_SIZE
+	#ifdef SOCK_BUF_SIZE
+		#define TCP_BUF_SIZE SOCK_BUF_SIZE
+	#else
+		#ifdef tcp_MaxBufSize
+			#define TCP_BUF_SIZE (tcp_MaxBufSize * 2)
+		#else
+			#define TCP_BUF_SIZE 4096
+		#endif
+	#endif
+#endif
+
+/*
+ * Determines the maximum number of TCP sockets with preallocated
+ * buffers.  If MAX_SOCKETS is defined instead, then
+ * MAX_TCP_SOCKET_BUFFERS will take the value of MAX_SOCKETS for
+ * backwards compatibility.
+ */
+#ifndef MAX_TCP_SOCKET_BUFFERS
+	#ifdef MAX_SOCKETS
+		#define MAX_TCP_SOCKET_BUFFERS MAX_SOCKETS
+	#else
+		#define MAX_TCP_SOCKET_BUFFERS 4
+	#endif
+#endif
+
+/*
+ * This determines the size of the UDP buffers.  If not specified,
+ * but SOCK_BUF_SIZE is, then UDP_BUF_SIZE takes on the value of
+ * SOCK_BUF_SIZE.  It also has further backwards compatibility with
+ * tcp_MaxBufSize.
+ */
+#ifndef UDP_BUF_SIZE
+	#ifdef SOCK_BUF_SIZE
+		#define UDP_BUF_SIZE SOCK_BUF_SIZE
+	#else
+		#ifdef tcp_MaxBufSize
+			#define UDP_BUF_SIZE (tcp_MaxBufSize * 2)
+		#else
+			#define UDP_BUF_SIZE 4096
+		#endif
+	#endif
+#endif
+
+/*
+ * Determines the maximum number of UDP sockets with preallocated
+ * buffers.  Defaults to NO UDP buffers.  DHCP and/or SNMP allocate
+ * and manage their own buffers, so they need not be considered
+ * in this setting.
+ */
+#ifndef MAX_UDP_SOCKET_BUFFERS
+	#define MAX_UDP_SOCKET_BUFFERS 0
+#endif
+
+/*
+ * Determines the number of socket locks that are allocated.  For
+ * uCOS/II, this effectively limits the number of sockets that can
+ * be allocated.
+ */
+#ifndef MAX_SOCKET_LOCKS
+	#define MAX_SOCKET_LOCKS (MAX_TCP_SOCKET_BUFFERS + MAX_UDP_SOCKET_BUFFERS)
+#endif
+
+#ifdef DISABLE_DNS
+	#define ACTUAL_SOCKET_LOCKS	MAX_SOCKET_LOCKS
+#else
+	#define ACTUAL_SOCKET_LOCKS	(MAX_SOCKET_LOCKS+1)
+#endif
+
+#ifndef ETH_MTU
+   #define ETH_MTU 1500			// MTU for Ethernet and WIFI (PPPoE will use this minus 8)
+#endif
+#ifndef PPP_MTU
+   #define PPP_MTU ETH_MTU		// MTU for serial PPP, default to same as ethernet
+#endif
+
+#if ETH_MTU > PPP_MTU
+	#define MAX_MTU	ETH_MTU
+	#define MIN_MTU	PPP_MTU
+#else
+	#define MAX_MTU	PPP_MTU
+	#define MIN_MTU	ETH_MTU
+#endif
+
+/* This symbol specifies the total number of incoming and outgoing packets for
+ all interfaces (not just ethernet, as the name implies).  The default of 10
+ will allocate about 300 bytes of root memory. */
+#ifndef ETH_MAXBUFS
+	#define ETH_MAXBUFS       10
+#endif
+
+/* This sets the number of xmem buffers.  It should be at least equal to the
+ ETH_MAXBUFS value, but no more than ETH_MAXBUFS*ceil((MAX_MTU+MAX_OVERHEAD)/512).
+ Each of these buffers takes 512 bytes of xmem.  They are used to contain the
+ data payload of received (and transmitted) packets.  Up to 3 of these buffers
+ may be required if the MTU plus link layer overhead is 1025..1536 bytes. */
+#ifndef PKT_XBUFS
+	#define PKT_XBUFS				30
+#endif
+
+#if PKT_XBUFS < ETH_MAXBUFS
+	#error "PKT_XBUFS must be at least equal to ETH_MAXBUFS"
+#endif
+
+// Set up some defines for dealing with the automagic macros dealing with
+// Ethernet that come from the system ID block.  These separate out the
+// compile-time and run-time portions, and indicate if the given interface
+// has multiple possible chipsets that must be resolved at run-time.
+#define _DC_ETH_COMPILETIME_MASK		0x0000ffff
+#define _DC_ETH_RUNTIME_MASK			0xf8000000
+#define _DC_ETH_MULTI					0x00001000
+
+// Consistent way of setting timeouts from 1ms through to about 24 days,
+// and 1ms thru 32 seconds using only 16-bit arithmetic (and a macro for
+// evaluation rather than a function call).
+#define _SET_TIMEOUT(x) (MS_TIMER + (x))
+#define _CHK_TIMEOUT(x) chk_timeout(x)
+#define _SET_SHORT_TIMEOUT(x) ((word)MS_TIMER + (x))
+#define _CHK_SHORT_TIMEOUT(x) ((int)((word)MS_TIMER - (x)) >= 0)
+
+#ifdef NET_ADD_ENTROPY
+	// Use packet arrival times to help seed random number generators (see RAND.LIB)
+	#ifndef RAND_H
+		#use "rand.lib"
+	#endif
+#endif
+
+/* If user defines VIRTUAL_ETH to a positive value, then he can create additional
+ ethernet interfaces on the fly.  The additional interfaces use the IF_ETH hardware,
+ but allow a different home address and netmask.  This is how "multi-homing" is
+ now officially supported.  VIRTUAL_ETH is only supported if at least one broadcast
+ ethernet interface is selected (USE_ETHERNET > 0).  The virtual interface numbers
+ get tacked on after the PPP's (if any).  A maximum of 16 total i/f's is
+ supported. */
+#ifndef VIRTUAL_ETH
+	#define VIRTUAL_ETH		0
+#endif
+
+
+#ifndef USE_ETHERNET
+	#define USE_ETHERNET 0
+#endif
+
+#ifndef USE_PPP_SERIAL
+	#define USE_PPP_SERIAL 0
+#endif
+
+#ifndef USE_VSPD
+	#define USE_VSPD 0
+#endif
+
+#ifndef USE_PPPOE
+	#define USE_PPPOE 0
+#endif
+
+#ifndef USE_WIFI
+   #define USE_WIFI 0
+#endif
+
+// If USE_PPPOE, then ensure USE_ETHERNET equal to it
+#if USE_PPPOE
+	#if (USE_PPPOE & USE_ETHERNET) != USE_PPPOE
+   	#warns "If you define USE_PPPOE, then define USE_ETHERNET to be at least the same."
+      #warns "...redefining USE_ETHERNET = USE_PPPOE, which may not be what you want."
+      #undef USE_ETHERNET
+      #define USE_ETHERNET USE_PPPOE
+   #endif
+#endif
+
+
+
+#if CPU_ID_MASK(_CPU_ID_) >= R3000
+	#if USE_PPP_SERIAL & ~0x3FL
+		#error "USE_PPP_SERIAL: invalid; use combination of 0x01,0x02,0x04,0x08,0x10,0x20 (SERA-F)"
+	#endif
+	// Maximum simultaneous PPP serial interfaces
+	#define MAX_PPP_SERIAL	6
+#else
+	#if USE_PPP_SERIAL & ~0xFL
+		#error "USE_PPP_SERIAL: invalid; use combination of 0x01,0x02,0x04,0x08 (SERA-D)"
+	#endif
+	#define MAX_PPP_SERIAL	4
+#endif
+
+#if USE_ETHERNET & ~0x3L
+	#error "USE_ETHERNET: invalid ethernet device specified"
+#endif
+
+#if VIRTUAL_ETH && !USE_ETHERNET
+	#error "If VIRTUAL_ETH non-zero, then must also define USE_ETHERNET non-zero"
+#endif
+
+#if USE_PPPOE & ~0x3L
+	#error "USE_PPPOE: invalid PPPoE device specified"
+#endif
+
+#if USE_WIFI & ~0x3L
+   #error "USE_WIFI: invalid WiFi device specified"
+#endif
+
+// This is rather ugly, but I can't think of a neater way to get the preprocessor to
+// count the number of '1' bits in a constant.
+#define USING_PPP_SERIAL	((USE_PPP_SERIAL & 1) + \
+								 (USE_PPP_SERIAL>>1 & 1) + \
+								 (USE_PPP_SERIAL>>2 & 1) + \
+								 (USE_PPP_SERIAL>>3 & 1) + \
+								 (USE_PPP_SERIAL>>4 & 1) + \
+								 (USE_PPP_SERIAL>>5 & 1))
+
+/* Virtual serial packet driver.  This allows an ordinary serial port to look
+ like a TCP stream.  It uses the PPPLINK driver, but without PPP.  The PPPLINK
+ instance operates in raw mode only.  Incoming packets have the INBAND flag set,
+ which causes pkt_received() to pass them to the interface's ioctl(..PD_INBAND..)
+ handler.  The vspd_ioctl() passes these packets to a special TCP handler,
+ tcp_stream_handler(). To the application, this looks just like a real TCP
+ socket.  Other protocols (including UDP) are not currently supported. */
+#define USING_VSPD		((USE_VSPD & 1) + \
+								 (USE_VSPD>>1 & 1) + \
+								 (USE_VSPD>>2 & 1) + \
+								 (USE_VSPD>>3 & 1) + \
+								 (USE_VSPD>>4 & 1) + \
+								 (USE_VSPD>>5 & 1))
+
+#define USING_PPPLINK (USING_PPP_SERIAL + USING_VSPD)
+
+#define VSPD_LOCALHOST	0x7F000001		// localhost IP address for VSPD
+													// interfaces (127.0.0.1)
+
+#if USE_VSPD & USE_PPP_SERIAL
+	#error "You cannot use the same serial port for PPP and VSPD."
+   #error "Check your definitions of USE_PPP_SERIAL and USE_VSPD to make sure no bits overlap."
+#endif
+
+#define USING_PPPOE ((USE_PPPOE & 1) + (USE_PPPOE>>1 & 1))
+
+// These are defined by pktdrv.lib, based on actual hardware available
+#define USING_ETHERNET ((USE_ETHERNET & 1) + (USE_ETHERNET>>1 & 1))
+#define USING_WIFI ((USE_WIFI & 1) + (USE_WIFI>>1 & 1))
+// Work out any board-specific things.  This also may redefin "USING_ETHERNET"
+// based on actual number of ethernets installed.
+#use "BOARD_DEPS.LIB"
+
+// Extra amount added to the desired MTU for various media:
+#define PPP_OVERHEAD		6		// HDLC address, control, check fields, plus PPP
+										//		protocol.
+#define ETH_OVERHEAD		18		// Ethernet header (14 bytes plus 4 byte CRC)
+#define PPPOE_OVERHEAD	26		// Ethernet, plus PPPoE header (6) plus PPP
+										//		protocol (2)
+
+#define MAX_OVERHEAD    26		// Max of all the above.  Used for sizing the Rx
+										//		buffers, and for allocating prefix space to
+										//		header buffers.  See also IP_MAX_LL_HDR in
+										//		IP.LIB, which does not count the CRC.
+
+// MULTI_IF is a bitmask of interfaces required.
+#if USE_ETHERNET || USE_PPP_SERIAL || USE_PPPOE || USE_VSPD || USE_WIFI
+	#define MULTI_IF  (USE_ETHERNET | USE_WIFI << 2 | USE_PPPOE << 4 | USE_PPP_SERIAL << 6 | \
+				USE_VSPD << 6)
+	#if !VIRTUAL_ETH && (MULTI_IF & -MULTI_IF) == MULTI_IF
+		// Go back to old-style definition if only zero or one interface after all
+		#undef MULTI_IF
+	#endif
+	#define IF_ETHERMASK		0x000F	// Ethernet or PPPoE
+	#define IF_SERIALMASK	0x03F0	// Serial link
+	#define IF_PPPOEMASK		0x000C	// PPPoE link
+	#define IF_PPPMASK		(0x03FC & ~(USE_VSPD<<6))	// Any PPP link
+#endif
+
+#ifdef MULTI_IF
+	#ifdef PKTDRV
+		#undef PKTDRV
+	#endif
+#endif
+
+// Determine if not using any broadcast ethernet.  If so, can
+// cut out a lot of ARP code.
+#ifdef MULTI_IF
+	#if !(MULTI_IF & 0x0F)
+		#define ARP_MINIMAL
+	#endif
+#else
+	#ifdef USING_PPP
+		#define ARP_MINIMAL
+	#endif
+#endif
+
+
+// Define buffer size (not including ll_prefix overhead).
+// Definitions select in order of decreasing overhead size.
+#if USING_PPPOE
+	#define ETH_BUFSIZE (MAX_MTU + PPPOE_OVERHEAD)
+#else
+	#ifndef ARP_MINIMAL		// if not defined, assume using ethernet
+		#define ETH_BUFSIZE (MAX_MTU + ETH_OVERHEAD)
+	#else
+		#define ETH_BUFSIZE (MAX_MTU + PPP_OVERHEAD)
+	#endif
+#endif
+
+#if ETH_BUFSIZE > 1536
+	#error "MTU plus overhead exceeds the maximum buffer size of 1536 bytes"
+   #error "Set ETH_MTU and PPP_MTU less than or equal 1500"
+#endif
+
+// Set IF_PPPX to be the first PPP interface defined (in order PPPOE0,1
+//	then SERA, B, ... F)
+#if USE_PPPOE & 0x01
+	#define IF_PPPX	IF_PPPOE0
+#elif USE_PPPOE & 0x02
+	#define IF_PPPX	IF_PPPOE1
+#elif USE_PPP_SERIAL & 0x01
+	#define IF_PPPX	IF_PPP0
+#elif USE_PPP_SERIAL & 0x02
+	#define IF_PPPX	IF_PPP1
+#elif USE_PPP_SERIAL & 0x04
+	#define IF_PPPX	IF_PPP2
+#elif USE_PPP_SERIAL & 0x08
+	#define IF_PPPX	IF_PPP3
+#elif USE_PPP_SERIAL & 0x10
+	#define IF_PPPX	IF_PPP4
+#elif USE_PPP_SERIAL & 0x20
+	#define IF_PPPX	IF_PPP5
+#endif
+
+// Determine whether the ppp driver is needed
+#if USE_PPPOE||USE_PPP_SERIAL
+	#if _USER
+   	#error "RabbitSys does not currently support PPP."
+   #endif
+	#ifndef PPP_PKTDRV_LIB
+   	#define PPP_PKTDRV_LIB	"ppp.lib"
+   #endif
+#endif
+
+// Needed for all interfaces.  This library provides basic packet buffering services,
+// plus it includes the necessary packet driver(s) based on board type.
+	#use "pktdrv.lib"
+
+#ifndef MULTI_IF
+	// No multiple interface support.  Old-style compatibility.
+	#define IF_MAX			1
+	#define IF_DEFAULT	0
+	#define IF_ETH_MAX	1
+   #if USING_ETHERNET || USING_PPPOE || USING_PPP_SERIAL || USING_VSPD || USING_WIFI
+		#define IF_SET			0x0001		// Bitmask of valid interfaces
+   #else
+   	#define IF_SET			0
+      #warns "#use dcrtcp.lib, but no interfaces defined.  Define one or more "
+      #warns "of USE_ETHERNET, USE_WIFI, USE_PPP_SERIAL, USE_PPPOE or USE_VSPD."
+   #endif
+	#if USING_ETHERNET
+		#if USING_PPPOE
+			#define IF_PPPOE0			0
+			#define IF_USES_ETH(i)	0
+			#define IF_PKT_ETH(i)	1
+         #define IF_PKT_REAL_WIFI(i)	0 //Real WiFi Interface
+			#define IF_PKT_SER(i)	0
+			#define IF_P2P(i)			1
+		#else
+			#define IF_ETH0			0
+			#define IF_USES_ETH(i)	1
+			#define IF_PKT_ETH(i)	1
+         #define IF_PKT__REAL_WIFI(i)	0
+			#define IF_PKT_SER(i)	0
+			#define IF_P2P(i)			0
+		#endif
+   #elif USING_WIFI
+			#define IF_WIFI0			0
+			#define IF_USES_ETH(i)	1
+			#define IF_PKT_ETH(i)	1
+         #define IF_PKT_REAL_WIFI(i)	1
+			#define IF_PKT_SER(i)	0
+			#define IF_P2P(i)			0
+	#else
+   	// Note: since PPP over serial and VSPD are not allowed to use the same
+      // serial port, we just use the IF_PPPn interface name for either type.
+		#if USE_PPP_SERIAL & 0x01 || USE_VSPD & 0x01
+			#define IF_PPP0			0	// PPP over serial port A
+		#elif USE_PPP_SERIAL & 0x02 || USE_VSPD & 0x02
+			#define IF_PPP1			0	// PPP over serial port B etc.
+		#elif USE_PPP_SERIAL & 0x04 || USE_VSPD & 0x04
+			#define IF_PPP2			0
+		#elif USE_PPP_SERIAL & 0x08 || USE_VSPD & 0x08
+			#define IF_PPP3			0
+		#elif USE_PPP_SERIAL & 0x10 || USE_VSPD & 0x10
+			#define IF_PPP4			0
+		#elif USE_PPP_SERIAL & 0x20 || USE_VSPD & 0x20
+			#define IF_PPP5			0
+		#endif
+		#define IF_USES_ETH(i)	0
+		#define IF_PKT_ETH(i)	0
+      #define IF_PKT_REAL_WIFI(i)	0
+		#define IF_PKT_SER(i)	1
+      #if USE_PPP_SERIAL
+			#define IF_P2P(i)			1
+      #else
+      	#define IF_P2P(i)			0
+      #endif
+	#endif
+	#if USING_ETHERNET > 1
+		#undef USING_ETHERNET
+		#define USING_ETHERNET 1
+	#elif USING_WIFI > 1
+		#undef USING_WIFI
+		#define USING_WIFI 1
+	#endif
+#else
+	// Support multiple interfaces.
+	#if (USING_ETHERNET || USING_WIFI)
+		#define IF_ETH0	0		// Ethernet NIC 0
+		#define IF_ETH1	1		// Ethernet NIC 1 (only if dual port board)
+      #define IF_WIFI0	2
+      #define IF_WIFI1	3
+		#define IF_PPPOE0	4		// PPP over ethernet (using NIC 0)
+		#define IF_PPPOE1	5		// PPP over ethernet (using NIC 1)
+		#define IF_PPP0	6		// PPP over serial
+		#define IF_PPP1	7
+		#define IF_PPP2	8
+		#define IF_PPP3	9
+		#if CPU_ID_MASK(_CPU_ID_) >= R3000
+			#define IF_PPP4	10
+			#define IF_PPP5	11
+			#define IF_MAX		12		// Maximum number of interfaces
+		#else
+			#define IF_MAX		10		// Maximum number of interfaces
+		#endif
+		#define IF_ETH_MAX  (USING_ETHERNET+USING_WIFI)		// Maximum (pseudo-)ethernet NICs (1..4)
+      #if VIRTUAL_ETH
+      	// Note that IF_MAX denotes the end of the real interfaces.  The virtual ones follow.
+	      // Test if interface uses ethernet NIC (we don't count PPPoE, even though it uses ethernet)
+	      #define IF_USES_ETH(i) ((word)(i) < USING_WIFI || (word)i >= IF_MAX)
+	      #define IF_PKT_ETH(i) ((word)(i) < IF_PPP0 || (word)i >= IF_MAX)
+	      #define IF_PKT_SER(i) ((word)(i) >= IF_PPP0 && (word)i < IF_MAX)
+	      // Test if i/f is a point-to-point link
+	      #define IF_P2P(i) ((i) >= IF_PPPOE0 && (word)i < IF_MAX)
+      #else
+	      // Test if interface uses ethernet NIC (we don't count PPPoE, even though it uses ethernet)
+	      #define IF_USES_ETH(i) ((word)(i) < USING_WIFI)
+	      #define IF_PKT_ETH(i) ((word)(i) < IF_PPP0)
+          // Test if i/f is a point-to-point link
+          #define IF_P2P(i) (1u<<(i) & (USE_PPP_SERIAL<<IF_PPP0|USE_PPPOE<<IF_PPPOE0))
+          // Test if i/f uses an async serial physical layer
+          #define IF_PKT_SER(i) (1u<<(i) & (USE_PPP_SERIAL<<IF_PPP0|USE_VSPD<<IF_PPP0))
+      #endif
+      #define IF_PKT_REAL_WIFI(i) ((word)(i) == IF_WIFI0 || (word)i == IF_WIFI1)
+		#define IF_SET		MULTI_IF	// Bitmask of valid interfaces
+	#else
+		#define IF_PPP0	0		// PPP over serial
+		#define IF_PPP1	1
+		#define IF_PPP2	2
+		#define IF_PPP3	3
+		#if CPU_ID_MASK(_CPU_ID_) >= R3000
+			#define IF_PPP4	4
+			#define IF_PPP5	5
+			#define IF_MAX		6		// Maximum number of interfaces
+		#else
+			#define IF_MAX		4		// Maximum number of interfaces
+		#endif
+		#define IF_ETH_MAX 1		// Max ethernet i/f.  This is 1 (not 0) to avoid
+										// code complications, however the table entry is
+										// not used.
+		#define IF_USES_ETH(i) 0
+		#define IF_PKT_ETH(i) 0
+      #define IF_PKT_REAL_WIFI(i) 0
+		#define IF_PKT_SER(i) 1
+
+      #define IF_P2P(i) (1u<<(i) & USE_PPP_SERIAL)
+	  #define IF_SET		(MULTI_IF>>6)	// Bitmask of valid interfaces
+	#endif
+#endif
+#define IF_ANY		0xFF	// Any interface
+
+// Default primary network interface and hardware type code
+#define IF_DEFAULT_IS_P2P	0
+#ifndef IF_DEFAULT
+	#ifdef USING_PPP
+		#undef IF_DEFAULT_IS_P2P
+		#define IF_DEFAULT_IS_P2P	1
+		#define IF_DEFAULT			IF_PPPX
+	#elif USING_WIFI
+      #if USE_WIFI == 0x02
+         #define IF_DEFAULT IF_WIFI1
+      #else
+			#define IF_DEFAULT IF_WIFI0
+		#endif
+   #else
+		#if USE_ETHERNET == 0x02
+			#define IF_DEFAULT		IF_ETH1
+		#else
+			#define IF_DEFAULT		IF_ETH0
+		#endif
+	#endif
+#endif
+
+
+
+/*
+ * Macros for working with IP addresses.  Some of these macros expand to function
+ * calls in order to reduce code size.  The macro expansions depend on MULTI_IF.
+ * If no multiple interface support, code size is reduced.  The macros which take
+ * an 'iface' parameter check for the specific interface, otherwise they test for
+ * a match on any interface.
+ *
+ * The IS_* macros return a boolean indication of whether the given IP address
+ * has a given property.
+ *
+ * The MY_* macros return IP addresses relevant to this host.
+ *
+ * Note that we do not really distinguish between "network" and "subnet" i.e. we
+ * do not encode knowledge of the class A,B,C,D,E network address ranges, except
+ * that class D (multicast) must be recognised.  One consequence of this is that
+ * we neither generate nor accept "all subnets broadcast" addresses.
+ *
+ * If multiple interfaces are supported then they MUST be on distinct,
+ * non-overlapping, subnets.
+ */
+
+#ifdef MULTI_IF
+#if _USER
+	#define IS_MY_ADDR(ip, iface)					((ip) == (get_if_tab_addr())[iface].ipaddr)
+#else
+	#define IS_MY_ADDR(ip, iface)					((ip) == _if_tab[iface].ipaddr)
+#endif
+	#define IS_ANY_MY_ADDR(ip)						is_any_my_addr(ip)
+	#define IS_NONLOCAL_SUBNET(ip, iface)		is_nonlocal_subnet(ip, iface)
+	#define IS_ALL_NONLOCAL_SUBNET(ip)			is_all_nonlocal_subnet(ip)
+	#define IS_SUBNET_BCAST_ADDR(ip, iface) 	is_subnet_bcast_addr(ip, iface)
+	#define IS_ANY_BCAST_ADDR(ip)					is_subnet_bcast_addr(ip, IF_ANY)
+	#define IS_SUBNET_NET_ADDR(ip, iface)		is_subnet_net_addr(ip, iface)
+	#define IS_ANY_NET_ADDR(ip)					is_subnet_net_addr(ip, IF_ANY)
+#if _USER
+	#define MY_ADDR(iface)							(get_if_tab_addr())[iface].ipaddr
+	#define MY_SUBNET_MASK(iface)					(get_if_tab_addr())[iface].mask
+#else
+	#define MY_ADDR(iface)							_if_tab[iface].ipaddr
+	#define MY_SUBNET_MASK(iface)					_if_tab[iface].mask
+#endif
+
+#else
+#if _USER
+	#define IS_MY_ADDR(ip, iface)					((ip) == (get_if_tab_addr())[IF_DEFAULT].ipaddr)
+#else
+	#define IS_MY_ADDR(ip, iface)					((ip) == _if_tab[IF_DEFAULT].ipaddr)
+#endif
+	#define IS_ANY_MY_ADDR(ip)						IS_MY_ADDR(ip,IF_DEFAULT)
+	#define IS_NONLOCAL_SUBNET(ip, iface)		is_nonlocal_subnet(ip, IF_DEFAULT)
+	#define IS_ALL_NONLOCAL_SUBNET(ip)			IS_NONLOCAL_SUBNET(ip, IF_DEFAULT)
+	#define IS_SUBNET_BCAST_ADDR(ip, iface) 	is_subnet_bcast_addr(ip, IF_DEFAULT)
+	#define IS_ANY_BCAST_ADDR(ip)					is_subnet_bcast_addr(ip, IF_ANY)
+	#define IS_SUBNET_NET_ADDR(ip, iface)		is_subnet_net_addr(ip, IF_DEFAULT)
+	#define IS_ANY_NET_ADDR(ip)					is_subnet_net_addr(ip, IF_ANY)
+#if __RABBITSYS == 1
+	#define MY_ADDR(iface)							(get_if_tab_addr())[IF_DEFAULT].ipaddr
+	#define MY_SUBNET_MASK(iface)					(get_if_tab_addr())[IF_DEFAULT].mask
+#else
+	#define MY_ADDR(iface)							_if_tab[IF_DEFAULT].ipaddr
+	#define MY_SUBNET_MASK(iface)					_if_tab[IF_DEFAULT].mask
+#endif
+#endif
+
+#define IS_LOCAL_SUBNET(ip, iface) 	(!IS_NONLOCAL_SUBNET(ip, iface))
+#define IS_ANY_LOCAL_SUBNET(ip) 		(!IS_ANY_NONLOCAL_SUBNET(ip))
+#define IS_MULTICAST_ADDR(ip)			(((ip) & 0xF0000000) == 0xE0000000)
+#define IS_LOOPBACK_ADDR(ip)			(((ip) & 0xFF000000) == 0x7F000000)
+
+// Following also allow my own address(es) as valid.  The *_SOURCE macros check
+// for proper source IP address in incoming datagrams.  The *_DEST macros check
+// for valid destination addresses in outgoing datagrams.
+#define IS_VALID_LOCAL_SOURCE(ip, iface)	is_valid_source(ip, iface, 1)
+#define IS_ANY_VALID_LOCAL_SOURCE(ip)		is_valid_source(ip, IF_ANY, 1)
+#define IS_VALID_SOURCE(ip, iface)			is_valid_source(ip, iface, 0)
+#define IS_ANY_VALID_SOURCE(ip)				is_valid_source(ip, IF_ANY, 0)
+
+#define MY_BCAST_ADDR(iface)					0xFFFFFFFF
+#define MY_SUBNET_NET_ADDR(iface)			(MY_ADDR(iface) & MY_SUBNET_MASK(iface))
+#define MY_SUBNET_BCAST_ADDR(iface)			(MY_ADDR(iface) | ~MY_SUBNET_MASK(iface))
+
+
+// Number of entries in ARP cache table.  Must be between 1 and 199 inclusive.
+// (The numbers 224-255 are reserved for special flags such as broadcast,
+// and 200-223 are reserved for future use).
+// Should be set to the number of permanent entries, plus router entries,
+// plus the number of simultaneously active TCP and UDP sockets.  For the
+// majority of applications, the default should be more than enough.
+#ifndef ARP_TABLE_SIZE
+	#ifndef ARP_MINIMAL
+		#define ARP_TABLE_SIZE				(5*(USING_ETHERNET+USING_WIFI)+IF_MAX)
+	#else
+		#define ARP_TABLE_SIZE				1
+	#endif
+#endif
+
+// Number of entries in router table.  The default is set up for one
+// router per interface, plus an extra one for each broadcast (i.e. ethernet)
+// interface, to handle possible redirections.
+#ifndef ARP_ROUTER_TABLE_SIZE
+	#define ARP_ROUTER_TABLE_SIZE		(IF_MAX+USING_ETHERNET+USING_WIFI)
+#endif
+
+
+
+/* Reserve ports ignores unlistened SYNs for specified ports */
+#define USE_RESERVEDPORTS
+
+
+
+#define MAXINT 0x7fff
+
+#define min(X,Y) (((X)<=(Y))?(X):(Y))
+#define max(X,Y) (((X)>=(Y))?(X):(Y))
+
+#define movmem(X,Y,Z) memcpy((Y),(X),(Z))
+
+#define FP_OFF(X) ((unsigned int)X)
+
+/*
+ *	Determine which libraries and functionality to include.
+ */
+
+
+
+#ifdef  DISABLE_UDP
+	#ifdef USE_DHCP
+		#warnt "Cannot set USE_DHCP if also DISABLE_UDP"
+		#undef USE_DHCP
+	#endif
+	#ifndef DISABLE_DNS
+		#warnt "Disabling DNS because DISABLE_UDP"
+		#define DISABLE_DNS
+	#endif
+#endif
+
+
+/* these are visible for select routine return values */
+#define SOCKESTABLISHED 1
+#define SOCKDATAREADY   2
+#define SOCKCLOSED      4
+
+// Network layer protocol field values in network order, as stored in the
+// ethernet header
+#define IP_TYPE         0x0008		// Really 0x0800
+#define ARP_TYPE			0x0608		// Really 0x0806
+#define IS_PPPOE_TYPE(t) (((t)&0x00FF) == 0x88)		// High (network order) byte
+																	// of type==0x88 -> is PPPoE.
+#define PPPOE_TYPE		0x6488		// Really 0x8864 - PPPoE session data
+#define PPPOE_DISC		0x6388		// Really 0x8863 - PPPoE link establishment
+
+#ifndef MAX_STRING
+	#define MAX_STRING      50				// Hostname strings are limited in length
+#endif
+
+#ifndef MAX_NAMESERVERS
+	#define MAX_NAMESERVERS 2
+#endif
+
+#ifndef MAX_COOKIES
+	#define MAX_COOKIES     1
+#endif
+
+#define TRUE            1
+#define true            TRUE
+#define FALSE           0
+#define false           FALSE
+
+
+
+// Separate spaces for TCP and UDP mode flags...
+
+// TCP modes:
+#define TCP_MODE_BINARY 0       /* default mode */
+#define TCP_MODE_ASCII  1
+#define TCP_MODE_NAGLE  0       /* Nagle algorithm */
+#define TCP_MODE_NONAGLE 2
+#define TCP_MODE_FULLCLOSE  0       /* Old style, do full close */
+#define TCP_MODE_HALFCLOSE  4			/* Support half-close on this socket */
+#define ALL_TCP_MODES (TCP_MODE_ASCII|TCP_MODE_NONAGLE|TCP_MODE_HALFCLOSE)
+
+#if _USER
+
+#define tcp_set_binary(s) \
+	sock_mode((s), (((struct _tcp_socket*)_sys_get_sock(s))->sock_mode & ~TCP_MODE_ASCII))
+#define tcp_set_ascii(s) \
+  	sock_mode((s), (((struct _tcp_socket*)_sys_get_sock(s))->sock_mode | TCP_MODE_ASCII))
+
+#define tcp_set_nagle(s) \
+  	sock_mode((s), (((struct _tcp_socket*)_sys_get_sock(s))->sock_mode & ~TCP_MODE_NONAGLE))
+#define tcp_set_nonagle(s) \
+  	sock_mode((s), (((struct _tcp_socket*)_sys_get_sock(s))->sock_mode | TCP_MODE_NONAGLE))
+
+#define tcp_set_fullclose(s) \
+  	sock_mode((s), (((struct _tcp_socket*)_sys_get_sock(s))->sock_mode & ~TCP_MODE_HALFCLOSE))
+#define tcp_set_halfclose(s) \
+  	sock_mode((s), (((struct _tcp_socket*)_sys_get_sock(s))->sock_mode | TCP_MODE_HALFCLOSE))
+
+#else
+
+#define tcp_set_binary(s) ((s)->sock_mode &= ~TCP_MODE_ASCII)
+#define tcp_set_ascii(s) ((s)->sock_mode |= TCP_MODE_ASCII)
+
+#define tcp_set_nagle(s) ((s)->sock_mode &= ~TCP_MODE_NONAGLE)
+#define tcp_set_nonagle(s) ((s)->sock_mode |= TCP_MODE_NONAGLE)
+
+#define tcp_set_fullclose(s) ((s)->sock_mode &= ~TCP_MODE_HALFCLOSE)
+#define tcp_set_halfclose(s) ((s)->sock_mode |= TCP_MODE_HALFCLOSE)
+
+#endif
+
+// UDP modes:
+#define UDP_MODE_CHK    0       /* default to having checksums */
+#define UDP_MODE_NOCHK  1
+#define UDP_MODE_NOICMP 0       /* default to not buffering ICMP error messages */
+#define UDP_MODE_ICMP   2
+#define UDP_MODE_NODICMP 0      /* default to not being the default ICMP message
+											  buffering socket */
+#define UDP_MODE_DICMP   4
+#define UDP_MODE_CONTIG 0       /* default to sending contiguous data to the
+											  UDP data handler */
+#define UDP_MODE_NOCONTIG   8
+#define ALL_UDP_MODES (UDP_MODE_NOCHK|UDP_MODE_ICMP|UDP_MODE_DICMP|UDP_MODE_NOCONTIG)
+
+#if _USER
+#define udp_set_chk(s)  \
+	sock_mode((s), (((struct _udp_socket*)_sys_get_sock(s))->sock_mode & ~UDP_MODE_NOCHK))
+#define udp_set_nochk(s) \
+	sock_mode((s), (((struct _udp_socket*)_sys_get_sock(s))->sock_mode | UDP_MODE_NOCHK))
+
+#define udp_set_noicmp(s) \
+	sock_mode((s), (((struct _udp_socket*)_sys_get_sock(s))->sock_mode & ~UDP_MODE_ICMP))
+#define udp_set_icmp(s) \
+  	sock_mode((s), (((struct _udp_socket*)_sys_get_sock(s))->sock_mode | UDP_MODE_ICMP))
+
+#define udp_set_nodicmp(s) \
+  	sock_mode((s), (((struct _udp_socket*)_sys_get_sock(s))->sock_mode & ~UDP_MODE_DICMP))
+#define udp_set_dicmp(s) \
+	sock_mode((s), (((struct _udp_socket*)_sys_get_sock(s))->sock_mode | UDP_MODE_DICMP))
+
+#define udp_set_contig(s) \
+  	sock_mode((s), (((struct _udp_socket*)_sys_get_sock(s))->sock_mode & ~UDP_MODE_NOCONTIG))
+#define udp_set_nocontig(s) \
+  	sock_mode((s), (((struct _udp_socket*)_sys_get_sock(s))->sock_mode | UDP_MODE_NOCONTIG))
+
+#else
+
+#define udp_set_chk(s) ((s)->sock_mode &= ~UDP_MODE_NOCHK)
+#define udp_set_nochk(s) ((s)->sock_mode |= UDP_MODE_NOCHK)
+
+#define udp_set_noicmp(s) ((s)->sock_mode &= ~UDP_MODE_ICMP)
+#define udp_set_icmp(s) ((s)->sock_mode |= UDP_MODE_ICMP)
+
+#define udp_set_nodicmp(s) ((s)->sock_mode &= ~UDP_MODE_DICMP)
+#define udp_set_dicmp(s) ((s)->sock_mode |= UDP_MODE_DICMP)
+
+#define udp_set_contig(s) ((s)->sock_mode &= ~UDP_MODE_NOCONTIG)
+#define udp_set_nocontig(s) ((s)->sock_mode |= UDP_MODE_NOCONTIG)
+
+#endif
+
+#define ALL_MODES (ALL_TCP_MODES|ALL_UDP_MODES)
+
+
+// Parameter identifiers for ifconfig().
+#define IFS_END							0		// End of parameter list
+#define IFS_IPADDR						2		// Set IP address [longword]
+#define IFG_IPADDR						3		// Get IP address [longword *]
+#define IFS_NETMASK						4		// Set netmask [longword]
+#define IFG_NETMASK						5		// Get netmask [longword *]
+#define IFS_MTU							6		// Set maximum transmission unit [word]
+#define IFG_MTU							7		// Get MTU [word *]
+#define IFS_UP								8		// Bring up interface [no parameter]
+#define IFS_DOWN							10		// Bring down interface [no parameter]
+#define IFS_ROUTER_SET					12		// Delete all rounters, then set this one [longword]
+#define IFS_ROUTER_SET_STATIC			13		// Set restricted router [longword,longword,longword]
+#define IFS_ROUTER_ADD					14		// Add rounter [longword]
+#define IFS_ROUTER_ADD_STATIC			15		// Add restricted router [longword,longword,longword]
+#define IFS_ROUTER_DEL					18		// Delete router [longword].  If 0 parm, delete all routers.
+#define IFG_ROUTER_DEFAULT				21		// Get default router [longword *]
+#define IFS_HWA							22		// Set hardware address [byte[6]]
+#define IFG_HWA							23		// Get hardware address [byte[6]]
+#define IFS_NAMESERVER_SET				26		// Delete all nameservers, then set this one [longword]
+#define IFS_NAMESERVER_ADD				28		// Add nameserver [longword]
+#define IFS_DHCP							32		// Use DHCP to configure this interface, or not [int]
+#define IFG_DHCP							33		// Get whether DHCP to be used [int *]
+#define IFS_ICMP_CONFIG					34		// Use "arp -s" ping to configure IP address, or not [int]
+#define IFG_ICMP_CONFIG					35		// Get whether ping configure [int *]
+#define IFS_DEBUG							36		// Set debug level [int]
+#define IFG_DEBUG							37		// Get debug level [int *]
+#define IFS_PPP_SPEED					40		// Set PPP speed in bits/sec [longword]
+#define IFG_PPP_SPEED					41		// Get PPP speed in bits/sec [longword *]
+#define IFG_DHCP_OK						43		// Get whether DHCP actually OK [int *]
+#define IFS_ICMP_CONFIG_RESET			44		// After ping configured OK, allow new ping configure [no parameter]
+#define IFG_ICMP_CONFIG_OK				45		// Get whether ping configured OK [int *]
+#define IFS_DHCP_TIMEOUT				46		// Set DHCP timeout seconds [int]
+#define IFG_DHCP_TIMEOUT				47		// Get DHCP timeout seconds [int *]
+#define IFS_DHCP_FALLBACK				48		// Set DHCP fallback [int]
+#define IFG_DHCP_FALLBACK				49		// Get DHCP fallback [int *]
+#define IFS_PPP_ACCEPTIP				52		// Accept peer's idea of our local IP address
+#define IFG_PPP_ACCEPTIP				53
+#define IFS_PPP_REMOTEIP				54		// Try to set peer's IP address
+#define IFG_PPP_REMOTEIP				55
+#define IFS_PPP_SETREMOTEIP			IFS_PPP_REMOTEIP
+#define IFS_PPP_ACCEPTDNS				56		// Accept a DNS server IP address from peer
+#define IFG_PPP_ACCEPTDNS				57
+#define IFS_PPP_REMOTEDNS				58		// Set DNS server IP address for peer
+#define IFG_PPP_REMOTEDNS				59
+#define IFS_PPP_SETREMOTEDNS			IFS_PPP_REMOTEDNS
+#define IFS_PPP_AUTHCALLBACK			60		// Called when a peer attempts to authenticate
+#define IFS_PPP_INIT						62		// Sets up PPP with default parameters
+#define IFS_PPP_REMOTEAUTH				63		// Sets username and password to give to peer
+#define IFG_PPP_REMOTEAUTH				64
+#define IFS_PPP_LOCALAUTH				65		// Required username and password for incoming peer
+#define IFG_PPP_LOCALAUTH				66
+#define IFS_PPP_RTSPIN					67		// Define the RTS pin [int, char *, int]
+#define IFG_PPP_RTSPIN					68
+#define IFS_PPP_CTSPIN					69		// Define the CTS pin [int, int]
+#define IFG_PPP_CTSPIN					70
+#define IFS_PPP_FLOWCONTROL			71		// Turn hardware flow control on/off (1/0) [int]
+#define IFG_PPP_FLOWCONTROL			72
+#define IFS_PPP_SENDEXPECT				73		// Sequence of send/expect strings separated by '\r' [char *]
+#define IFG_PPP_SENDEXPECT				74
+#define IFS_PPP_USEMODEM				75		// Turn on/off modem handling step [int]
+#define IFG_PPP_USEMODEM				76
+#define IFS_PPP_HANGUP					77		// string to send to the modem when shutting down
+#define IFG_PPP_HANGUP					78
+#define IFS_PPP_MODEMESCAPE			79		// Send a standard escape sequence '+++' before SENDEXPECT or HANGUP
+#define IFG_PPP_MODEMESCAPE			80
+#define IFS_PPP_USEPORTD				82		// Use parallel port D pins for serial ports A,B (IF_PPP0,1) -
+#define IFG_PPP_USEPORTD				83		//   otherwise uses the normal parallel port C pins.
+#define IFG_PPP_PEERADDR				85		// Return the PPP peer IP address
+#define IFS_IF_CALLBACK					90		// Set interface up/down callback [void (*)()]
+#define IFG_DHCP_INFO               93		// Get DHCP goodies [DHCPInfo **]
+#define IFG_DHCP_FELLBACK				95		// Get DHCP fallback status [int *]
+#define IFS_DHCP_OPTIONS            96    // Set DHCP custom options  [int] [char *] [int (*)()]
+#define IFG_DHCP_OPTIONS            97    // Get DHCP custom options  [int *] [char **]
+#define IFS_DHCP_QUERY              98    // Set DHCP query  [int]
+#define IFG_DHCP_QUERY              99    // Get DHCP query  [int *]
+#define IFS_DHCP_DOMAIN             100   // Set DHCP 'get host & domain name' flag  [int]
+#define IFG_DHCP_DOMAIN             101   // Get DHCP host/domain flag  [int *]
+#define IFS_NAMESERVER_DEL				102	// Delete nameserver [longword]
+#define IFS_DHCP_FB_IPADDR          104   // Set DHCP fallback IP address [longword]
+#define IFG_DHCP_FB_IPADDR          105   // Get DHCP fallback IP address [longword *]
+#define IFS_PPP_PASSIVE					106	// Set PPP passive mode [bool]
+#define IFG_PPP_PASSIVE					107	// Get PPP passive mode [bool *]
+#define IFS_USE_DMA						108	// Rabbit 4000: use DMA to serial port
+#define IFS_USE_SERIAL					110	// Rabbit 4000: use serial port directly
+
+// These are used only for the default interface.
+#define ZWORLD
+#ifndef MY_IP_ADDRESS
+   #ifndef USE_DHCP
+	   #define MY_IP_ADDRESS	"10.10.6.100"
+   #endif
+#endif
+#ifndef MY_NETMASK
+   #ifndef USE_DHCP
+   	#define MY_NETMASK		"255.255.255.0"
+   #endif
+#endif
+
+// Set up default interface initializations.
+// IFCONFIG_ALL : all items not specific to any particular interface
+// IFCONFIG_DEFAULT : all items for the default interface (IF_DEFAULT).
+// If not defined, these definitions are compatible with previous releases.
+// The user can also define IFCONFIG_ETH0, IFCONFIG_PPP0 etc., in which
+// case those definitions will be used for the specified interface instead
+// of the defaults.
+#ifndef IFCONFIG_ALL
+	#ifdef MY_GATEWAY
+		#define _MY_GATEWAY IFS_ROUTER_SET,aton(MY_GATEWAY),
+	#else
+		#define _MY_GATEWAY
+	#endif
+	#ifdef MY_NAMESERVER
+		#define _MY_NAMESERVER IFS_NAMESERVER_SET,aton(MY_NAMESERVER),
+	#else
+		#define _MY_NAMESERVER
+	#endif
+	#define IFCONFIG_ALL _MY_GATEWAY _MY_NAMESERVER IFS_END
+#endif
+
+#ifndef IFCONFIG_DEFAULT
+	#ifdef USE_DHCP
+		#define _USE_DHCP IFS_DHCP,1,
+	#else
+		#define _USE_DHCP
+	#endif
+	#if IF_DEFAULT_IS_P2P
+		#ifndef PPP_SPEED
+			#define PPP_SPEED 19200
+		#endif
+		#define _PPP_STUFF IFS_PPP_SPEED,(longword)PPP_SPEED,IFS_PPP_INIT,
+	#else
+		#define _PPP_STUFF
+	#endif
+	#define IFCONFIG_DEFAULT IFS_IPADDR,aton(MY_IP_ADDRESS), \
+				IFS_NETMASK,aton(MY_NETMASK),_USE_DHCP _PPP_STUFF IFS_UP
+#endif
+
+#define sockaddr_in sockaddr
+
+// Macros for backward compatibility
+#define my_ip_addr	_if_tab[IF_DEFAULT].ipaddr
+#define sin_mask		_if_tab[IF_DEFAULT].mask
+#define _mtu			_if_tab[IF_DEFAULT].mtu
+#define multihomes 0		// never did this
+
+// Include published structures and typedefs
+#use "NET_DEFS.LIB"
+
+// Include published variable/state information
+#use "NET_VARS.LIB"
+
+/*
+ * Locks for use in a reentrant environment
+ */
+
+#ifdef MCOS_LOCKS
+	INT8U InitSocketLock(_rs_sock_type *s);
+
+	typedef struct {
+		OS_EVENT *lock;
+		_rs_sock_type *s;
+	} socket_lock_block;
+
+	extern socket_lock_block sock_lock_array[ACTUAL_SOCKET_LOCKS];
+
+	/* the actual lock funcitons */
+	void IPSemPend(OS_EVENT *lock, char *lock_count);
+	void IPSemPost(OS_EVENT *lock, char *lock_count);
+
+	/* an individual socket lock, for use on sock rx/tx
+		buffers, and the sock structure itself */
+#ifndef NET_COARSELOCK
+	#define LOCK_SOCK(s)		/*printf("%d Lock sock: %x (%d)\n",(int)OSPrioCur, s, (int)((udp_Socket *)(s))->lock_count);*/ \
+				IPSemPend( ((_rs_udp_Socket *)(s))->lock, &(((_rs_udp_Socket *)(s))->lock_count) )
+	#define UNLOCK_SOCK(s)	/*printf("%d UnLock sock: %x (%d)\n",(int)OSPrioCur, s, (int)((udp_Socket *)(s))->lock_count);*/ \
+				IPSemPost( ((_rs_udp_Socket *)(s))->lock, &(((_rs_udp_Socket *)(s))->lock_count) )
+#endif
+	/* global locks, for use on global vars/lists, and global tasks like DNS */
+	typedef struct {
+		OS_EVENT			*lock;			/* the actual semaphore */
+		char				 lock_count;	/* how many times we grabbed the semaphore */
+	} GlobalLock;
+	#define LOCK_GLOBAL(l)		IPSemPend((l).lock, &((l).lock_count))
+	#define UNLOCK_GLOBAL(l)	IPSemPost((l).lock, &((l).lock_count))
+
+	// Some conditional locking, for routines which do not need lock if not yet
+	// called sock_init().
+	#define LOCK_GLOBAL_IF_INIT(l)	if (_initialized) IPSemPend((l).lock, &((l).lock_count))
+	#define UNLOCK_GLOBAL_IF_INIT(l)	if (_initialized) IPSemPost((l).lock, &((l).lock_count))
+
+#ifdef NET_COARSELOCK
+	#define LOCK_SOCK(s) LOCK_GLOBAL(TCPGlobalLock)
+	#define UNLOCK_SOCK(s) UNLOCK_GLOBAL(TCPGlobalLock)
+#endif
+#ifdef NET_COMMON_DNS_LOCK
+   extern GlobalLock TCPGlobalLock;
+   #define LOCK_DNS() LOCK_GLOBAL(TCPGlobalLock)
+   #define UNLOCK_DNS() UNLOCK_GLOBAL(TCPGlobalLock)
+#else
+	extern GlobalLock TCPGlobalLock, DNSGlobalLock;
+   #define LOCK_DNS() LOCK_GLOBAL(DNSGlobalLock)
+   #define UNLOCK_DNS() UNLOCK_GLOBAL(DNSGlobalLock)
+#endif
+
+	/* a quick lock, usualy implemented by turning off interrupts; this
+		should NOT stay locked for long! */
+	#define LOCK_QUICK()		OS_ENTER_CRITICAL()
+	#define UNLOCK_QUICK()	OS_EXIT_CRITICAL()
+#elif _SYSTEM
+	#define LOCK_DNS()
+	#define UNLOCK_DNS()
+	#define LOCK_SOCK(s)
+	#define UNLOCK_SOCK(s)
+	#define LOCK_GLOBAL(lock)		_check_rs_delay()
+	#define UNLOCK_GLOBAL(lock)   asm ld hl,_rk_tcplock $ dec (hl)
+	#define LOCK_GLOBAL_IF_INIT(l)
+	#define UNLOCK_GLOBAL_IF_INIT(l)
+	#define LOCK_QUICK()
+	#define UNLOCK_QUICK()
+#else
+	/* no multitasker - locks are not necessary */
+   #define LOCK_DNS()
+   #define UNLOCK_DNS()
+	#define LOCK_SOCK(s)
+	#define UNLOCK_SOCK(s)
+	#define LOCK_GLOBAL(l)
+	#define UNLOCK_GLOBAL(l)
+	#define LOCK_GLOBAL_IF_INIT(l)
+	#define UNLOCK_GLOBAL_IF_INIT(l)
+	#define LOCK_QUICK()
+	#define UNLOCK_QUICK()
+#endif
+
+/*
+ * End of locks section
+ */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+sock_wait_established                   <NET.LIB>
+
+SYNTAX: void sock_wait_established(void* s, int seconds, int (*fptr)(),
+          int* status);
+
+KEYWORDS:		tcpip
+
+DESCRIPTION: 	Macro which waits until a connection is established for
+               TCP sockets.  Returns immediately for UDP sockets.  On
+               an error the macro jumps to the local, user-supplied sock_err
+               label. If fptr, a user-supplied function, returns non-zero
+               the macro returns.
+
+PARAMETER1:    socket
+PARAMETER2:    number of seconds to wait before timing out
+PARAMETER3:    function to call repeatedly while waiting
+PARAMETER4:    status word
+
+RETURN VALUE:  none
+
+SEE ALSO:      sock_wait_input, sock_wait_closed
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+sock_wait_input                        <NET.LIB>
+
+SYNTAX: void sock_wait_input(void* s, int seconds, int (*fptr)(),
+          int* status);
+
+KEYWORDS:		tcpip
+
+DESCRIPTION: 	Macro which waits until input exists for a established
+               TCP socket.  If the socket is in ASCII mode this function
+               waits until a complete string exists or the buffer is
+               full.  Returns immediately for UDP sockets.  On an error
+               the macro jumps to the local sock_err label. If fptr
+               returns non-zero the macro returns.
+
+PARAMETER1:    socket
+PARAMETER2:    number of seconds to wait before timing out
+PARAMETER3:    function to call repeatedly while waiting
+PARAMETER4:    status word
+
+RETURN VALUE:  none
+
+SEE ALSO:      sock_wait_established, sock_wait_closed, sock_mode
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+sock_wait_closed                       <NET.LIB>
+
+SYNTAX: void sock_wait_closed(void * s, int seconds, int (*fptr)(),
+           int* status);
+
+KEYWORDS:		tcpip
+
+DESCRIPTION: 	Macro which waits until a TCP connection is fully closed.
+               Returns immediately for UDP sockets.  On an error the macro
+               jumps to the local sock_err label. If fptr, a user-supplied
+               function, returns non-zero the macro returns.
+
+PARAMETER1:    socket
+PARAMETER2:    number of seconds to wait before timing out
+PARAMETER3:    function to call repeatedly while waiting
+PARAMETER4:    status word
+
+RETURN VALUE:  none
+
+SEE ALSO:      sock_wait_established, sock_wait_input
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+sock_tick                       <NET.LIB>
+
+SYNTAX: void sock_tick(void* s, int * optional_status_ptr);
+
+KEYWORDS:		tcpip
+
+DESCRIPTION: 	This macro calls tcp_tick to quickly check incoming and
+					outgoing data and to manage all the open sockets.  If our
+					particular socket, s, is either closed or made inoperative
+					due to an error condition, sock_tick sets the value of
+					*optional_status_ptr (if the pointer is not NULL) to 1,
+					then jumps to a local, user-supplied label, sock_err.  If
+					the socket connection is fine and the pointer is not NULL
+					*optional_status_ptr is set to 0
+
+PARAMETER1:    socket
+PARAMETER2:    status word
+
+RETURN VALUE:  none
+
+SEE ALSO:      sock_wait_established, sock_wait_input
+
+END DESCRIPTION **********************************************************/
+
+#define set_mstimeout( x ) (set_timeout(0)+ (x / 55))
+
+#define sock_wait_established( s, seconds, fn, statusptr ) \
+    if (_ip_delay0( (sock_type*)s, seconds, fn, statusptr )) goto sock_err;
+#define sock_wait_input( s, seconds, fn , statusptr ) \
+    if (_ip_delay1( (sock_type*)s, seconds, fn, statusptr )) goto sock_err;
+#define sock_tick( s, statusptr ) \
+    if ( !tcp_tick(s)) { \
+    	if (statusptr != NULL) *(int *)statusptr = 1 ; goto sock_err; } \
+    else { if (statusptr != NULL) *(int *)statusptr = 0; }
+#define sock_wait_closed(s, seconds, fn, statusptr )\
+    if (_ip_delay2( (sock_type*)s, seconds, fn, statusptr )) goto sock_err;
+/*** EndHeader */
+
+/*** BeginHeader set_timeout */
+unsigned long set_timeout(unsigned int seconds);
+/*** EndHeader */
+
+nodebug unsigned long set_timeout(unsigned int seconds)
+{
+	return (MS_TIMER + seconds*1000L);
+}
+
+
+/*** BeginHeader chk_timeout */
+int chk_timeout(unsigned long timeout);
+/*** EndHeader */
+
+nodebug int chk_timeout(unsigned long timeout)
+{
+#asm
+		; do the subtraction, but only need MSB of result.  Atomic get of MS_TIMER
+		ipset	1
+		ld		hl,(MS_TIMER+2)
+		ex		de',hl
+		ipres
+		ld		hl,(MS_TIMER)
+		or		a
+		sbc	hl,de
+		ex		de',hl
+		sbc	hl,bc
+		add	hl,hl
+		ccf
+		sbc	hl,hl
+		bool	hl
+#endasm
+	//return ((long)(MS_TIMER-timeout))>=0;
+}
+
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+sock_init                              <NET.LIB>
+
+SYNTAX: int sock_init();
+
+KEYWORDS:		tcpip, initialization
+
+DESCRIPTION: 	This function initializes the packet driver and DCRTCP
+               using the compiler defaults for configuration.  This
+               function should be called before using other DCRTCP
+               functions.
+
+               The return value indicates if sock_init() was successful.
+               If it returns 0, then everything was successful.  If it
+               returns 1, then the packet driver initialization failed.
+
+					Note that the network interface will not necessarily be
+               available immediately after sock_init() is called, even
+               if you are simply using an Ethernet interface with a
+               static configuration.  This is especially true if you are
+               using DHCP.  If you need to make a network connection
+               directly after calling sock_init(), then you will probably
+               want to use code like the following:
+
+               sock_init();
+               while (ifpending(IF_DEFAULT) == IF_COMING_UP) {
+                  tcp_tick(NULL);
+               }
+
+               The while loop will not finish until the interface has either
+               completely come up or has failed (see the documentation for
+               ifpending() for more information).
+
+               If you use ucos2.lib, be sure to call OSInit() before
+               calling sock_init().
+
+RETURN VALUE:  Integer code as follows:
+						0: OK.
+						1: Ethernet packet driver initialisation failed.
+						Other: reserved.
+
+END DESCRIPTION **********************************************************/
+
+#ifdef MCOS_LOCKS
+socket_lock_block sock_lock_array[ACTUAL_SOCKET_LOCKS];
+#ifdef NET_COMMON_DNS_LOCK
+GlobalLock TCPGlobalLock;
+#else
+GlobalLock TCPGlobalLock, DNSGlobalLock;
+#endif
+
+nodebug INT8U InitSocketLock(_rs_sock_type *s)
+{
+	static int i;
+	static _rs_udp_Socket *sock;
+	static long s_addr;
+	static byte stackseg;
+
+#GLOBAL_INIT { memset(sock_lock_array, 0, sizeof(sock_lock_array)); }
+
+	sock = (_rs_udp_Socket *)s;
+
+   for(i=0; i<ACTUAL_SOCKET_LOCKS; i++) {
+   	if(sock_lock_array[i].s == s) {
+   		/* found our lock */
+   		sock->lock = sock_lock_array[i].lock;
+   		sock->lock->OSEventPtr = NULL;
+   		sock->lock_count = 0;
+   		return 0;
+   	}
+   	if(sock_lock_array[i].s == NULL) {
+   		/* we were not in the list - mark the next free space ours */
+   		sock_lock_array[i].s = s;
+   		sock_lock_array[i].lock = sock->lock = OSSemCreate(1);	// allocate a new semaphore
+   		sock->lock_count = 0;
+   		sock->lock->OSEventPtr = NULL;
+   		return 0;
+   	}
+   }
+   return 1;
+}
+
+nodebug void IPSemPend(OS_EVENT *lock, char *lock_count)
+{
+   OS_ENTER_CRITICAL();
+#if 0
+   if (lock == (OS_EVENT *)0) {						// Validate 'lock'
+      OS_EXIT_CRITICAL();
+   } else if (lock->OSEventType != OS_EVENT_TYPE_SEM) {	// Validate event block type
+      OS_EXIT_CRITICAL();
+   } else
+#endif
+   if ( (INT8U)lock->OSEventPtr == (void *)OSPrioCur ) {	// we have the lock already
+   	*lock_count += 1;
+   	OS_EXIT_CRITICAL();
+   } else if (lock->OSEventCnt > 0) {				// If sem. is positive, resource available ...
+      lock->OSEventCnt--;								// ... decrement semaphore only if positive.
+      *lock_count = 0;									// init lock count
+      lock->OSEventPtr = (void *)OSPrioCur;		// set that we have the lock
+      OS_EXIT_CRITICAL();
+   } else if (bios_intnesting > 0) {				// See if called from ISR ...
+      OS_EXIT_CRITICAL();								// ... can't PEND from an ISR
+   } else {													// Otherwise, must wait until event occurs
+      OSTCBCur->OSTCBStat    |= OS_STAT_SEM;		// Resource not available, pend on semaphore
+      OSTCBCur->OSTCBDly      = 0;					// Store pend timeout in TCB
+      OS_EventTaskWait(lock);							// Suspend task until event or timeout occurs
+      OS_EXIT_CRITICAL();
+      OS_Sched(); 											// Find next highest priority task ready
+      OS_ENTER_CRITICAL();
+		lock->OSEventPtr = (void *)OSPrioCur;		// we got the lock back
+      if (OSTCBCur->OSTCBStat & OS_STAT_SEM) {	// Must have timed out if still waiting for event
+         OS_EventTO(lock);
+         OS_EXIT_CRITICAL();
+      } else {
+         OSTCBCur->OSTCBEventPtr = (OS_EVENT *)0;
+         OS_EXIT_CRITICAL();
+      }
+   }
+}
+
+nodebug void IPSemPost(OS_EVENT *lock, char *lock_count)
+{
+    OS_ENTER_CRITICAL();
+#if 0
+    if (lock == (OS_EVENT *)0) {						// Validate 'pevent'
+        OS_EXIT_CRITICAL();
+        return; // (OS_ERR_PEVENT_NULL);
+    }
+    if (lock->OSEventType != OS_EVENT_TYPE_SEM) {	// Validate event block type
+        OS_EXIT_CRITICAL();
+        return; // (OS_ERR_EVENT_TYPE);
+    }
+#endif
+    if ((INT8U)lock->OSEventPtr == (void *)OSPrioCur) {
+    	if(*lock_count > 0) {
+    		*lock_count -= 1;
+    		OS_EXIT_CRITICAL();
+    		return; // just decrement the count - lock will be freed later
+    	}
+    }
+    lock->OSEventPtr = (void *)OS_PRIO_INVALID;	// freeing the lock - mark it as not used
+
+    if (lock->OSEventGrp) {							// See if any task waiting for semaphore
+        OS_EventTaskRdy(lock, (void *)0, OS_STAT_SEM);	// Ready highest prio task waiting on event
+        OS_EXIT_CRITICAL();
+        OS_Sched();										// Find highest priority task ready to run
+        return; // (OS_NO_ERR);
+    } else {
+        if (lock->OSEventCnt < 65535) {			// Make sure semaphore will not overflow
+            lock->OSEventCnt++;						// Increment semaphore count to register event
+            OS_EXIT_CRITICAL();
+            return; // (OS_NO_ERR);
+        } else {											// Semaphore value has reached its maximum
+            OS_EXIT_CRITICAL();
+            return; // (OS_SEM_OVF);
+        }
+    }
+}
+#endif
+
+
+/*** BeginHeader _rs_sock_init */
+
+int _rs_sock_init ();
+// For backwards compatibility.  sock_init() does not call exit().
+#define sock_init_noexit sock_init
+#ifdef USE_IGMP
+	#use IGMP.LIB
+#endif
+
+/*** EndHeader */
+
+_net_nodebug
+int _rs_sock_init ()
+{
+   auto int i;
+   auto longword timer;
+
+#ifdef MCOS_LOCKS
+	if (!_initialized) {
+		TCPGlobalLock.lock = OSSemCreate(1);
+		TCPGlobalLock.lock_count = 0;
+		TCPGlobalLock.lock->OSEventPtr = NULL;
+	#ifndef NET_COMMON_DNS_LOCK
+		DNSGlobalLock.lock = OSSemCreate(1);
+		DNSGlobalLock.lock_count = 0;
+		DNSGlobalLock.lock->OSEventPtr = NULL;
+   #endif
+	}
+#endif
+	if (_initialized) {
+		_rs_abort_socks(NETERR_IFDOWN, IF_ANY);
+
+		// Clobber interfaces
+		_if_request = 0;
+		_if_prequest = 0;
+		_if_actual = 0;
+		_if_dhcp = 0;
+		_if_dhcp_lease = 0;
+		for (i = 0; i < IF_MAX; i++)
+			_if_tab[i].up = 0;
+	}
+
+	_arp_init();
+
+   // Initialize packet driver(s)
+   if (pkt_init()) return 1;
+
+#ifdef USE_IGMP
+	_igmp_init();
+#endif
+
+#ifndef DISABLE_TCP
+	tcp_sock_init();
+#endif
+
+#ifndef DISABLE_UDP
+	udp_sock_init();
+#endif
+
+#ifndef DISABLE_DNS
+	_dns_init();
+#endif
+
+	// Exit here if we've already run sock_init()
+   if (_initialized) return 0;
+
+#ifdef USE_SNMP
+	// Initialise the SNMP timers and base epoch
+	_snmp.ms_ref = MS_TIMER;
+	_snmp.upd_timeout = _SET_SHORT_TIMEOUT(30000);
+
+#endif
+
+   // Reset the various tables
+   _last_cookie = 0;
+   memset(_hostname, 0, sizeof(_hostname));
+
+
+   //prt_nicreg(0);
+
+	// This is necessary to allow the ethernet to come online, as it were.  This delay can be as
+	// short as 50ms or less, but some switching hubs with auto-negotiate take longer.  We
+	// take the conservative approach and allow 1 second.  This is only needed at boot time.
+	// If not done, the consequences are not severe, except that initial packet(s) will be
+	// dropped.  This sucks, but there is no way to tell whether the device is ready to send.
+   // pd_havelink() returns true even if not ready.  Sigh.
+#if (USING_ETHERNET || USING_WIFI)
+	#if _SYSTEM
+		_rs_tick(0);
+   #endif
+	timer = _SET_SHORT_TIMEOUT(1000);
+	while (!_CHK_SHORT_TIMEOUT(timer));
+#endif
+	//prt_nicreg(0);
+
+   tcp_config_old( NULL );
+
+   _initialized = 1;	// This indicates sock_init() has been called at least once.
+
+	// Check ARP timeouts (and other background processes) at most about 5Hz
+	_arp_tick_strat = _SET_SHORT_TIMEOUT(207);
+
+   return 0;
+}
+
+
+/*
+ * provide some typical BSD UNIX functionality
+ */
+
+/*** BeginHeader _chk_socket */
+#if _USER
+int _chk_socket( _sys_sock_type *s );
+#else
+int _chk_socket( _rs_sock_type *s );
+#endif
+/*** EndHeader */
+
+/*
+ * chk_socket - determine whether a real socket or not
+ */
+_net_nodebug
+#if _USER
+int _chk_socket( _sys_sock_type *s )
+#else
+int _chk_socket( _rs_sock_type *s )
+#endif
+{
+	LOCK_QUICK();
+#ifndef DISABLE_TCP
+   if( s->tcp.ip_type == TCP_PROTO )
+   {
+      if( s->tcp.state <= tcp_StateCLOSED)
+      { /* skips invalid data */
+      	UNLOCK_QUICK();
+         return( 2 );
+      }
+   }
+#endif
+#ifndef DISABLE_UDP
+   if( s->udp.ip_type == UDP_PROTO )
+   {
+   	UNLOCK_QUICK();
+   	return( 1 );
+   }
+#endif
+   UNLOCK_QUICK();
+   return( 0 );
+}
+
+
+
+/*** BeginHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ntohs                                  <NET.LIB>
+
+SYNTAX: word ntohs( word value );
+
+KEYWORDS:		tcpip, byte order, network order
+
+DESCRIPTION: 	convert a network ordered word to a host ordered word.
+               This is a macro.
+
+PARAMETER1: 	networked ordered word
+
+RETURN VALUE:  network word in host format exa. 0xff00 == ntohs(0x00ff)
+
+SEE ALSO:      htons, ntohl, htonl
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+ntohl                                  <NET.LIB>
+
+SYNTAX: longword ntohl( longword value );
+
+KEYWORDS:		tcpip, byte order, network order
+
+DESCRIPTION: 	convert a network ordered double word to a host ordered
+               double word.  This is a macro.
+
+PARAMETER1: 	network ordered word
+
+RETURN VALUE:  network word in host format exa. 0x11223344 ==
+               ntohl(0x44332211)
+
+SEE ALSO:      htons, ntohs, htonl
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+htons                                  <NET.LIB>
+
+SYNTAX: word htons( word value );
+
+KEYWORDS:		tcpip, byte order, network order
+
+DESCRIPTION: 	convert a host ordered word to a network ordered word.
+               This is a macro.
+
+PARAMETER1: 	host ordered word
+
+RETURN VALUE:  host word in network format exa. 0x2211 == ntohs(0x1122)
+
+SEE ALSO:      htonl, ntohl, ntohs
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+htonl                                  <NET.LIB>
+
+SYNTAX: longword htonl( longword value );
+
+KEYWORDS:		tcpip, byte order, network order
+
+DESCRIPTION: 	convert a host ordered double word to a network ordered
+               double word.  This is a macro.
+
+PARAMETER1: 	host ordered word
+
+RETURN VALUE:  host word in network format exa. 0x11223344 ==
+               ntohl(0x44332211)
+
+SEE ALSO:      htons, ntohs, ntohl
+
+END DESCRIPTION **********************************************************/
+
+#define ntohs intel16
+#define htons intel16
+#define ntohl intel
+#define htonl intel
+/*** EndHeader */
+
+/*** BeginHeader _rs_sock_rbsize */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_rbsize                            <NET.LIB>
+
+SYNTAX: int sock_rbsize( void* s );
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	returns the size of the read buffer
+
+PARAMETER1: 	socket
+
+RETURN VALUE:  size of the read buffer for the socket
+
+SEE ALSO:      sock_rbused, sock_rbleft, sock_tbsize,	sock_tbused,
+               sock_tbleft
+
+END DESCRIPTION **********************************************************/
+
+_system int _rs_sock_rbsize( void *s );
+/*** EndHeader */
+
+_net_nodebug
+_system int _rs_sock_rbsize( void* s )
+{
+	_SYS_CALL_VARS
+   if ( _chk_socket( s ))
+   	return ((_rs_sock_type*)s)->tcp.rd.maxlen;
+   else
+   	return 0;
+}
+
+/*** BeginHeader _rs_sock_rbused */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_rbused                            <NET.LIB>
+
+SYNTAX: int sock_rbused( void* s );
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	returns the number of used bytes in the receive buffer
+
+PARAMETER1: 	socket
+
+RETURN VALUE:  number of used bytes in the receive buffer
+
+SEE ALSO:      sock_rbsize, sock_rbleft, sock_tbsize, sock_tbused,
+               sock_tbleft
+
+END DESCRIPTION **********************************************************/
+
+_system int _rs_sock_rbused( void *s );
+/*** EndHeader */
+
+_net_nodebug
+_system int _rs_sock_rbused( void *s )
+{
+	_SYS_CALL_VARS
+   if ( _chk_socket( s ))
+   	return ((_rs_sock_type*)s)->tcp.rd.len;
+   else
+   	return 0;
+}
+
+/*** BeginHeader _rs_sock_rbleft */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_rbleft                            <NET.LIB>
+
+SYNTAX: int sock_rbleft( void* s );
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	returns the number of bytes left in the receive buffer
+
+PARAMETER1: 	socket
+
+RETURN VALUE:  number of bytes left in the receive buffer
+
+SEE ALSO:      sock_rbsize, sock_rbused, sock_tbsize, sock_tbused,
+               sock_tbleft
+
+END DESCRIPTION **********************************************************/
+
+_system int _rs_sock_rbleft( void *s );
+/*** EndHeader */
+
+_net_nodebug
+_system int _rs_sock_rbleft( void *s )
+{
+	_SYS_CALL_VARS
+   if ( _chk_socket( s ))
+   	return ((_rs_sock_type*)s)->tcp.rd.maxlen - ((_rs_sock_type*)s)->tcp.rd.len;
+   else
+   	return 0;
+}
+
+/*** BeginHeader _rs_sock_tbsize */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_tbsize                            <NET.LIB>
+
+SYNTAX: int sock_tbsize( void* s );
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	returns the size of the transmit buffer
+
+PARAMETER1: 	socket
+
+RETURN VALUE:  size of the transmit buffer for the socket
+
+SEE ALSO:      sock_rbsize, sock_rbused, sock_rbleft, sock_tbused,
+               sock_tbleft
+
+END DESCRIPTION **********************************************************/
+
+_system int _rs_sock_tbsize( void *s );
+/*** EndHeader */
+
+
+_net_nodebug
+_system int _rs_sock_tbsize( void *s )
+{
+	_SYS_CALL_VARS
+   if (_chk_socket( s ) == 2)
+   	return ((_rs_sock_type *)s)->tcp.wr.maxlen;
+   else
+   	return 0;
+}
+
+/*** BeginHeader _rs_sock_tbused */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_tbused                            <NET.LIB>
+
+SYNTAX: int sock_tbused( void* s );
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	returns the number of byte used in the transmit buffer
+
+PARAMETER1: 	socket
+
+RETURN VALUE:  number of byte used in the transmit buffer
+
+SEE ALSO:      sock_rbsize, sock_rbused, sock_rbleft, sock_tbsize,
+					sock_tbleft
+
+END DESCRIPTION **********************************************************/
+
+_system int _rs_sock_tbused( void *s );
+/*** EndHeader */
+
+_net_nodebug
+_system int _rs_sock_tbused( void *s )
+{
+	_SYS_CALL_VARS
+   if (_chk_socket( s ) == 2)
+   	return ((_rs_sock_type*)s)->tcp.wr.len;
+   else
+   	return 0;
+}
+
+/*** BeginHeader _rs_sock_tbleft */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_tbleft                            <NET.LIB>
+
+SYNTAX: int sock_tbleft( void* s );
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	returns the number of bytes left in the transmit buffer
+
+PARAMETER1: 	socket
+
+RETURN VALUE:  number of bytes left in the transmit buffer
+
+SEE ALSO:      sock_rbsize, sock_rbused, sock_rbleft, sock_tbsize,
+					sock_tbused
+
+END DESCRIPTION **********************************************************/
+
+_system int _rs_sock_tbleft( void *s );
+/*** EndHeader */
+
+_net_nodebug
+_system int _rs_sock_tbleft( void *s )
+{
+	_SYS_CALL_VARS
+   if (_chk_socket( s ) == 2)
+   	return ((_rs_sock_type*)s)->tcp.wr.maxlen - ((_rs_sock_type*)s)->tcp.wr.len;
+   else
+   	return 0;
+}
+
+/*** BeginHeader */
+#define MY_IP		      "MY_IP_ADDRESS"
+#define IP              "IP"
+#define NETMASK 	      "MY_NETMASK"
+#define COOKIE		      "COOKIE"
+#define NAMESERVER	   "MY_NAMESERVER"
+#define GATEWAY 	      "MY_GATEWAY"
+#define DOMAINS		   "DOMAINSLIST"
+#define HOSTNAME	      "HOSTNAME"
+#define SOCKDELAY       "SOCKDELAY"
+#define ETHIP		      "ETHIP"
+#define BOOTP		      "BOOTP"
+#define BOOTPTO		   "BOOTPTO"
+#define PRINT		      "PRINT"
+#define INACTIVE        "INACTIVE"
+#define INCLUDE         "INCLUDE"
+#define MULTIHOMES      "MULTIHOMES"
+#define DATATIMEOUT     "DATATIMEOUT"
+
+#define is_it( x ) if (!strcmp(name,x))
+/*** EndHeader */
+
+/*** BeginHeader set_my_ip */
+void set_my_ip(char *value);
+/*** EndHeader */
+void set_my_ip(char *value)
+{
+	my_ip_addr = aton( value );
+}
+
+/*** BeginHeader ethip */
+void ethip( char *s );
+/*** EndHeader */
+
+_net_nodebug void ethip( char *s ) {
+   auto eth_address temp_eth;
+   auto char *temp;
+
+   temp = _inet_atoeth( s, (byte*)&temp_eth );
+   if (temp && !memcmp( &temp_eth, &_eth_addr, sizeof( eth_address )))
+   	my_ip_addr = inet_addr( temp );
+}
+
+/*** BeginHeader _add_server */
+void _add_server( int *counter, int max, longword *array, longword value );
+/*** EndHeader */
+
+_net_nodebug void _add_server( int *counter, int max, longword *array, longword value )
+{
+   auto int i, duplicate;
+
+   duplicate=0;
+
+   if( value && ( *counter < max )) {
+      for(i=0;i<*counter; i++) {
+         if( array[i] == value)
+            duplicate=1;
+      }
+      if(!duplicate)
+         array[ (*counter)++ ] = value;
+   }
+}
+
+
+/*** BeginHeader if_max_mtu */
+word if_max_mtu(int iface);
+/*** EndHeader */
+
+_net_nodebug word if_max_mtu(int iface)
+{
+	// Return the maximum allowable MTU for a given interface number
+	if (IF_PKT_SER(iface))
+		return ETH_BUFSIZE - PPP_OVERHEAD;
+	else if (IF_USES_ETH(iface))
+		return ETH_BUFSIZE - ETH_OVERHEAD;
+	return ETH_BUFSIZE - PPPOE_OVERHEAD;
+}
+
+/*** BeginHeader _rs_tcp_config */
+_system void _rs_tcp_config(char *name, char *value);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+tcp_config                               <NET.LIB>
+
+SYNTAX: void tcp_config(char *name, char *value);
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	tcp_config is used to set TCP/IP stack parameters at runtime
+					The possible parameters are
+					MY_IP - host IP address (use sethostid() instead)
+					NETMASK
+					GATEWAY - name/address of gateway
+					NAMESERVER - adds a nameserver's address
+					DOMAINS - name of default domain
+						(use setdomainname() instead)
+
+					Note that there are specific (and safer) functions for
+					modifying some of the common parameters.
+
+					This function is deprecated.  It is highly recommended that
+					you do NOT use it, since it uses strings (which take up
+					lots of root data storage).
+
+					The recommended replacement function is ifconfig().
+
+PARAMETER1: 	name - string name of the parameter above to modify
+PARAMETER2: 	value - new value for parameter(in string form)
+
+RETURN VALUE:  None
+
+SEE ALSO:      sock_init, ifconfig
+
+END DESCRIPTION **********************************************************/
+
+_net_nodebug
+_system void _rs_tcp_config(char *name, char *value )
+{
+	_SYS_CALL_VARS
+   is_it( MY_IP ) {
+		if ( toupper( *value ) != 'B' &&
+	   	  toupper( *value ) != 'D')
+			my_ip_addr = aton( value );
+   } else is_it( IP ) {
+		if ( toupper( *value ) != 'B' &&
+	     	  toupper( *value ) != 'D')
+			my_ip_addr = aton( value );
+   }
+   else is_it( NETMASK )
+    	sin_mask = aton( value );
+   else is_it( GATEWAY ) {
+		/* accept gateip[,subnet[,mask]]  */
+		_arp_add_gateway( value , 0L );
+	}
+#ifndef DISABLE_DNS
+   else is_it( NAMESERVER )
+   	servlist_add(&_dns_server_table, aton(value), DNS_PREDEFINED, NULL);
+#endif
+   else is_it( COOKIE )
+   	_add_server( &_last_cookie, MAX_COOKIES, _cookie, aton( value ));
+   else is_it( HOSTNAME )
+   	strncpy(_hostname, value, MAX_STRING );
+   else is_it( SOCKDELAY )
+   	sock_delay = atoi( value );
+   else is_it( ETHIP )
+   	ethip( value );
+   else is_it( INACTIVE )
+   	sock_inactive = atoi( value );
+   else is_it( DATATIMEOUT)
+   	sock_data_timeout = atoi( value )*1000uL;
+}
+
+/*** BeginHeader ifctl_tick */
+int ifctl_tick(int iface);
+/*** EndHeader */
+
+_net_nodebug int ifctl_tick(int iface)
+{
+	auto word up, change;
+	auto word ifmask;
+	auto int retval;
+   auto IFTEntry * ie;
+#ifdef USE_DHCP
+	auto word dhcp;
+#endif
+	auto word sureg;
+
+	ifmask = 1 << iface;
+	ie = _if_tab + iface;
+
+	up = _if_request & ifmask;
+	change = (_if_request ^ _if_prequest) & ifmask;
+#ifdef USE_DHCP
+	if (!up && change) {
+   	if (ie->flags & IFF_DHCP_OK) {
+	      // First time down for DHCP, and it was up
+	      ie->dhcp->state = DHCP_ST_RELEASE;
+	      retval = dhcp_tick(iface);
+      }
+      else if (_if_dhcp & ifmask) {
+      	// First time down for DHCP, and it was not yet up.  Just abandon
+         // the state machine.
+			_if_dhcp &= ~ifmask;
+      }
+   }
+	if (dhcp = _if_dhcp & ifmask) {
+   	retval = dhcp_tick(iface);
+      if (retval != IFCTL_PEND)
+      	_if_dhcp &= ~ifmask;
+   }
+   else
+#endif
+	if (ie->ncd->ifctl)
+		retval = ie->ncd->ifctl(ie->state, up, change);
+	else
+		retval = IFCTL_OK;
+	_if_prequest ^= change;
+#ifdef USE_DHCP
+	if (up && retval == IFCTL_OK && !dhcp && ie->flags & IFF_DHCP) {
+   	// Link and basic IP layers up successfully, and not already doing dhcp acquisition,
+      // and want to do dhcp for this interface: start off the dhcp process.
+		retval = dhcp_init(iface);
+      if (retval == IFCTL_PEND)
+      	_if_dhcp |= ifmask;	// Mark for continuation next time.
+   }
+#endif
+	if (retval == IFCTL_OK) {
+		if (up) {
+      	// Finished coming up
+			_if_actual |= ifmask;
+			ie->up = 1;
+         #if VIRTUAL_ETH
+         // If this is ethernet, bring up any dependent virtual ethernet interfaces
+         virtual_set(iface, 1);
+         #endif
+		}
+		else {
+      	// Finished coming down
+			_if_actual &= ~ifmask;
+			ie->up = 0;
+         #if VIRTUAL_ETH
+         // If this is ethernet, bring down any dependent virtual ethernet interfaces
+         virtual_set(iface, 0);
+         #endif
+         arpcache_purge_iface(iface);
+		}
+#ifdef USE_IF_CALLBACK
+		if (ie->ifcallback)
+		{
+	      #if _SYSTEM
+	      SETUSERMODE;
+	      #endif
+			ie->ifcallback(iface, up);
+	      #if _SYSTEM
+	      SETSYSMODE;
+	      #endif
+		}
+#endif
+	}
+	else if (retval == IFCTL_FAIL) {
+		// On failure, make requested state = actual state to prevent
+		// repeated retrying - application will need to recover.
+		if (up)
+			_if_request &= ~ifmask;
+		else
+			_if_request |= ifmask;
+		_if_prequest = _if_prequest & ~ifmask | _if_request & ifmask;
+	}
+	return retval;
+}
+
+/*** BeginHeader ifctl_ethernet */
+int ifctl_ethernet(int iface, int up, int change);
+/*** EndHeader */
+
+_net_nodebug int ifctl_ethernet(int iface, int up, int change)
+{
+	// Only action required is to possibly issue ARP probe for our IP address
+	// when coming up.  Note that this function is called by individual driver ifctl()
+   // functions, if they are ethernet drivers.
+	if (up && !_rk_pd_havelink(iface))
+   	return IFCTL_PEND;
+#ifndef ARP_NO_ANNOUNCE
+	if (up && _if_tab[iface].ipaddr && !(_if_tab[iface].flags & IFF_DHCP)) {
+		// We think we have a valid IP address.  Do an ARP request to make sure nobody
+		// else is claiming the same address.  We won't know the result until later.
+      // Don't do this if going to use DHCP, since DHCP effectively does this check anyway.
+		_arp_request(_if_tab[iface].ipaddr, iface);
+	}
+#endif
+	return IFCTL_OK;
+}
+
+
+/*** BeginHeader _rs_ifpending */
+_system int _rs_ifpending(int iface);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ifpending                               <NET.LIB>
+
+SYNTAX: int ifpending(int iface)
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	Returns indication of whether the specified interface is
+               up, down, pending up or pending down.  This reveals more
+               information than ifstatus(), which only indicates the
+               current state (up or down).
+
+               Note: ANDing the return value with 0x01 indicates a
+               pending condition; ANDing with 0x02 is equivalent to
+               the return from ifstatus(), except that ifstatus()
+               returns '1' instead of '2'.
+
+               Example:
+                 // assume IF_ETH0 is down.  Bring it up...
+                 ifconfig(IF_ETH0, IFS_UP, IFS_END);
+                 while (ifpending(IF_ETH0) == IF_COMING_UP)
+                    tcp_tick(NULL);
+                 if (ifpending(IF_ETH0) == IF_UP)
+                    // came up OK
+                 else
+                    // failed to come up
+
+PARAMETER1: 	iface - interface number.  Use one of the definitions
+                 IF_ETH0, IF_ETH1, IF_PPPOE0, IF_PPPOE1, IF_PPP0-5.
+               If the interface does not exist, then you will get a
+               compile time error.
+
+RETURN VALUE:  0 if interface is currently down and not pending up,
+               1 if interface is currently down and pending up,
+               2 if interface is currently up and not pending down,
+               3 if interface is currently up and pending down.
+               Rather than the above constants, you should use the macros
+                 IF_DOWN
+                 IF_COMING_UP
+                 IF_UP
+                 IF_COMING_DOWN
+
+SEE ALSO:      ifconfig, ifdown, ifup, ifstatus
+
+END DESCRIPTION **********************************************************/
+_net_nodebug
+_system int _rs_ifpending(int iface)
+{
+	_SYS_CALL_VARS
+	auto word mask;
+
+	mask = 1u << iface;
+	if (_if_request & mask)
+		if (_if_actual & mask)
+			return IF_UP;
+		else
+			return IF_COMING_UP;
+	else
+		if (_if_actual & mask)
+			return IF_COMING_DOWN;
+		else
+			return IF_DOWN;
+}
+
+/*** BeginHeader _rs_ifup */
+_system int _rs_ifup(int iface);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ifstatus                               <NET.LIB>
+
+SYNTAX: word ifstatus(int iface);
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	This returns the status of the specified interface.
+
+PARAMETER1: 	iface - interface number.  Use one of the definitions
+                 IF_ETH0, IF_ETH1, IF_PPPOE0, IF_PPPOE1, IF_PPP0-5.
+               If the interface does not exist, then you will get zero (0).
+
+RETURN VALUE:  0 if interface is currently down,
+               Non-zero if interface is currently up (active).
+
+SEE ALSO:      ifconfig, ifdown, ifup, ifpending
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+ifup                               <NET.LIB>
+
+SYNTAX: int ifup(int iface);
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	This function attempts to activate the specified
+               interface.  The action depends on the previous status
+               reported by ifpending().
+
+               ifpending()     Action
+               --------------  ---------------------------------
+               IF_UP           None, returns IFCTL_OK.
+               IF_COMING_UP    None, returns IFCTL_PEND.
+               IF_DOWN         Starts bringing interface up
+                                using normal procedure.
+               IF_COMING_DOWN  Depends on interface capabilities:
+                                see below, but note that in
+                                practice this always returns
+                                IFCTL_FAIL.
+
+               If the interface is currently "coming down", then the
+               action taken when ifup() is called depends on the
+               interface.  Some interfaces may not allow the interface
+               to come back up in this condition, in which case
+               IFCTL_FAIL will be returned.  Try again later when the
+               interface is fully down, or you can call ifdown()
+               to force the interface down immediately.  If the
+               interface allows changing requested state when
+               coming down, then the return value will be either
+               IFCTL_PEND or IFCTL_OK.  Currently, the only interface
+               types which do not come down instantly are PPP over
+               async serial and PPPoE.  These do NOT currently
+               implement calling ifup() when they are pending down.
+
+PARAMETER1: 	iface - interface number.  Use one of the definitions
+                 IF_ETH0, IF_ETH1, IF_PPPOE0, IF_PPPOE1, IF_PPP0-5.
+               If the interface does not exist, then you will get a
+               compile time error.
+
+RETURN VALUE:  IFCTL_OK if OK,
+               IFCTL_FAIL if error (bad iface or iface is coming down),
+               IFCTL_PEND if OK but not complete.
+
+SEE ALSO:      ifconfig, ifdown, ifstatus, ifpending
+
+END DESCRIPTION **********************************************************/
+
+_net_nodebug
+_system int _rs_ifup(int iface)
+{
+	_SYS_CALL_VARS
+	auto word pend;
+
+	if (iface >= IF_MAX)
+		return IFCTL_FAIL;
+	if ((pend = _rs_ifpending(iface)) == IF_UP)
+		return IFCTL_OK;
+   if (pend == IF_COMING_UP)
+   	return IFCTL_PEND;
+   if (pend == IF_COMING_DOWN)
+   	return IFCTL_FAIL;
+	_if_request |= 1 << iface;
+	return ifctl_tick(iface);
+}
+
+/*** BeginHeader _rs_ifdown */
+_system int _rs_ifdown(int iface);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ifdown                               <NET.LIB>
+
+SYNTAX: int ifdown(int iface);
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	This function attempts to deactivate the specified
+               interface.  The action depends on the previous status
+               reported by ifpending().
+
+               ifpending()     Action
+               --------------  ---------------------------------
+               IF_DOWN         None, returns IFCTL_OK.
+               IF_COMING_UP    Cancels bringing up, starts down.
+               IF_UP           Starts bringing interface down
+                                using normal "graceful" procedure.
+               IF_COMING_DOWN  Forces down.  This cuts short any
+                                normal termination procedure.
+
+PARAMETER1: 	iface - interface number.  Use one of the definitions
+                 IF_ETH0, IF_ETH1, IF_PPPOE0, IF_PPPOE1, IF_PPP0-5.
+               If the interface does not exist, then you will get a
+               compile time error.
+
+RETURN VALUE:  IFCTL_OK if OK,
+               IFCTL_FAIL if error,
+               IFCTL_PEND if OK but not complete.
+
+SEE ALSO:      ifconfig, ifup, ifstatus, ifpending
+
+END DESCRIPTION **********************************************************/
+
+_net_nodebug
+_system int _rs_ifdown(int iface)
+{
+	_SYS_CALL_VARS
+	auto word pend, mask;
+
+	if (iface >= IF_MAX)
+		return IFCTL_FAIL;
+	if (!(pend = _rs_ifpending(iface)))
+		return IFCTL_OK;
+   mask = 1<<iface;
+   if (pend == IF_COMING_DOWN) {
+   	_if_actual &= ~mask;	// Cut short
+      _if_prequest &= ~mask;
+      return IFCTL_OK;
+   }
+   if (pend == IF_COMING_UP) {
+   	// If it was coming up, pretend it was fully up so that the ifctl_tick function gets driven.
+      _if_actual |= mask;
+      _if_prequest |= mask;
+   }
+	_if_request &= ~mask;
+	_rs_abort_socks(NETERR_IFDOWN, iface);
+	return ifctl_tick(iface);
+}
+
+/*** BeginHeader _rs_ifconfig */
+_system int _rs_ifconfig(int iface,...);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ifconfig                               <NET.LIB>
+
+SYNTAX: int ifconfig(int iface,...);
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	This function replaces tcp_config() for setting network
+               parameters at runtime.  In addition, it allows retrieval
+               of parameters and supports multiple interfaces.  An
+               arbitrary number of parameters may be set or retrieved
+               in one call.
+
+               Example:
+                 ifconfig(IF_ETH0,
+                   IFS_DOWN,
+                   IFS_IPADDR, aton("10.10.6.100"),
+                   IFS_NETMASK, 0xFFFFFF00uL,
+                   IFS_ROUTER_SET, aton("10.10.6.1"),
+                   IFS_NAMESERVER_SET, aton("192.68.1.123"),
+                   IFS_NAMESERVER_ADD, aton("192.68.1.124"),
+                   IFS_UP,
+                   IFS_END);
+               This first brings the first ethernet interface down if it
+               is not already inactive, then it configures
+               the home IP address, netmask, router (gateway), and
+               two nameservers.  Finally, the interface is made
+               active (IFS_UP).  IFS_END is required to terminate the
+               parameter list.
+
+PARAMETER1: 	iface - interface number.  Use one of the definitions
+               IF_ETH0, IF_ETH1, IF_WIFI0, IF_WIFI1, IF_PPPOE0, IF_PPPOE1,
+               IF_PPP0-5, IF_ANY.
+               If the interface does not exist, then you will get a
+               compile time error.  IF_ANY may be used only for the
+               parameters which are not specific to any particular
+               interface.  It can also be used, where applicable, to
+               mean "all interfaces" if the operation would make
+               sense when applied to all interfaces.
+PARAMETER2: 	Parameters 2 through n are polymorphic (like printf()
+               parameters).  Parameters are provided in groups (usually
+               pairs) with the first parm in the group being one of a
+               documented set of identifiers, and subsequent parms in
+               the group being the value specific to that identifier.
+               The list of parm groups MUST be terminated using the
+               identifier "IFS_END".	The parameter identifiers are:
+
+               Identifier           Extra info  Description
+               -------------------  ----------  -------------------------
+               IFS_END              none        End of parameter list
+               IFS_IPADDR   <1>     longword    Set home IP address. <18>
+               IFG_IPADDR           longword *  Get home IP address
+               IFS_NETMASK          longword    Set netmask
+               IFG_NETMASK          longword *  Get netmask
+               IFS_MTU              word        Set maximum trans. unit
+               IFG_MTU              word *      Get MTU
+               IFS_UP               none        Bring up interface
+               IFS_DOWN             none        Bring down interface
+               IFS_ROUTER_SET       longword    Delete all rounters, then
+                            <4>                   set this one as a
+                                                  default router
+               IFS_ROUTER_SET_STATIC            Set static router:
+                            <4,5>   longword      IP address of router
+                                    longword      subnet served
+                                    longword      subnet mask
+               IFS_ROUTER_ADD <4>   longword    Add general rounter
+               IFS_ROUTER_ADD_STATIC            Add static router:
+                            <4,5>   longword      IP address of router
+                                    longword      subnet served
+                                    longword      subnet mask
+               IFS_ROUTER_DEL <4>   longword    Delete router.  If 0 parm,
+                                                  delete all routers.
+               IFG_ROUTER_DEFAULT<7>longword *  Get default router
+               IFS_HWA      <1>     byte *      Set hardware address (6
+                                                  bytes).
+               IFG_HWA              byte *      Get hardware address
+               IFS_NAMESERVER_SET   longword    Delete all predefined name-
+                            <4>                   servers, then set this one
+               IFS_NAMESERVER_ADD<4>longword    Add nameserver to list
+               IFS_NAMESERVER_DEL<4>longword    Delete nameserver.  If name-
+                                                server is 0, then deletes
+                                                _all_ nameservers.
+               IFS_DHCP     <8>     bool <2>    Use DHCP to configure this
+                                                  interface
+               IFG_DHCP     <8>     bool *      Get whether DHCP to be used
+                                                  and interface is qualified
+                                                  to use DHCP.
+               IFG_DHCP_OK  <8>     bool *      Get whether DHCP actually
+                                                  configured OK.
+               IFS_DHCP_TIMEOUT <8> int         Set DHCP overall timeout in
+                                                  seconds.
+               IFG_DHCP_TIMEOUT <8> int *       Get DHCP overall timeout in
+                                                  seconds.
+               IFS_DHCP_QUERY <8>   bool   <16> Set whether DHCP uses INFORM.
+               IFG_DHCP_QUERY <8>   bool *      Get whether DHCP uses INFORM.
+               IFS_DHCP_DOMAIN<8>   bool        Set whether to use domain
+                                                  and/or hostname info.
+               IFG_DHCP_DOMAIN<8>   bool *      Get flag setting.
+               IFS_DHCP_FALLBACK<8> bool        Set whether DHCP allows
+                                                  fallback to static config.
+               IFG_DHCP_FALLBACK<8> bool *      Get whether DHCP allows
+                                                  fallback to static config.
+					IFS_DHCP_FB_IPADDR   longword    Set the DHCP fallback IP
+                                <8>               address. <17>
+					IFG_DHCP_FB_IPADDR   longword *  Get the DHCP fallback IP
+                                <8>               address. <17>
+               IFG_DHCP_FELLBACK<8> bool *      Get whether DHCP actually
+                                                  had to use fallbacks.
+					IFS_DHCP_OPTIONS<8>  int,char*,int(*)()  <15>
+                                                Set DHCP custom options.
+					IFG_DHCP_OPTIONS<8>  int*,char** Get DHCP custom options.
+					IFG_DHCP_INFO<8>     DHCPInfo**  Get DHCP information, or
+                                                  NULL if not qualified.
+               IFS_ICMP_CONFIG      bool        Allow "arp -s" ping to
+                            <3,9>                 configure IP address
+               IFG_ICMP_CONFIG      bool *      Get whether ping configure
+               IFG_ICMP_CONFIG_OK   bool *      Get whether ping configured
+                                                  successfully.
+               IFS_PING_CONFIG_RESET  none      After ping configure OK,
+                                                  allow further ping conf.
+               IFS_DEBUG    <4>     int         Set debug level
+               IFG_DEBUG    <4>     int *       Get debug level
+               IFS_IF_CALLBACK      void (*)()  Set interface up/down
+                            <3,12>                callback, or NULL.
+
+               Following identifiers only for PPP interfaces: <14>
+               IFS_PPP_SPEED        longword    Set serial PPP speed (bps)
+               IFG_PPP_SPEED        longword *  Get serial PPP speed
+               IFS_PPP_ACCEPTIP     bool        Accept peer's idea of our
+                                                  local IP address
+               IFG_PPP_ACCEPTIP     bool *
+               IFS_PPP_REMOTEIP     longword    Try to set peer's IP addr.
+					IFG_PPP_REMOTEIP     longword *
+               IFS_PPP_ACCEPTDNS    bool        Accept a DNS server IP
+                                                  address from peer
+					IFG_PPP_ACCEPTDNS    bool *
+               IFS_PPP_REMOTEDNS    longword,longword
+                                                Set DNS server IP addresses
+                                                  for peer (prim., sec.)
+					IFG_PPP_REMOTEDNS    longword *, longword *
+               IFS_PPP_AUTHCALLBACK int (*)()   Called when a peer attempts
+                                                  to authenticate <10>
+               IFS_PPP_INIT         none        Sets up PPP with default
+                                                  parameters.  This should
+                                                  be used before any other
+                                                  PPP setting parameters.
+               IFS_PPP_REMOTEAUTH   char *, char *
+                                                Sets username and password
+                                                  to give to peer
+					IFG_PPP_REMOTEAUTH   char **, char **
+               IFS_PPP_LOCALAUTH    char *, char *
+                                                Required username and
+                                                  password for incoming peer
+					IFG_PPP_LOCALAUTH    char **, char **
+               IFS_PPP_RTSPIN       int, char *, int
+                                                Define the RTS pin <11>
+					IFG_PPP_RTSPIN       int *, char **, int *
+               IFS_PPP_CTSPIN       int, int    Define the CTS pin <11>
+					IFG_PPP_CTSPIN       int *, int *
+               IFS_PPP_FLOWCONTROL  bool        Turn hardware flow control
+                                                  on or off
+					IFG_PPP_FLOWCONTROL  bool *
+               IFS_PPP_SENDEXPECT   char *      A series of strings to send and
+               				<19>					then expect, each seperated by
+               											a carriage return('\r'). <13>
+					IFG_PPP_SENDEXPECT   char **		<19>
+               IFS_PPP_USEMODEM     bool        Specify whether to use
+                           <19>                   modem dialout string.
+					IFG_PPP_USEMODEM     bool *		<19>
+					IFS_PPP_MODEMESCAPE  bool			Specify whether or not to
+									<19>  					add an escape sequence
+																<delay>+++<delay> before
+																sending send/expect or hangup
+																strings
+					IFG_PPP_MODEMESCAPE  bool *		<19>
+					IFS_PPP_USEPORTD     bool        Use parallel port D instead of
+					                                 par port C for serial ports
+					                                 A and B.
+					IFG_PPP_USEPORTD     bool *
+					IFG_PPP_PEERADDR     longword *  Get the PPP peer address.
+					                                 Returns 0 if no connection.
+					IFS_PPP_HANGUP			char *		Optional string to send to
+									<19>						modem to shut it down, in
+                                                send-expect format. <13>
+					IFG_PPP_HANGUP       char **		<19>
+					IFS_PPP_PASSIVE      bool        Set passive mode for PPP.
+               											If TRUE, then interface will
+                                                wait indefinitiely for a
+                                                connection after its initial
+                                                connection attempt.
+					IFG_PPP_PASSIVE      bool *
+
+               Following identifiers only for PPP or VSPD interfaces, on
+               Rabbit4000 processors, since they rely on the existence of
+               DMA channels:  <20>
+
+               IFS_USE_DMA          dma_chan_t, Use the specified DMA channel
+                                    dma_chan_t, instead of the serial port.
+                                    word        First channel for source,
+                                                second for dest.  Last parm
+                                                specifies I/O port address.
+               IFS_USE_SERIAL       <none>      Use the serial port directly.
+                                                This undoes the effect of
+                                                IFS_USE_DMA.
+
+               Notes:
+               <1> Setting the value of these parameters may require the
+               interface(s) to be brought down temporarily.  If this is
+               necessary it will be brought up again before return,
+               however any sockets that were open on that interface will
+               have been aborted.
+
+               <2> The "bool" parameter really means an integer, whose
+               value is 0 for false, or non-zero for true.
+
+               <3> These parameters may be set for IF_ANY i.e. all
+               interfaces.
+
+               <4> These parameters do not care about the value of "iface"
+               because they are not specific to an interface.
+
+               <5> "Static router" means a router which handles routing to
+               a specified subnet destination.  When a router is selected
+               for a given IP address, the most specific static router
+               will be used.  For example, given the following setup:
+                 Router         Subnet          Mask
+                 10.10.6.1      0               0
+                 10.10.6.2      10.99.0.0       255.255.0.0
+                 10.10.6.3      10.99.57.0      255.255.255.0
+               then, given a destination IP address (which is not on
+               the local subnet 10.10.6.0), the router will be selected
+               according to the following algorithm:
+                 If address is 10.99.57.*, use 10.10.6.3
+                 else if address is 10.99.*.*, use 10.10.6.2
+                 else use 10.10.6.1
+               Note that IFS_ROUTER_SET is basically the same as
+               IFS_ROUTER_SET_STATIC, except that the subnet and mask
+               parameters are automatically set to zero.  Most simple
+               networks with a single router to non-local subnets will
+               use a single IFS_ROUTER_SET.
+
+               <6> (deprecated).
+
+               <7> When retrieving the default router, the interface
+               parameter may be either a specific interface number (to
+               get the default router for that interface), or IF_ANY
+               which will retrieve an overall default router.  If
+               no router is configured, zero is stored.
+
+               <8> The DHCP parameters are only available if USE_DHCP
+               is defined, and will only work if the interface is
+               qualified for DHCP.  The IFS_DHCP parameter will cause
+               acquisition or release of the specified interface.
+
+               <9> If DHCP and ping configure are both set, then the
+               completion of DHCP will automatically turn off ping
+               configure.  If DHCP fails, then ping configure will be
+               allowed after the set timeout for DHCP.  Ping config
+               cannot override DHCP until DHCP has timed out.  This is
+               the case whenever a DHCP lease is obtained whether or
+               not at sock_init() time.
+
+               <10> The authentication callback is invoked with the
+               following parameters:
+                 int auth_cb(char * user, int userlen,
+                             char * passwd, int passwdlen)
+               The parameters indicate userid, password and their
+               lengths (not null terminated).  The callback should
+               return 1 if OK, 0 if not authorized.
+
+               <11> The parameters for the RTS/CTS pin assignments are
+               RTS: int port_address, char * shadow_reg, int port_pin
+               CTS: int port_address, int port_pin
+               where port_address is the parallel port internal I/O
+               address e.g. PEDR for port E.  shadow_reg is the
+               appropriate shadow register for the parallel port data
+               register e.g. &PEDRShadow for port E.  port_pin is a
+               number from 0-7 indicating the pin number of the port.
+
+               <12> The interface up/down callback function is called
+               with two parameters: ifcallback(int iface, int up) where
+               iface is the interface number, and up is non-zero if the
+               interface has just come up, or zero if it has just come
+               down.  This functionality is available only if you
+               #define USE_IF_CALLBACK before #use "dcrtcp.lib".
+
+               <13> Setting send/expect automatically turns on
+               IFS_PPP_USEMODEM.  See the documentation for chat_init()
+               for details on the syntax for these strings.  The
+               specified strings MUST be in static storage, since only
+               the pointers are stored rather than copying the strings.
+               Note that two substitution parameters are available:
+               %0 may be used to insert the current user name (as set
+               using the IFS_PPP_REMOTEAUTH command) and %1 is the
+               corresponding password.  This is useful if your logon
+               script uses the same userid/password as is used by PPP
+               during its authentication (PAP) stage.
+
+               <14> You will get a runtime error (non-zero return code)
+               if you apply one of the PPP-specific parameters to a
+               non-PPP interface.
+
+               <15> DHCP custom options processing:  First parameter (int)
+               is length of options list.  2nd parameter (char *) points
+               to options list.  This is a byte array containing values
+               from the DHCP_VN_* definitions in BOOTP.LIB (these are
+               taken from the list in RFC2132).  Also, option '0' is
+               used to indicate the boot file name.  If the boot file
+               name is provided, then the TFTP server IP address can
+               be obtained from the di->bootp_host field of the
+               structure provided to the callback (see below).
+               This options list must be in static storage, since only
+               the pointer is saved.
+
+               The 3rd parameter may be NULL, or is a pointer to a callback
+               function to process the custom options.  The callback
+               function has the following prototype:
+	             int my_callback(int iface, DHCPInfo * di, int opt,
+                                int len, char * data)
+	            where
+	               iface: interface number.
+	               di: DHCP information struct.  Read only,
+                      except you can modify the 'data' field if desired.
+                      See the definition of this struct in NET.LIB
+                      for details.
+	               opt: DHCP option number (DHCP_VN_*); or 0 for the
+                      boot file name.
+	               len: length of option data in bytes
+	               data: pointer to data for this option.  Read only.
+	            The callback is only invoked for options which were
+               requested and which were not handled internally (such as
+               DHCP_VN_SUBNET).  The return value from the callback should
+               be zero, for future compatibility.  The callback should not
+               make any long computations, blocking calls, or call any
+               other tcp/ip functions, since it would delay the main
+               application.  If uC/OS is in use, it should also be
+	            re-entrant and definitely not call any tcp/ip functions.
+	            Note that the following options are always retrieved and
+               MUST NOT be provided in the options list:
+	                  All DHCP protocol options (50-61),
+	                  DHCP_VN_SUBNET,
+	                  DHCP_VN_TIMEOFF,
+	                  DHCP_VN_ROUTER,    *
+	                  DHCP_VN_DNS,       *
+	                  DHCP_VN_SMTPSRV,   *
+	                  DHCP_VN_NTPSRV,    *
+	                  DHCP_VN_COOKIE     *
+	            (* - only forbidden if DHCP_NUM_ROUTERS etc. are defined to
+               be non-zero).
+
+               <16> This parameter specifies that DHCP INFORM message is
+               used for Ethernet interfaces, and is applicable if the
+               IP address is configured other than by DHCP.  The parameter
+               is always TRUE for PPP interfaces.
+
+               <17> The DHCP fallback address parameters are used in
+               preference to IFS_IPADDR (the "current" address).  This
+               indicates the static IP address to use in case DHCP
+               could not be used to configure the interface.  See also
+               the following note.
+
+               <18> The action of IFS_IPADDR depends on the current
+               interface state.  If the i/f has the IFS_DHCP flag set,
+               then this parameter sets only the fallback IP address
+               without changing the current i/f status.  Otherwise,
+               the i/f is reconfigured with the new address immediately,
+               which may require it to be brought down then up.
+               IFS_IPADDR always sets the DHCP fallback address, but
+               you can also use the IFS_DHCP_FB_IPADDR parameter to
+               set the fallback address without ever changing the i/f
+               status.
+
+               <19> These commands are not available if you #define
+               PPP_NO_MODEM.
+
+               <20> These commands are only available if the processor is
+               a Rabbit 4000.  This processor has 8 channels of DMA
+               (Direct Memory Access) available.  Any PPP over async serial,
+               or VSPD (Virtual Stream Packet Driver) interface may be
+               switched between its normal fixed async serial port and a
+               pair of DMA channels allocated to the application via the
+               DMAalloc() function in DMA.LIB.  The DMA channels should not
+               be modified by the application while in use by the network
+               library.
+
+               When specifying DMA channels (type dma_chan_t), you also
+               provide a third, word, parameter which specifies the I/O
+               register to be the source and destination for incoming and
+               outgoing data respectively.  This does not need to be a
+               serial port data register, but it usually would be.  Currently,
+               only internal I/O registers are supported for this function.
+
+               The application is responsible for setting serial port
+               parameters as desired.  When using DMA channels, the
+               network library routines do not make any changes to or make
+               any assumptions about the underlying I/O port.  The same
+               applies to the DMA channel.  For example, the application is
+               responsible for enabling the external DMA request line if,
+               for example, it is desired to implement hardware transmit
+               flow control.
+
+               Use of a DMA channel reduces the amount of CPU overhead taken
+               up servicing interrupts.  This allows higher communication
+               rates, or allows the application to perform more useful work
+               in the same time.
+
+               If the DMA channels are released via IFS_USE_SERIAL then it is
+               the application's responsibility to re-use or unallocate the
+               DMA channels as desired.
+
+RETURN VALUE:  If no error, returns 0.  Otherwise, returns the identifier
+               of the first parameter group which encountered an error,
+               which will be a non-zero value.
+               Returns -1 if iface parameter invalid.
+               An exception (run-time error) is raised if the parameter
+               list contains an invalid parameter number.
+
+SEE ALSO:      sock_init, tcp_config, ip_print_ifs, ifstatus, ifpending
+
+END DESCRIPTION **********************************************************/
+
+_net_nodebug
+_system int _rs_ifconfig(int iface,...)
+{
+	_SYS_CALL_VARS
+	return vifconfig(iface, (char *)(&iface + 1));
+}
+
+/*** BeginHeader vifconfig */
+int vifconfig(int iface, char * p);
+/*** EndHeader */
+// Define macro to check for sock_init() having been called.  Some parameters will
+// not work unless sock_init has been called. (uC/OS environment only)
+#ifdef NET_DEBUG
+	#ifdef MCOS_LOCKS
+		#define _FAIL_IF_NOT_INIT	if (!_initialized) goto _ifc_error
+	#else
+		#define _FAIL_IF_NOT_INIT
+	#endif
+#else
+	#define _FAIL_IF_NOT_INIT
+#endif
+
+
+_net_nodebug int vifconfig(int iface, char * p)
+{
+	auto int ident, i, j, wasup;
+#ifdef USE_DHCP
+   auto DHCPInfo * di;
+#endif
+	auto int ival, * ipval;
+	auto word wval, * wpval;
+	auto char *cptr;
+	auto char **cptrptr;
+	auto word onflags, offflags;
+	auto longword lval, lval2, lval3, * lpval;
+	auto byte * bpval;
+	auto word ru, rif;
+	auto ATHandle ath;
+#ifdef USING_PPP
+	auto PPPState *ppp;
+#endif
+	auto IFTEntry * ifte;
+#if _RAB4K
+	auto dma_chan_t rxchan, txchan;
+   auto int ioctlrc;
+#endif
+
+	if (iface < 0 || iface != IF_ANY && !(1u<<(word)iface & IF_SET)) {
+   #ifdef NET_VERBOSE
+   	printf("NET: ifconfig(%d...) invalid interface\n", iface);
+   #endif
+		return -1;
+   }
+
+  	LOCK_GLOBAL_IF_INIT(TCPGlobalLock);
+
+   // Initialize packet drivers.  This only does anything the first time called.  We do
+   // this here in case ifconfig() is being called before sock_init().
+   pkt_init();
+
+	if (iface != IF_ANY) {
+   	ifte = _if_tab + iface;
+#ifdef USE_DHCP
+	   di = ifte->dhcp;
+#endif
+#ifdef USING_PPP
+		if (IF_P2P(iface))
+			ppp = ifte->u.ppp.ppp_state;
+		else
+			ppp = NULL;
+#endif
+		wasup = _rs_ifpending(iface);
+	}
+	else {
+   	ifte = NULL;
+#ifdef USE_DHCP
+	   di = NULL;
+#endif
+#ifdef USING_PPP
+		ppp = NULL;
+#endif
+   }
+	for (;;) {
+		ident = *(int *)p;
+		p += sizeof(int);
+		switch (ident) {
+			case IFS_END:
+				if (iface != IF_ANY &&
+                (wasup == IF_UP || wasup == IF_COMING_UP) &&
+                _rs_ifpending(iface) == IF_DOWN)
+					_rs_ifup(iface);	// Start coming up (but don't check for errors)
+				goto _clean_return;
+			case IFS_UP:
+				_FAIL_IF_NOT_INIT;
+				if (iface == IF_ANY)
+					for (i = 0; i < IF_MAX; i++)
+						_rs_ifup(i);
+				else
+					if (_rs_ifup(iface) == IFCTL_FAIL)
+						goto _ifc_error;
+					else
+						wasup = _rs_ifpending(iface);
+				break;
+			case IFS_DOWN:
+				_FAIL_IF_NOT_INIT;
+				if (iface == IF_ANY)
+					for (i = 0; i < IF_MAX; i++)
+						_rs_ifdown(i);
+				else
+					if (wasup != IF_DOWN && wasup != IF_COMING_DOWN &&
+						_rs_ifdown(iface) == IFCTL_FAIL)
+						goto _ifc_error;
+					else
+						wasup = _rs_ifpending(iface);
+				break;
+			case IFS_IPADDR:
+				if (!ifte)
+					goto _ifc_error;
+      	#ifdef USE_DHCP
+         	if (!(ifte->flags & IFF_DHCP)) {
+					if (wasup == IF_UP || wasup == IF_COMING_UP)
+						_rs_ifdown(iface);
+					ifte->ipaddr = *(longword *)p;
+            }
+				// IFS_IPADDR always sets the fallback address
+				if (di)
+					di->fallback_ip = *(longword *)p;
+         #else
+				if (wasup == IF_UP || wasup == IF_COMING_UP)
+					ifdown(iface);
+				ifte->ipaddr = *(longword *)p;
+         #endif
+				p += sizeof(longword);
+				break;
+			case IFG_IPADDR:
+				if (!ifte)
+					goto _ifc_error;
+				lpval = *(longword **)p;
+				p += sizeof(longword *);
+				*lpval = ifte->ipaddr;
+				break;
+			case IFS_NETMASK:
+				if (!ifte)
+					goto _ifc_error;
+				ifte->mask = *(longword *)p;
+				p += sizeof(longword);
+				break;
+			case IFG_NETMASK:
+				if (!ifte)
+					goto _ifc_error;
+				lpval = *(longword **)p;
+				p += sizeof(longword *);
+				*lpval = ifte->mask;
+				break;
+			case IFS_MTU:
+				if (!ifte)
+					goto _ifc_error;
+				ifte->mtu = *(word *)p;
+				wval = if_max_mtu(iface);
+				if (ifte->mtu > wval)
+					ifte->mtu = wval;
+				p += sizeof(word);
+				break;
+			case IFG_MTU:
+				if (!ifte)
+					goto _ifc_error;
+				wpval = *(word **)p;
+				p += sizeof(word *);
+				*wpval = ifte->mtu;
+				break;
+			case IFS_ROUTER_SET:
+				_rs_router_del_all();
+				// fall thru
+			case IFS_ROUTER_ADD:
+				lval = *(longword *)p;
+				p += sizeof(longword);
+				lval2 = 0;
+				lval3 = 0;
+				goto _ifc_router;
+			case IFS_ROUTER_SET_STATIC:
+				_rs_router_del_all();
+				// fall thru
+			case IFS_ROUTER_ADD_STATIC:
+				lval = *(longword *)p;
+				p += sizeof(longword);
+				lval2 = *(longword *)p;
+				p += sizeof(longword);
+				lval3 = *(longword *)p;
+				p += sizeof(longword);
+			_ifc_router:
+				_FAIL_IF_NOT_INIT;
+				i = _rs_ip_iface(lval, 2);
+				if (i == IF_ANY)
+					if (iface == IF_ANY)
+						goto _ifc_error;
+					else
+						i = iface;
+				if (_rs_router_add(lval, i, lval2, lval3, 0) < 0)
+					goto _ifc_error;
+				break;
+			case IFS_ROUTER_DEL:
+				_FAIL_IF_NOT_INIT;
+				lval = *(longword *)p;
+				p += sizeof(longword);
+				if (!lval)
+					_rs_router_del_all();
+				else
+					_rs_router_delete(lval);
+				break;
+			case IFG_ROUTER_DEFAULT:
+				_FAIL_IF_NOT_INIT;
+				lpval = *(longword **)p;
+				p += sizeof(longword *);
+				if ((ath = _rs_router_for_iface(0, &ru, &rif, iface)) < 0)
+					*lpval = 0;
+				else
+					_rs_arpcache_ipaddr(ath, lpval);
+				break;
+			case IFS_HWA:
+				if (iface == IF_ANY || !my_eth_addr[iface])
+					goto _ifc_error;
+				bpval = *(byte **)p;
+				p += sizeof(byte *);
+				_rk_pd_sethwaddr(iface, bpval);
+				memcpy(my_eth_addr[iface], bpval, 6);
+				break;
+			case IFG_HWA:
+				if (iface == IF_ANY || !my_eth_addr[iface])
+					goto _ifc_error;
+				bpval = *(byte **)p;
+				p += sizeof(byte *);
+				memcpy(bpval, my_eth_addr[iface], 6);
+				break;
+			case IFS_NAMESERVER_SET:
+#ifndef DISABLE_DNS
+				servlist_delete(&_dns_server_table, 0, DNS_PREDEFINED);
+#endif
+				// fall thru
+			case IFS_NAMESERVER_ADD:
+				lval = *(longword *)p;
+				p += sizeof(longword);
+#ifndef DISABLE_DNS
+				servlist_add(&_dns_server_table, lval, DNS_PREDEFINED, NULL);
+#endif
+				break;
+			case IFS_NAMESERVER_DEL:
+				lval = *(longword *)p;
+				p += sizeof(longword);
+#ifndef DISABLE_DNS
+				servlist_delete(&_dns_server_table, lval, 0xFFFF); // all sources
+#endif
+				break;
+			#ifdef USE_DHCP
+			case IFS_DHCP_TIMEOUT:
+				if (!di)
+					goto _ifc_error;
+				di->overall_timeout = *(word *)p;
+				p += sizeof(word);
+				break;
+			case IFG_DHCP_TIMEOUT:
+				if (!di)
+					goto _ifc_error;
+				wpval = *(word **)p;
+				p += sizeof(word *);
+				*wpval = di->overall_timeout;
+				break;
+			case IFS_DHCP_FB_IPADDR:
+				if (!di)
+					goto _ifc_error;
+				di->fallback_ip = *(longword *)p;
+				p += sizeof(longword);
+				break;
+			case IFG_DHCP_FB_IPADDR:
+				if (!di)
+					goto _ifc_error;
+				lpval = *(longword **)p;
+				p += sizeof(longword *);
+				*lpval = di->fallback_ip;
+				break;
+			case IFS_DHCP_FALLBACK:
+				if (!di)
+					goto _ifc_error;
+				onflags = IFF_DHCP_FALLBACK;
+				goto _ifc_setflags;
+			case IFS_DHCP_QUERY:
+				if (!di)
+					goto _ifc_error;
+				onflags = IFF_DHCP_QUERY;
+				goto _ifc_setflags;
+			case IFS_DHCP_DOMAIN:
+				if (!di)
+					goto _ifc_error;
+				onflags = IFF_DHCP_DOMAIN;
+				goto _ifc_setflags;
+			case IFS_DHCP:
+				if (!di)
+					goto _ifc_error;
+				onflags = IFF_DHCP;
+			#endif
+			_ifc_setflags:
+				ival = *(int *)p;
+				p += sizeof(int);
+				if (ival)
+					offflags = 0xFFFF;
+				else
+					offflags = ~onflags, onflags = 0;
+				if (iface == IF_ANY)
+					for (i = 0; i < IF_MAX; i++)
+						ifte->flags = ifte->flags & offflags | onflags;
+				else
+					ifte->flags = ifte->flags & offflags | onflags;
+			#ifdef USE_DHCP
+				if (ident == IFS_DHCP) {
+					// Special processing for DHCP.  Set global vars for compatibility.
+					if (!ival) {
+                  // If iface currently up or coming up with DHCP, but flag says no
+                  // DHCP, then do an ifdown.
+                  if (wasup == IF_UP || wasup == IF_COMING_UP) {
+                  	_rs_ifdown(iface);
+                     wasup = _rs_ifpending(iface);
+                  }
+						//_if_tab[iface].flags &= ~(IFF_DHCP_OK|IFF_DHCP_FELLBACK);
+               }
+				}
+			#endif
+				break;
+			#ifdef USE_DHCP
+			case IFS_DHCP_OPTIONS:
+         	// Takes int (length), char* (options list), int (*)() (callback).
+				if (!di)
+					goto _ifc_error;
+				di->num_req_options = *(word *)p;	// length
+				p += sizeof(word);
+            di->req_options = *(char **)p;	// options list
+            p += sizeof(char *);
+				di->opt_callback = *(int (**)())p;
+				p += sizeof(int (*)());
+            break;
+			case IFG_DHCP_OPTIONS:
+         	// Takes int* (length return), char** (options list return).
+				if (!di)
+					goto _ifc_error;
+				wpval = *(word **)p;	// length
+				p += sizeof(word*);
+            *wpval = di->num_req_options;
+            cptrptr = *(char ***)p;	// options list
+            p += sizeof(char **);
+            *cptrptr = di->req_options;
+            break;
+			case IFG_DHCP_INFO:
+				wpval = *(word **)p;
+				p += sizeof(word *);
+				*(DHCPInfo **)wpval = di;
+            break;
+			case IFG_DHCP:
+				if (iface == IF_ANY)
+					goto _ifc_error;
+            if (!di) {
+			  		ipval = *(int **)p;
+					p += sizeof(int *);
+					*ipval = 0;	// Not qualified
+               break;
+            }
+				onflags = IFF_DHCP;
+			#endif
+			_ifc_getflags:
+				if (iface == IF_ANY)
+					goto _ifc_error;
+				ipval = *(int **)p;
+				p += sizeof(int *);
+				*ipval = (ifte->flags & onflags) != 0;
+				break;
+			#ifdef USE_DHCP
+			case IFG_DHCP_FALLBACK:
+				if (!di)
+					goto _ifc_error;
+				onflags = IFF_DHCP_FALLBACK;
+				goto _ifc_getflags;
+			case IFG_DHCP_QUERY:
+				if (!di)
+					goto _ifc_error;
+				onflags = IFF_DHCP_QUERY;
+				goto _ifc_getflags;
+			case IFG_DHCP_DOMAIN:
+				if (!di)
+					goto _ifc_error;
+				onflags = IFF_DHCP_DOMAIN;
+				goto _ifc_getflags;
+			case IFG_DHCP_FELLBACK:
+				if (!di)
+					goto _ifc_error;
+				onflags = IFF_DHCP_FELLBACK;
+				goto _ifc_getflags;
+			case IFG_DHCP_OK:
+				onflags = IFF_DHCP_OK;
+				goto _ifc_getflags;
+			#endif
+			case IFS_ICMP_CONFIG:
+				onflags = IFF_ICMP_CONFIG;
+				goto _ifc_setflags;
+			case IFG_ICMP_CONFIG:
+				onflags = IFF_ICMP_CONFIG;
+				goto _ifc_getflags;
+				break;
+			case IFG_ICMP_CONFIG_OK:
+				onflags = IFF_ICMP_CFG_OK;
+				goto _ifc_getflags;
+				break;
+			case IFS_ICMP_CONFIG_RESET:
+				if (!ifte)
+					goto _ifc_error;
+				ifte->flags &= ~IFF_ICMP_CFG_OK;
+				break;
+			case IFS_DEBUG:
+				debug_on = *(int *)p;
+				p += sizeof(int);
+				break;
+			case IFG_DEBUG:
+				ipval = *(int **)p;
+				p += sizeof(int *);
+				*ipval = debug_on;
+				break;
+
+#if USING_PPPLINK
+			case IFS_PPP_SPEED:
+            ifte->ncd->ioctl(ifte->state, PD_PPPLINK_SPEED, (longword *)p);
+				p += sizeof(longword);
+				break;
+
+			case IFG_PPP_SPEED:
+				lpval = *(longword **)p;
+            *lpval = 0;
+            ifte->ncd->ioctl(ifte->state, PD_PPPLINK_SPEED, lpval);
+				p += sizeof(longword *);
+				break;
+#endif
+
+#ifdef USING_PPP
+
+	#if !USING_PPPLINK
+			case IFS_PPP_SPEED:
+				p += sizeof(longword);
+				break;
+
+			case IFG_PPP_SPEED:
+				p += sizeof(longword *);
+				break;
+	#endif
+
+			case IFS_PPP_ACCEPTIP:
+				if (!ppp) goto _ifc_error;
+            if (*(int *)p) {
+					ppp->ipcp.flags |= IPCP_F_IP_NEGOT;
+					ppp->ipcp.local_ip = 0L; //make sure zeroed out
+            }
+            else
+            	ppp->ipcp.flags &= ~IPCP_F_IP_NEGOT;
+				p += sizeof(int);
+				break;
+
+			case IFG_PPP_ACCEPTIP:
+				if (!ppp) goto _ifc_error;
+				ipval = *(int **)p;
+				*ipval = (ppp->ipcp.flags & IPCP_F_IP_NEGOT) != 0;
+				p += sizeof(int *);
+				break;
+
+			case IFS_PPP_REMOTEIP:
+				if (!ppp) goto _ifc_error;
+				if (*(longword *)p) {
+					ppp->ipcp.remote_ip = *(longword *)p;
+					ppp->ipcp.flags |= IPCP_F_HAVE_HIS_IP;
+            }
+            else
+					ppp->ipcp.flags &= ~IPCP_F_HAVE_HIS_IP;
+				p += sizeof(longword);
+				break;
+
+			case IFG_PPP_REMOTEIP:
+				if (!ppp) goto _ifc_error;
+				lpval = *(longword **)p;
+				if(ppp->ipcp.flags & IPCP_F_HAVE_HIS_IP)
+					*lpval = ppp->ipcp.remote_ip;
+				else
+					*lpval = 0L;
+				p += sizeof(longword *);
+				break;
+
+
+			case IFS_PPP_ACCEPTDNS:
+				if (!ppp) goto _ifc_error;
+            if (*(int *)p) {
+					ppp->ipcp.flags |= IPCP_F_DNS_NEGOT;
+					ppp->ipcp.primary_dns = 0L;
+					ppp->ipcp.secondary_dns = 0L;
+            }
+            else
+            	ppp->ipcp.flags &= ~IPCP_F_DNS_NEGOT;
+				p += sizeof(int);
+				break;
+
+			case IFG_PPP_ACCEPTDNS:
+				if (!ppp) goto _ifc_error;
+				ipval = *(int **)p;
+				*ipval = (ppp->ipcp.flags & IPCP_F_DNS_NEGOT) != 0;
+				p += sizeof(int *);
+				break;
+
+			case IFS_PPP_REMOTEDNS:
+				if (!ppp) goto _ifc_error;
+				if (*(longword *)p) {
+            	ppp->ipcp.flags |= IPCP_F_HAVE_HIS_DNS;
+					ppp->ipcp.primary_dns = *(longword *)p;
+					ppp->ipcp.secondary_dns = *(longword *)(p + sizeof(longword));
+				}
+            else
+            	ppp->ipcp.flags &= ~IPCP_F_HAVE_HIS_DNS;
+				p += 2*sizeof(longword);
+				break;
+
+			case IFG_PPP_REMOTEDNS:
+				if (!ppp) goto _ifc_error;
+				lpval = *(longword **)p;
+				*lpval = ppp->ipcp.primary_dns;
+				lpval = *(longword **)(p + sizeof(longword *));
+				*lpval = ppp->ipcp.secondary_dns;
+				p += 2*sizeof(longword *);
+				break;
+
+			case IFS_PPP_AUTHCALLBACK:
+				if (!ppp) goto _ifc_error;
+				ppp->pap.require_auth = 1;
+				ppp->pap.local_auth_callback = *(int (**)())p;
+				p += sizeof(int (*)());
+				break;
+
+			case IFS_PPP_INIT:
+				if (!ppp) goto _ifc_error;
+            // This code should not be used.  ifup/ifdown does everything necessary.
+            // It is harmless (but inefficient) to do this provided the interface is currently down.
+				PPPinitialize(ppp, ifte->state, iface, ifte->ncd, NULL, NULL);
+				break;
+
+			case IFS_PPP_REMOTEAUTH:
+				if (!ppp) goto _ifc_error;
+				ppp->pap.have_auth = 1;
+				strcpy(ppp->pap.remote_username, *(char **)p);
+				strcpy(ppp->pap.remote_password, *(char **)(p + sizeof(char *)));
+				p += 2*sizeof(char *);
+				break;
+
+			case IFG_PPP_REMOTEAUTH:
+				if (!ppp) goto _ifc_error;
+				cptrptr = *(char ***)p;
+				*cptrptr = ppp->pap.remote_username;
+				cptrptr = *(char ***)(p + sizeof(char **));
+				*cptrptr = ppp->pap.remote_password;
+				p += 2*sizeof(char **);
+				break;
+
+
+			case IFS_PPP_LOCALAUTH:
+				if (!ppp) goto _ifc_error;
+				ppp->pap.require_auth = 1;
+				ppp->pap.local_auth_callback = NULL; //use single login combo
+				strcpy(ppp->pap.local_username, *(char **)p);
+				strcpy(ppp->pap.local_password, *(char **)(p + sizeof(char *)));
+				p += 2*sizeof(char *);
+				break;
+
+			case IFG_PPP_LOCALAUTH:
+				if (!ppp) goto _ifc_error;
+				cptrptr = *(char ***)p;
+				if(!ppp->pap.local_auth_callback)
+					*cptrptr = ppp->pap.local_username;
+				else
+					*cptrptr = NULL;
+				cptrptr = *(char ***)(p + sizeof(char **));
+				if(!ppp->pap.local_auth_callback)
+					*cptrptr = ppp->pap.local_password;
+				else
+					*cptrptr = NULL;
+				p += 2*sizeof(char **);
+				break;
+#endif
+
+#if USING_PPPLINK
+			case IFS_PPP_RTSPIN:
+            // We now ignore the shadow register, since the ioctl computes it.
+            i = FLOWCTL_RTS;
+            j = 1 << *(int *)(p + sizeof(int) + sizeof(char *));
+            ifte->ncd->ioctl(ifte->state, PD_PPPLINK_FLOWIN, &i, p, &j);
+				p += sizeof(char *) + 2*sizeof(int);
+				break;
+
+			case IFG_PPP_RTSPIN:
+            i = FLOWCTL_QUERY;
+            ifte->ncd->ioctl(ifte->state, PD_PPPLINK_FLOWIN, &i, *(int **)p, &j);
+            cptrptr = *(char ***)(p + sizeof(int *));
+            *cptrptr = NULL;  // We don't return the shadow any more
+            ipval = *(int **)(p + sizeof(int *) + sizeof(char **));
+            *ipval = 0;
+            if(j) {
+               while(j >>= 1)
+                  *ipval++;
+            }
+				p += sizeof(char **) + 2*sizeof(int *);
+				break;
+
+			case IFS_PPP_CTSPIN:
+            i = FLOWCTL_CTS;
+            j = 1 << *(int *)(p + sizeof(int));
+            ifte->ncd->ioctl(ifte->state, PD_PPPLINK_FLOWOUT, &i, p, &j);
+				p += 2*sizeof(int);
+				break;
+
+			case IFG_PPP_CTSPIN:
+            i = FLOWCTL_QUERY;
+            ifte->ncd->ioctl(ifte->state, PD_PPPLINK_FLOWOUT, &i, *(int **)p, &j);
+            ipval = *(int **)(p + sizeof(int *));
+            *ipval = 0;
+            if(j) {
+               while(j >>= 1)
+                  *ipval++;
+            }
+				p += 2*sizeof(int *);
+				break;
+
+			case IFS_PPP_FLOWCONTROL:
+            // We treat inbound and outbound the same.  Also assume hardware f.c.
+            if (*(int *)p)
+            	*(int *)p = FLOWCTL_CTS;
+            else
+            	*(int *)p = FLOWCTL_NONE;
+            ifte->ncd->ioctl(ifte->state, PD_PPPLINK_FLOWIN, p, NULL, NULL);
+            ifte->ncd->ioctl(ifte->state, PD_PPPLINK_FLOWOUT, p, NULL, NULL);
+				p += sizeof(int);
+				break;
+
+			case IFG_PPP_FLOWCONTROL:
+				if(IF_PKT_SER(iface)) {
+					ipval = *(int **)p;
+	         	*ipval = FLOWCTL_QUERY;
+               // Retrieve just the outbound setting
+					ifte->ncd->ioctl(ifte->state, PD_PPPLINK_FLOWOUT, ipval, NULL, NULL);;
+				}
+            else
+            	*ipval = FLOWCTL_NONE;
+				p += sizeof(int *);
+				break;
+#endif
+
+#ifdef USING_PPP
+			case IFS_PPP_SENDEXPECT:
+			#if USING_PPP_SERIAL
+				if (!ppp) goto _ifc_error;
+            ifte->ncd->ioctl(ifte->state, PD_PPPLINK_SENDEX, *(char **)p);
+            // Also turn on 'usemodem'
+            i = 1;
+            ifte->ncd->ioctl(ifte->state, PD_PPPLINK_USEMODEM, &i);
+			#endif
+				p += sizeof(char *);
+				break;
+
+			case IFG_PPP_SENDEXPECT:
+			#if USING_PPP_SERIAL
+				if (!ppp) goto _ifc_error;
+				if(IF_PKT_SER(iface)) {
+					cptrptr = *(char ***)p;
+               *cptrptr = (char *)ifte->ncd->ioctl(ifte->state, PD_PPPLINK_SENDEX, NULL);
+				}
+			#endif
+				p += sizeof(char **);
+				break;
+
+			case IFS_PPP_USEMODEM:
+			#if USING_PPP_SERIAL
+				if (!ppp) goto _ifc_error;
+				if(IF_PKT_SER(iface))
+					ifte->ncd->ioctl(ifte->state, PD_PPPLINK_USEMODEM, p);
+			#endif
+				p += sizeof(int);
+				break;
+
+			case IFG_PPP_USEMODEM:
+			#if USING_PPP_SERIAL
+				if (!ppp) goto _ifc_error;
+				if(IF_PKT_SER(iface)) {
+					ipval = *(int **)p;
+					*ipval = ifte->ncd->ioctl(ifte->state, PD_PPPLINK_USEMODEM, NULL);
+				}
+			#endif
+				p += sizeof(int *);
+				break;
+
+			case IFS_PPP_HANGUP:
+			#if USING_PPP_SERIAL
+				if (!ppp) goto _ifc_error;
+            ifte->ncd->ioctl(ifte->state, PD_PPPLINK_HANGUP, *(char **)p);
+			#endif
+				p += sizeof(char *);
+				break;
+
+			case IFG_PPP_HANGUP:
+			#if USING_PPP_SERIAL
+				if (!ppp) goto _ifc_error;
+				if(IF_PKT_SER(iface)) {
+					cptrptr = *(char ***)p;
+               *cptrptr = (char *)ifte->ncd->ioctl(ifte->state, PD_PPPLINK_HANGUP, NULL);
+				}
+			#endif
+				p += sizeof(char **);
+				break;
+
+			case IFS_PPP_MODEMESCAPE:
+			#if USING_PPP_SERIAL
+				if (!ppp) goto _ifc_error;
+				if(IF_PKT_SER(iface))
+					ifte->ncd->ioctl(ifte->state, PD_PPPLINK_MODEMESC, p);
+			#endif
+				p += sizeof(int);
+				break;
+
+			case IFG_PPP_MODEMESCAPE:
+			#if USING_PPP_SERIAL
+				if (!ppp) goto _ifc_error;
+				if(IF_PKT_SER(iface)) {
+					ipval = *(int **)p;
+					*ipval = ifte->ncd->ioctl(ifte->state, PD_PPPLINK_MODEMESC, NULL);
+				}
+			#endif
+				p += sizeof(int *);
+				break;
+
+#endif
+
+#if USING_PPPLINK
+			case IFS_PPP_USEPORTD:
+            if (*(int *)p)
+               i = 0xFFFF;
+            else
+               i = 0;
+            ifte->ncd->ioctl(ifte->state, PD_PPPLINK_FLAGS, &i, PPPPORT_ALT);
+				p += sizeof(int);
+				break;
+
+			case IFG_PPP_USEPORTD:
+            ipval = *(int **)p;
+            *ipval = ifte->ncd->ioctl(ifte->state, PD_PPPLINK_FLAGS, NULL, 0) & PPPPORT_ALT;
+				p += sizeof(int *);
+				break;
+#endif
+
+#ifdef USING_PPP
+			case IFS_PPP_PASSIVE:
+				if (!ppp) goto _ifc_error;
+            ppp->passive = (char)*(int *)p;
+				p += sizeof(int);
+				break;
+
+			case IFG_PPP_PASSIVE:
+				if (!ppp) goto _ifc_error;
+				ipval = *(int **)p;
+				*ipval = ppp->passive;
+				p += sizeof(int *);
+				break;
+
+			case IFG_PPP_PEERADDR:
+				if (!ppp) goto _ifc_error;
+				lpval = *(longword **)p;
+				*lpval = _if_tab[iface].u.ppp.peeraddr;
+				p += sizeof(longword *);
+				break;
+
+
+#endif
+
+#ifdef USE_IF_CALLBACK
+			case IFS_IF_CALLBACK:
+				if (iface == IF_ANY)
+					for (i = 0; i < IF_MAX; i++)
+					{
+						_if_tab[i].ifcallback = (void (*)())(*p);
+					}
+				else
+            {
+               _if_tab[iface].ifcallback = (void (*)())(*p);
+            }
+				p += sizeof(void (*)());
+				break;
+#endif
+
+#if _RAB4K
+	#if USING_PPPLINK
+			case IFS_USE_DMA:
+         	rxchan = *(dma_chan_t *)p; p += sizeof(dma_chan_t);
+         	txchan = *(dma_chan_t *)p; p += sizeof(dma_chan_t);
+            wval = *(word *)p; p += sizeof(word);
+				ioctlrc = ifte->ncd->ioctl(ifte->state, PD_DMA, rxchan, txchan, wval);
+            #ifdef NET_VERBOSE
+            if (ioctlrc)
+            	printf("NET: IFS_USE_DMA: ioctl returned %d\n", ioctlrc);
+            #endif
+         	break;
+			case IFS_USE_SERIAL:
+				ioctlrc = ifte->ncd->ioctl(ifte->state, PD_SERIAL);
+            #ifdef NET_VERBOSE
+            if (ioctlrc)
+            	printf("NET: IFS_USE_SERIAL: ioctl returned %d\n", ioctlrc);
+            #endif
+         	break;
+	#endif
+#endif //R4000
+
+			default:
+				exception(-ERR_BADPARAMETER);
+				goto _ifc_error;	// This should never execute
+		}
+	}
+
+_clean_return:
+	ident = 0;
+_ifc_error:
+#ifdef NET_VERBOSE
+	if (ident)
+		printf("NET: ifconfig() bad or inappropriate parameter ID: %d\n", ident);
+#endif
+	UNLOCK_GLOBAL_IF_INIT(TCPGlobalLock);
+	return ident;
+}
+
+/*** BeginHeader is_valid_iface */
+int is_valid_iface(int iface);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+is_valid_iface                               <NET.LIB>
+
+SYNTAX: int is_valid_iface(int iface)
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	This function returns a boolean indicator of whether the
+               given interface number is valid for the configuration.
+
+PARAMETER1: 	iface - interface number.
+
+RETURN VALUE:  non-zero if the interface is valid;
+					0 if the interface does not exist.
+
+SEE ALSO:      ifconfig, ifup, ifdown, ifstatus
+
+END DESCRIPTION **********************************************************/
+_net_nodebug
+int is_valid_iface(int iface)
+{
+	return (1u<<iface) & IF_SET;
+}
+
+/*** BeginHeader _rs_virtual_eth */
+_system int _rs_virtual_eth(word real_iface, longword ipaddr, longword netmask,
+	void * resv);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+virtual_eth                                  <NET.LIB>
+
+SYNTAX: int virtual_eth(word real_iface, longword ipaddr, longword netmask,
+               void * resv)
+
+KEYWORDS:		tcpip, interface
+
+DESCRIPTION: 	Create a new virtual ethernet interface.  You must
+               #define VIRTUAL_ETH to a positive number (1-6) for this
+               function to work.
+
+               Virtual ethernet interfaces have some restrictions:
+               1. You cannot use DHCP
+               2. Broadcast/multicast packets are not received.
+               3. Some ifconfig() settings (such as MTU size) are
+                  not settable.
+               4. Once a virtual interface is created, it cannot
+                  be destroyed.  In practice, this means that all
+                  virtual i/f's should be created at boot time
+                  (after sock_init).
+
+               The virtual i/f will be created in the same up/down
+               state as the real i/f.  Changes to the up/down state
+               of the real i/f will affect all virtual i/f's tied
+               to that interface.
+
+               The callback function for a virtual i/f is set to NULL.
+
+PARAMETER1: 	The real interface to use.  This must be IF_ETH0, or
+               may be IF_ETH1 for boards with two ethernet chips.
+PARAMETER2:    The IP address to assign this interface.  This must not
+               be the same as the IP address of any other interface.
+PARAMETER3:    Netmask to use.  If zero, then the netmask of the real
+               interface will be used.
+PARAMETER4:    Pointer reserved for future use.  Pass as NULL.
+
+RETURN VALUE:  -1: failed because VIRTUAL_ETH was not defined, or the
+                   number of virtual interfaces exceeds the value specified
+                   by VIRTUAL_ETH, or the real_iface parameter was not
+                   valid.
+               otherwise: returns the interface number to use for this
+                   virtual interface.  This should be passed to any
+                   other function which requires the interface number to
+                   be specified.
+
+SEE ALSO:      ifconfig
+
+END DESCRIPTION **********************************************************/
+#if !VIRTUAL_ETH
+	#warnt "virtual_eth() does nothing if VIRTUAL_ETH not defined non-zero"
+#endif
+_net_nodebug _system int _rs_virtual_eth(word real_iface, longword ipaddr,
+	longword netmask, void * resv)
+{
+	_SYS_CALL_VARS
+	static word num_virtuals;
+   auto word vif;
+   auto IFTEntry * ift;
+   auto IFTEntry * rift;
+
+#if VIRTUAL_ETH
+	#GLOBAL_INIT { num_virtuals = 0; }
+
+	if (real_iface >= USING_ETHERNET + USING_WIFI || num_virtuals == VIRTUAL_ETH)
+   	return -1;
+	vif = IF_MAX + num_virtuals++;
+   ift = _if_tab + vif;
+   rift = _if_tab + real_iface;
+   ift->u.eth.eflags = EFLAG_VIRT;
+	ift->u.eth.riface = real_iface;
+	ift->up = rift->up;
+   if (ift->up) {
+   	_if_actual |= 1<<vif;
+   	_if_request |= 1<<vif;
+   }
+   ift->mtu = rift->mtu;
+   ift->ipaddr = ipaddr;
+   if (netmask)
+   	ift->mask = netmask;
+   else
+   	ift->mask = rift->mask;
+	ift->state = rift->state;
+	ift->ncd = rift->ncd;
+#ifdef USE_IF_CALLBACK
+   ift->ifcallback = NULL;
+#endif
+   my_eth_addr[vif] = my_eth_addr[real_iface];
+   return vif;
+#else
+	return -1;
+#endif
+}
+
+/*** BeginHeader virtual_set*/
+void virtual_set(word real_iface, int up);
+/*** EndHeader */
+
+_net_nodebug void virtual_set(word real_iface, int up)
+{
+	// Make all virtual ethernet interfaces reflect state (up/down) or real interface.
+   auto word mask, i;
+   auto IFTEntry * ift;
+
+   for (mask = 1<<(i = IF_MAX); i < IF_MAX+VIRTUAL_ETH; mask <<= 1, ++i) {
+   	ift = _if_tab + i;
+   	if (ift->u.eth.riface == real_iface) {
+      	if (up) {
+         	_if_actual |= mask;
+            _if_request |= mask;
+            ift->up = 1;
+         }
+         else {
+         	_if_actual &= ~mask;
+            _if_request &= ~mask;
+            ift->up = 0;
+         }
+      }
+   }
+}
+
+/*
+ * _inet_atoeth - read src, dump to ethernet buffer
+ *		  and return pointer to end of text string
+ */
+
+/*** BeginHeader _inet_atoeth */
+char *_inet_atoeth( char *src, byte *eth );
+/*** EndHeader */
+
+_net_nodebug char *_inet_atoeth( char *src, byte *eth ) {
+   auto word count, val;
+   auto byte ch, icount;
+
+   val = count = icount = 0;
+   while((ch = toupper(*src++)) != 0 ) {
+      if(ch == ':' ) continue;
+      if(ch == ',' ) break;
+
+      if((ch -= '0') > 9) ch -= 7;
+      val = (val << 4) + ch;
+
+      if( icount ) {
+         eth[ count++ ] = val;
+         if(count > 5) break;
+         val = icount = 0;
+      } else
+         icount = 1;
+   }
+   if( *src == ',' ) ++src;
+   return( src );
+}
+
+/*** BeginHeader tcp_config_old */
+int tcp_config_old(char* path);
+/*** EndHeader */
+
+_net_nodebug int tcp_config_old(char* path)
+{
+#if !(_USER)
+	// Interface-specific defaults
+#ifdef IF_ETH0
+	#ifdef IFCONFIG_ETH0
+		_rs_ifconfig(IF_ETH0, IFCONFIG_ETH0, IFS_END);
+	#else
+		#if IF_DEFAULT == IF_ETH0
+			_rs_ifconfig(IF_DEFAULT, IFCONFIG_DEFAULT, IFS_END);
+		#endif
+	#endif
+#endif
+#ifdef IF_ETH1
+	#ifdef IFCONFIG_ETH1
+		_rs_ifconfig(IF_ETH1, IFCONFIG_ETH1, IFS_END);
+	#else
+		#if IF_DEFAULT == IF_ETH1
+			_rs_ifconfig(IF_DEFAULT, IFCONFIG_DEFAULT, IFS_END);
+		#endif
+	#endif
+#endif
+#ifdef IF_WIFI0
+	#ifdef IFCONFIG_WIFI0
+		_rs_ifconfig(IF_WIFI0, IFCONFIG_WIFI0, IFS_END);
+	#else
+		#if IF_DEFAULT == IF_WIFI0
+			_rs_ifconfig(IF_DEFAULT, IFCONFIG_DEFAULT, IFS_END);
+		#endif
+	#endif
+#endif
+#ifdef IF_WIFI1
+	#ifdef IFCONFIG_WIFI1
+		_rs_ifconfig(IF_WIFI1, IFCONFIG_WIFI1, IFS_END);
+	#else
+		#if IF_DEFAULT == IF_WIFI1
+			_rs_ifconfig(IF_DEFAULT, IFCONFIG_DEFAULT, IFS_END);
+		#endif
+	#endif
+#endif
+#ifdef IF_PPPOE0
+	#ifdef IFCONFIG_PPPOE0
+		_rs_ifconfig(IF_PPPOE0, IFCONFIG_PPPOE0, IFS_END);
+	#else
+		#if IF_DEFAULT == IF_PPPOE0
+			_rs_ifconfig(IF_DEFAULT, IFCONFIG_DEFAULT, IFS_END);
+		#endif
+	#endif
+#endif
+#ifdef IF_PPPOE1
+	#ifdef IFCONFIG_PPPOE1
+		_rs_ifconfig(IF_PPPOE1, IFCONFIG_PPPOE1, IFS_END);
+	#else
+		#if IF_DEFAULT == IF_PPPOE1
+			_rs_ifconfig(IF_DEFAULT, IFCONFIG_DEFAULT, IFS_END);
+		#endif
+	#endif
+#endif
+#ifdef IF_PPP0
+	#ifdef IFCONFIG_PPP0
+		_rs_ifconfig(IF_PPP0, IFCONFIG_PPP0, IFS_END);
+	#endif
+#endif
+#ifdef IF_PPP1
+	#ifdef IFCONFIG_PPP1
+		_rs_ifconfig(IF_PPP1, IFCONFIG_PPP1, IFS_END);
+	#endif
+#endif
+#ifdef IF_PPP2
+	#ifdef IFCONFIG_PPP2
+		_rs_ifconfig(IF_PPP2, IFCONFIG_PPP2, IFS_END);
+	#endif
+#endif
+#ifdef IF_PPP3
+	#ifdef IFCONFIG_PPP3
+		_rs_ifconfig(IF_PPP3, IFCONFIG_PPP3, IFS_END);
+	#endif
+#endif
+#ifdef IF_PPP4
+	#ifdef IFCONFIG_PPP4
+		_rs_ifconfig(IF_PPP4, IFCONFIG_PPP4, IFS_END);
+	#endif
+#endif
+#ifdef IF_PPP5
+	#ifdef IFCONFIG_PPP5
+		_rs_ifconfig(IF_PPP5, IFCONFIG_PPP5, IFS_END);
+	#endif
+#endif
+
+	// Non-specific default.  This is done last, since addition of routers
+	// requires basic interface-specific stuff to be set up first.
+	_rs_ifconfig(IF_ANY, IFCONFIG_ALL, IFS_END);
+
+#endif
+	return 0;
+}
+
+
+
+/*** BeginHeader _rs_sock_yield */
+_system int _rs_sock_yield( _rs_tcp_Socket *s, void (*fn)( /*void*/ ) );
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sock_yield                                 <NET.LIB>
+
+SYNTAX: int sock_yield( tcp_Socket *s, void (*fn)() );
+
+DESCRIPTION:	This function, if called prior to one of the blocking
+					functions, will cause fn, the user-defined function
+					that is passed in as the second parameter,  to be called
+					repeatedly while the blocking function is in a busywait
+					state.
+
+PARAMETER1:	TCP socket
+PARAMETER2:	User-defined function
+
+RETURN VALUE:	0.
+
+KEYWORDS: tcpip, sock_read, sock_write
+END DESCRIPTION **********************************************************/
+/*
+ * sock_yield - enable user defined yield function
+ */
+_net_nodebug
+_system int _rs_sock_yield( _rs_tcp_Socket *s, void (*fn)( /*void*/ ) )
+{
+	_SYS_CALL_VARS
+
+   if( s )
+      s->usr_yield = fn;
+   else
+      system_yield = fn;
+   return( 0 );
+}
+
+/*** BeginHeader _rs_sock_mode */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_mode                              <NET.LIB>
+
+SYNTAX: void sock_mode(void* s, word mode);
+
+KEYWORDS:		tcpip, ip address
+
+DESCRIPTION: 	Change some of the socket options.  Depending on whether
+               s is a TCP or UDP socket, you may pass OR'ed combinations
+               of the following flags in the mode parameter.  For a TCP
+               socket, only the TCP_MODE_* flags are relevant.  For a
+               UDP socket, only the UDP_MODE_* flags are relevant.  Do
+               not use the wrong flags for the given socket type.
+
+               Note: it is more convenient, faster, and safer to use the
+               macro equivalent, if it is only desired to change one
+               mode at a time.  If you use this function, then you must
+               specify the setting of all relevant flags (TCP or UDP).
+               The macros do not do socket locking so, strictly speaking,
+               uC/OS users should call this function rather than use the
+               macros.
+
+               TCP modes:
+
+                TCP_MODE_BINARY (default)
+                TCP_MODE_ASCII
+                  tcp and udp sockets are usually in binary mode which
+                  means an arbitrary stream of bytes is allowed.  By
+                  changing this to TCP_MODE_ASCII, some of the DCRTCP
+                  functions will see a stream of records terminated
+                  with a newline character.  The new behavior means
+                  sock_bytesready will only return true when a complete
+                  newline terminated string is in the buffer.  sock_puts
+                  will append a newline to any output.  sock_gets (which
+                  should only be used in ASCII mode) removes the newline
+                  and null terminates the string.
+
+                  Macros:
+                    tcp_set_binary(s)
+                    tcp_set_ascii(s)
+
+                TCP_MODE_NAGLE (default)
+                TCP_MODE_NONAGLE
+                  The Nagle algorithm may substantially reduce network
+                  traffic with little negative effect on a user.  By
+                  default, Nagle is selected.  This method, which only
+                  effects tcp connections can be used by selecting the
+                  TCP_MODE_NONAGLE flag.
+
+                  Macros:
+                    tcp_set_nagle(s)
+                    tcp_set_nonagle(s)
+
+                TCP_MODE_FULLCLOSE (default, unless your app #defines
+                                    TCP_NO_CLOSE_ON_LAST_READ)
+                TCP_MODE_HALFCLOSE
+						Support half-close i.e. sock_close() only closes the
+                  transmit side of the socket, but allows indefinite
+                  receives until the peer closes.  This prevents the
+                  normal close timeout from being set.  If full-close
+                  then, when reading, if the socket is half-closed by
+                  the peer, then the socket will be automatically closed
+                  from this side.
+
+                  Macros:
+                    tcp_set_fullclose(s)
+                    tcp_set_halfclose(s)
+
+               UDP modes:
+
+                UDP_MODE_CHK (default)
+                UDP_MODE_NOCHK
+               	Checksums are required for tcp, but not for udp.  If
+               	you are providing a checking at a higher level, the
+               	low level checksum may be redundant.  The checksum for
+               	UDP can be disabled by selecting the TCP_MODE_NOCHK
+               	flag.
+
+                  Macros:
+                    udp_set_chk(s)
+                    udp_set_nochk(s)
+
+                UDP_MODE_NOICMP (default)
+                UDP_MODE_ICMP
+                  Marks this socket for receipt of ICMP error messages.
+                  The messages are queued like normal received datagrams,
+                  and read using udp_recvfrom(), which returns -3 when
+                  ICMP messages are returned instead of normal datagrams.
+                  Only ICMP messages which are relevant to the current
+                  binding of the socket are queued.
+
+                  Macros:
+                    udp_set_noicmp(s)
+                    udp_set_icmp(s)
+
+                UDP_MODE_NODICMP (default)
+                UDP_MODE_DICMP
+                  Marks this socket as the default receiver of ICMP
+                  messages which cannot be assigned to a particular UDP
+                  socket.  This would be used for UDP sockets which are
+                  used with many different sendto addresses, since the
+                  ICMP message may refer to a message sent some time ago
+                  (with different destination address than the most
+                  recent).  Only one UDP socket should be set with this
+                  mode.
+
+                  Macros:
+                    udp_set_nodicmp(s)
+                    udp_set_dicmp(s)
+
+                UDP_MODE_CONTIG (default)
+                UDP_MODE_NOCONTIG
+                  Specify whether data passed to the UDP data handler (if
+                  any) for this socket is to be contiguous or not.
+                  Contiguous mode is slightly less efficient, since the
+                  UDP process may to copy data from the network packet
+                  buffers into a temporary xmem area.  Non-contig mode
+                  is more efficient, but the data handler may need to
+                  process data from two xmem areas.  Since this is more
+                  complex to handle, there may be no nett efficiency gain.
+                  Contig is the default, since it is compatible with
+                  Dynamic C releases prior to DC 9.0, which always
+                  provided contiguous data.
+
+                  Macros:
+                    udp_set_contig(s)
+                    udp_set_nocontig(s)
+
+PARAMETER1: 	socket
+PARAMETER2: 	new mode
+
+RETURN VALUE:  resulting mode flags
+
+SEE ALSO:      inet_addr
+
+END DESCRIPTION **********************************************************/
+
+_system word _rs_sock_mode( void *s, word mode );
+/*** EndHeader */
+
+_net_nodebug
+_system word _rs_sock_mode( void *s, word mode )
+{
+	_SYS_CALL_VARS
+	auto word retval;
+
+	mode &= ALL_MODES;	// Don't allow bad bits through
+	LOCK_QUICK();
+   retval = ((_rs_sock_type*)s)->tcp.sock_mode =
+		( ((_rs_sock_type*)s)->tcp.sock_mode & ~ALL_MODES ) | mode;
+   UNLOCK_QUICK();
+   return retval & ALL_MODES;
+}
+
+/*** BeginHeader _rs_sock_alive */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_alive                               <NET.LIB>
+
+SYNTAX: int sock_alive(void * s);
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	This function performs the same test as tcp_tick(s) i.e.
+               it checks the status of the socket and returns 0 if the
+               socket is fully closed.
+
+               You can pass a pointer to a TCP or UDP socket.  UDP
+               sockets (being connectionless) will be 'alive' unless
+               they are currently closed.  TCP sockets will be alive
+               in any state (including listening and other unconnected
+               states) unless the TCP socket is completely closed.
+
+               The processing overhead of tcp_tick() is avoided for cases
+               where several sockets need to be checked in succession.
+
+               When this function returns zero for a socket, the socket
+               is then ready for a new call to tcp_open(), udp_open or
+               tcp_listen() and friends.
+
+PARAMETER1: 	TCP or UDP socket pointer
+
+RETURN VALUE:  0: socket connection reset or fully closed.  Socket ready
+                 for re-use in another connection after calling an
+                 open function.
+               non-zero: connection is opening, established, listening,
+                 or in the process of closing.
+
+SEE ALSO:      tcp_open, tcp_listen, sock_close, sock_abort, tcp_tick,
+					udp_open
+
+END DESCRIPTION **********************************************************/
+_system int _rs_sock_alive(void * s);
+/*** EndHeader */
+
+_tcp_nodebug
+_system int _rs_sock_alive(void * s)
+{
+	_SYS_CALL_VARS
+	auto int retval;
+
+#ifndef DISABLE_TCP
+   LOCK_GLOBAL(TCPGlobalLock);	// Global lock because of potential unthread.
+#endif
+	LOCK_SOCK(s);
+#ifndef DISABLE_TCP
+   if((((_rs_tcp_Socket *)s)->ip_type == TCP_PROTO ) &&
+      (((_rs_tcp_Socket *)s)->state & tcp_StateCLOSED ) &&
+      (((_rs_tcp_Socket *)s)->rd.len == 0 )) {
+      tcp_unthread((_rs_tcp_Socket *)s);
+      ((_rs_tcp_Socket *)s)->ip_type = 0;
+   }
+#endif
+   retval = ((_rs_tcp_Socket *)s)->ip_type;
+   UNLOCK_SOCK(s);
+#ifndef DISABLE_TCP
+   UNLOCK_GLOBAL(TCPGlobalLock);
+#endif
+   return retval;
+}
+
+/*** BeginHeader _rs_sock_waiting */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_waiting                               <NET.LIB>
+
+SYNTAX: int sock_waiting(tcp_Socket * s);
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	This function determines whether a TCP socket is waiting
+               for a connection establishment.  It returns TRUE (non-zero)
+               if and only if the socket is open, but not YET established.
+
+               The purpose of this function is to simplify the application
+               logic in programs which interleave TCP/IP functions with
+               other processing i.e. "non-blocking" style.
+
+               Note: it is an error to pass a UDP socket to this function.
+               UDP sockets are connectionless, so there is no concept of
+               "waiting for a connection".
+
+PARAMETER1: 	TCP socket pointer.  This should be a TCP socket which
+					was opened using tcp_listen, tcp_extlisten, tcp_open
+               or tcp_extopen.
+
+RETURN VALUE:  0: socket is not waiting.  In this case, then next
+                  tests that the application should perform are:
+                  a.  sock_established(): if this returns TRUE, then a
+                    connection is currently established.  The application
+                    can now communicate using sock_read, sock_write etc.,
+                    then finally call sock_close().
+                  b.  sock_alive(): if this returns FALSE, then the
+                    socket was aborted by the peer.  The application may
+                    re-open or re-listen the socket.
+                  c.  Otherwise, the socket was established, but is now
+                    closing because the peer closed its side of the
+                    connection.  The application MAY be able to read
+                    and/or write to the socket (depending on protocol)
+                    however the amount of readable data will be
+                    limited.  The application should call sock_close()
+                    or sock_abort().
+                  In cases (a) and (c), a socket should not be re-opened
+                  until tcp_tick() on that socket returns 0.
+                  Note that '0' is returned for invalid sockets (e.g.
+                  UDP sockets or sockets which are closed).
+               non-zero: the socket is waiting for a connection.  The
+                  application should keep calling tcp_tick() until
+                  this function returns 0.
+
+SEE ALSO:      tcp_open, tcp_listen, sock_close, sock_abort, tcp_tick,
+					sock_established, sock_alive
+
+END DESCRIPTION **********************************************************/
+_system int _rs_sock_waiting(_rs_tcp_Socket * s);
+/*** EndHeader */
+
+_tcp_nodebug
+_system int _rs_sock_waiting(_rs_tcp_Socket * s)
+{
+	_SYS_CALL_VARS
+	auto int retval;
+
+	LOCK_SOCK(s);
+   retval = 0;
+   s->ip_type == TCP_PROTO
+     && (retval = s->state & (tcp_StateLISTEN|tcp_StateARP|tcp_StateSYNSENT|tcp_StateSYNREC));
+   UNLOCK_SOCK(s);
+   return retval;
+}
+
+/*** BeginHeader _rs_sock_writable */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_writable                               <NET.LIB>
+
+SYNTAX: int sock_writable(void * s);
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	This function determines whether a socket may have data
+               written to it using (e.g.) sock_fastwrite() or
+               udp_sendto().
+
+               The parameter may be either a TCP socket or a UDP socket.
+
+               The return value is more than a simple boolean: it also
+               indicates the amount of data the socket is guaranteed
+               to accept with a sock_fastwrite() call that immediately
+               follows.
+
+               Note: a TCP socket may be writable before it is established.
+               In this case, any written data is transferred as soon as
+               the connection is established.
+
+PARAMETER1: 	TCP or UDP socket pointer.
+
+RETURN VALUE:  If parameter is a TCP socket (tcp_Socket *):
+					  0: socket is not writable.  It was closed by the
+                    application or it may have been aborted by the peer.
+                 non-zero: the socket is writable.  The amount of data
+                    that the socket would accept is this value minus 1;
+                    which may turn out to be zero if the socket's buffer
+                    is temporarily full.  On a freshly-established socket,
+                    and at any other time when all data has been
+                    acknowledged by the peer, the return value (minus one)
+                    indicates the maximum socket transmit buffer size.
+               If parameter is a UDP socket (udp_Socket *):
+                 0: socket is not open.
+                 non-zero: socket is open.  This value minus 1 equals the
+                 maximum size datagram payload that would be sent without
+                 fragmentation at the IP level.
+                 Note: the maximum payload depends on the interface which
+                 is selected.  Since this is not known a-priori, the
+                 interface with the largest MTU is arbitrarily selected.
+
+SEE ALSO:      tcp_open, tcp_listen, sock_close, sock_abort, tcp_tick,
+					sock_established, sock_alive, sock_waiting, sock_readable,
+               udp_open, udp_sendto
+
+END DESCRIPTION **********************************************************/
+_system int _rs_sock_writable(void * s);
+/*** EndHeader */
+
+_tcp_nodebug
+_system int _rs_sock_writable(void * s)
+{
+	_SYS_CALL_VARS
+	auto int retval;
+
+	LOCK_SOCK(s);
+   switch (((_rs_tcp_Socket *)s)->ip_type) {
+#ifndef DISABLE_TCP
+   case TCP_PROTO:
+   	if (((_rs_tcp_Socket *)s)->state & (tcp_StateCLOSED | tcp_StateLASTACK | tcp_StateFINWT1 |
+                   tcp_StateFINWT2 | tcp_StateCLOSING | tcp_StateTIMEWT))
+   		retval = 0;
+   	else
+   		retval = 1 + (((_rs_tcp_Socket *)s)->wr.maxlen - ((_rs_tcp_Socket *)s)->wr.len);
+      break;
+#endif
+#ifndef DISABLE_UDP
+   case UDP_PROTO:
+   	retval = (MAX_MTU+1) - (sizeof(in_Header) + sizeof(udp_Header));
+		break;
+#endif
+   default:
+   	retval = 0;
+   }
+   UNLOCK_SOCK(s);
+   return retval;
+}
+
+/*** BeginHeader _rs_sock_readable */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_readable                               <NET.LIB>
+
+SYNTAX: int sock_readable(void * s);
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	This function determines whether a socket may have data
+               read from it using (e.g.) sock_fastread() or
+               udp_recvfrom().
+
+               The parameter may be either a TCP socket or a UDP socket.
+
+               The return value is more than a simple boolean: it also
+               indicates the amount of data the socket is guaranteed
+               to deliver with a sock_fastread() call that immediately
+               follows (provided that the buffer length is at least that
+               long).
+
+               Note: a TCP socket may be readable after it is closed,
+               since there may be pending data in the buffer that has not
+               been read by the application, and it is also possible for
+               the peer to keep sending data
+
+PARAMETER1: 	TCP or UDP socket pointer.
+
+RETURN VALUE:  If parameter is a TCP socket (tcp_Socket *):
+					  0: socket is not readable.  It was aborted by the
+                    application or the peer has closed the socket and all
+                    pending data has been read by the application.  This
+                    can be used as a definitive "EOF" indication for a
+                    receive stream.
+                 non-zero: the socket is readable.  The amount of data that
+                    the socket would deliver is this value minus 1; which
+                    may turn out to be zero if the socket's buffer is
+                    temporarily empty, or the socket is not yet connected
+                    to a peer.
+               If parameter is a UDP socket (udp_Socket *):
+                 0: socket is not open.
+                 non-zero: socket is open.  This value minus 1 equals the
+                 size of the next datagram in the receive buffer, that
+                 would be returned by udp_recvfrom() etc.  Note that
+                 ICMP error messages are also considered if the socket
+                 is set up to receive ICMP messages.
+
+SEE ALSO:      tcp_open, tcp_listen, sock_close, sock_abort, tcp_tick,
+					sock_established, sock_alive, sock_waiting, sock_writable,
+               udp_open, udp_recvfrom
+
+END DESCRIPTION **********************************************************/
+_system int _rs_sock_readable(void * s);
+/*** EndHeader */
+
+_tcp_nodebug
+_system int _rs_sock_readable(void * s)
+{
+	_SYS_CALL_VARS
+#ifndef DISABLE_UDP
+	auto _udp_datagram_info udi;
+#endif
+	auto int retval;
+
+	LOCK_SOCK(s);
+   switch (((_rs_tcp_Socket *)s)->ip_type) {
+#ifndef DISABLE_TCP
+   case TCP_PROTO:
+   	if (((_rs_tcp_Socket *)s)->rd.len)
+	      retval = ((_rs_tcp_Socket *)s)->rd.len + 1;
+	   else if (((_rs_tcp_Socket *)s)->state &
+               (tcp_StateCLOSWT | tcp_StateLASTACK | tcp_StateCLOSING | tcp_StateTIMEWT))
+	      retval = 0; // Already read the FIN flag
+	   else
+	      retval = 1; // Readable, but currently no data
+      break;
+#endif
+#ifndef DISABLE_UDP
+   case UDP_PROTO:
+   	if (_rs_udp_peek((_rs_udp_Socket *)s, &udi))
+      	retval = udi.len + 1;
+      else
+      	retval = 1;
+		break;
+#endif
+   default:
+   	retval = 0;
+   }
+   UNLOCK_SOCK(s);
+   return retval;
+}
+
+/*
+ * ip user level timer stuff
+ *   void ip_timer_init( void *s, int delayseconds )
+ *   int  ip_timer_expired( void *s )
+ *	- 0 if not expired
+ */
+
+/*** BeginHeader _rs_ip_timer_init */
+/* START FUNCTION DESCRIPTION ********************************************
+ip_timer_init                          <NET.LIB>
+
+SYNTAX: void ip_timer_init( void* s, word seconds );
+
+KEYWORDS:		tcpip, socket, timer
+
+DESCRIPTION: 	set a timer inside the socket structure
+
+PARAMETER1: 	socket
+PARAMETER2: 	number of seconds for the timeout, if the seconds is zero
+               never timeout.
+
+RETURN VALUE:  none
+
+SEE ALSO:      ip_timer_expired
+
+END DESCRIPTION **********************************************************/
+
+_system void _rs_ip_timer_init( void *s , int delayseconds );
+/*** EndHeader */
+
+_net_nodebug
+_system void _rs_ip_timer_init( void *s , int delayseconds )
+{
+	_SYS_CALL_VARS
+   if(delayseconds)
+      ((_rs_sock_type*)s)->tcp.usertimer = set_timeout( delayseconds );
+   else
+      ((_rs_sock_type*)s)->tcp.usertimer = 0;
+}
+
+/*** BeginHeader _rs_ip_timer_expired */
+/* START FUNCTION DESCRIPTION ********************************************
+ip_timer_expired                       <NET.LIB>
+
+SYNTAX: word ip_timer_expired( void* s );
+
+KEYWORDS:		tcpip, socket, timer
+
+DESCRIPTION: 	check the timer inside the socket structure which was set
+               by ip_timer_init
+
+PARAMETER1: 	socket
+
+RETURN VALUE:  0 if not expired
+               1 if expired
+
+SEE ALSO:      ip_timer_init
+
+END DESCRIPTION **********************************************************/
+
+_system int _rs_ip_timer_expired( _rs_sock_type *s );
+/*** EndHeader */
+
+_net_nodebug
+_system int _rs_ip_timer_expired( _rs_sock_type *s )
+{
+	_SYS_CALL_VARS
+   if(! s->tcp.usertimer)   /* cannot expire */
+      return( 0 );
+   return( chk_timeout( s->tcp.usertimer));
+}
+
+/*** BeginHeader tcp_checkfor */
+int tcp_checkfor( _rs_sock_type *t );
+/*** EndHeader */
+
+/*
+ * look for bugs
+ */
+_net_nodebug int tcp_checkfor( _rs_sock_type *t )
+{
+#ifndef DISABLE_TCP
+   auto _rs_tcp_Socket *p;
+
+   for( p = tcp_allsocs ; p ; p = p->next )
+      if( p == (_rs_tcp_Socket *)t ) return( 1 );
+#endif
+   return( 0 );
+}
+
+/*** BeginHeader tcp_shutdown */
+void tcp_shutdown( void );
+/*** EndHeader */
+
+/*
+ * Shut down network
+ */
+_net_nodebug void tcp_shutdown( void )
+{
+#ifndef DISABLE_TCP
+	auto tcp_Pending *p;
+   while(tcp_allsocs)
+      _rs_tcp_abort( tcp_allsocs );
+	for( p = tcp_allpending;p;p = p->next)
+		tcp_abortpending(p);
+#endif
+}
+
+
+/*** BeginHeader tcp_set_ports */
+void tcp_set_ports(word tcp_base, word udp_base);
+/*** EndHeader */
+
+// initialize the port number counters
+_net_nodebug void tcp_set_ports(word tcp_base, word udp_base) {
+#ifndef DISABLE_TCP
+   if(tcp_base) next_tcp_port=(int) tcp_base;
+#endif
+#ifndef DISABLE_UDP
+   if(udp_base) next_udp_port=(int) udp_base;
+#endif
+}
+
+/*** BeginHeader tcp_get_ports */
+void tcp_get_ports(word *tcp_base, word *udp_base);
+/*** EndHeader */
+
+// - return current port number counters
+_net_nodebug void tcp_get_ports(word *tcp_base, word *udp_base) {
+#ifndef DISABLE_TCP
+   if(tcp_base) *tcp_base=(word) next_tcp_port;
+#endif
+#ifndef DISABLE_UDP
+   if(udp_base) *udp_base=(word) next_udp_port;
+#endif
+}
+
+/*** BeginHeader _rs_findfreeport */
+_system word _rs_findfreeport( word oldport, word proto_tcp );
+/*** EndHeader */
+
+/*
+ * findfreeport - return unused local port
+ *              - oldport = 0:normal port, 1:special port (513-1023)
+ *              - we need not be this picky, but it doesn't hurt
+ * 		- added TCP/UDP flag so we can pick unique ports and
+ *             avoid reconnecting with a socket in TIME_WAIT (the
+ *             original "oldport+510" scan needs a rewrite someday)
+ */
+_net_nodebug
+_system word _rs_findfreeport( word oldport, word proto_tcp )
+{
+	_SYS_CALL_VARS
+   auto word temp;
+   auto _rs_tcp_Socket *s;
+
+   if(( oldport > 1 ) && (oldport < 0xffff))
+      return( oldport );
+
+   LOCK_GLOBAL(TCPGlobalLock);
+
+   if( oldport == 0) {
+      if(proto_tcp) {
+#ifndef DISABLE_TCP
+         if((oldport=next_tcp_port++)>=32767-510) next_tcp_port=1024;
+#endif
+			;
+#ifndef DISABLE_UDP
+      } else {
+         if((oldport=next_udp_port++)>=32767-510) next_udp_port=1024;
+#endif
+      }
+   } else oldport = 513;
+
+   for( temp = oldport ; temp < oldport + 510 ; ++temp ) {
+      if(!proto_tcp) {
+#ifndef DISABLE_UDP
+         if(( s = (_rs_tcp_Socket*)udp_allsocs) != NULL ) {
+            while( s->next && (s->myport != temp))
+               s = (_rs_tcp_Socket*)s->next;
+            if( s->myport == temp ) continue;
+         }
+#endif
+			;
+#ifndef DISABLE_TCP
+      } else {
+         if( (s = tcp_allsocs ) != NULL ) {
+            while( s->next && (s->myport != temp ))
+               s = s->next;
+            if( s->myport == temp ) continue;
+         }
+#endif
+      }
+      break;
+   }
+   UNLOCK_GLOBAL(TCPGlobalLock);
+   return( temp );
+}
+
+/*** BeginHeader _rs_sock_abort */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sock_abort                             <NET.LIB>
+
+SYNTAX: void sock_abort(void* s)
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	Close a connection by sending a RST (reset).  Under UDP
+               there is no difference between sock_close and sock_abort.
+
+PARAMETER1: 	socket to abort connection
+
+RETURN VALUE:  none
+
+SEE ALSO:      sock_close, sock_open
+
+END DESCRIPTION **********************************************************/
+
+_system void _rs_sock_abort( void *s );
+/*** EndHeader */
+
+_net_nodebug
+_system void _rs_sock_abort( void *s )
+{
+	_SYS_CALL_VARS
+#ifndef DISABLE_TCP
+   if( ((_rs_sock_type*)s)->tcp.ip_type == TCP_PROTO )
+      _rs_tcp_abort( (_rs_tcp_Socket *)s );
+#endif
+#ifndef DISABLE_UDP
+   if ( ((_rs_sock_type*)s)->tcp.ip_type == UDP_PROTO )
+      _rs_udp_close( (_rs_udp_Socket *)s );
+#endif
+}
+
+
+/*** BeginHeader _rs_abort_socks */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_abort_socks                             <NET.LIB>
+
+SYNTAX: int _abort_socks(word reason, byte iface)
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	Abort all open TCP and UDP sockets.  This routine may be
+               called if the network becomes unavailable, for example
+               because a DHCP address lease expired or because an IP
+               address conflict was encountered.
+
+               This function is generally intended for internal library
+               use, but may be invoked by applications in special
+               circumstances.
+
+PARAMETER1: 	Reason code.  A suitable NETERR_* constant as defined in
+               NETERRNO.LIB.  This code is set as the error code for
+               each socket which was affected.
+PARAMETER2:		Specific interface on which active connections are to
+               be aborted, or pass IF_ANY to abort connections on all
+               active interfaces.
+
+RETURN VALUE:  0
+
+SEE ALSO:      sock_abort, sock_error
+
+END DESCRIPTION **********************************************************/
+
+_system int _rs_abort_socks(word reason, byte iface);
+/*** EndHeader */
+
+
+_net_nodebug
+_system int _rs_abort_socks(word reason, byte iface)
+{
+	_SYS_CALL_VARS
+	// Abort or close active and passive sockets.
+	// This is called if the IP address is changed or relinquished, in
+	// order to terminate any active connections (if changed) or all
+	// active and passive sockets (if relinquished).  "reason" is an
+	// error code which is set into the socket's error message buffer.
+	// If, on entry, my_ip_addr is zero then it is assumed that the
+	// IP address was relinquished.  Otherwise, it is assumed to have
+	// changed.
+   auto _rs_udp_Socket *s, **sp;
+   auto _rs_tcp_Socket *t;
+	auto tcp_Pending *p;
+
+
+   LOCK_GLOBAL(TCPGlobalLock);
+
+#ifndef DISABLE_UDP
+   // First, do UDP sockets
+   sp = &udp_allsocs;
+   while (s = *sp) {
+      if (s->hisaddr && s->hisaddr != ~0UL &&
+          (iface == IF_ANY || _rs_ip_iface(s->hisaddr, 0) == iface)) {
+   		LOCK_SOCK(s);
+         *sp = s->next;
+         s->ip_type = 0;	// Mark this sock as closed (for sock_alive()).
+         _rs_sock_msg(s, reason);
+   		UNLOCK_SOCK(s);
+      }
+      else
+        sp = &s->next;
+   }
+#endif
+
+#ifndef DISABLE_TCP
+   // Then do TCP sockets and pending sockets
+   do {
+   	for (t = tcp_allsocs; t; t = t->next)
+      	if (t->hisaddr && t->hisaddr != ~0UL &&
+          	 (iface == IF_ANY || _rs_ip_iface(t->hisaddr, 0) == iface)) {
+	   		_rs_tcp_abort(t);
+   			_rs_sock_msg(t, reason);
+      		break;
+      	}
+	} while (t);
+
+   do {
+   	for (p = tcp_allpending; p; p = p->next)
+   		if (iface == IF_ANY || _rs_ip_iface(p->hisaddr, 0) == iface) {
+				tcp_abortpending(p);
+				break;
+			}
+   } while (p);
+#endif
+   UNLOCK_GLOBAL(TCPGlobalLock);
+   return 0;
+}
+
+/*** BeginHeader _rs_sock_dataready */
+_system int _rs_sock_dataready( void *s );
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sock_dataready                         <NET.LIB>
+
+SYNTAX: int sock_dataready( void *s );
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	return the number of bytes waiting to be read.  If the
+					socket is in ASCII mode, it returns 0 if the newline
+					character has not been read yet.  This function should
+					no longer be used.  Use sock_bytesready() instead,
+					which extends the usefulness of ASCII-mode sockets.
+
+					For UDP sockets, it returns the number of bytes in the
+					next datagram.
+
+PARAMETER1: 	socket
+
+RETURN VALUE:  0		no bytes waiting to be read (or newline not yet
+							read if the socket is in ASCII mode)
+					> 0	number of bytes waiting to be read
+
+SEE ALSO:      sock_bytesready
+
+END DESCRIPTION **********************************************************/
+
+_net_nodebug
+_system int _rs_sock_dataready( void *s )
+{
+	_SYS_CALL_VARS
+   auto int len;
+   auto char c;
+   auto _rs_udp_Socket* udp_sock;
+   auto _rs_tcp_Socket* tcp_sock;
+   auto _udp_datagram_info udp_datagram_info;
+
+   LOCK_SOCK(s);
+   switch (((_rs_sock_type *)s)->tcp.ip_type) {
+#ifndef DISABLE_UDP
+	case UDP_PROTO:
+		udp_sock = (_rs_udp_Socket *)s;
+	   if (!(len = udp_sock->rd.len)) {
+      	UNLOCK_SOCK(s);
+	   	return (0);
+	   }
+	   _tbuf_xread(paddr((char *)&udp_datagram_info), &udp_sock->rd, 0,
+	                   sizeof(_udp_datagram_info));
+     	UNLOCK_SOCK(s);
+	   return (udp_datagram_info.len);
+#endif
+#ifndef DISABLE_TCP
+	case TCP_PROTO:
+		tcp_sock = (_rs_tcp_Socket *)s;
+
+	   if (!(len = tcp_sock->rd.len)) {
+      	UNLOCK_SOCK(s);
+	   	return (0);
+	   }
+
+	   if (tcp_sock->sock_mode & TCP_MODE_ASCII) {
+	      if (tcp_sock->sock_mode & TCP_SAWCR) {
+   	      tcp_sock->sock_mode &= ~TCP_SAWCR;
+      	   _tbuf_xread(paddr(&c), &tcp_sock->rd, 0, 1);
+         	if (c == '\n' || c == '\0') {
+         		_tbuf_delete(&tcp_sock->rd, 1);
+         		tcp_sock->rd.len = --len;
+            	if (!len) {
+            		UNLOCK_SOCK(s);
+            		return (0);
+           		}
+         	}
+      	}
+
+      	/* check for terminating \r */
+      	if (_tbuf_findchar(&tcp_sock->rd, '\r', len, 0) != -1) {
+      		UNLOCK_SOCK(s);
+         	return (len);
+      	}
+      	if (_tbuf_findchar(&tcp_sock->rd, '\n', len, 0) != -1) {
+      		UNLOCK_SOCK(s);
+         	return (len);
+      	}
+
+			if (len == tcp_sock->rd.maxlen ||
+			    tcp_sock->state & (tcp_StateCLOSWT | tcp_StateCLOSING |
+                                tcp_StateLASTACK | tcp_StateTIMEWT |
+                                tcp_StateCLOSED)) {
+				UNLOCK_SOCK(s);
+				return (len);
+			}
+
+      	UNLOCK_SOCK(s);
+      	return (0);
+   	} else {
+      	UNLOCK_SOCK(s);
+      	return (len);
+      }
+#endif
+	default:
+		UNLOCK_SOCK(s);
+		return (0);
+	}
+}
+
+/*** BeginHeader _rs_sock_bytesready */
+_system int _rs_sock_bytesready(void *s);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sock_bytesready                        <NET.LIB>
+
+SYNTAX: int sock_bytesready(void *s);
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION:	For TCP sockets:
+
+					If the socket is in binary mode, sock_bytesready returns the
+					number of bytes waiting to be read.   If there are no bytes
+					waiting, it returns -1.
+
+					In ASCII mode, sock_bytesready returns -1 if there are no bytes
+					waiting to be read or the line that is waiting is incomplete
+					(no line terminating character has been read.)  The number of
+					bytes waiting to be read will be returned given one of the
+					following conditions:
+ 						* the buffer is full
+						* the socket has been closed (no line terminating character
+																 can be sent,)
+						* a complete line is waiting
+
+					In ASCII mode, a blank line will be read as a complete line
+					with length 0, which will be the value returned.
+
+					For UDP sockets:
+
+					Returns the number of bytes in the next datagram to be read.
+					If it is a datagram with no data (an empty datagram), then it
+					will return 0.  If there are no datagrams waiting, then it
+					returns -1.
+
+PARAMETER1: 	socket
+
+RETURN VALUE:	-1		no bytes waiting to be read
+					0		in ASCII mode, a blank line is waiting to be read,
+					      or, for UDP, an empty datagram is waiting to be read
+					> 0	number of bytes waiting to be read
+
+SEE ALSO:      sock_wait_established, sock_established, sock_state
+
+END DESCRIPTION **********************************************************/
+
+_net_nodebug
+_system int _rs_sock_bytesready(void *s)
+{
+	_SYS_CALL_VARS
+   auto int len;
+	auto int linelen;
+   auto char c;
+   auto _rs_udp_Socket* udp_sock;
+   auto _rs_tcp_Socket* tcp_sock;
+   auto _udp_datagram_info udp_datagram_info;
+
+   LOCK_SOCK(s);
+   switch (((_rs_sock_type *)s)->tcp.ip_type) {
+#ifndef DISABLE_UDP
+	case UDP_PROTO:
+		udp_sock = (_rs_udp_Socket *)s;
+	   if (!(len = udp_sock->rd.len)) {
+      	UNLOCK_SOCK(s);
+	   	return (-1);
+	   }
+	   _tbuf_xread(paddr((char *)&udp_datagram_info), &udp_sock->rd, 0,
+	                   sizeof(_udp_datagram_info));
+     	UNLOCK_SOCK(s);
+	   return (udp_datagram_info.len);
+#endif
+#ifndef DISABLE_TCP
+	case TCP_PROTO:
+		tcp_sock = (_rs_tcp_Socket *)s;
+
+		if (!(len = tcp_sock->rd.len)) {
+#ifndef TCP_NO_CLOSE_ON_LAST_READ
+			// If there is no data to read, and we are in CLOSWT state (i.e. the
+			// peer will not send any more data), then automatically close our
+			// side of the connection.  This is the "old" behavior.
+			if (tcp_sock->state & tcp_StateCLOSWT)
+				_rs_tcp_close(tcp_sock);
+#endif
+			UNLOCK_SOCK(s);
+			return (-1);
+		}
+
+		if (tcp_sock->sock_mode & TCP_MODE_ASCII) {
+			if (tcp_sock->sock_mode & TCP_SAWCR) {
+				tcp_sock->sock_mode &= ~TCP_SAWCR;
+				_tbuf_xread(paddr(&c), &tcp_sock->rd, 0, 1);
+				if (c == '\n' || c == '\0') {
+					_tbuf_delete(&tcp_sock->rd, 1);
+					tcp_sock->rd.len = --len;
+					if (!len) {
+						UNLOCK_SOCK(s);
+						return (-1);
+					}
+				}
+			}
+
+			/* check for terminating \r */
+			if ((linelen = _tbuf_findchar(&tcp_sock->rd, '\r', len, 0)) != -1) {
+				UNLOCK_SOCK(s);
+				return (linelen);
+			}
+			if ((linelen = _tbuf_findchar(&tcp_sock->rd, '\n', len, 0)) != -1) {
+				UNLOCK_SOCK(s);
+				return (linelen);
+			}
+
+			/* check for lines that cannot be completed */
+			if (len == tcp_sock->rd.maxlen ||
+			    tcp_sock->state & (tcp_StateCLOSWT | tcp_StateCLOSING |
+                                tcp_StateLASTACK | tcp_StateTIMEWT |
+                                tcp_StateCLOSED)) {
+				UNLOCK_SOCK(s);
+				return (len);
+			}
+
+			UNLOCK_SOCK(s);
+			return (-1);
+		} else {
+			UNLOCK_SOCK(s);
+			return (len);
+		}
+#endif
+	default:
+		UNLOCK_SOCK(s);
+		return (-1);
+	}
+}
+
+/*** BeginHeader _rs_sock_close */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sock_close                             <NET.LIB>
+
+SYNTAX: void sock_close(void* s)
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	close an open socket.  the socket cannot be reused until
+               it is completely closed.  You can tell a tcp socket is
+               closed by tcp_tick(s)==NULL or by running sock_wait_closed(s)
+
+PARAMETER1: 	socket
+
+RETURN VALUE:  none
+
+SEE ALSO:      sock_open, sock_abort, sock_tick, sock_wait_closed
+
+END DESCRIPTION **********************************************************/
+
+_system void _rs_sock_close( void *s );
+/*** EndHeader */
+
+_net_nodebug
+_system void _rs_sock_close( void *s )
+{
+	_SYS_CALL_VARS
+   switch(((_rs_sock_type*)s)->udp.ip_type) {
+#ifndef DISABLE_UDP
+   case UDP_PROTO :
+      _rs_udp_close( (_rs_udp_Socket *)s );
+      break;
+#endif
+#ifndef DISABLE_TCP
+   case TCP_PROTO :
+      _rs_tcp_close( (_rs_tcp_Socket *)s );
+      _rs_tcp_tick( s );
+      break;
+#endif
+   }
+}
+
+/*** BeginHeader _rs_sock_set_ttl */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_set_ttl                             <NET.LIB>
+
+SYNTAX: void sock_set_ttl(void* s, byte ttl)
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	Set the IP Time To Live field in outgoing packets for this
+               socket.  The given TTL will be in effect until the socket
+               is closed.  When a socket is opened (or re-opened), the
+               TTL will be set to the default (TCP_TTL or UDP_TTL as
+               appropriate).  If not overridden, the defaults are 64
+               in both cases.
+
+PARAMETER1: 	Pointer to open TCP or UDP socket
+PARAMETER2: 	Time To Live.  This is a value between 1 and 255.  A value
+               of zero is also accepted, but will have undesirable
+               consequences.
+
+SEE ALSO:      tcp_extopen, sock_set_tos
+
+END DESCRIPTION **********************************************************/
+
+_system void _rs_sock_set_ttl(void* s, byte ttl);
+/*** EndHeader */
+
+_net_nodebug
+_system void _rs_sock_set_ttl(void* s, byte ttl)
+{
+	_SYS_CALL_VARS
+   ((_rs_sock_type*)s)->tcp.ttl = ttl;
+}
+
+/*** BeginHeader _rs_sock_set_tos */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_set_tos                             <NET.LIB>
+
+SYNTAX: void sock_set_tos(void* s, byte tos)
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	Set the IP Type Of Service field in outgoing packets for
+               this socket.  The given TOS will be in effect until the
+               socket is closed.  When a socket is opened (or re-opened),
+               the TOS will be set to the default (TCP_TOS or UDP_TOS as
+               appropriate).  If not overridden, the defaults are zero
+               (IPTOS_DEFAULT) in both cases.
+
+PARAMETER1: 	Pointer to open TCP or UDP socket
+PARAMETER2: 	Type Of Service.  This should be one of the following
+               values:
+                 IPTOS_DEFAULT    Default service
+                 IPTOS_CHEAP      Minimize monetary cost
+                 IPTOS_RELIABLE   Maximize reliability
+                 IPTOS_CAPACIOUS  Maximize throughput
+                 IPTOS_FAST       Minimize delay
+                 IPTOS_SECURE     Maximize security.
+               Other value may be used (since TOS is just a number between
+               0 and 255), but this should only be done for experimental
+               purposes.
+
+SEE ALSO:      tcp_extopen, sock_set_ttl
+
+END DESCRIPTION **********************************************************/
+
+_system void _rs_sock_set_tos(void* s, byte tos);
+/*** EndHeader */
+
+_net_nodebug
+_system void _rs_sock_set_tos(void* s, byte tos)
+{
+	_SYS_CALL_VARS
+   ((_rs_sock_type*)s)->tcp.tos = tos;
+}
+
+/*** BeginHeader _rs_sock_iface */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_iface                             <NET.LIB>
+
+SYNTAX: byte sock_iface(void* s)
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	Retrieve the interface number of an open socket.  May
+               return IF_ANY for unbound sockets.
+
+PARAMETER1: 	Pointer to open TCP or UDP socket.
+
+SEE ALSO:      tcp_extopen, udp_extopen, tcp_extlisten, udp_extlisten
+
+END DESCRIPTION **********************************************************/
+
+byte _rs_sock_iface(void* s);
+/*** EndHeader */
+
+_net_nodebug
+byte _rs_sock_iface(void* s)
+{
+	auto word iface;
+
+	if (((_rs_sock_type*)s)->tcp.sath)
+		_rs_arpcache_iface(((_rs_sock_type*)s)->tcp.sath, &iface);
+	else
+		iface = ((_rs_sock_type*)s)->tcp.iface;
+   return iface;
+}
+
+/*** BeginHeader _rs_sock_resolved */
+/* START FUNCTION DESCRIPTION ********************************************
+sock_resolved                             <NET.LIB>
+
+SYNTAX: int sock_resolved(void * s)
+
+KEYWORDS:		tcpip, socket
+
+DESCRIPTION: 	Check whether the socket has a valid destination hardware
+               address.  This is typically used for UDP sockets, but may
+               also be used for TCP sockets.  If this function returns
+               zero (FALSE), then any datagrams you send using udp_send()
+               or udp_sendto() may not be transmitted because the
+               destination hardware address is not known.
+
+               If the current destination IP address of the socket is
+               zero (i.e. the socket is passively opened), this function
+               returns zero, since datagrams cannot be transmitted from
+               a passively opened socket.
+
+               If udp_bypass_arp() is in effect, the return value from
+               this function is unaffected, however datagrams will still
+               be sent to the specified hardware address (since the normal
+               resolve process is bypassed).
+
+               Note that a hardware address may become invalid after being
+               valid, since the underlying ARP table may need to purge
+               the entry.  This would be rare, but if any UDP application
+               needs to ensure that all packets are actually transmitted,
+               which is a questionable goal since UDP is unreliable,
+               then this function should be consulted before each send.
+               If this function returns 0, then the UDP socket should
+               be re-opened.
+
+               The hardware address may also be invalidated if udp_sendto()
+               is called with a different destination IP address, that has
+               not been determined based on an incoming datagram.
+
+               This function is not required for TCP sockets, since the
+               TCP library handles these details internally.
+
+PARAMETER1: 	Pointer to open TCP or UDP socket
+
+RETURN VALUE:	0: destination hardware address not valid
+               non-zero: destination hardware address resolved OK.
+
+SEE ALSO:      udp_extopen, arpresolve_start, arpresolve_check,
+               udp_waitopen, udp_sendto, udp_bypass_arp
+
+END DESCRIPTION **********************************************************/
+
+_system int _rs_sock_resolved(void * s);
+/*** EndHeader */
+
+_net_nodebug
+_system int _rs_sock_resolved(void * s)
+{
+	_SYS_CALL_VARS
+	ATHandle ath;
+	_rs_udp_Socket * u;
+
+	u = (_rs_udp_Socket *)s;	// Also works for TCP (all fields common).
+	if (!u->hisaddr)
+		return 0;
+   return _rs_arpresolve_check(u->sath, u->hisaddr) > 0;
+}
+
+/*
+ * _ip_delay0 called by macro sock_wait_established()
+ * _ip_delay1 called by macro sock_wait_input()
+ * _ip_delay2 called by macro sock_wait_closed();
+ *
+ */
+
+/*** BeginHeader _rs_ip_delay0 */
+_system int _rs_ip_delay0( _rs_sock_type *s, int timeoutseconds, sockfunct_t fn,
+	int *statusptr);
+/*** EndHeader */
+
+_net_nodebug
+_system int _rs_ip_delay0( _rs_sock_type *s, int timeoutseconds,
+	sockfunct_t fn, int *statusptr )
+{
+	_SYS_CALL_VARS
+   auto int status;
+
+	_RK_CHK_POINTER(statusptr)
+   LOCK_SOCK(s);
+   _rs_ip_timer_init( s , timeoutseconds );
+   do {
+#ifndef DISABLE_TCP
+      if( s->tcp.ip_type == TCP_PROTO ) {
+         if( _rs_tcp_established( &(s->tcp) )) {
+            status = 0;
+            break;
+         }
+      }
+#endif
+      if( !_rs_tcp_tick( s )) {
+      	_rs_sock_msg(s, NETERR_HOST_REFUSED);
+         status = -1; /* get an early reset */
+         break;
+      }
+      if( _rs_ip_timer_expired( s )) {
+      	_rs_sock_msg(s, NETERR_OPEN_TIMEOUT);
+         _rs_sock_close( s );
+         status = -1;
+         break;
+      }
+      if( (fn != NULL) && ((status = fn(s)) != 0) ) break;
+      if( s->tcp.usr_yield ) (*s->tcp.usr_yield)();
+      if( s->tcp.ip_type == UDP_PROTO ) {
+         status = 0;
+         break;
+      }
+   } while( 1 );
+   if(statusptr) *statusptr = status;
+
+   UNLOCK_SOCK(s);
+   return( status );
+}
+
+/*** BeginHeader _rs_ip_delay1 */
+_system int _rs_ip_delay1( _rs_sock_type *s, int timeoutseconds, sockfunct_t fn,
+	int *statusptr);
+/*** EndHeader */
+
+_net_nodebug
+_system int _rs_ip_delay1( _rs_sock_type *s, int timeoutseconds,
+	sockfunct_t fn, int *statusptr)
+{
+	_SYS_CALL_VARS
+   auto int status;
+
+   LOCK_SOCK(s);
+
+	_RK_CHK_POINTER(statusptr)
+   _rs_ip_timer_init( s , timeoutseconds );
+
+   do {
+      if( _rs_sock_bytesready( s ) != -1 ) {
+         status = 0;
+         break;
+      }
+      //kbhit(); /* permit ^c */
+
+      if( !_rs_tcp_tick( s )) {
+         status = 1;
+         break;
+      }
+      if( _rs_ip_timer_expired( s )) {
+      	_rs_sock_msg(s, NETERR_CONN_TIMEOUT);
+         _rs_sock_close( s );
+         status = -1;
+         break;
+      }
+      if(fn) {
+         if((status = fn(s)) != 0)
+            break;
+      }
+      if( s->tcp.usr_yield ) (*s->tcp.usr_yield)();
+   } while( 1 );
+   if(statusptr) *statusptr = status;
+   UNLOCK_SOCK(s);
+   return( status );
+}
+
+/*** BeginHeader _rs_ip_delay2 */
+_system int _rs_ip_delay2( _rs_sock_type *s, int timeoutseconds, sockfunct_t fn,
+	int *statusptr);
+/*** EndHeader */
+
+_net_nodebug
+_system int _rs_ip_delay2( _rs_sock_type *s, int timeoutseconds,
+	sockfunct_t fn, int *statusptr)
+{
+	_SYS_CALL_VARS
+   auto int status;
+	_RK_CHK_POINTER(statusptr)
+   _rs_ip_timer_init( s , timeoutseconds );
+
+   if(s->tcp.ip_type != TCP_PROTO ) {
+      if( statusptr ) * statusptr = 1;
+      return( 1 );
+   }
+
+   LOCK_SOCK(s);
+
+   do {
+      /* in this situation we KNOW user not planning to read rdbuffer */
+      s->tcp.rd.len = 0;
+      if( !_rs_tcp_tick( s )) {
+         status = 1;
+         break;
+      }
+      if( _rs_ip_timer_expired( s )) {
+      	_rs_sock_msg(s, NETERR_CONN_TIMEOUT);
+         _rs_sock_abort( s );
+         status = -1;
+         break;
+      }
+      if(fn) {
+         if((status = fn(s)) != 0)
+            break;
+      }
+      if( s->tcp.usr_yield ) (*s->tcp.usr_yield)();
+
+   } while( 1 );
+   if(statusptr) *statusptr = status;
+
+   UNLOCK_SOCK(s);
+   return( status );
+}
+
+/*** BeginHeader _rs_rip */
+char *_rs_rip( char *s );
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+rip                       <NET.LIB>
+
+SYNTAX: char *rip( char *s );
+
+KEYWORDS:		tcpip
+
+DESCRIPTION: 	Strips newline (\n) and/or carriage return (\r) from string.
+					Only the first \n and \r characters are replaced with 0s.
+					The resulting string beyond the first 0 character is undefined.
+
+PARAMETER1:    string
+
+RETURN VALUE:  modified string
+
+END DESCRIPTION **********************************************************/
+
+_net_nodebug char *_rs_rip( char *s )
+{
+   auto char *temp;
+
+   if((temp = strchr( s, '\n')) != NULL) *temp = '\0';
+   if((temp = strchr( s, '\r')) != NULL) *temp = '\0';
+   return( s );
+}
+
+/*
+ * sock_sselect - returns one of several constants indicating
+ *                SOCKESTABLISHED - tcp connection has been established
+ *                SOCKDATAREAY    - tcp/udp data ready for reading
+ *                SOCKCLOSED      - socket has been closed
+ */
+
+/*** BeginHeader sock_sselect */
+int sock_sselect( _rs_sock_type *s, int waitstate );
+/*** EndHeader */
+
+_net_nodebug int sock_sselect( _rs_sock_type *s, int waitstate )
+{
+   /* are we connected ? */
+   if( waitstate == SOCKDATAREADY )
+      if( s->tcp.rd.len ) return( SOCKDATAREADY );
+   if( s->tcp.ip_type == 0 ) return( SOCKCLOSED );
+   if( waitstate == SOCKESTABLISHED ) {
+      if( s->tcp.ip_type == UDP_PROTO ) return( SOCKESTABLISHED );
+#ifndef DISABLE_TCP
+      if( s->tcp.state & (tcp_StateESTAB | tcp_StateCLOSWT) )
+         return( SOCKESTABLISHED );
+#endif
+   }
+   return( 0 );
+}
+
+/*** BeginHeader sock_debugdump */
+void sock_debugdump( _rs_sock_type *s );
+/*** EndHeader */
+
+_net_nodebug void sock_debugdump( _rs_sock_type *s )
+{
+   auto _rs_tcp_Socket *t;
+   auto _rs_udp_Socket *u;
+
+   u = (_rs_udp_Socket *)s;
+   t = (_rs_tcp_Socket *)s;
+
+   printf("next	%04x\n\r", u->next);
+   printf("type    %04x\n\r", u->ip_type);
+   sock_perror(s, "errors");
+   printf("timervalue %8lx returns %sexpired\n\r",
+          u->usertimer, chk_timeout(u->usertimer)?"":"NOT ");
+   printf("rdbuffer %u (%s)\n\r", u->rd.len, u->rd.buf );
+#ifndef DISABLE_TCP
+   printf("tcp state %04X\n\r", t->state );
+#endif
+}
+
+
+/*** BeginHeader debugpsocketlen */
+void debugpsocketlen( void );
+/*** EndHeader */
+
+_net_nodebug void debugpsocketlen( void )
+{
+   printf("tcp_Socket : %u bytes \n", sizeof( _rs_tcp_Socket ));
+   printf("udp_Socket : %u bytes \n", sizeof( _rs_udp_Socket ));
+}
+
+
+
+/*** BeginHeader intel, intel16, semup */
+root unsigned long intel( unsigned long );
+root unsigned short intel16( unsigned short );
+root int  sem_up( void * ptr );
+/*** EndHeader */
+
+#asm
+;
+; unsigned long intel(unsigned long)
+; returns the intel byte order dword converted from network byte order
+;
+
+intel::
+	ex		de,hl
+	ld		e,b
+	ld		d,c
+	ld		b,l
+	ld		c,h
+	ret
+
+;
+; unsigned intel16(unsigned)
+; returns the intel byte order word converted from network byte order
+;
+
+intel16::
+	ld		a,l
+	ld		l,h
+	ld		h,a
+	ret
+
+;
+; unsigned sem_up(char* semaphore)
+; atomically bts semaphore.  returns previous value.
+;
+
+sem_up::
+	bit	0,(hl)					; atomic bts (hl) because bit is priv.
+	set	0,(hl)
+	ld		hl,0x0000
+	jr		nz,su_done
+	inc	hl
+su_done:
+	ret
+
+#endasm
+
+/*
+ *		### initialize global initialized variables ###
+ */
+
+/*** BeginHeader dcr_initdcr */
+#if !(_USER)
+void dcr_initdcr();
+	#ifndef _RK_LEAN_N_MEAN
+		#if PLD_ETH_COMPILING == 0
+			#funcchain _GLOBAL_INIT dcr_initdcr
+		#endif
+	#endif
+#endif
+/*** EndHeader */
+
+
+// Note that this table must have at least USING_ETHERNET entries in it.
+// This defines the order in which interface numbers (IF_ETH0,IF_ETH1) are assigned
+// to ethernet drivers.  The USE_ETHERNET macro (which is an application setting)
+// specifies which, if any, ethernet interfaces to use.
+// In the following table, DX stands for a driver (e.g. REALTEK).  DY stands
+// for a different driver.  DX(n) stands for nth instance of driver DX.  It is
+// assumed that DX < DY in the following ordering [DMAETH, REALTEK, ASIX, SMSC,
+// CFPRISM, CUSTOM].
+//
+//    Available Drivers                USE_ETHERNET     IF_ETH0     IF_ETH1
+//    ------------------------------   --------------   ---------   ----------
+//    DX, with only one instance       0x01             DX(0)       N/A
+//                                     0x02  - invalid
+//                                     0x03  - invalid
+//    DX, with 2 instances             0x01             DX(0)       N/A
+//                                     0x02             DX(1)       N/A
+//                                     0x03             DX(0)       DX(1)
+//    DX, with 1 instance, + DY        0x01             DX(0)       N/A
+//                                     0x02             DY(0)       N/A
+//                                     0x03             DX(0)       DY(0)
+//    DX, with 2 instances, + DY       0x01             DX(0)       N/A
+//                                     0x02             DX(1)       N/A
+//                                     0x03             DX(0)       DY(0)
+// Note that in the last case, the 2nd instance of DX is not available,
+// since a maximum of 2 ethernet-type interfaces is currently implemented.
+// *CUSTOM*
+//   For new libraries, make analogous changes.  You will need to decide
+//   where the new driver lies in the ordering, and be consistent.
+#if !USING_DMAETH
+	#define DMAETH_TABLE1
+	#define DMAETH_TABLE2
+#endif
+#if !USING_REALTEK
+	#define REALTEK_TABLE1
+	#define REALTEK_TABLE2
+#endif
+#if !USING_ASIX
+	#define ASIX_TABLE1
+	#define ASIX_TABLE2
+#endif
+#if !USING_SMSC
+	#define SMSC_TABLE1
+	#define SMSC_TABLE2
+#endif
+#if !USING_CFPRISM
+	#define CFPRISM_TABLE1
+	#define CFPRISM_TABLE2
+#endif
+#if !USING_CUSTOM
+	#define CUSTOM_TABLE1
+	#define CUSTOM_TABLE2
+#endif
+#if !USING_PPP_SERIAL
+	#define PPP_SERIAL_TABLE1
+	#define PPP_SERIAL_TABLE2
+	#define PPP_SERIAL_TABLE3
+	#define PPP_SERIAL_TABLE4
+	#define PPP_SERIAL_TABLE5
+	#define PPP_SERIAL_TABLE6
+#endif
+#if !USING_VSPD
+	#define VSPD_TABLE1
+	#define VSPD_TABLE2
+	#define VSPD_TABLE3
+	#define VSPD_TABLE4
+	#define VSPD_TABLE5
+	#define VSPD_TABLE6
+#endif
+
+//for _wifi_table
+#if !USING_WIFI
+   #define PRISM2_TABLE1
+   #define PRISM2_TABLE2
+#endif
+
+static const struct driver_tbl_type {
+	NetControllerDevice * ncd;
+   void * state;
+   word	instance;
+}  _driver_table[] = {
+#if USE_ETH_PRELOADED_DRIVER == 0
+	#if USE_ETHERNET != 2
+		DMAETH_TABLE1
+		REALTEK_TABLE1
+		ASIX_TABLE1
+		SMSC_TABLE1
+		CFPRISM_TABLE1
+		CUSTOM_TABLE1
+		#if USE_ETHERNET == 3
+   		DMAETH_TABLE2
+   		REALTEK_TABLE2
+   		ASIX_TABLE2
+   		SMSC_TABLE2
+   		CFPRISM_TABLE2
+   		CUSTOM_TABLE2
+   	#endif
+	#endif
+	#if USE_ETHERNET == 2
+		// If 2nd instance: use it; otherwise use 1st instance (reverse normal order).
+	   DMAETH_TABLE2
+	   REALTEK_TABLE2
+	   ASIX_TABLE2
+	   SMSC_TABLE2
+	   CFPRISM_TABLE2
+	   CUSTOM_TABLE2
+
+		CUSTOM_TABLE1		// Notice the backwards ordering here...
+		CFPRISM_TABLE1
+		SMSC_TABLE1
+		ASIX_TABLE1
+		REALTEK_TABLE1
+		DMAETH_TABLE1
+	#endif
+#endif
+	// End of ethernet table marker (not used, but required syntactically)
+   { NULL, NULL, 0 }
+};
+
+// Conditional compile logic here is analogous to that used in _driver_table above.
+#if USING_WIFI
+const struct driver_tbl_type _wifi_table[] = {
+  #if USE_WIFI != 2
+	// WIFI Driver entries
+	PRISM2_TABLE1
+
+	#if USE_WIFI == 3
+	PRISM2_TABLE2
+   #endif
+  #else
+	PRISM2_TABLE2
+
+   PRISM2_TABLE1
+  #endif
+	// End of table marker
+   { NULL, NULL, 0 }
+};
+#endif
+
+#if USING_PPP_SERIAL
+const struct driver_tbl_type _ppp_serial_table[] = {
+	// PPP over async serial tables
+	PPP_SERIAL_TABLE1
+	PPP_SERIAL_TABLE2
+	PPP_SERIAL_TABLE3
+	PPP_SERIAL_TABLE4
+	PPP_SERIAL_TABLE5
+	PPP_SERIAL_TABLE6
+
+	// End of table marker
+   { NULL, NULL, 0 }
+};
+#endif
+
+#if USING_VSPD
+const struct driver_tbl_type _vspd_table[] = {
+	// Virtual Serial Packet Driver (stream)
+	VSPD_TABLE1
+	VSPD_TABLE2
+	VSPD_TABLE3
+	VSPD_TABLE4
+	VSPD_TABLE5
+	VSPD_TABLE6
+
+	// End of table marker
+   { NULL, NULL, 0 }
+};
+#endif
+
+
+#if USING_PPPOE
+const struct driver_tbl_type _pppoe_table[] = {
+	// PPP over Ethernet tables
+	PPPOE_TABLE1
+	PPPOE_TABLE2
+
+	// End of table marker
+   { NULL, NULL, 0 }
+};
+#endif
+
+
+
+_net_nodebug
+void dcr_initdcr()
+{
+	static int i, numser, numvspd, numpppoe, numdhcp;
+   static IFTEntry * ifte;
+   auto unsigned long ethHWConfig;
+   auto int ethnum, wifinum, retval, dtindex;
+
+	sock_delay=30;
+	sock_inactive=0;
+
+	system_yield = NULL;
+	dcrtcpd = NULL;
+	sock_data_timeout = 120000uL;
+
+	memset(_if_tab, 0, sizeof(_if_tab));
+	_if_request = 0;
+	_if_prequest = 0;
+	_if_actual = 0;
+	_if_dhcp = 0;
+	_if_dhcp_lease = 0;
+
+#ifndef DISABLE_DNS
+	// Init the name server table
+	_dns_server_table.num = 0;
+	_dns_server_table.max = DNS_TABLE_SIZE;
+	_dns_server_table.table = _dns_servers;
+	_dns_server_table.sources = DNS_ALL_SOURCES;
+	_dns_server_table.health = DNS_ALL_HEALTH;
+	_dns_server_table.preference = DNS_ALL_SOURCES|DNS_ALL_HEALTH;
+#endif
+
+#ifdef USE_DHCP
+	memset(_dhcp_info, 0, sizeof(_dhcp_info));
+#endif
+#if USING_PPP_SERIAL
+	memset(_ppp_states, 0, sizeof(_ppp_states));
+#endif
+#if USING_PPPOE
+	memset(_pppoe_states, 0, sizeof(_pppoe_states));
+#endif
+	numser = 0;
+	numvspd = 0;
+	numpppoe = 0;
+   numdhcp = 0;
+   ethnum = 0;
+   wifinum = 0;
+	for (i = 0; i < IF_MAX; i++) {
+   	ifte = _if_tab + i;
+		// Set to narrowest mask.  This is done even for unused i/f slots,
+		// so that functions which iterate through all slots don't get confused.
+		ifte->mask = 0xFFFFFFFFuL;
+		if (!(1u<<i & IF_SET))
+			continue;
+
+#if USING_ETHERNET
+		if (IF_PKT_ETH(i))
+      	ifte->u.eth.riface = i;
+		if (IF_PKT_ETH(i) && !IF_P2P(i))
+      {
+     		retval = _GetSysMacroValue((ethnum == 0)?"_DC_ETH0_":"_DC_ETH1_",
+     		                           &ethHWConfig);
+     		// The macro did exist, and this is an interface with multiple
+     		// possible Ethernet chipsets
+     		if ((retval == 0) &&
+     		    ((ethHWConfig & _DC_ETH_COMPILETIME_MASK) >= _DC_ETH_MULTI)) {
+            // Choose the appropriate chipset (at runtime)
+            if ((ethHWConfig & _DC_ETH_RUNTIME_MASK) == 0x00000000) {
+               dtindex = ethnum;
+            }
+            else {
+               dtindex = ethnum + 1;
+            }
+            // Skip past the two possibilities for the next iteration
+            ethnum += 2;
+         }
+         else {
+            dtindex = ethnum;
+            ethnum++;
+         }
+
+         ifte->mtu = ETH_MTU;
+	#if USE_ETH_PRELOADED_DRIVER == 0
+         // Dynamic state information for driver
+         ifte->state = _driver_table[dtindex].state;
+         // (const) information about driver
+         ifte->ncd = _driver_table[dtindex].ncd;
+         // Instance number of device in driver
+         ifte->instance = _driver_table[dtindex].instance;
+      #else
+			_SYS_MAP_FLASH
+         pld_init_ethernet(ifte, dtindex);
+			_SYS_UNMAP_FLASH
+      #endif
+
+   #ifdef USE_DHCP
+	      if (numdhcp < NUM_DHCP_IF) {
+	         ifte->dhcp = _dhcp_info + numdhcp;
+	         ifte->flags |= IFF_DHCP_QUALIFY;
+	         numdhcp++;
+	      }
+   #endif
+		}
+
+#endif // USING_ETHERNET
+
+#if USING_WIFI
+	 if(IF_PKT_REAL_WIFI(i))
+       ifte->u.eth.riface = i;
+    if(IF_PKT_REAL_WIFI(i) && !IF_P2P(i)) {
+
+	   ifte->mtu = ETH_MTU;
+	   // Dynamic state information for driver
+	   ifte->state = _wifi_table[wifinum].state;
+	   // (const) information about driver
+	   ifte->ncd = _wifi_table[wifinum].ncd;
+	   // Instance number of device in driver
+	   ifte->instance = _wifi_table[wifinum].instance;
+
+      wifinum++;
+
+	#ifdef USE_DHCP
+	   if (numdhcp < NUM_DHCP_IF) {
+	      ifte->dhcp = _dhcp_info + numdhcp;
+	      ifte->flags |= IFF_DHCP_QUALIFY;
+	      numdhcp++;
+	   }
+	#endif
+   }
+#endif //USING_WIFI
+
+#if USING_PPP_SERIAL
+		if (IF_PKT_SER(i) && IF_P2P(i)) {
+         ifte->state = _ppp_serial_table[numser].state;  // Dynamic state information for driver
+         ifte->ncd = _ppp_serial_table[numser].ncd;      // (const) information about driver
+         ifte->instance = _ppp_serial_table[numser].instance;  // Instance number of device in driver
+         ++numser;
+			ifte->mtu = PPP_MTU;
+      #ifdef USE_DHCP
+         #ifdef DHCP_ON_PPP
+         if (numdhcp < NUM_DHCP_IF) {
+            ifte->dhcp = _dhcp_info + numdhcp;
+            ifte->flags |= IFF_DHCP_QUALIFY;
+            numdhcp++;
+         }
+         #endif
+      #endif
+		}
+#endif	// USING_PPP_SERIAL
+#if USING_VSPD
+		if (IF_PKT_SER(i) && !IF_P2P(i)) {
+         ifte->state = _vspd_table[numvspd].state;  // Dynamic state information for driver
+         ifte->ncd = _vspd_table[numvspd].ncd;      // (const) information about driver
+         ifte->instance = _vspd_table[numvspd].instance;  // Instance number of device in driver
+         ++numvspd;
+			ifte->mtu = 1500;
+		}
+#endif	// USING_PPP_SERIAL
+#if USING_PPPOE
+		if (IF_PKT_ETH(i) && IF_P2P(i)) {
+         ifte->state = _pppoe_table[numpppoe].state;  // Dynamic state information for driver
+         ifte->ncd = _pppoe_table[numpppoe].ncd;      // (const) information about driver
+         ifte->instance = _pppoe_table[numpppoe].instance;  // Instance number of device in driver
+         ++numpppoe;
+			ifte->mtu = ETH_MTU - 8;	// Subtract 6 for PPPoE header, and 2 for PPP protocol field.
+      	#ifdef USE_DHCP
+         	#ifdef DHCP_ON_PPPOE
+         	if (numdhcp < NUM_DHCP_IF) {
+            	ifte->dhcp = _dhcp_info + numdhcp;
+               ifte->flags |= IFF_DHCP_QUALIFY;
+               numdhcp++;
+            }
+            #endif
+         #endif
+		}
+#endif		//USING_PPPOE
+	}
+	ip_id = 0;
+#ifndef DISABLE_TCP
+	next_tcp_port = 1024;
+	tcp_allsocs = NULL;
+#endif
+#ifndef DISABLE_UDP
+	next_udp_port = 1024;
+	udp_allsocs = NULL;
+#endif
+	debug_on = 0;
+
+	_initialized = 0; 		/* If this var out-of-scope, you're not
+										calling sock_init()! */
+#if __RABBITSYS == 2
+   _rk_tcp_udp_handles = NULL;	/* if this var is out-of-scope, you're
+   											not calling _sys_net_socket_alloc()! */
+#endif
+}
+
+/*** BeginHeader _rs_ifstatus */
+_system int _rs_ifstatus (int iface);
+/*** EndHeader */
+
+_net_nodebug
+_system int _rs_ifstatus (int iface)
+{
+	_SYS_CALL_VARS
+	if ( (iface<0) || (iface > (IF_MAX+VIRTUAL_ETH)) )
+	{
+		return 0;
+	}
+	return (_initialized && _if_tab[iface].up);
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */
+

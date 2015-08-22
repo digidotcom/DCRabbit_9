@@ -1,0 +1,4 @@
+
+SHOW:
+	Displays the state of both LEDs.  They can either
+	be ON solid, OFF solid, or pulse-width modulated.

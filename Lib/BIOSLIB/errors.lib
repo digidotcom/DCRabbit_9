@@ -1,0 +1,1801 @@
+/*** BeginHeader  ********************************************/
+#ifndef __ERRORS_LIB
+#define __ERRORS_LIB
+/*** EndHeader ***********************************************/
+
+/* START LIBRARY DESCRIPTION *********************************
+ERRORS.LIB
+	Copyright (c) 2006, Rabbit Semiconductor
+
+DESCRIPTION:
+	Runtime error support.
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************/
+
+/*** BeginHeader */
+#define ERRLOG_VERSION        2
+
+// Assert macro, see comments for _dc_assert below for more information
+// We follow the ANSI standard for the NDEBUG macro, but differ in what
+// the macro is defined as in that case to save code space (ANSI specifies
+// that assert is defined as ((void)0) when NDEBUG is defined, but this
+// generates a NOP in Dynamic C, so we just define it to be nothing.
+#ifdef NDEBUG // ANSI standard
+#define assert(ignore)
+#else
+#define assert(exp)       ((exp) ? (void)0 : \
+                           _dc_assert(#exp, __FILE__, __LINE__))
+#endif
+
+/*** EndHeader */
+
+/*** BeginHeader _dc_assert */
+void _dc_assert(char* exp, char* filenm, int line);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_dc_assert                             <ERRORS.LIB>
+
+SYNTAX: void _dc_assert(char* exp, char* filenm, int line);
+
+DESCRIPTION: Internal helper function for assert macro. This function
+             takes a stringified expression, a file name, and a line
+             number and prints them to stdout, then exits the program
+             with an assertion failure exception.
+
+             To disable assertions, add the line:
+             #define NDEBUG
+             to the top of RabbitBios.c.
+
+PARAMETER 1: Stringified expression that failed the assertion test
+PARAMETER 2: Name of the file where the assertion is
+PARAMETER 3: Line in the file where the assertion is
+
+RETURN VALUE: None
+
+END DESCRIPTION **********************************************************/
+
+// Assert function called by assert macro
+nodebug
+void _dc_assert(char* exp, char* filenm, int line)
+{
+	// Print error message
+	printf("Assertion failure: %s\nFile: %s, Line %d\n", exp, filenm, line);
+
+	// Throw assertion exception and exit
+   exception(-ERR_ASSERTFAILURE);
+   exit(-ERR_ASSERTFAILURE);
+}
+
+/*** BeginHeader exception */
+root int exception(int errCode);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+exception							<ERRORS.LIB>
+
+SYNTAX:			int exception(int errCode)
+
+DESCRIPTION:	This function is called by Rabbit libraries when a
+runtime error occurs.  It puts information relevant to the runtime
+error on the stack and calls the default runtime error handler
+pointed to by the ERROR_EXIT macro.  To define your own error
+handler, see the defineErrorHandler() function.
+
+When the error handler is called, the following information will
+be on the stack:
+			SP+0	return adress for error handler call
+			SP+2	runtime error code
+			SP+4	0x0000 (can be used for additional information)
+			SP+6	XPC when exception() was called (upper byte)
+			SP+8	address where exception() was called
+
+RETURN VALUE:	Runtime error code passed to it.
+
+SEE ALSO:		defineErrorHandler
+
+END DESCRIPTION ***************************************************************/
+
+#asm nodebug root
+; Dynamic C Exception Handler
+;
+; int   exception ( int errCode );
+; error code should be passed to this function in hl (and on stack)
+; returns error code passed to it
+;
+; Pushes the following on the stack before jumping to (ERROR_EXIT)
+;		SP+0	- return address for _EH_exceptionRet
+;		SP+2	- Error code
+;		SP+4	- 0x0000 (can be used for additional information)
+;		SP+6	- XPC when error occurred (upper byte)
+;		SP+8	- address where exception() was called
+;
+
+exception::
+#if !__RABBITSYS
+	#if ENABLE_ERROR_LOGGING
+	   ld    a,xpc
+	   push  af
+	   push  hl
+	   push  ip
+	   push  ip
+	   ipset 3
+	   call  errloadLogEntry
+	   pop   ip
+	   pop   ip
+	   pop   hl
+	   pop   af
+	   ld    xpc,a
+	#endif
+#endif
+	ex    de,hl
+	ld		hl, (sp)				; get return addr for exception() call
+	ld		bc, -3				; adjust for call opcode
+	add	hl, bc
+	push	hl						; push return address onto stack
+
+	ld		a, xpc				; get XPC
+	push	af						; push current XPC onto stack
+
+	bool	hl
+	ld		l, h
+	push	hl						; push 0x0000 onto stack (user-defined byte)
+
+	ex		de, hl				; put error code back into HL
+	push	hl						; push error code onto stack
+
+#if _USER
+	; log user run time exceptions with the RabbitSys monitor.
+	call 	_sys_mon_rt_error
+
+	; trigger shutdown events
+	ld		hl,_SYS_EVENT_SHUTDOWN
+	push	hl
+	call	_sys_exec_event
+	add	sp,2
+   ; hl is expected to have the error code, so load it off of the stack
+	ld		hl,(sp)
+#endif
+
+	ld 	bc, _EH_exceptionRet
+	push 	bc						; push return address on stack
+
+	exx
+	ld    hl, (sp+14)       ; ret addr to after error line, used in db_adj_pc()
+	exx
+
+	; a has xpc, hl has error code, hl' has return address
+_EH_errexit:
+#if _SYSTEM
+	; Use alternates to determine if ERROR_EXIT is pointing somewhere other
+   ; than system's default (_xexit).  If ERROR_EXIT has been set, switch to user
+   ; mode prior to calling function.
+	push	hl
+   ld		hl, (ERROR_EXIT)
+   ex		de,hl
+   ld		hl, _xexit
+   or		a
+   sbc	hl,de
+	pop	hl
+   jr		z,.notusermode				; zero flag is set, function ptr not changed
+	add	sp,2
+	push	su
+   ld		bc,_EH_userexceptionRet
+   push	bc
+	// disable system writes
+   ld		a, 1
+   ioi   ld (WPCR), a
+   setusr
+	ld 	iy, (ERROR_EXIT)
+	jp 	(iy)					; jump to runtime error handler (error code in HL)
+
+_EH_userexceptionRet:
+	pop	su
+   ; reenable writes to system space
+   xor   a
+   ioi	ld (WPCR), a
+   jr		_EH_exceptionRet
+
+.notusermode:
+#endif
+	ld 	iy, (ERROR_EXIT)
+	jp 	(iy)					; jump to runtime error handler (error code in HL)
+
+;; if (ERROR_EXIT) returns, execution continues here
+_EH_exceptionRet:
+	; clean up stack
+	pop   hl    				; return value = error code
+	pop   bc
+	pop   bc
+	pop   bc
+_EH_exceptionDone:
+	ret
+#endasm
+
+/*** BeginHeader EXCEPTION */
+
+// The standard runtime error handler expects the
+// address in the user code where the utility function
+// that the runtime error occurred in to be in a
+// fixed location on the stack.  Auto variables change
+// this location, so this scrap of code will adjust
+// the stack accordingly.
+
+#define	EXCEPTION(x)	$\
+	push	hl					$\
+	ld		hl, @SP			$\
+	add	hl, sp			$\
+	inc	hl					$\
+	inc	hl					$\
+	ld		hl, (hl)			$\
+	push	hl					$\
+	ld		hl, x				$\
+	push	hl					$\
+	call	exception		$\
+	add	sp, 4				$\
+	pop	hl
+
+/*** EndHeader */
+
+/*** BeginHeader _rs_defineErrorHandler *******/
+_system void _rs_defineErrorHandler(void *errfcn);
+/*** EndHeader ***************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+defineErrorHandler              <ERRORS.LIB>
+
+SYNTAX: void defineErrorHandler(void *errfcn)
+
+PARAMETER1:		pointer to user-defined runtime error handler.
+
+DESCRIPTION:	Sets the BIOS function pointer for runtime errors to
+the function pointed to by errfcn.  When a runtime error occurs, the
+following information is passed to the error handler on the stack:
+			SP+0	- return address for _EH_exceptionRet
+			SP+2	- Error code
+			SP+4	- 0x0000 (can be used for additional information)
+			SP+6	- XPC when exception() was called (upper byte)
+			SP+8	- address where exception() was called
+
+The user-defined function should ALWAYS be in root memory.  Specify
+'root' at the start of the function definition to ensure this.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+_system nodebug
+void _rs_defineErrorHandler(void *errfcn)
+{
+	_SYS_CALL_VARS
+   DCParam.errorExit = (unsigned int)errfcn;
+}
+
+/* START FUNCTION DESCRIPTION **************************************************
+errlogGetNthEntry							<ERRORS.LIB>
+
+SYNTAX:			int errlogGetNthEntry(int N)
+
+DESCRIPTION: This function loads the data structure errLogEntry with the
+contents of the Nth error log entry.
+
+PARAMETER1:   the index (starting from zero) of entry to load. If
+N > ERRLOG_NUM_ENTRIES, then  N  MOD ERRLOG_NUM_ENTRIES is used.
+
+RETURN VALUE:	0 - succes
+              -1 - The checksum of the entry did not match the contents
+                   (the structure is still loaded)
+
+SEE ALSO: errlogFormatEntry,errlogFormatStackDump,errlogGetHeaderInfo,
+errlogFormatStackReg,errlogGetMessage
+
+END DESCRIPTION ***************************************************************/
+/*** BeginHeader errlogGetNthEntry *******/
+root int errlogGetNthEntry(int n);
+/*** EndHeader ***************************/
+#asm nodebug root
+errlogGetNthEntry::
+	ld   a,xpc
+	push af
+;	Trashes BC,DE,HL
+
+	;**** Do HL MOD NumEntries
+	ld    de,ERRLOG_NUM_ENTRIES
+_EH_modLoop:
+	scf
+	ccf
+	ld    b,h
+	ld    c,L
+	sbc   hl,de
+	jr    nc,_EH_modLoop
+	ld    h,b
+	ld    L,c
+
+c  sizeof(errLogEntry);
+   ex    de,hl    ; DE now has entry size
+	mul				; HL:BC = BC · DE
+	   				; BC now has offset
+	               ; HL must be zero since
+	               ;   the buffer is < 64K
+   ld    h,b      ; Save offset in hl
+   ld    L,c
+
+	push 	hl
+	;*** Get base in BC:DE
+c  ERRLOG_PHYSICAL_ADDR+sizeof(errLogInfo);
+	pop	hl
+	add   hl,de
+	ex    de,hl
+   jr    nc,_EH_NoCarry
+	inc   bc
+_EH_NoCarry:
+	call  LongToXaddr     ; get address in A:DE
+	ld    xpc,a
+c  sizeof(errLogEntry);
+	ld    b,L
+	dec   b               ; last byte is checksum
+	ld    c,0             ; initialize checksum
+	ld    hl,errLogEntry
+_EH_LoadLoop:
+	ld    a,(de)
+	ld    (hl),a          ; load data
+	add   a,c
+	ld    c,a             ; store checksum
+	inc   de
+	inc   hl
+	djnz  _EH_LoadLoop
+	ex    de,hl
+	cp    (hl)
+	ld    (de),a          ; load checksum too
+	jr    z,_EH_CS_OK
+	ld    hl,-1
+	pop   af
+	ld    xpc,a
+	ret
+_EH_CS_OK:
+	ld    hl,0
+	pop   af
+	ld    xpc,a
+	ret
+#endasm
+
+/* START FUNCTION DESCRIPTION **************************************************
+errlogFormatStackDump							<ERRORS.LIB>
+
+SYNTAX:			char* errlogFormatStackDump()
+
+DESCRIPTION:	This function formats a string with the contents
+of the stack dump of the error entry currently in the structure errlogEntry
+in the following format:
+
+Stack Dump:
+ d3ee: 3a00
+ d3f0: 00ea
+ d3f2: e59c
+ d3f4: 00ea
+ d3f6: 15ad
+ d3f8: 0000
+ d3fa: 0000
+ d3fc: a440
+
+The string will contain "Stack dump not used" if the macro
+ERRLOG_STACKDUMP_SIZE is defined to 0.
+
+errlogGetNthEntry(N) can be called to load errLogEntry with the Nth entry.
+
+RETURN VALUE:	pointer to above string.
+
+SEE ALSO: errlogFormatEntry,errlogFormatRegDump,errlogGetNthEntry,
+errlogGetHeaderInfo,errlogGetMessage,
+
+END DESCRIPTION ***************************************************************/
+/*** BeginHeader errlogFormatStackDump ***/
+char* errlogFormatStackDump();
+/*** EndHeader ***************************/
+nodebug
+char* errlogFormatStackDump()
+{
+#if ERRLOG_STACKDUMP_SIZE
+   auto int i;
+	auto char *ptr;
+	static char buf[14+ERRLOG_STACKDUMP_SIZE*12];
+
+	sprintf(buf," Stack Dump:\n");
+	ptr = (char*)((unsigned)buf+strlen(buf));
+	for(i=0; i<ERRLOG_STACKDUMP_SIZE; i=i+2)
+	{
+		sprintf(ptr," %04x: %04x\n",
+			errLogEntry.regDump._SP+i,
+			*(unsigned*)&errLogEntry.stackDump[i]
+		);
+		ptr += 12;
+	}
+	buf[strlen(buf)-1]=0;
+	return buf;
+#else
+	return " Stack Dump not used";
+#endif
+}
+
+/* START FUNCTION DESCRIPTION **************************************************
+errlogFormatRegDump							<ERRORS.LIB>
+
+SYNTAX:			char* errlogFormatRegDump()
+
+DESCRIPTION: This function formats a string with the contents
+of the register dump of the error entry currently in the structure
+errlogEntry in the following format:
+
+ AF=0100,AF'=0100
+ HL=00ea,HL'=0000
+ BC=3f40,BC'=0000
+ DE=0000,DE'=0000
+ IX=0000,IY =e590
+ SP=d3ee,XPC=00f8
+
+errlogGetNthEntry(N) can be called to load errLogEntry with the Nth entry.
+
+The string will contain "Register dump not used" if the macro
+ERRLOG_USE_REG_DUMP is defined to 0.
+
+RETURN VALUE:	pointer to above string.
+
+SEE ALSO: errlogFormatEntry,errlogFormatStackDump,errlogGetNthEntry,
+errlogGetHeaderInfo,errlogGetMessage
+
+END DESCRIPTION ***************************************************************/
+
+
+/*** BeginHeader errlogFormatRegDump *****/
+char* errlogFormatRegDump();
+/*** EndHeader ***************************/
+nodebug
+char* errlogFormatRegDump()
+{
+#if ERRLOG_USE_REG_DUMP
+	auto char *ptr;
+	static char buf[109];
+
+	sprintf(buf,
+	 " AF=%04x,AF\'=%04x\n HL=%04x,HL\'=%04x\n BC=%04x,BC\'=%04x\n",
+		errLogEntry.regDump._AF, errLogEntry.regDump._AFprime,
+		errLogEntry.regDump._HL, errLogEntry.regDump._HLprime,
+		errLogEntry.regDump._BC, errLogEntry.regDump._BCprime
+	);
+
+   ptr = (char*)((unsigned)buf+strlen(buf));
+
+	sprintf(ptr,
+	 " DE=%04x,DE\'=%04x\n IX=%04x,IY =%04x\n SP=%04x,XPC=%04x\n",
+		errLogEntry.regDump._DE, errLogEntry.regDump._DEprime,
+		errLogEntry.regDump._IX, errLogEntry.regDump._IY,
+		errLogEntry.regDump._SP, errLogEntry.regDump._XPC
+	);
+	return buf;
+#else
+	return " Register Dump not used";
+#endif
+}
+
+/* START FUNCTION DESCRIPTION **************************************************
+errlogGetMessage							<ERRORS.LIB>
+
+SYNTAX:			char* errlogGetMessage()
+
+DESCRIPTION: This function returns a string with the contents
+of the 8 byte message in errLogEntry.
+
+errlogGetNthEntry(N) can be called to load errLogEntry with the Nth entry.
+
+The string will contain "Message not used" if the macro
+ERRLOG_USE_MESSAGE is defined to 0.
+
+RETURN VALUE:	pointer to above string.
+
+SEE ALSO: errlogFormatEntry,errlogFormatStackDump,errlogGetNthEntry,
+errlogGetHeaderInfo,errlogFormatRegDump
+
+END DESCRIPTION ***************************************************************/
+
+/*** BeginHeader errlogGetMessage *****/
+char* errlogGetMessage();
+/*** EndHeader ***************************/
+nodebug
+char* errlogGetMessage()
+{
+#if ERRLOG_USE_MESSAGE
+	static char buf[9];
+	memcpy(buf,errLogEntry.message,8);
+	buf[8]=0;
+	return buf;
+#else
+	return " Message not used";
+#endif
+}
+
+/* START FUNCTION DESCRIPTION **************************************************
+errlogFormatEntry							<ERRORS.LIB>
+
+SYNTAX:			char* errlogFormatEntry()
+
+DESCRIPTION:	This function formats a string with the basic
+information for an error log entry in the following format:
+
+Error type=234
+ Address = 00:15ad
+ Time: 06/13/2001 18:54:59
+
+errlogGetNthEntry(N) can be called to load errLogEntry with the Nth entry.
+
+RETURN VALUE:	pointer to above string.
+
+SEE ALSO: errlogFormatStackDump,errlogFormatRegDump,errlogGetNthEntry,
+errlogGetHeaderInfo,errlogGetMessage
+
+END DESCRIPTION ***************************************************************/
+/*** BeginHeader errlogFormatEntry *******/
+char* errlogFormatEntry();
+/*** EndHeader ***************************/
+nodebug
+char* errlogFormatEntry()
+{
+	static char buf[65];
+	auto char *ptr;
+	auto struct tm	thetm;
+
+	mktm(&thetm,errLogEntry.secTimer);
+	sprintf(buf,
+	 "\nError type=%d\n Address = %02x:%04x\n \
+Time: %02d/%02d/%04d %02d:%02d:%02d",
+	  errLogEntry.errType,
+	  errLogEntry.address.aaa.a.base,
+	  errLogEntry.address.aaa.a.addr,
+ 	  thetm.tm_mon, thetm.tm_mday, 1900+thetm.tm_year,
+	  thetm.tm_hour, thetm.tm_min, thetm.tm_sec
+	);
+	return buf;
+}
+
+/* START FUNCTION DESCRIPTION **************************************************
+errlogGetHeaderInfo							<ERRORS.LIB>
+
+SYNTAX:			char* errlogGetHeaderInfo()
+
+DESCRIPTION:	This function formats a string with the contents
+of the error log header in the following format:
+
+Status Byte: 00
+#Exceptions: 0
+Index last exception: -1
+#SW Resets: 3
+#HW Resets: 1
+#WD Timeouts: 0
+
+The string will contain "Header checksum invalid" if a checksum error
+occurs.
+
+When running stand alone (not talking to Dynamic C, this function the
+header directly from the log buffer. When in debug mode, this function
+reads the header from the copy in flash.
+
+When a Dynamic C cold boot takes place, the header in RAM is zeroed out
+to initialize it, but first it's contents are copied to an address
+in the BIOS code before the BIOS in RAM is copied to flash. This means
+that on the second cold boot, the data structure in flash will be
+zeroed out. The configuration of the log buffer may still be read,
+and the log buffer entries are not affected.
+
+Because the exception mechanism resets the processor by causing a
+watchdog time-out, the number of watchdog timeouts reported by this
+functions is the number of actual WDTOs plus the number of exceptions.
+
+The meaning of the status byte is as follows:
+bit 0   - An error has occurred since deployment.
+bit 1   - The count of SW resets has rolled over.
+bit 2   - The count of HW resets has rolled over.
+bit 3   - The count of WDTOs has rolled over.
+bit 4   - The count of exceptions has rolled over.
+bit 5-6 - Not used.
+bit 7   - The error log is initialized.
+
+The index of the last exception is the index from the
+start of the error log entries. If this index does
+not equal the total exception count, the error log
+entries have wrapped around the log buffer.
+
+RETURN VALUE:	pointer to above string.
+
+SEE ALSO: errlogFormatEntry,errlogFormatStackDump,errlogGetMessage
+errlogFormatRegDump,errlogGetNthEntry
+
+END DESCRIPTION ***************************************************************/
+/*** BeginHeader errlogGetHeaderInfo *****/
+char *errlogGetHeaderInfo();
+/*** EndHeader ***************************/
+nodebug
+char *errlogGetHeaderInfo()
+{
+	static char buf[126];
+	auto char *ptr, checksum;
+	auto int  i;
+
+	if ((OPMODE & 0x08) == 0x08) {
+		errlogReadLastHeader();
+	} else {
+		errlogReadHeader();
+	}
+	checksum = 0;
+	ptr = (char *) &errLogInfo;
+
+	for (i = 0; i < sizeof(errLogInfo) - 1; i++) {
+		checksum += *ptr;
+		ptr++;
+	}
+	if (*ptr == checksum) {
+		sprintf(buf, "Status Byte: %02x\n", errLogInfo.status);
+   	ptr = (char *) ((unsigned) buf + strlen(buf));
+		sprintf(ptr, "#Exceptions: %u\n", errLogInfo.ExceptionIndex);
+   	ptr = (char *) ((unsigned) buf + strlen(buf));
+		sprintf(ptr, "Index last exception: %d\n", (errLogInfo.ExceptionIndex)
+		        ? (errLogInfo.ExceptionIndexMod + ERRLOG_NUM_ENTRIES - 1)
+		          % ERRLOG_NUM_ENTRIES : -1);
+   	ptr = (char *) ((unsigned) buf + strlen(buf));
+		sprintf(ptr, "#SW Resets: %u\n", errLogInfo.SWresetsSinceDeployment);
+   	ptr = (char *) ((unsigned) buf + strlen(buf));
+		sprintf(ptr, "#HW Resets: %u\n", errLogInfo.HWresetsSinceDeployment);
+   	ptr = (char *) ((unsigned) buf + strlen(buf));
+		sprintf(ptr, "#WD Timeouts: %u\n\n", errLogInfo.WDTOsSinceDeployment);
+	} else {
+		sprintf(buf, "Header checksum invalid");
+	}
+	return buf;
+}
+
+/*** BeginHeader InitializeErrorLog *******/
+
+root void InitializeErrorLog();
+
+struct _errLogStaticInfo
+{
+	char     version;              // the version # must be less than 128
+	unsigned long errlogPhysAddr;  // RAM location of error log buffer
+	char     configuration;        // configuration flags
+	char 		stackDumpSize;
+	unsigned length;               // total length of error log buffer
+};
+
+#if (FAST_RAM_COMPILE && (RUN_IN_RAM_CS == 0x2))
+	#define ERRLOG_PHYSICAL_ADDR ((DATA2END)-(ERRLOG_LOG_SIZE+TC_SYSBUF_BLOCK))
+#else
+	#define ERRLOG_PHYSICAL_ADDR ((flash_buf_phys)-(ERRLOG_LOG_SIZE+TC_SYSBUF_BLOCK))
+#endif
+
+/*** EndHeader ***************************/
+
+/**********************************************
+	This function is called from the BIOS when
+	on start-up. If it has already been
+	intialized, it will return right away.
+	If not, 	the error log configuration 	is
+	written to the address ErrLogConfiguration
+	so that it will be safely stored in flash.
+
+	The data at the labels in the flash where
+	the is data stored is initialized to all
+	bits set. so that it can be overwritten
+	without erasing the sector.
+
+	The data will be written when the program
+	is loaded by Dynamic C, and then never
+	again. If the program is loaded by other
+	means, it will bu written on the first
+	start up only.
+
+	The RAM error log header to is copied
+	ErrLogLastHeader in flash so that it can
+	still be read in debug mode after one cold
+	boot in the DC environment.
+
+	The header of the RAM log buffer containing
+	exception counts, etc. is zeroed out.
+	Initialization of the error log statistics
+	therefore can only take place when the
+	program is compiled in DC.
+
+**********************************************/
+#if ERRLOG_USE_REG_DUMP
+#define USE_REG_DUMP_BIT 2
+#else
+#define USE_REG_DUMP_BIT 0
+#endif
+#if ERRLOG_STACKDUMP_SIZE
+#define USE_STACK_DUMP_BIT 1
+#else
+#define USE_STACK_DUMP_BIT 0
+#endif
+#if ERRLOG_USE_MESSAGE
+#define USE_MESSAGE_BIT 4
+#else
+#define USE_MESSAGE_BIT 0
+#endif
+
+struct _errLogStaticInfo  errLogConfig;
+
+#asm root nodebug
+InitializeErrorLog::
+	ld    a,xpc
+	push  af
+
+   //*** if the high bit of the version data  *******
+   //***  byte is set, this is the virgin run *******
+	ld    a,(ErrLogConfiguration)
+	bit   7,a
+	jp    z,_EH_finished        // only initialize on virgin run
+
+	//*** Initialize data in RAM struct
+	ld    a,ERRLOG_VERSION
+	ld    (errLogConfig+version),a
+c  ERRLOG_LOG_SIZE;
+	ld    (errLogConfig+length),hl
+c  ERRLOG_STACKDUMP_SIZE;
+	ld    a,L
+	ld    (errLogConfig+stackDumpSize),a
+	xor   a
+	or    USE_STACK_DUMP_BIT | USE_REG_DUMP_BIT | USE_MESSAGE_BIT
+	ld    (errLogConfig+configuration),a
+c  ERRLOG_PHYSICAL_ADDR;                    // load bc:de
+	ld    (errLogConfig+errlogPhysAddr),de
+	ld    (errLogConfig+errlogPhysAddr+2),bc
+
+	;*** copy RAM buffer header to RAM struct and zero
+	;*** out in log buffer
+	call  LongToXaddr               // convert long addr in BC:DE to XPC:ADDR in A:DE
+	ld    xpc,a
+   ld    hl,sizeof(errLogInfo);
+	ld    b,L
+_EH_isEven1:
+	ld    hl,errLogInfo            // destination to copy last header
+_EH_copyELHeader:
+	ld    a,(de)
+	ld    (hl),a
+	xor   a                        // zero the header byte
+	ld    (de),a
+	inc   hl
+	inc   de
+	djnz  _EH_copyELHeader
+
+//** Copy first sector in flash to transfer buffer
+#if FAST_RAM_COMPILE
+	// Map in flash
+	ld		a, (MB3CRShadow)
+	push  af
+	ld		a, CS_FLASH | FLASH_WSTATES | BANK_INVERT_A18
+;	ioi	ld (MB3CR), a
+	IOWRITE_A(MB3CR)
+	ld		(MB3CRShadow), a
+
+	// Save current XPC, load from flash at 0xC0000
+	ld		a, xpc
+	push  af
+	ld    a,0xb2
+#if __SEPARATE_INST_DATA__
+	add   a,0x10
+#endif
+	ld		xpc, a
+	ld    hl, 0xe000
+#else
+	// Load from beginning of flash data area
+	ld    hl, 0
+#endif
+
+	ld    bc, (_FlashInfo+sectorSize)
+	ld    ix,(flash_buf_0015)
+_EH_copyFbufLoop:	                 // copy sector to transfer buffer
+	ld    a,(flash_buf_1619)
+	push  hl
+	ld    hl,(hl)
+	ldp   (ix),hl
+	pop   hl
+	inc   hl                     // increment everything by 2
+	inc   hl
+	inc   ix
+	inc   ix
+	dec   bc
+	dec   bc
+   ld    a,b
+   or    c
+   jr    nz, _EH_copyFbufLoop
+
+#if FAST_RAM_COMPILE
+	// Restore xpc and memory mapping
+	pop	af
+	ld		xpc, a
+	pop	af
+;	ioi	ld (MB3CR), a
+	IOWRITE_A(MB3CR)
+	ld		(MB3CRShadow), a
+#endif
+
+   ;*** Put erroLogHeader in transfer buffer, before copying
+	;*** back sector so there is an opportunity to read it in DC
+	ld    bc, sizeof(errLogInfo)
+	ld    b,c
+   bit   0,b
+   jr    z,_EH_isEven2            // make sure count is even to use LDP
+	ld    a,1
+   add   a,b
+   ld    b,a
+_EH_isEven2:
+	exx
+	ld		de, ErrLogLastHeader
+  	ld    ix, (flash_buf_0015)
+  	add   ix, de
+  	exx
+	ld    hl,errLogInfo
+_EH_copyFbufLoop1:
+	ld    a,(flash_buf_1619)
+	push  hl
+	ld    hl,(hl)
+	ldp   (ix),hl
+	pop   hl
+	inc   hl
+	inc   hl
+	inc   ix
+	inc   ix
+	dec   b
+   djnz  _EH_copyFbufLoop1
+
+   ;*** Put erroLogConfig in transfer buffer, before copying
+	;*** back sector so it is there forever, or until next debug sess.
+	ld    bc, sizeof(errLogConfig)
+	ld    b,c
+   bit   0,b
+   jr    z,_EH_isEven3            // make sure count is even to use LDP
+	ld    a,1
+   add   a,b
+   ld    b,a
+_EH_isEven3:
+	exx
+	ld		de, ErrLogConfiguration
+  	ld    ix, (flash_buf_0015)
+  	add   ix, de
+  	exx
+	ld    hl,errLogConfig
+_EH_copyFbufLoop3:
+	ld    a,(flash_buf_1619)
+	push  hl
+	ld    hl,(hl)
+	ldp   (ix),hl
+	pop   hl
+	inc   hl
+	inc   hl
+	inc   ix
+	inc   ix
+	dec   b
+   djnz  _EH_copyFbufLoop3
+
+   //*** write sector @ 0000
+	ld    bc, (_FlashInfo+sectorSize)
+	ld    de,0xe000
+#if FAST_RAM_COMPILE
+	ld		a, (MB3CRShadow)
+	push  af
+	ld		a, CS_FLASH | FLASH_WSTATES | BANK_INVERT_A18
+;	ioi	ld (MB3CR), a
+	IOWRITE_A(MB3CR)
+	ld		(MB3CRShadow), a
+	ld    a,0xb2
+#else
+	ld    a,0xf2
+#endif
+#if __SEPARATE_INST_DATA__
+	add   a,0x10
+#endif
+	call  _WriteFlash
+#if FAST_RAM_COMPILE
+	pop	af
+;	ioi	ld (MB3CR), a
+	IOWRITE_A(MB3CR)
+	ld		(MB3CRShadow), a
+
+	//*** Running in mirror changes to flash to RAM copy as well ***
+	ld		hl, errLogConfig
+	ld		de, ErrLogConfiguration
+	ld 	bc, sizeof(errLogConfig)
+	ldir
+	ld		hl, errLogInfo
+	ld		de, ErrLogLastHeader
+	ld		bc, sizeof(errLogInfo)
+	ldir
+#endif
+
+_EH_finished:
+	pop   af
+	ld    xpc,a
+	ret
+#endasm
+
+#asm xmem nodebug
+errlogGetStaticInfo::
+c  sizeof(errLogConfig);
+	ld    c,L
+	ld    b,0
+   ld    hl,ErrLogConfiguration
+   ld    de,errLogConfig
+	ldir
+	lret
+#endasm
+
+/* START FUNCTION DESCRIPTION **************************************************
+ResetErrorLog							<ERRORS.LIB>
+
+SYNTAX:	void ResetErrorLog()
+
+DESCRIPTION: This function is for resetting the exception and
+restart type counts in the error log buffer header. This function
+is not called by default from anywhere. This function should be
+used to initialized the error log when a board is programmed by
+means other than Dynamic C, cloning, the Rabbit Field Utility, or
+a DeviceMate. For example, if boards are mass produced with
+pre-programmed flash chips, then the test program that runs on
+the boards should call this function.
+
+END DESCRIPTION ***************************************************************/
+
+/*** BeginHeader ResetErrorLog *******/
+root void ResetErrorLog();
+/*** EndHeader ***************************/
+
+#asm root nodebug
+ResetErrorLog::
+	ld   a,xpc
+	push af
+c  ERRLOG_PHYSICAL_ADDR;   // load bc:de
+	;*** Zero out header in log buffer
+	;*** LongToXaddr converts BC:DE to xmem addr.
+	;*** in A:DE. First copy it to BIOS, so there
+	;*** is an opportunity to read it in DC
+	call  LongToXaddr
+c  sizeof(errLogInfo);    // load HL
+	ld   b,L
+	ld   hl,ErrLogLastHeader
+	ld   xpc,a
+	xor  a
+_EH_zeroOutHeader:
+	ld   (de),a
+	inc  de
+	djnz _EH_zeroOutHeader
+	pop  af
+	ld   xpc,a
+	ret
+#endasm
+
+/*** BeginHeader errlogRecordStartStatus */
+xmem int errlogRecordStartStatus();
+/*** EndHeader ***************************/
+/*****************************************
+   Output:
+		stores start-up statistics in the
+		error log buffer header.
+*****************************************/
+#asm xmem nodebug
+errlogRecordStartStatus::
+	ex    af,af'
+	ld    a,0x5a
+;	ioi   ld (WDTCR),a
+	IOWRITE_A(WDTCR)
+	call  errlogReadHeader
+	ld    a,(errLogInfo+status)
+	ld    b,a
+	ex    af,af'
+	push  af
+
+	and	0xC0
+	cp		0x40
+	jr		nz, _EH_NoWDTO
+   ld    hl,(errLogInfo+WDTOsSinceDeployment)
+   inc   hl
+   ld    (errLogInfo+WDTOsSinceDeployment),hl
+	ld    a,(errLogInfo+status)
+	bit   3,a           // check rollover if it hasn't yet
+	jr    nz,_EH_NoWDTO
+   bool  hl
+   jr    nz,_EH_NoWDTO
+   set   3,b           // record rollover
+
+_EH_NoWDTO:
+	pop   af
+	push  af
+	and	0xC0
+	cp		0x00
+	jr		nz, _EH_NoSoftReset
+   ld    hl,(errLogInfo+SWresetsSinceDeployment)
+   inc   hl
+   ld    (errLogInfo+SWresetsSinceDeployment),hl
+	ld    a,(errLogInfo+status)
+	bit   1,a           // check rollover if it hasn't yet
+	jr    nz,_EH_NoSoftReset
+   bool  hl
+   jr    nz,_EH_NoSoftReset
+   set   1,b           // record rollover
+
+_EH_NoSoftReset:
+	pop   af
+	push  af
+	and	0xC0
+	cp		0xC0
+	jr		nz, _EH_NoHardReset
+   ld    hl,(errLogInfo+HWresetsSinceDeployment)
+   inc   hl
+   ld    (errLogInfo+HWresetsSinceDeployment),hl
+	ld    a,(errLogInfo+status)
+	bit   2,a           // check rollover if it hasn't yet
+	jr    nz,_EH_NoHardReset
+   bool  hl
+   jr    nz,_EH_NoHardReset
+   set   2,b           // record rollover
+
+_EH_NoHardReset:
+   set   7,b           // indicate error log initialized
+	ld    a,b
+	ld    (errLogInfo+status),a
+	call  errlogWriteHeader
+	pop   af
+	lret
+#endasm
+
+/*** BeginHeader errlogAddEntry **********/
+root int errlogAddEntry();
+/*** EndHeader ***************************/
+#asm nodebug
+errlogAddEntry::
+/*****************************************
+	Input:
+   	errLogEntry struct contents
+   Output:
+   	loads new entry in error log with
+   	errLogEntry struct contents
+	Trashes BC,DE,HL,A
+*****************************************/
+	call  errlogReadHeader
+	call  errlogGetCurOffset
+c  sizeof(errLogEntry);
+	ld    b,L
+	dec   b
+	ld    c,0					; init checksum
+	ld    hl,errLogEntry
+_EH_loadLoop:
+	ld    a,(hl)
+	ld    (de),a
+	add   a,c
+	ld    c,a
+	inc   de
+	inc   hl
+	djnz  _EH_loadLoop
+	ld    a,c
+	ld    (de),a           ; store checksum
+
+	ld    a,(errLogInfo+status)
+	set   0,a	                          ; signal that an error has occurred
+	ld    hl,(errLogInfo+ExceptionIndex)  ; increment count
+	inc   hl
+	ld    (errLogInfo+ExceptionIndex),hl
+	bool  hl
+	jr    nz,_EH_NosetRollOver
+	ld    (errLogInfo+ExceptionIndex),hl
+	bit   4,a
+	jr    nz,_EH_NosetRollOver
+	set   4,a                             ; signal that total count
+_EH_NosetRollOver:
+	ld    (errLogInfo+status),a           ; rollover has occurred
+
+c  ERRLOG_NUM_ENTRIES;
+	ld    de,(errLogInfo+ExceptionIndexMod)
+	inc   de
+	scf
+	sbc   hl,de
+	jr    nc,_EH_nobufRollOver               ; check for buffer wrap-around
+	ld    de,0
+_EH_nobufRollOver:
+	ld    (errLogInfo+ExceptionIndexMod),de
+	call  errlogWriteHeader
+	ret
+#endasm
+
+/*** BeginHeader errlogGetCurOffset ******/
+root int errlogGetCurOffset();
+/*** EndHeader ***************************/
+#asm nodebug
+errlogGetCurOffset::
+/*****************************************
+   Output:
+		offset of current entry in XPC:DE
+	Trashes DE,HL,BC,A
+*****************************************/
+	call  errlogReadHeader
+	ld    bc,(errLogInfo+ExceptionIndexMod)
+c  sizeof(errLogEntry);
+	ex    de,hl
+						; HL:BC = BC · DE
+	mul				; BC now has offset
+	               ; HL must be zero since
+	               ;  the the buffer is < 64K
+
+   ld    h,b      ; Save offset in hl
+   ld    L,c
+
+	push	hl
+	;*** Get base in BC:DE
+c  ERRLOG_PHYSICAL_ADDR+sizeof(errLogInfo);
+	pop	hl
+
+	add   hl,de
+	ex    de,hl
+   jr    nc,_EH_NoCarry
+	inc   bc
+_EH_NoCarry:
+	call  LongToXaddr
+	ld    xpc,a
+	ret
+#endasm
+
+/* START FUNCTION DESCRIPTION **************************************************
+errlogReadHeader							<ERRORS.LIB>
+
+SYNTAX:			int errlogReadHeader()
+
+DESCRIPTION:	The global data structure errLogInfo is filled with contents
+of the error log header when this function is called.
+
+RETURN VALUE:	0 - success
+              -1 - The checksum of the header did not match the contents
+                   (the structure is still loaded)
+
+SEE ALSO: errlogFormatEntry,errlogFormatStackDump,errlogGetMessage
+errlogFormatRegDump,errlogGetNthEntry
+END DESCRIPTION ***************************************************************/
+/*** BeginHeader errlogReadHeader,errlogReadLastHeader */
+root int errlogReadHeader();
+root int errlogReadLastHeader();
+/*** EndHeader ***************************/
+#asm nodebug
+/*************************************************
+   Output:
+		loads head of log buffer into errLogInfo
+		In debug mode, loads last header from BIOS
+		where it was stored when the BIOS initialized.
+	Trashes DE,HL,BC,A
+*************************************************/
+errlogReadHeader::            ; Run Mode entry point
+	ld    a,xpc
+	push  af
+c  ERRLOG_PHYSICAL_ADDR;     // Get base in BC:DE
+	call  LongToXaddr   			; Convert to xmem addr.
+	ld    xpc,a
+	jr    _EH_Startload
+errlogReadLastHeader::        ; Debug entry point
+	ld    a,xpc
+	push  af
+	ld    de,ErrLogLastHeader  ; Source in BIOS flash
+_EH_Startload:
+c  sizeof(errLogInfo);
+	ld    b,L
+	dec   b
+	ld    c,0
+   ld    hl,errLogInfo
+	ex    de,hl
+
+_EH_load_Loop:
+	ld    a,(hl)
+	ld    (de),a
+	add  	a,c
+	ld    c,a
+	inc   hl
+	inc   de
+   djnz  _EH_load_Loop
+	ld    (de),a          ; load checksum too
+	cp    (hl)
+	jr    z,_EH_rhCS_OK
+	ld    hl,-1
+	pop   af
+	ld    xpc,a
+	ret
+_EH_rhCS_OK:
+	ld    hl,0
+	pop   af
+	ld    xpc,a
+	ret
+#endasm
+
+/*** BeginHeader errlogWriteHeader *******/
+root int errlogWriteHeader();
+/*** EndHeader ***************************/
+
+#asm nodebug
+errlogWriteHeader::
+/*****************************************
+	Input :
+		The data structure errLogInfo
+   Output:
+		loads errLogInfo into head of log buffer
+		and computes simple checksum for header
+	Trashes DE,HL,BC,A
+******************************************/
+	ld    a,xpc
+	push  af
+	;*** Get base in BC:DE
+c  ERRLOG_PHYSICAL_ADDR; // load BC:DE
+	call  LongToXaddr   ; convert to xmem addr. in A:DE
+	ld    xpc,a
+c  sizeof(errLogInfo); // load hl
+	ld    b,L
+	dec   b             ; last byte is checksum of 1rstbytes
+	ld    c,0           ; Init. checksum
+   ld    hl,errLogInfo
+_EH_storeLoop:
+	ld    a,(hl)
+	ld    (de),a        ; store byte
+	add   a,c           ; compute checksum
+	ld    c,a           ;
+	inc   hl            ; next address
+	inc   de
+	djnz  _EH_storeLoop
+	ld    a,c
+	ld    (de),a        ; store checksum
+	pop   af
+	ld    xpc,a
+	ret
+#endasm
+
+/*** BeginHeader errloadLogEntry *********/
+root void errloadLogEntry();
+/*** EndHeader ***************************/
+extern shared unsigned long SEC_TIMER;
+#asm nodebug
+errloadLogEntry::
+/*************************************************
+	Called by exception.
+   Input:
+		HL - error type
+		errLogMessage - an 8 byte array containing
+		the message to put in the entry. The default
+		exception handler does nothing with this, but
+		users writing custom error handlers can load
+		this before calling exception.
+   Output:
+		loads whatever inforamtion is used to errLogEntry.
+	Trashes DE,HL,BC,A
+*************************************************/
+	ld    (errLogEntry+errType),HL
+
+#if ERRLOG_USE_REG_DUMP
+	ld    (errLogEntry+regDump+_HL),hl
+	ld    (errLogEntry+regDump+_DE),de
+	ld    (errLogEntry+regDump+_BC),bc
+	push  af
+	pop   bc
+	ld    (errLogEntry+regDump+_AF),bc
+	exx
+	ld    (errLogEntry+regDump+_HLprime),hl
+	ld    (errLogEntry+regDump+_DEprime),de
+	ld    (errLogEntry+regDump+_BCprime),bc
+	push  af
+	pop   bc
+	ld    (errLogEntry+regDump+_AFprime),bc
+	ld    (errLogEntry+regDump+_IX),ix
+	ld    (errLogEntry+regDump+_IY),iy
+	exx
+	ld    (errLogEntry+regDump+_SP),SP
+	ld    a,xpc
+	ld    (errLogEntry+regDump+_XPC),a
+	ld    (errLogEntry+address+2),a
+	xor   a
+	ld    (errLogEntry+regDump+_XPC+1),a
+#endif
+	ld    hl,(sp+12)
+	ld    (errLogEntry+address),hl
+	ld    hl,(SEC_TIMER)
+	ld    (errLogEntry+secTimer),hl
+	ld    hl,(SEC_TIMER+2)
+	ld    (errLogEntry+secTimer+2),hl
+
+#if ERRLOG_STACKDUMP_SIZE
+	ld    bc,ERRLOG_STACKDUMP_SIZE
+	ld    hl,ERRLOG_STACKDUMP_SIZE+8
+	add   hl,sp
+	ld    de,errLogEntry+stackDump+ERRLOG_STACKDUMP_SIZE
+	lddr
+#endif
+#if ERRLOG_USE_MESSAGE
+	ld    bc,8
+	ld    hl,errlogMessage
+	ld    de,errLogEntry+message
+	ldir
+#endif
+	call  errlogAddEntry
+	ret
+#endasm
+
+/*** BeginHeader  ********************************************/
+#endif
+/*** EndHeader ***********************************************/
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+error_message                             <ERRORS.LIB>
+
+SYNTAX: unsigned long error_message(int message_index);
+
+DESCRIPTION: Returns a physical pointer to a descriptive string for
+             an error code listed in errno.lib.
+
+PARAMETER 1: Positive or negative value of error return code.
+
+RETURN VALUE: Physical address of string, or zero if error code is not
+              listed.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader error_message *******************************************/
+root unsigned long error_message(int);
+/*** EndHeader ***********************************************************/
+
+// Note: Be sure to update errno.lib and errmsg.ini for any new error codes
+//  added.
+// The errmsg_xstrings and errmsg_indices arrays should match and be in
+// increasing order, otherwise the error_message function may not operate
+// correctly.
+xstring errmsg_xstrings
+{
+/*0*/ "Program terminated",
+/*1*/ "Operation not permitted",
+/*2*/ "No such file or directory",
+/*5*/ "I/O error",
+/*6*/ "No such device or address",
+/*7*/ "Arg list too long or something else is too big like a string parameter",
+/*9*/ "Bad file number",
+/*11*/ "Operation would block try again",
+/*12*/ "Out of memory",
+/*13*/ "Permission denied",
+/*14*/ "Bad address",
+/*15*/ "Block device required",
+/*16*/ "Device or resource busy",
+/*17*/ "File exists",
+/*19*/ "No such device",
+/*20*/ "Not a directory",
+/*21*/ "Is a directory",
+/*22*/ "Invalid argument",
+/*23*/ "File table overflow",
+/*24*/ "Too many open files",
+/*27*/ "File too large",
+/*28*/ "No space left on device",
+/*30*/ "Read-only file system",
+/*36*/ "File name too long",
+/*38*/ "Function not implemented",
+/*39*/ "Directory not empty",
+/*41*/ "End of file or directory",
+/*61*/ "No data available",
+/*62*/ "Timer expired",
+/*64*/ "Machine is not on the network",
+/*67*/ "Link has been severed",
+/*70*/ "Communication error on send",
+/*71*/ "Protocol error",
+/*72*/ "Multihop attempted",
+/*74*/ "Not a data message",
+/*75*/ "Value too large for defined data type",
+/*76*/ "Name not unique on network",
+/*77*/ "File descriptor in bad state",
+/*84*/ "Illegal byte sequence",
+/*85*/ "Interrupted system call should be restarted",
+/*87*/ "Too many users",
+/*88*/ "Socket operation on non-socket",
+/*89*/ "Destination address required",
+/*90*/ "Message too long",
+/*91*/ "Protocol wrong type for socket",
+/*92*/ "Protocol not available",
+/*93*/ "Protocol not supported",
+/*94*/ "Socket type not supported",
+/*95*/ "Operation not supported on transport endpoint",
+/*96*/ "Protocol family not supported",
+/*97*/ "Address family not supported by protocol",
+/*98*/ "Address already in use",
+/*99*/ "Cannot assign requested address",
+/*100*/ "Network is down",
+/*101*/ "Network is unreachable",
+/*102*/ "Network dropped connection because of reset",
+/*103*/ "Software caused connection abort",
+/*104*/ "Connection reset by peer",
+/*105*/ "No buffer space available",
+/*106*/ "Transport endpoint is already connected",
+/*107*/ "Transport endpoint is not connected",
+/*108*/ "Cannot send after transport endpoint shutdown",
+/*109*/ "Too many references: cannot splice",
+/*110*/ "Connection timed out",
+/*111*/ "Connection refused",
+/*112*/ "Host is down",
+/*113*/ "No route to host",
+/*114*/ "Operation already in progress",
+/*115*/ "Operation now in progress",
+/*122*/ "Quota exceeded",
+/*123*/ "No medium found",
+/*124*/ "Wrong medium type",
+/*201*/ "Bad sequence number in file",
+/*202*/ "Unexpected end-of-chain in file",
+/*203*/ "Not a data block (B-block)",
+/*204*/ "Bad file number in file",
+/*236*/ "FAT mutex error",
+/*301*/ "Root directory full",
+/*302*/ "Not partitioned",
+/*303*/ "Partition bad or unrecognized",
+/*304*/ "Partition or volume not formatted",
+/*305*/ "Bad type",
+/*306*/ "Bad file/dir path string",
+/*307*/ "Block marked bad on the device",
+/*308*/ "Error detected in read data",
+/*309*/ "Driver level is busy new write not started",
+/*310*/ "Cannot flush enough entries from cache to perform next read.",
+/*311*/ "Parameter mismatch when registering a device.",
+/*312*/ "Ddevice not registered when _fatwtc_devwrite called.",
+/*313*/ "Not writing full physical sector in _fatwtc_devwrite.",
+/*314*/ "Rollback journal overflow.  Transaction requires too much data to be stored.",
+/*315*/ "fatrj_transtart() called with transaction already open.",
+/*316*/ "Internal error: a tied cache group is in an inconsistent state.",
+/*317*/ "fatrj_setchk() called without transaction being open.",
+/*318*/ "Transaction cannot contain both checkpoint and marker data.",
+/*319*/ "File is in an invalid state.  Probably because the FATfile structure was not zero when opened for the first time.",
+/*320*/ "Partition is in an invalid state.  This occurs if you are trying to delete a file when another file is being allocated or vice versa",
+/*321*/ "FAT filesystem appears to be corrupted",
+/*400*/ "No network error",
+/*401*/ "Local host not reachable (ARP could not resolve)",
+/*402*/ "Host not reachable (Router not resolved)",
+/*403*/ "Host refused connection",
+/*404*/ "Timout on open or close",
+/*405*/ "Connection timed out (keepalive etc.)",
+/*406*/ "Active abort sent from this peer",
+/*407*/ "Timed out due to inactivity",
+/*408*/ "DHCP lease expired",
+/*409*/ "ICMP reported trouble",
+/*410*/ "Protocol error e.g. bad ack number for TCP",
+/*411*/ "Remote peer reset connection",
+/*412*/ "ICMP error",
+/*413*/ "ICMP error",
+/*414*/ "ICMP error",
+/*415*/ "ICMP error",
+/*416*/ "ICMP error",
+/*417*/ "ICMP error",
+/*418*/ "ICMP error",
+/*419*/ "ICMP error",
+/*420*/ "ICMP error",
+/*421*/ "ICMP error",
+/*422*/ "ICMP error",
+/*423*/ "ICMP error",
+/*424*/ "ICMP error",
+/*425*/ "ICMP error",
+/*426*/ "ICMP error",
+/*427*/ "ICMP error",
+/*428*/ "ICMP error",
+/*429*/ "ICMP error",
+/*430*/ "ICMP error",
+/*431*/ "ICMP error",
+/*432*/ "ICMP error",
+/*433*/ "ICMP error",
+/*434*/ "IP address changed",
+/*435*/ "No memory for buffer",
+/*436*/ "IP address conflict detected",
+/*437*/ "Interface down or deactivated",
+/*501*/ "aton2() encountered non-digit in IP address",
+/*502*/ "aton2() encountered decimal field outside 0-255",
+/*503*/ "aton2() encountered delimiter not '.' or ','.",
+/*504*/ "aton2() did not find ']' for '['.",
+/*505*/ "aton2() port number out of range.",
+/*601*/ "watch log full",
+/*602*/ "state machine has invalid state",
+/*603*/ "user program ended",
+/*604*/ "no handles available. Close something",
+/*605*/ "Stack limit violation occurred in user mode",
+/*606*/ "Processor attempted to execute system code while running in user mode",
+/*607*/ "Write protection violation occurred in user mode",
+/*608*/ "User syscall is undefined",
+/*609*/ "No shadow register is associated with the I/O register being accessed",
+/*610*/ "No more tcp or udp sockets are available",
+/*701*/ "Secondary watchdog timeout",
+/*702*/ "Assertion failure",
+/*703*/ "Input compression buffer pool overflow",
+/*704*/ "Output compression buffer pool overflow",
+/*705*/ "Erroneous pointer assignment",
+/*706*/ "Array index out of bounds",
+/*707*/ "Stack corrupted",
+/*708*/ "Stack overflow",
+/*709*/ "Auxiliary stack overflow",
+/*710*/ "Domain error",
+/*711*/ "Range error",
+/*712*/ "Floating point overflow",
+/*713*/ "Long divide by zero",
+/*714*/ "Long zero modulus error",
+/*715*/ "Bad parameter passed to I/O function",
+/*716*/ "Integer divide by zero",
+/*717*/ "Unexpected interrupt",
+/*718*/ "CoData structure trashed",
+/*719*/ "Virtual watchdog timeout",
+/*720*/ "Xmem allocation failed (out of memory).",
+/*721*/ "Stack allocation failed (out of free stacks or size requested too large).",
+/*722*/ "Stack deallocation failed (Stack address invalid).",
+/*723*/ "Xmem allocation initialization failed",
+/*724*/ "No virtual watchdog timers available",
+/*725*/ "No valid MAC address for board",
+/*726*/ "Invalid cofunction instance",
+/*727*/ "Socket must be class 'static' not 'auto'",
+/*728*/ "Attempt to switch to an invalid stack address",
+/*729*/ "An RST 10 occurred but the RST 10 vector is uninitialized",
+/*730*/ "A syscall occurred but the syscall vector is uninitialized",
+/*731*/ "An RST 38 occurred but the RST 38 vector is uninitialized",
+/*732*/ "A slave port interrupt occurred but the slave port vector is uninitialized",
+/*733*/ "A write protect violation occurred but the write protect violation vector is uninitialized",
+/*734*/ "A timer A interrupt occurred but the timer A interrupt vector is uninitialized",
+/*735*/ "A timer B interrupt occurred but the timer B interrupt vector is uninitialized",
+/*736*/ "An interrupt for serial port B occurred but the serial port B vector is uninitialized",
+/*737*/ "An interrupt for serial port C occurred but the serial port C vector is uninitialized",
+/*738*/ "An interrupt for serial port D occurred but the serial port D vector is uninitialized",
+/*739*/ "An external interrupt 0 occurred but the external interrupt 0 vector is uninitialized",
+/*740*/ "An external interrupt 1 occurred but the external interrupt 1 vector is uninitialized",
+/*741*/ "A pulse width modulation interrupt occurred but the pulse width modulation vector is uninitialized",
+/*742*/ "A system mode violation interrupt occurred but the system mode violation vector is uninitialized",
+/*743*/ "A quadrature decoder interrupt occurred but the quadrature decoder vector is uninitialized",
+/*744*/ "An input capture interrupt occurred but the input capture vector is uninitialized",
+/*745*/ "A stack violation interrupt occurred but the stack violation vector is uninitialized",
+/*746*/ "An interrupt for serial port E occurred but the serial port E vector is uninitialized",
+/*747*/ "An interrupt for serial port F occurred but the serial port F vector is uninitialized",
+/*748*/ "The preloaded parallel flash driver made an unknown resource request",
+/*749*/ "Initialization function not called",
+/*750*/ "Library written for a different clock speed"
+};
+
+const unsigned int errmsg_indices[] =
+{
+   0, // Program terminated
+   1, // Operation not permitted
+   2, // No such file or directory
+   5, // I/O error
+   6, // No such device or address
+   7, // Arg list too long, or something else is too big like a string parameter
+   9, // Bad file number
+   11, // Operation would block, try again
+   12, // Out of memory
+   13, // Permission denied
+   14, // Bad address
+   15, // Block device required
+   16, // Device or resource busy
+   17, // File exists
+   19, // No such device
+   20, // Not a directory
+   21, // Is a directory
+   22, // Invalid argument
+   23, // File table overflow
+   24, // Too many open files
+   27, // File too large
+   28, // No space left on device
+   30, // Read-only file system
+   36, // File name too long
+   38, // Function not implemented
+   39, // Directory not empty
+   41, // End of file or directory
+   61, // No data available
+   62, // Timer expired
+   64, // Machine is not on the network
+   67, // Link has been severed
+   70, // Communication error on send
+   71, // Protocol error
+   72, // Multihop attempted
+   74, // Not a data message
+   75, // Value too large for defined data type
+   76, // Name not unique on network
+   77, // File descriptor in bad state
+   84, // Illegal byte sequence
+   85, // Interrupted system call should be restarted
+   87, // Too many users
+   88, // Socket operation on non-socket
+   89, // Destination address required
+   90, // Message too long
+   91, // Protocol wrong type for socket
+   92, // Protocol not available
+   93, // Protocol not supported
+   94, // Socket type not supported
+   95, // Operation not supported on transport endpoint
+   96, // Protocol family not supported
+   97, // Address family not supported by protocol
+   98, // Address already in use
+   99, // Cannot assign requested address
+   100, // Network is down
+   101, // Network is unreachable
+   102, // Network dropped connection because of reset
+   103, // Software caused connection abort
+   104, // Connection reset by peer
+   105, // No buffer space available
+   106, // Transport endpoint is already connected
+   107, // Transport endpoint is not connected
+   108, // Cannot send after transport endpoint shutdown
+   109, // Too many references: cannot splice
+   110, // Connection timed out
+   111, // Connection refused
+   112, // Host is down
+   113, // No route to host
+   114, // Operation already in progress
+   115, // Operation now in progress
+   122, // Quota exceeded
+   123, // No medium found
+   124, // Wrong medium type
+   201, // Bad sequence number in file
+   202, // Unexpected end-of-chain in file
+   203, // Not a data block (B-block)
+   204, // Bad file number in file
+   236, // FAT mutex error
+   301, // Root directory full
+   302, // Not partitioned
+   303, // Partition bad or unrecognized
+   304, // Partition or volume not formatted
+   305, // Bad type
+   306, // Bad file/dir path string
+   307, // Block marked bad on the device
+   308, // Error detected in read data
+   309, // Driver level is busy, new write not started
+   310, // Cannot flush enough entries from cache to perform next read.
+   311, // Parameter mismatch when registering a device.
+   312, // Ddevice not registered when _fatwtc_devwrite called.
+   313, // Not writing full physical sector in _fatwtc_devwrite.
+   314, // Rollback journal overflow.  Transaction requires too much data to be stored.
+   315, // fatrj_transtart() called with transaction already open.
+   316, // Internal error: a tied cache group is in an inconsistent state.
+   317, // fatrj_setchk() called without transaction being open.
+   318, // Transaction cannot contain both checkpoint and marker data.
+   319, // File is in an invalid state.  Probably because the FATfile structure was not zero when opened for the first time.
+   320, // Partition is in an invalid state.  This occurs if you are trying to delete a file when another file is being allocated, or vice versa
+   321, // FAT filesystem appears to be corrupted
+   400, // No network error
+   401, // Local host not reachable (ARP could not resolve)
+   402, // Host not reachable (Router not resolved)
+   403, // Host refused connection
+   404, // Timout on open or close
+   405, // Connection timed out (keepalive etc.)
+   406, // Active abort sent from this peer
+   407, // Timed out due to inactivity
+   408, // DHCP lease expired
+   409, // ICMP reported trouble
+   410, // Protocol error e.g. bad ack number for TCP
+   411, // Remote peer reset connection
+   412, // ICMP error
+   413, // ICMP error
+   414, // ICMP error
+   415, // ICMP error
+   416, // ICMP error
+   417, // ICMP error
+   418, // ICMP error
+   419, // ICMP error
+   420, // ICMP error
+   421, // ICMP error
+   422, // ICMP error
+   423, // ICMP error
+   424, // ICMP error
+   425, // ICMP error
+   426, // ICMP error
+   427, // ICMP error
+   428, // ICMP error
+   429, // ICMP error
+   430, // ICMP error
+   431, // ICMP error
+   432, // ICMP error
+   433, // ICMP error
+   434, // IP address changed
+   435, // No memory for buffer
+   436, // IP address conflict detected
+   437, // Interface down or deactivated
+   501, // aton2() encountered non-digit in IP address
+   502, // aton2() encountered decimal field outside 0-255
+   503, // aton2() encountered delimiter not '.' or ','.
+   504, // aton2() did not find ']' for '['.
+   505, // aton2() port number out of range.
+   601, // watch log full
+   602, // state machine has invalid state
+   603, // user program ended
+   604, // no handles available. Close something
+   605, // Stack limit violation occurred in user mode
+   606, // Processor attempted to execute system code while running in user mode
+   607, // Write protection violation occurred in user mode
+   608, // User syscall is undefined
+   609, // No shadow register is associated with the I/O register being accessed
+   610, // No more tcp or udp sockets are available
+   701, // Secondary watchdog timeout
+   702, // Assertion failure
+   703, // Input compression buffer pool overflow
+   704, // Output compression buffer pool overflow
+   705, // Erroneous pointer assignment
+   706, // Array index out of bounds
+   707, // Stack corrupted
+   708, // Stack overflow
+   709, // Auxiliary stack overflow
+   710, // Domain error
+   711, // Range error
+   712, // Floating point overflow
+   713, // Long divide by zero
+   714, // Long zero modulus error
+   715, // Bad parameter passed to I/O function
+   716, // Integer divide by zero
+   717, // Unexpected interrupt
+   718, // CoData structure trashed
+   719, // Virtual watchdog timeout
+   720, // Xmem allocation failed (out of memory).
+   721, // Stack allocation failed (out of free stacks or size requested too large).
+   722, // Stack deallocation failed (Stack address invalid).
+   723, // Xmem allocation initialization failed
+   724, // No virtual watchdog timers available
+   725, // No valid MAC address for board
+   726, // Invalid cofunction instance
+   727, // Socket must be class 'static', not 'auto'
+   728, // Attempt to switch to an invalid stack address
+   729, // An RST 10 occurred, but the RST 10 vector is uninitialized
+   730, // A syscall occurred, but the syscall vector is uninitialized
+   731, // An RST 38 occurred, but the RST 38 vector is uninitialized
+   732, // A slave port interrupt occurred, but the slave port vector is uninitialized
+   733, // A write protect violation occurred, but the write protect violation vector is uninitialized
+   734, // A timer A interrupt occurred, but the timer A interrupt vector is uninitialized
+   735, // A timer B interrupt occurred, but the timer B interrupt vector is uninitialized
+   736, // An interrupt for serial port B occurred, but the serial port B vector is uninitialized
+   737, // An interrupt for serial port C occurred, but the serial port C vector is uninitialized
+   738, // An interrupt for serial port D occurred, but the serial port D vector is uninitialized
+   739, // An external interrupt 0 occurred, but the external interrupt 0 vector is uninitialized
+   740, // An external interrupt 1 occurred, but the external interrupt 1 vector is uninitialized
+   741, // A pulse width modulation interrupt occurred, but the pulse width modulation vector is uninitialized
+   742, // A system mode violation interrupt occurred, but the system mode violation vector is uninitialized
+   743, // A quadrature decoder interrupt occurred, but the quadrature decoder vector is uninitialized
+   744, // An input capture interrupt occurred, but the input capture vector is uninitialized
+   745, // A stack violation interrupt occurred, but the stack violation vector is uninitialized
+   746, // An interrupt for serial port E occurred, but the serial port E vector is uninitialized
+   747, // An interrupt for serial port F occurred, but the serial port F vector is uninitialized
+   748, // The preloaded parallel flash driver made an unknown resource request
+   749, // Initialization function not called
+   750, // Library written for a different clock speed
+};
+
+#define errmsg_size (sizeof(errmsg_indices) / sizeof(errmsg_indices[0]))
+nodebug root unsigned long error_message(int message)
+{
+	auto int guess_index; //< For searching index.
+   // Interval : [lowest, highest)
+   auto int lowest;
+   auto int highest;
+   auto int guess;
+   auto unsigned long actual_address;
+
+   // First take the absolute value of message.
+   if (message < 0) {
+		message = -message;
+   }
+
+   if (message > errmsg_indices[errmsg_size - 1]) {
+   	return 0;
+   }
+   // Let's play guess the number.
+   lowest = 0;
+   highest = errmsg_size;
+   guess_index = errmsg_size / 2;
+   while (1) {
+   	guess = errmsg_indices[guess_index];
+      if (highest - lowest <= 1 && guess != message) {
+         return 0;
+      }
+      if (guess < message) {
+         lowest = guess_index;
+      }
+      else if (guess > message) {
+         highest = guess_index;
+      }
+      else {
+         break; // guess_index is the correct index.
+      }
+      guess_index = (lowest + highest) / 2;
+   }
+   xmem2root(&actual_address,
+             errmsg_xstrings + sizeof(unsigned long)*guess_index,
+             sizeof(unsigned long));
+
+   return actual_address;
+}

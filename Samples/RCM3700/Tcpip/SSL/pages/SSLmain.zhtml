@@ -1,0 +1,31 @@
+<!Main page for SSL LED demo>
+<HTML> 
+<HEAD>
+<TITLE>SSL Sample</TITLE>
+</HEAD>
+<BODY>
+
+<b>LED Status</b>
+<br>
+LED 1 :
+<?z if($LED01==0) { ?>
+ OFF
+<?z } ?>
+<?z if($LED01==1) { ?>
+ ON
+<?z } ?>
+<br>
+LED 1 :
+<?z if($LED02==0) { ?>
+ OFF
+<?z } ?>
+<?z if($LED02==1) { ?>
+ ON
+<?z } ?>
+
+
+<br><br><br>
+<A HREF="https://10.10.6.206/admin/index.zhtml">Change LEDS</A>
+
+</BODY>
+</HTML>

@@ -1,0 +1,10 @@
+
+GET
+   ASCII mode usage: "get <filename>"
+   The contents of the file <filename> will be printed
+   to the console.
+
+   BINARY mode usage: "get <filename> <size>"
+   The message "LENGTH <len>" will be sent to the console, 
+   indicating length of the file <filename>, followed
+   by <size> bytes of that file.

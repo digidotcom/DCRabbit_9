@@ -1,0 +1,6 @@
+
+Available commands: (type "help <command>" for more info)
+echo	- Turn on or off echoing of characters.
+set	- Configure various options.
+show	- Show current configuration.
+help	- This help screen.

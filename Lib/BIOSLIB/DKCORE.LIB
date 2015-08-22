@@ -1,0 +1,3372 @@
+/*** BeginHeader */
+#ifndef __DKCORE_LIB
+#define __DKCORE_LIB
+/*** EndHeader */
+
+
+
+/*** BeginHeader dkStatusFlags, dkRequest, dkAckToSend, dkStepFlags,
+					  dkSendFlags, dkptrASMbuf, dkASMbuf, dkRegisters, dkNextAddress,
+					  dkBreakAddress, dkEntryCount, dkLastAsmStart, dkLastAsmEnd,
+					  dkLocks, dkRST28State, dkRT20State, rstvectorreturn, dkSUval,
+                 dkBDCRHandle */
+
+
+#define TC_TYPE_DEBUG						0x01
+
+#define TC_DEBUG_NOREQUEST					0x00
+#define TC_DEBUG_SINGLESTEP				0x01
+#define TC_DEBUG_TOGGLEBREAKPOINT		0x02
+#define TC_DEBUG_CLEARBREAKPOINTS		0x03
+#define TC_DEBUG_TOGGLEALLBREAKPOINTS	0x04
+#define TC_DEBUG_ATBREAKPOINT				0x05
+#define TC_DEBUG_STARTPROGRAM				0x06		// start from beginning
+#define TC_DEBUG_RUNPROGRAM				0x07		// only stop for breakpoints
+#define TC_DEBUG_STOPPROGRAM				0x08		// stop running program
+#define TC_DEBUG_ADDWATCH					0x09
+#define TC_DEBUG_DELETEWATCH				0x0a
+#define TC_DEBUG_DELETEALLWATCHES		0x0b
+#define TC_DEBUG_EXECWATCH					0x0c
+#define TC_DEBUG_EXECALLWATCHES			0x0d
+#define TC_DEBUG_SENDCHAR					0x0e
+#define TC_DEBUG_RESET						0x0f
+#define TC_DEBUG_SETSENDFLAGS          0x10
+#define TC_DEBUG_REGDATA               0x11
+#define TC_DEBUG_WATCHDATA             0x12
+#define TC_DEBUG_ASMDATA               0x13
+#define TC_DEBUG_STACKDATA             0x14
+#define TC_DEBUG_STDIO						0x15
+#define TC_DEBUG_WRITEREGDATA				0x16
+#define TC_DEBUG_STDIOCHARREADY			0x17
+#define TC_DEBUG_NOOP						0x18
+#define TC_DEBUG_ENABLEDOPTIONS			0x19
+#if (DK_ENABLE_TRACING == 1)
+#define TC_DEBUG_TRACEMSG					0x1a
+#define TC_DEBUG_SETTRACEFLAGS			0x1b
+#endif
+#if (DK_ENABLE_STACK_TRACING == 1)
+#define TC_DEBUG_WRITESTACKSIZE        0x1c
+#define TC_DEBUG_STACKTRACEDATA        0x1d
+#endif
+
+// debug kernel single step flags
+#define DKF_STEP_INTO					0
+#define DKF_STEP_OVER					1
+#define DKF_STEP_ASM						2
+#define DKF_STEP_SOURCE					3
+#define DKF_STEP_CALL					4
+#define DKF_STEP_LCALL					5
+
+// debug kernel status flags
+#define DKF_STAT_AT_BP					0
+#define DKF_STAT_AT_HARD_BP			1
+#define DKF_STAT_RUNMODE				2
+#define DKF_STAT_STEPMODE				3
+#define DKF_STAT_ASMSTEPMODE			4
+#define DKF_STAT_ATEXIT					5
+#define DKF_STAT_CONTEXTSWITCH		6			// currently used only for ucos
+#define DKF_STAT_INWATCH				7
+
+#if (DK_ENABLE_TRACING == 1)
+// debug kernel trace flags
+#define DKF_TRACE_FULL              0
+#define DKF_TRACE_WATCH             1
+#define DKF_TRACE_MACRO             2
+#define DKF_TRACE_RST               3
+#define DKF_TRACE_FENTRY            4
+#define DKF_TRACE_FEXIT             5
+#define DKF_TRACE_INIT              6
+#define DKF_TRACE_ON                7
+
+#define DKF_TRACERESET_FUNC         0
+
+//  bytes,  cycles
+#if _USER
+   #define _TRACE    asm push  af                        $\
+                         push  hl                        $\
+                         push  bc                        $\
+                         push  de                        $\
+                         exx                             $\
+                         push  hl                        $\
+                         push  bc                        $\
+                         push  de                        $\
+                         ld    hl,dkSendFlags            $\
+                         set   DKF_SEND_STATUS,(hl)      $\
+                         set   DKF_SEND_TRACE,(hl)       $\
+                         ld    hl,dkTraceFlags           $\
+                         set   DKF_TRACE_MACRO,(hl)      $\
+                         call  dkEnableRST28					$\
+                         rst   0x28                      $\
+                         ld    a,(dkRST28State)          $\
+                         cp	 _OP_JP                    $\
+                         jr    @pc+6                     $\
+                         lcall dkDisableRST28            $\
+                         pop   de                        $\
+                         pop   bc                        $\
+                         pop   hl                        $\
+                         exx                             $\
+                         pop   de                        $\
+                         pop   bc                        $\
+                         pop   hl                        $\
+                         pop   af
+#else
+   #define _TRACE    asm push  af                        $\
+                         push  hl                        $\
+                         ld    hl,dkSendFlags            $\
+                         set   DKF_SEND_STATUS,(hl)      $\
+                         set   DKF_SEND_TRACE,(hl)       $\
+                         ld    hl,dkTraceFlags           $\
+                         set   DKF_TRACE_MACRO,(hl)      $\
+                         ld    a,_OP_JP                  $\
+                         ld    (INTVEC_BASE+RST28_OFS),a $\
+                         rst   0x28                      $\
+                         ld    a,(dkRST28State)          $\
+                         ld    (INTVEC_BASE+RST28_OFS),a $\
+                         pop   hl                        $\
+                         pop   af
+#endif
+
+// 13 bytes, 40 cycles
+#define _TRACEON  asm lcall dkSetTraceOn
+
+// 6 bytes, 24 cycles
+#define _TRACEOFF asm lcall dkSetTraceOff
+
+#else
+#define _TRACE
+#define _TRACEON
+#define _TRACEOFF
+#endif
+
+//#define DK_SEND_STACK_LENGTH			32
+#define DK_SEND_ASM_LENGTH				256 - TC_HEADER_RESERVE
+//debug kernel send flags
+#define DKF_SEND_STACK		 0
+#define DKF_SEND_WATCHES	 1
+#define DKF_SEND_ASM			 2
+#define DKF_SEND_REGS		 3
+#define DKF_SEND_STATUS		 4
+#define DKF_SEND_ACK			 5
+#if (DK_ENABLE_TRACING == 1)
+#define DKF_SEND_TRACE		 6
+#endif
+#if (DK_ENABLE_STACK_TRACING == 1)
+#define DKF_SEND_STACKTRACE 7
+#endif
+
+// debug kernel error messages for unsupported commands
+// these are returned to dc when dc makes a request that
+// has been compiled out of the debug kernel
+#define DK_ERROR_BPNOTENABLED							0xff
+#define DK_ERROR_ASMSINGLESTEPNOTENABLED			0xfe
+#define DK_ERROR_WATCHNOTENABLED						0xfd
+
+#define DKF_STDIO_LOCK		0
+#define DKF_GETCHAR_LOCK	1
+#define DKF_RESET_LOCK		2
+#define DKF_DK_LOCK			3
+#define DK_STDIO_TIMEOUT	100
+#define DK_GETCHAR_TIMEOUT	100
+
+#define  dkIOI		0xD3
+#define  dkIOE		0xDB
+#define  dkALTD	0x76
+
+#define	DK_RST20 0xe7
+#define	DK_RST28 0xef
+
+// Z = esc or 4 byte instruction
+// S = single byte instruction
+// D = double byte instruction
+// T = triple byte instruction
+
+#define	dkZZ		0x0
+#define	dkZS		0x1
+#define	dkZD		0x2
+#define	dkZT		0x3
+#define 	dkSZ		0x4
+#define	dkSS		0x5
+#define  dkSD		0x6
+#define 	dkST		0x7
+#define	dkDZ		0x8
+#define 	dkDS		0x9
+#define	dkDD		0xa
+#define  dkDT		0xb
+#define	dkTZ		0xc
+#define	dkTS		0xd
+#define	dkTD		0xe
+#define	dkTT		0xf
+
+struct __dkregisters
+{
+	unsigned int	_sp;
+	unsigned int	_xpc;
+	unsigned int	_afPrime;
+	unsigned int	_bcPrime;
+	unsigned int	_dePrime;
+	unsigned int	_hlPrime;
+	unsigned int	_af;
+	unsigned int	_bc;
+	unsigned int	_de;
+	unsigned int	_hl;
+	unsigned int	_ix;
+	unsigned int	_iy;
+	unsigned char	_ip;
+	unsigned int	_pc;
+};
+
+#if (DK_ENABLE_STACK_TRACING == 1)
+struct __dkStackTraceMsg
+{
+   uint16 _size;
+   uint16 _maxSize;
+   uint16 _sp;
+   uint16 _xpc;
+   uint16 _pc;
+};
+#endif
+
+#if (DK_ENABLE_TRACING == 1)
+#define DK_TRACEMSG_FULL   0x01
+#define DK_TRACEMSG_FUNC   0x02
+
+struct __dkTrace
+{
+   uint8 flags;
+};
+
+#define DK_TRACE_RUNNING   0
+#define DK_TRACE_STEPPING  1
+#define DK_TRACEMSG_MACRO  2
+#define DK_TRACEMSG_RST    3
+#define DK_TRACEMSG_FENTRY 4
+#define DK_TRACEMSG_FEXIT  5
+#define DK_TRACE_FUNCRESET 7
+
+struct __dkDebugTraceMsg
+{
+   uint8 type;
+   struct __dkregisters registers;
+};
+
+struct __dkTraceCalls
+{
+	uint8  _xpc;
+   uint16 pretrace;
+   uint16 posttrace;
+   uint16 traceon;
+   uint16 traceoff;
+};
+#endif
+
+struct __dkaddress
+{
+	unsigned int  offset;
+	unsigned char xpc;
+};
+
+struct __dkbreakpoint
+{
+	unsigned long addr;
+	char	 		  flags;
+	int	 		  (*condition)();
+};
+
+#define DK_MAX_WATCHES _DK_MAX_WATCHES_			// must not be greater than 256
+
+struct __dkwatch
+{
+	TypedArg WatchResult;
+	unsigned long Address;
+	unsigned short Size;
+};
+
+#if (DK_ENABLE_TRACING == 1)
+extern unsigned int				dkTraceCount;
+extern char							dkTraceFlags;
+#endif
+extern char							dkStatusFlags;
+//extern char							dkInBiosStack;
+extern char							dkSendFlags;
+extern char 						dkRequest;
+extern char 						dkAckToSend;
+extern char 						dkStepFlags;
+extern char*						dkptrASMbuf;
+extern char		 					dkASMbuf[20];
+extern struct __dkregisters 	dkRegisters;
+#if (DK_ENABLE_TRACING == 1)
+extern struct __dkTrace 			dkTrace;
+extern struct __dkDebugTraceMsg	dkDebugTraceMsg;
+#endif
+extern struct __dkaddress		dkNextAddress;
+extern struct __dkaddress		dkBreakAddress;
+extern struct __dkbreakpoint	dkBreakPoint;
+extern int dkEntryCount;
+#if (DK_ENABLE_STACK_TRACING == 1)
+extern unsigned int dkStackTop;
+extern unsigned int dkStkAddrToSend;
+extern struct __dkStackTraceMsg	dkStackTraceMsg;
+#endif
+extern unsigned int dkLastAsmStart;
+extern unsigned int dkLastAsmEnd;
+extern char dkLocks;
+#if (DK_ENABLE_STACK_TRACING == 1)
+extern char dkUCos;
+#endif
+extern char dkRST28State;
+extern char dkRST20State;
+
+extern int rstvectorreturn;
+extern char dkSUval;
+#if __RABBITSYS
+extern handle dkBDCRHandle;
+#endif
+/*** EndHeader */
+
+#if (DK_ENABLE_TRACING == 1)
+unsigned int				dkTraceCount;
+char                    dkTraceFlags;
+#endif
+char							dkStatusFlags;
+//char							dkInBiosStack;
+char							dkSendFlags;
+char 							dkRequest;
+char 							dkAckToSend;
+char 							dkStepFlags;
+char*							dkptrASMbuf;
+char		 					dkASMbuf[20];
+struct __dkregisters 	dkRegisters;
+struct __dkaddress		dkNextAddress;
+struct __dkaddress		dkBreakAddress;
+struct __dkbreakpoint	dkBreakPoint;
+#if (DK_ENABLE_TRACING == 1)
+struct __dkTrace 				dkTrace;
+struct __dkDebugTraceMsg	dkDebugTraceMsg;
+#endif
+int dkEntryCount;
+unsigned int dkLastAsmStart;
+unsigned int dkLastAsmEnd;
+#if (DK_ENABLE_STACK_TRACING == 1)
+unsigned int dkStackTop;
+unsigned int dkStkAddrToSend;
+struct __dkStackTraceMsg dkStackTraceMsg;
+#endif
+char dkLocks;
+#if (DK_ENABLE_STACK_TRACING == 1)
+char dkUCos;
+#endif
+char dkRST28State;
+char dkRST20State;
+
+int rstvectorreturn;
+char dkSUval;
+#if __RABBITSYS
+	handle dkBDCRHandle;
+#endif
+/*** BeginHeader dkCheckEntry */
+xmem void dkCheckEntry(void);
+/*** EndHeader */
+#asm xmem
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; destroys af, af should be saved prior to calling
+dkCheckEntry::
+	push	hl
+	ld		hl,dkLocks
+	bit	DKF_DK_LOCK,(hl)
+	set	DKF_DK_LOCK,(hl)
+	pop	hl
+	lret
+#endasm
+
+/*** BeginHeader dkSaveContext */
+root void dkSaveContext(void);
+/*** EndHeader */
+#asm root
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Save all registers into a structure.
+dkSaveContext::
+	push	af										; pad for pc
+	push	ip
+	push	iy
+	push	ix
+	push	hl
+	push	de
+	push	bc
+	push	af
+	exx
+	ex		af,af'
+	push	hl
+	push	de
+	push	bc
+	push	af
+	push	af										; pad for xpc
+	push	af										; pad for sp
+#if 1
+#if _RK_FIXED_VECTORS
+	ld		hl, 31+3									; 27 + 4 (accounts for call & rst) + 3 (adjust for xpc call as well)
+#else
+	ld		hl, 31
+#endif
+#else
+#if _RK_FIXED_VECTORS
+	ld		hl, 33+3									; 27 + 4 (accounts for call & rst) + 3 (adjust for xpc call as well)
+#else
+	ld		hl, 33
+#endif
+#endif
+	add	hl,sp
+	ld		ix,dkRegisters+__dkregisters+_sp
+	ld		(ix),hl								; save sp into register structure
+	bool  hl
+	ld    l, h									; zero hl
+	add	hl,sp
+	inc	hl
+	inc	hl
+	ld		de,dkRegisters+__dkregisters+_xpc
+	ld		bc,__dkregisters+@LENGTH-2
+	ldir
+
+	ld		hl,__dkregisters+@LENGTH
+	add	hl,sp
+	ld		sp,hl									; unwind stack
+
+	ret
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#endasm
+
+
+/*** BeginHeader dkSavepc */
+xmem void dkSavepc(void);
+/*** EndHeader */
+#asm xmem
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Save xpc:pc of next instruction to execute into appropriate
+; position in register structure
+dkSavepc::
+	ld		hl,(dkNextAddress+__dkaddress+xpc)
+	ld		h,0
+	ld		(dkRegisters+__dkregisters+_xpc),hl
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	ld		(dkRegisters+__dkregisters+_pc),hl
+	lret
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#endasm
+
+/*** BeginHeader dkPollSerialPort */
+xmem void dkPollSerialPort();
+/*** EndHeader */
+
+#asm xmem nodebug
+dkPollSerialPort::
+	push	ip
+	push 	ip
+	pop	hl				; put ip into hl
+	ld		a,l
+	and	3				; check if current interrupt priority is > 0
+	jr		z,__dk_pspexit
+
+	push	ip
+	; dkDoHook is a root function that saves the xpc, calls the desired function
+	; which may modify the xpc, and restores the xpc prior to returning.
+	ld		hl,dkcDoSerial
+	call	dkDoHook
+	pop	ip
+
+__dk_pspexit:
+	lret
+#endasm
+
+/*** BeginHeader dkSavepcrst2028, dkCore */
+root void dkSavepcrst2028(void);
+xmem void dkCore(void);
+/*** EndHeader */
+
+xmem void dkSendStatus(void);
+
+#asm root
+dkSavepcrst2028::
+	; pc pushed on stack when rst encountered
+	#if _RK_FIXED_VECTORS
+	ld		hl,(sp+5)	; adjust for xmem relay
+	#else
+	ld		hl,(sp+2)
+	#endif
+	ld		(dkNextAddress+__dkaddress+offset),hl
+	#if _RK_FIXED_VECTORS
+	; get xpc from stack since the interrupt relay trashed the original one
+	ld		hl,(sp+4)
+	ld    a, l
+	#else
+	ld		a,xpc
+	#endif
+	ld		(dkNextAddress+__dkaddress+xpc),a
+
+	call	dkSavepc
+	ret
+#endasm
+
+#asm xmem
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+dkCore::
+#if _USER
+	call	_sys_dk_pollserialport
+#else
+	call	bioshitwd
+	lcall	dkPollSerialPort
+#endif
+
+	ld		a,(dkSendFlags)					; send target information to DC only if
+	bit	DKF_SEND_STATUS,a					; send status flag is set
+	jr		z,__dk_get_command
+	ljp	dkSendStatus						; send target information to DC
+__dk_sendstatusret::
+	push	ip
+	ipset	1
+	ld		a,(dkSendFlags)
+	res	DKF_SEND_STATUS,a
+#if (DK_ENABLE_TRACING == 1)
+   res	DKF_SEND_TRACE,a
+#endif
+	ld		(dkSendFlags),a
+	pop	ip
+
+__dk_get_command:
+	ld		a,(dkRequest)						; if DC has sent a command, handle it
+	cp		TC_DEBUG_NOREQUEST
+	jp		nz,__dk_core_handle_command
+
+#if _USER
+	ld		a,(dkStatusFlags)
+   bit	DKF_STAT_ATEXIT,a
+   jr		z,.checkrunmode
+	lcall _sys_dk_startuserprog
+#endif
+
+#if __RABBITSYS == 0
+	ld		a,(dkStatusFlags)
+   bit	DKF_STAT_ATEXIT,a
+   jr		z,.checkrunmode
+   jp		StartUserCode
+#endif
+
+.checkrunmode:
+	ld		a,(dkStatusFlags)					; if no command is sent, and we're in run mode, return to
+	bit	DKF_STAT_RUNMODE,a				; user program
+#if (DK_ENABLE_TRACING == 1)
+   jr		z,__dk_tracingautostep
+   ld		hl,dkTraceFlags
+	res	DKF_TRACE_MACRO,(hl)
+   ld		a,(dkRST28State)              ; restore RST28 vector to ret or jp
+	cp		_OP_JP
+   jr		z,__dk_ssr_enablerst28
+   lcall	dkDisableRST28
+   jr		__dk_ssr_setrst28done
+__dk_ssr_enablerst28:
+	lcall	dkEnableRST28
+__dk_ssr_setrst28done:
+   jp		dkRestoreContext
+#else
+	jr		z,dkCore
+#endif
+	ld		a,(dkRST28State)					; restore RST28 vector to ret or jp
+   cp		_OP_JP
+   jr		z,__dk_corerst28enable
+   lcall	dkDisableRST28
+   jr		__dk_corerst28done
+__dk_corerst28enable:
+   lcall	dkEnableRST28
+__dk_corerst28done:
+	jp		dkRestoreContext
+
+#if (DK_ENABLE_TRACING == 1)
+__dk_tracingautostep:
+   ld		hl,dkTraceFlags
+   bit	DKF_TRACE_MACRO,(hl)
+	res	DKF_TRACE_MACRO,(hl)
+	jp		nz,dkRestoreContext
+   ld		a,(dkStatusFlags)
+   bit	DKF_STAT_STEPMODE,a
+   jp		z,dkCore
+   ld		a,(dkStepFlags)
+   bit	DKF_STEP_OVER,a
+   jp		z,dkCore
+   ld		hl,(dkEntryCount)
+   bool	hl
+   jp		z,dkCore
+
+   ld    a,(dkSendFlags)
+   set   DKF_SEND_STATUS,a
+   ld    (dkSendFlags),a
+
+   jp  dkRestoreContext
+#endif
+
+__dk_core_handle_command:
+	cp		TC_DEBUG_SINGLESTEP
+	jr		nz,__dk_notss
+	ljp	dkSingleStep
+__dk_notss:
+	cp		TC_DEBUG_RUNPROGRAM
+	jr		nz,__dk_notrun
+	ljp	dkRunProgram
+__dk_notrun:
+	cp		TC_DEBUG_STOPPROGRAM
+	jr		nz,__dk_notstop
+	ljp	dkStopProgram
+__dk_notstop:
+	cp		TC_DEBUG_STARTPROGRAM
+	jr		nz,__dk_notstart
+	ljp	dkStartProgram
+__dk_notstart:
+#if (DK_ENABLE_WATCHEXPRESSIONS == 1)
+	cp		TC_DEBUG_EXECWATCH
+	jr		nz,__dk_notexecwatch
+	ljp	dkExecuteWatch
+__dk_notexecwatch:
+	cp		TC_DEBUG_EXECALLWATCHES
+	jr		nz,__dk_notexecwatches
+	ljp	dkExecuteAllWatches
+__dk_notexecwatches:
+#endif
+	ljp	dkCore
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#endasm
+
+#asm xmem
+dkSendStatus::
+	; send debug info back to dc based on flags set
+	ld		a,(dkSendFlags)					; get send flags into a
+	or		a
+	jp		z,__dk_exitsendstatus			; exit if no flags are set
+
+	ld		a,(dkSendFlags)					; get send flags into a
+	bit	DKF_SEND_REGS,a					; check if registers should be sent
+	jr		z,__dk_noregsend					; skip if bit not set
+
+	ld		hl,dkRegisters						; hl has pointer to reg struct
+	ld		bc,sizeof(dkRegisters)			; bc has length of reg struct
+	ld		d,TC_TYPE_DEBUG					; d has packet type
+	ld		e,TC_DEBUG_REGDATA				; e has packet subtype
+
+   call 	dkRespond							; send packet
+
+__dk_noregsend:
+	ld		a,(dkSendFlags)					; get send flags into a
+	bit   DKF_SEND_STACK,a					; check if stack should be sent
+	jp		z,__dk_nostacksend				; skip if bit not set
+   ld		hl,(dkRegisters+__dkregisters+_sp)
+	ld		bc,0x20
+	ld		d,TC_TYPE_DEBUG					; d has packet type
+	ld		e,TC_DEBUG_STACKDATA				; e has packet subtype
+	call	dkRespond							; send packet
+
+__dk_nostacksend:
+#if (DK_ENABLE_WATCHEXPRESSIONS == 1)
+	ld		a,(dkSendFlags)					; get send flags into a
+	bit	DKF_SEND_WATCHES,a				; check if watches should be sent
+	jr		z,__dk_nowatchsend				; skip if bit not set
+	jp		dkExecuteAllWatches				; run the watches prior to sending table
+__dk_eawret::
+	ld		hl,dkWatchTable					; hl has pointer to watchtable
+	ld		bc,sizeof(dkWatchTable)			; bc has length of watchtable
+	ld		d,TC_TYPE_DEBUG					; d has packet type
+	ld		e,TC_DEBUG_WATCHDATA				; e has packet subtype
+
+	call	dkRespond							; send packet
+#endif
+__dk_nowatchsend:
+#if (DK_ENABLE_TRACING == 1)
+	ld		hl,dkTraceFlags
+   bit	DKF_TRACE_WATCH,(hl)
+   res	DKF_TRACE_WATCH,(hl)
+   jr		z,__dk_tracesendcont
+   lret                        ; dkExecuteAllWatches called from dkSetTraceFlags
+__dk_tracesendcont:
+   ld    hl,dkDebugTraceMsg
+   lcall  dkSendTrace
+	ld		hl,dkTraceFlags
+   bit	DKF_TRACE_FENTRY,(hl)
+   res	DKF_TRACE_FENTRY,(hl)
+   res	DKF_TRACE_FEXIT,(hl)
+   jr		nz,__dk_tracesendcont    ; now repeat Entry trace with Execute or MACRO
+   res	DKF_TRACE_RST,(hl)
+#endif
+
+__dk_exitsendstatus:
+#if (DK_ENABLE_TRACING == 1)
+   ld  a,(dkStatusFlags)
+   bit DKF_STAT_STEPMODE,a
+   jr  z,__dk_exitsendstatus01
+
+   ld  a,(dkStepFlags)
+   bit DKF_STEP_OVER,a
+   jr  z,__dk_exitsendstatus01
+
+   ld  hl,(dkEntryCount)
+   bool hl
+   jr  nz,__dk_noacksend
+
+__dk_exitsendstatus01:
+   ld		a,(dkTraceFlags)
+   bit	DKF_TRACE_MACRO,a
+   jr		nz,__dk_noacksend
+#endif
+	ld		a,(dkSendFlags)               ; get send flags into a
+   bit   DKF_SEND_ACK,a                ; check if last command needs to be acked
+   jr    z,__dk_noacksend              ; skip if bit not set
+
+   res   DKF_SEND_ACK,a                ; clear the send ack bit
+   ld    (dkSendFlags),a               ; save send flags
+   ld    a,(dkAckToSend)               ; get command to ack
+   or    TC_ACK                        ; set ack bit
+	ld		e,a
+	ld		bc,0
+	call	dkRespond
+   xor   a                             ; clear a
+   ld    (dkAckToSend),a               ; clear ack to send
+
+__dk_noacksend:
+	ljp 	__dk_sendstatusret
+#endasm
+
+/*** BeginHeader dkStartProgram */
+xmem void dkStartProgram(void);
+/*** EndHeader */
+#asm xmem
+dkStartProgram::
+
+#if _USER
+	call dkResetBreakpoints
+#endif
+
+	; push StartUserCode address onto stack, restore context,
+	; and return to start the user program.
+
+	ld		a,(dkSendFlags)					; get send flags into a
+	set	DKF_SEND_STATUS,a
+	ld		(dkSendFlags),a					; save send flags
+
+	xor	a										; clear a
+	ld		(dkRequest),a						; clear request
+	ld		hl,startupcode+3							; load hl with addr to start running from
+	ld		(dkRegisters+__dkregisters+_pc),hl	; set pc to start address
+	jp		dkRestoreContext							; restore context and jump to start of program
+#endasm
+
+/*** BeginHeader dkRunProgram */
+xmem void dkRunProgram(void);
+/*** EndHeader */
+#asm xmem
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Clear all flags.  Set run mode flag so that debug kernel will
+; let user program continue to run until DC requests the program
+; be stopped
+dkRunProgram::
+	xor	a
+	ld		(dkRequest),a
+   ld		(dkStepFlags),a
+	ld		a,(dkStatusFlags)
+	set	DKF_STAT_RUNMODE,a
+	res	DKF_STAT_STEPMODE,a
+	res	DKF_STAT_AT_BP,a
+	res	DKF_STAT_AT_HARD_BP,a
+	ld		(dkStatusFlags),a
+	jp		dkRestoreContext
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#endasm
+
+/*** BeginHeader dkStopProgram */
+xmem void dkStopProgram(void);
+/*** EndHeader */
+#asm xmem
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Clear run mode flag so that debug kernel will not allow user
+; program to continue running.
+dkStopProgram::
+	xor	a
+	ld		(dkRequest),a
+	ld		a,(dkStatusFlags)
+	res	DKF_STAT_RUNMODE,a		; clear run mode flag
+	res	DKF_STAT_STEPMODE,a
+	ld		(dkStatusFlags),a
+	ld		a,(dkSendFlags)
+	set	DKF_SEND_STATUS,a			; send status back to dc
+	ld		(dkSendFlags),a
+	ljp	dkCore
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#endasm
+
+///////////////////////////////////////////////////////////////
+/*			Breakpoint handling											 */
+///////////////////////////////////////////////////////////////
+
+/*** BeginHeader dkBPTableFindEmpty, dkBPTableFindBP, dkToggleBreakpoint,
+	  dkClearBPTable, dkToggleAllBreakpoints, dkBPTable, dkResetBreakpoints */
+
+xmem void dkBPTableFindEmpty(void);
+xmem void dkBPTableFindBP(void);
+xmem void dkToggleBreakpoint(void);
+xmem void dkClearBPTable(void);
+xmem void dkToggleAllBreakpoints(void);
+xmem void dkResetBreakpoints(void);
+
+// breakpoint bit flags, number corresponds to
+// bit position set if flag is on
+#define DKF_BP_INACTIVE		0
+#define DKF_BP_ACTIVE		1
+#define DKF_BP_DELETED		2
+#define DKF_BP_CONDITIONAL 3
+#define DKF_BP_HARD			4
+
+// internal breakpoint handling flags
+#define DKF_BP_INSERT		0
+#define DKF_BP_FOUND			1
+#define DKF_BP_NOTFOUND		2
+#define DKF_BP_EMPTYFOUND	3
+#define DKF_BP_EXHAUSTED	4
+
+
+// the macro will be defineable via a gui option.  Make sure that the number of
+// breakpoints is a power of 2 and less than 256, just to be safe
+#define DK_MAX_BREAKPOINTS	_DK_MAX_BREAKPOINTS_		// must be less than 256
+
+#ifndef DK_MAX_BREAKPOINTS
+#define DK_MAX_BREAKPOINTS 32
+#warnt "DK_MAX_BREAKPOINTS undefined, defaulting to 32"
+#endif
+
+#if (DK_MAX_BREAKPOINTS & (DK_MAX_BREAKPOINTS - 1)) != 0
+#undef  DK_MAX_BREAKPOINTS
+#define DK_MAX_BREAKPOINTS 32
+#warnt "DK_MAX_BREAKPOINTS must be 2^n"
+#endif
+
+#if (DK_MAX_BREAKPOINTS > 255)
+#undef DK_MAX_BREAKPOINTS
+#define DK_MAX_BREAKPOINTS 255
+#endif
+
+#define DK_BREAKPOINT_MASK		DK_MAX_BREAKPOINTS-1
+
+extern struct __dkbreakpoint	dkBPTable[DK_MAX_BREAKPOINTS];
+extern char dkBPCount;
+/*** EndHeader */
+
+#if (DK_ENABLE_BREAKPOINTS == 1)
+struct __dkbreakpoint	dkBPTable[DK_MAX_BREAKPOINTS];
+char dkBPCount;
+
+#asm xmem
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; expects bc-de to contain physical address for breakpoint. On
+; return, a will contain information about what was found, and
+; hl will either contain a cell address, or zero on failure.
+
+dkBPTableFindEmpty::
+	; put DKF_BP_INSERT in alternate a register - table lookup
+	; will halt on first inactive or deleted cell, returning
+	; address of cell to caller
+	ex		af,af'
+	xor	a
+	set	DKF_BP_INSERT,a					; a has 'inserting' flag
+	ex		af,af'
+	jr		__dk_bplookup
+dkBPTableFindBP::
+	; The following code moves root addresses into xmem because this
+	; is how they are stored in the breakpoint table.
+	ld    a, 0xdf
+	cp    d
+	jr    c, .dkbpinxmem
+	call 	dkcPhysicalToLogical 			; move the root code address into xmem code
+	ex 	de, hl								; move a:hl into bc:de
+	ld 	c, a
+.dkbpinxmem:
+	; clear alternate a register - table lookup will halt when
+	; breakpoint has been found, or on first inactive (unused)
+	; cell
+	ex		af,af'
+	xor	a
+	ex		af,af'
+
+__dk_bplookup:
+	; get index for breakpoint using lower n bits of address where n is determined
+	; by the size of the breakpoint table
+	ld		hl,DK_BREAKPOINT_MASK			; number of bits of address to use for hash
+	and	hl,de
+
+	push	bc										; save bp phys addr
+	push	de										; save bp phys addr
+
+	; get bp struct at hash index in bp table
+	ld		b,DK_MAX_BREAKPOINTS				; load max breakpoints into de
+	ex		de,hl									; de has index for bp
+	ld		de',de								; save starting index in de'
+
+__dk_bplookupnext:
+	ld		bc',bc								; save count int bc'
+	ld		bc,__dkbreakpoint+@LENGTH		; bc has length of breakpoint struct
+	xor	a										; want base address of struct
+	ld		hl,dkBPTable						; hl has base address of bp hash table
+	call	dkGetStructMemberAddr			; get base address of bp struct from hash table
+
+	pop	de										; restore phys addr
+	pop	bc										; restore phys addr
+	ld		iy,hl									; use iy so bp base addr doesn't get destroyed
+
+	ex		af,af'
+	bit	DKF_BP_INSERT,a					; check to see if we're inserting
+
+	jr		nz,__dk_bpinserting				; jump if inserting
+	ex		af,af'								; restore a and flags
+
+	; check active state, if active check address
+	ld		a,(iy+__dkbreakpoint+flags)	; load flags portion of bp into a
+	cp		DKF_BP_ACTIVE						; check active flag
+	jr		nz, __dk_bpcheckinactive		; if not active check for inactive
+
+	; if active flag is set, check address for possible hash collision.
+__dk_bpcheckaddr:
+	xor	a										; clear carry
+	ld		hl,(iy+__dkbreakpoint+addr)	; load high 16 bits of bp address into hl
+	sbc	hl,de									; compare high 16 bits of address
+	jr		nz,__dk_bpindexused				; jump if address does not match
+	xor	a										; clear carry
+	ld		hl,(iy+__dkbreakpoint+addr+2)	; load low 16 bits of bp address into hl
+	sbc	hl,bc									; compare low 16 bits of address
+	jr		nz,__dk_bpindexused				; jump if address does not match
+	ld		hl,iy									; load hl with pointer to correct offset in table
+	ld		a,DKF_BP_FOUND						; a contains found bp state
+	lret
+
+__dk_bpcheckinactive:
+	ld		a,(iy+__dkbreakpoint+flags)	; get flags from current bp into a
+	bit	DKF_BP_INACTIVE,a					; check inactive state
+	jr		z,__dk_bpcheckaddr				; if not inactive, bp has been deleted, check addr for match
+	ld		hl,0									; inactive - set hl to point to nothing
+	xor	a										; clear a
+	ld		a,DKF_BP_NOTFOUND					; set notound state in a
+	lret
+
+__dk_bpinserting:
+	ex		af,af'								; restore a and flags
+	ld		a,(iy+__dkbreakpoint+flags)	; get flags from current bp into a
+	bit	DKF_BP_ACTIVE,a					; check if cell is active
+	jr		nz,__dk_bpcheckaddr				; if cell is active check addr
+	ld		hl,iy									; load hl with pointer to correct offset in table
+	ld		a,DKF_BP_EMPTYFOUND				; a contains empty bp found state
+	lret
+
+	; if address does not match, check next index, stopping when/if entire table
+	; is checked.
+__dk_bpindexused:
+	push	bc										; save phys addr
+	push	de										; save phys addr
+	exx
+	ld		bc',bc								; load stored count into bc
+	ld		de',de								; load stored index into de
+	exx
+	xor 	a										; clear carry flag
+	inc	de										; increment index to check
+	ld		hl,DK_MAX_BREAKPOINTS-1
+	sbc	hl,de									; check if we need to wrap around
+	jr		nc,__dk_bpnowrap					; if de is not larger than hl, don't wrap
+
+	ld		a,e									; put index into a
+	sub	DK_MAX_BREAKPOINTS				; wrap back around table
+	ld		e,a									; e has index to lookup
+
+__dk_bpnowrap:
+	ld		de',de								; save index in de'
+	djnz	__dk_bplookupnext					; decrement count and jump if we haven't hit 0 yet
+	ld		hl,0									; hl points at nothing
+	ld		a,DKF_BP_EXHAUSTED				; entire table has been checked - bp not found
+	add	sp,4									; re-align stack for pushed addr
+	lret
+#endasm
+
+#asm root
+; convert base:offset style address in a:hl to 20-bit phys address in a:iy
+dkConvertAddress::
+	ex		de,hl								; a=segment, hl=logical address
+	bool	hl
+	ld		l,h
+	rra
+	rr		hl
+	rra
+	rr		hl
+	rra
+	rr		hl
+	rra
+	rr		hl
+
+	add	hl,de
+	ld		b,0x00
+	adc	a,b
+	and	0x0f
+	ld		iy,hl
+	ret
+#endasm
+
+#asm xmem
+dkToggleBreakpoint::
+	xor	a
+	ld		(dkRequest),a
+
+	ld		ix,dkBreakPoint
+
+	; Check if breakpoint is in xmem
+   ld		hl,(ix+__dkbreakpoint+addr)
+   ld		a,h
+   cp		0xe0
+   jp		nc,.__dk_tbinxmem
+
+	push	hl
+
+   ; Convert address received from DC to xmem address using the lower 16-bits
+   ; and 0 for the xpc value
+   xor	a
+   call	dkConvertAddress
+
+   ; Convert to xpc:offset address
+   ld		hl,iy
+   _LIN2SEG
+
+   ; segmented address in in a:hl
+   ld		(ix+__dkbreakpoint+addr),hl
+   bool	hl
+   ld		l,a
+   ld		(ix+__dkbreakpoint+addr+2),hl
+
+   ; Convert address to physical address using only the lower 16-bits received
+   ; from DC.  Since the address is in instruction space, a is set to non-zero.
+   pop	hl
+   xor	a
+   inc	a
+	call	dkcLogicalToPhysical
+
+   ; Physical address in bc,de
+	ex		de,hl
+   ld		iy,hl
+   ld		a,c
+	jr		.__dk_tbreadopcode
+
+.__dk_tbinxmem:
+	ld		hl,(ix+__dkbreakpoint+addr+2)	; get upper 16 bits of addr in hl
+	ld		a,l
+	ld		hl,(ix+__dkbreakpoint+addr)	; hl has lower 16 bits of addr
+	; put bp address into a:iy - address comes from dc in xpc:offset
+	; form, not as a 20-bit physical address
+	call	dkConvertAddress					; returns with 20-bit phys addr in a:iy
+
+.__dk_tbreadopcode:
+	; make sure instruction at breakpoint address is an rst 28 or rst 20 prior to
+	; changing adding a breakpoint
+   cp		0x08
+   push	af
+   push	iy
+	ldp	hl,(iy)								; get opcode at bp addr
+	ld		a,DK_RST28							; load a with rst 28 opcode
+	cp		l										; compare with opcode at bp addr
+	jr		z,__dk_tbcont						; continue if rst 28
+	ld		a,DK_RST20							; load a with rst 20 opcode
+	cp		l										; compare with opcode at bp addr
+	jr		z,__dk_tbcont						; continue if rst 20
+	ld		a,TC_DEBUG_TOGGLEBREAKPOINT	; ack request but don't add bp
+	or		TC_ACK
+   pop	af
+   pop	iy
+	jp		__dk_tbdone
+
+__dk_tbcont:
+	; put bp address into bc:de - address comes from dc in xpc:offset
+	; form, not as a 20-bit physical address
+	ld		hl,(ix+__dkbreakpoint+addr+2)	; get upper 16 bits of addr in hl
+	ld		b,h
+	ld		c,l									; bc has upper 16 bits of addr
+	ld		hl,(ix+__dkbreakpoint+addr)	; hl has lower 16 bits of addr
+	ex		de,hl									; put lower 16 bits of addr in de
+
+	; check if bp should be removed or added
+	ld		a,(ix+__dkbreakpoint+flags)
+	bit	DKF_BP_DELETED,a					; check for deleted flag (remove breakpoint)
+;	jr		nz,__dk_tbdelete					; jump if bp should be removed
+	jp		nz,__dk_tbdelete					; jump if bp should be removed
+
+	call	dkBPTableFindEmpty				; find empty bp in table
+	cp		DKF_BP_EXHAUSTED					; check if entire table was searched
+	jp		z,__dk_tberror						; error if no empty spot was found
+	cp		DKF_BP_FOUND						; check if active bp already in table
+	jp		z,__dk_tbdone						; if matching deleted bp found, return
+	ex		de,hl									; de has dest addr in bp table
+	ld		hl,ix									; hl has addr of bp to copy
+	ld		bc,__dkbreakpoint+@LENGTH		; bc has length of bp struct
+	ldir											; copy bp into table
+
+	ld		a,_OP_JP
+	ld		(dkRST20State),a
+   lcall	dkEnableRST20
+
+#if _USER
+	; user program compile, must go through syscall interface if breakpoint is
+   ; being set in flash.  Otherwise, write breakpoint directly
+	pop	iy
+   pop	af
+   jr		c,__dk_tbinflash
+   ldp	hl,(iy)
+   ld		L,DK_RST20
+   ldp	(iy),hl
+	jp		__dk_tbbpset
+
+__dk_tbinflash:
+	ld		hl,DK_RST20
+	push	hl
+	ld		hl,(ix+__dkbreakpoint+addr)
+	push	hl
+	bool	hl
+	ld		hl,(ix+__dkbreakpoint+addr+2)
+	push	hl
+	call	_sys_dk_setbreakpoint
+	add	sp,6
+#elif _SYSTEM
+
+	pop	iy
+   pop	af
+   jr		c,__dk_tbinflash
+   ldp	hl,(iy)
+   ld		L,DK_RST20
+   ldp	(iy),hl
+   jp		__dk_tbbpset
+
+__dk_tbinflash:
+	ld		hl,DK_RST20
+   push	hl
+	ld		hl,(ix+__dkbreakpoint+addr)
+	push	hl
+	bool	hl
+	ld		hl,(ix+__dkbreakpoint+addr+2)
+	push	hl
+   xor	a
+   inc	a
+   call	_rs_dk_setbreakpoint
+	add	sp,6
+
+#else
+#ifdef _FLASH_
+	; toggle breakpoint if code is in flash
+
+   pop	iy
+   pop	af
+
+	ld		hl,commBuffer
+	ld		(hl),DK_RST20
+	ld		hl,(ix+__dkbreakpoint+addr)
+	ld		(curHeader+address),hl
+
+	ld		hl,(ix+__dkbreakpoint+addr+2)
+	ld		a,l
+	ld		(curHeader+XPCval),a
+
+	ld		hl, 0x0001
+	ld		(curHeader+length), hl
+#ifdef USE_2NDFLASH_CODE
+	add   a, 0xe						; normalize xpc address
+	cp		0x40
+	jr   	c,.nochangexpc				; in second flash?
+	ld    a,0x32
+	ld 	(_FlashInfo+flashXPC),a ; fool flash driver
+
+	; allow writes to ID block addresses on 2nd flash
+	ld		hl, 0x0001
+	ld		(_overwrite_block_flag), hl
+.nochangexpc:
+#endif
+	ld		hl,FSM_XFlash
+	call	dkDoHook								; dkDoHook calls the root function specified in
+													; hl, saving and restoring the xpc.
+#ifdef USE_2NDFLASH_CODE
+	ex de, hl
+
+	; block writes to ID block addresses on 2nd flash
+	bool	hl
+	ld		l, h
+	ld		(_overwrite_block_flag), hl
+
+	ld    hl,_FlashInfo+flashXPC
+   ld 	(hl),0xf2					; restore for 1st flash
+   ex de, hl
+#endif
+
+#endif
+
+#if FAST_RAM_COMPILE || RAM_COMPILE
+ 	pop	iy
+   pop	af
+ ; toggle breakpoint if code is in ram
+   ldp	hl,(iy)
+   ld		L,DK_RST20
+   ldp	(iy),hl
+   jp		__dk_tbbpset
+#endif
+
+#endif
+
+__dk_tbbpset:
+	ld		hl,dkBPCount						; increment breakpoint count
+	inc	(hl)
+	ld		a,TC_DEBUG_TOGGLEBREAKPOINT
+	or		TC_ACK
+	jr		__dk_tbdone
+
+__dk_tbdelete:
+	add	sp,4
+	call	dkBPTableFindBP					; find bp in table to remove
+	cp		DKF_BP_EXHAUSTED					; check if entire table was searched
+	jr		z,__dk_tberror						; error if no empty spot was found
+
+	cp		DKF_BP_NOTFOUND					; check if bp was not found
+	jr		z,__dk_tberror						; if bp not found, error
+
+	ld		iy,hl									; point iy at bp in table
+	ld		a,(iy+__dkbreakpoint+flags)	; put flags from bp in table into a
+	bit	DKF_BP_DELETED,a					; check if bp already deleted
+	jr		nz,__dk_tbdone						; if already deleted, we're done
+
+	set	DKF_BP_DELETED,a
+	res	DKF_BP_ACTIVE,a
+	ld		(iy+__dkbreakpoint+flags),a	; mark bp as deleted
+
+	ld		a,(dkBPCount)						; decrement breakpoint count
+	dec	a
+	ld		(dkBPCount),a
+	or		a
+	jr		nz,__dk_tbdeletedone
+	ld		a,(dkStatusFlags)
+	bit	DKF_STAT_RUNMODE,a
+	jr		z,__dk_tbdeletedone
+	ld		a,0xc9
+	ld		(dkRST20State),a
+   lcall	dkDisableRST20
+
+__dk_tbdeletedone:
+	ld		a,TC_DEBUG_TOGGLEBREAKPOINT
+	or		TC_ACK
+	jr		__dk_tbdone
+
+__dk_tberror:
+	; NAK request!!!
+	ld		a,TC_DEBUG_TOGGLEBREAKPOINT
+	or		TC_NAK
+
+__dk_tbdone:
+	lret
+#endasm
+
+#asm xmem
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Set all breakpoints to unused state.  This should only be done
+; at the start of a debugging session.  Doing this in the middle
+; could cause problems
+dkClearBPTable::
+	ld		hl,dkBPTable					; hl has base addr of bp table
+	ld		(hl),0x0							; seed base addr with 0
+	ld		d,h								; set de to base addr of table
+	ld		e,l
+	inc	de									; move de to base+1
+	ld		bc,sizeof(dkBPTable)-1		; bc has size of bp table
+	ldir										; copy zeroes into bp table
+
+	xor	a									; clear bp count
+	ld		(dkBPCount),a
+	lret
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Turn all breakpoints off by setting all active bp's to deleted
+; state
+dkToggleAllBreakpoints::
+	ld		de,0
+	ld		b,DK_MAX_BREAKPOINTS			; have to go through entire table
+__dktab_loop:
+	ld		bc',bc							; save count for later
+	ld		a,__dkbreakpoint+flags		; just get addr of flags for each entry
+	ld		bc,__dkbreakpoint+@LENGTH	; length of each bp struct
+	ld		hl,dkBPTable					; base addr of table
+	call	dkGetStructMemberAddr
+	set 	DKF_BP_DELETED,(hl)			; inactivate breakpoint
+	exx										; restore count
+	ld		bc',bc							; load count into bc
+	exx										; count now in bc
+	inc	de									; move to next index
+	djnz	__dktab_loop					; if not done
+	lret
+#endasm
+
+#asm xmem
+dkResetBreakpoints::
+#if _USER
+	; The user program is recopied into ram when it is started by RabbitSys
+   ; which can cause all set breakpoints to be lost.  Spin through the
+   ; breakpoint table and reset as necessary
+
+   ; set b to the number of breakpoints, ix to the front of the bp table
+   ld		b,sizeof(dkBPTable) / sizeof(dkBreakPoint)
+   ld		ix,dkBPTable
+
+.set_next_bp:
+   push	bc									; save off breakpoint count
+   push	ix									; save off offset into bp table
+
+   ; copy current bp from table into dkBreakPoint structure (dkToggleBreakpoint)
+   ; expects this structure to be filled
+ 	ld		de,dkBreakPoint
+	ld		hl,ix
+	ld		bc,sizeof(dkBreakPoint)
+	ldir
+
+   ; now that the breakpoint from the current offset into the table has been
+   ; copied into the dkBreakPoint structure, clear out the breakpoint address
+   ; and flags from the current location in the bp table
+   bool	hl
+   ld		l,h
+   ld    (ix+__dkbreakpoint+addr),hl
+   ld    (ix+__dkbreakpoint+addr+2),hl
+   ld		(ix+__dkbreakpoint+flags),l
+
+	; if the address member of the breakpoint is not set, skip to the next
+   ; breakpoint in the table
+   ld		ix,dkBreakPoint
+	ld		hl,(ix+__dkbreakpoint+addr)
+   bool	hl
+   jr		nz,.do_toggle
+   ld		hl,(ix+__dkbreakpoint+addr+2)
+   bool	hl
+   jr		z,.toggle_done
+
+.do_toggle:
+	lcall	dkToggleBreakpoint
+
+.toggle_done:
+	; done with current breakpoint, add the size of the breakpoint structure to
+   ; the current offset (in ix) into the bp table.
+   ld		de,sizeof(dkBreakPoint)
+   pop	ix
+   add	ix,de
+   pop	bc
+   djnz	.set_next_bp
+#endif
+   lret
+#endasm
+
+#else
+
+#asm xmem
+dkBPTableFindBP::
+dkBPTableFindEmpty::
+dkToggleBreakpoint::
+dkClearBPTable::
+dkToggleAllBreakpoints::
+dkResetBreakpoints::
+	lret
+#endasm
+
+#endif
+///////////////////////////////////////////////////////////////
+/*			End Breakpoint handling										 */
+///////////////////////////////////////////////////////////////
+
+
+/*** BeginHeader dkRestoreContext */
+root void dkRestoreContext(void);
+/*** EndHeader */
+#asm
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+dkRestoreContext::
+	ipset	1
+
+	call	dkExit
+
+	bool	hl
+	ld		l,h
+	add	hl,sp
+	ld		de,-(__dkregisters+@LENGTH-4)	; make room for registers on stack
+	add	hl,de
+	ld		sp,hl
+	ex		de,hl									; de points to top of stack
+	ld		hl,dkRegisters+4					; hl points to register structure
+	ld		bc,__dkregisters+@LENGTH-4
+	ldir											; move registers onto stack
+
+	call	dkEpilog
+
+	ld		hl,dkLocks
+	res	DKF_DK_LOCK,(hl)					; reset debug kernel lock
+
+#if _USER
+	; user program compile, must go through syscall interface
+	bool	hl
+	ld		l,h
+	push	hl
+	call	_sys_dk_nestinterrupts
+	add	sp,2
+#else
+	ld		iy,TCState								; enable nesting of interrupts during tc callbacks
+	xor	a
+	TC_STOR(dont_nest_interrupts,a)
+#endif
+
+	ld		a,(dkRegisters+__dkregisters+_xpc)
+	ld		xpc,a
+	pop	af										; restore prime registers
+	pop	bc
+	pop	de
+	pop	hl
+	exx
+	ex		af,af'
+	pop	af
+	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	pop	iy
+	reti
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#endasm
+
+/*** BeginHeader dkDoHook */
+root void dkDoHook(void);
+/*** EndHeader */
+#asm root
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; expects address of root hook function in hl
+dkDoHook::
+	ld		a,xpc
+	push	af
+	xor	a
+	or		h
+	or		l							; make sure address isn't zero
+	jr		z,__dk_dh_done
+	ld		de,__dk_dh_done		; load and push return addr on stack
+	push	de
+	jp		(hl)						; jump to hook function
+__dk_dh_done:
+	pop	af
+	ld		xpc,a
+	ret
+#endasm
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+/*** BeginHeader dkSingleStep */
+xmem void dkSingleStep(void);
+/*** EndHeader */
+#asm xmem
+dkSingleStep::
+	xor	a
+	ld		(dkRequest),a			; clear request
+
+	; debug kernel needs to send status information on next entry
+	ld		a,(dkStatusFlags)
+	set	DKF_STAT_STEPMODE,a
+	res	DKF_STAT_RUNMODE,a
+	res	DKF_STAT_AT_BP,a
+	res	DKF_STAT_AT_HARD_BP,a
+	ld		(dkStatusFlags),a
+	ld		a,(dkSendFlags)
+	set	DKF_SEND_STATUS,a
+	ld		(dkSendFlags),a
+
+   ld		a,0x01
+	ld		a,(dkStepFlags)		; jump to appropriate handler
+	bit   DKF_STEP_SOURCE,a
+	jr		z,__dk_asmss
+	ljp	dkCSingleStep
+__dk_asmss:
+	ljp	dkAsmSingleStep
+#endasm
+
+/*** BeginHeader dkCSingleStep */
+xmem void dkCSingleStep(void);
+/*** EndHeader */
+#asm xmem
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+dkCSingleStep::
+	; stepping into/over function calls is handled inside _fentry and
+	; _fexit.
+
+   call	dkSingleStepExit
+
+	bool	hl
+	ld		l,h
+	ld		(dkEntryCount),hl
+	lcall	dkEnableRST28
+	ld		a,_OP_JP					; enable rst 0x28
+	ld		(dkRST28State),a
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	ld		ix,dkRegisters+__dkregisters+_pc
+	ld		(ix),hl
+
+	jp		dkRestoreContext
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#endasm
+
+/*** BeginHeader dkAsmSingleStep */
+xmem void dkAsmSingleStep(void);
+#if (DK_ENABLE_ASMSINGLESTEP == 1)
+extern struct __dkaddress		dkStackAddress;
+extern struct __dkaddress		dkReturnAddress;
+#endif
+/*** EndHeader */
+
+// if DK_ENABLE_ASMSINGLESTEP is 0, then dkAsmSingleStep,
+// dkGetOplength, dkOplen will not be compiled, and the tables used
+// by dkGetOplength and dkOplen (dkOpsize and dkPrefixed) will not
+// be placed into memory
+#if (DK_ENABLE_ASMSINGLESTEP == 1)
+
+struct __dkaddress		dkStackAddress;
+struct __dkaddress		dkReturnAddress;
+
+char dknextasm[8];
+
+#asm root
+dkCopyNextInstruction::
+	ld		a,xpc
+	push	af
+	ld		a,(dkNextAddress+__dkaddress+xpc)
+	ld		xpc,a
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+#if __SEPARATE_INST_DATA__
+	; Note that for xmem addresses this just to physical and then back again
+	ld		a, TC_SYSREAD_LOGICAL_CODE					; read from code space
+	call  dkcLogicalToPhysical                   ; convert to physical address
+   call  dkcPhysicalToLogical							; convert to XPC:eXXX address
+   ld		xpc, a
+.dk_inxmem:
+#endif
+	ld		de,dknextasm
+	ld		bc,sizeof(dknextasm)
+	ldir
+	pop	af		;restore the xpc
+	ld		xpc,a
+	ret
+#endasm
+
+#asm root
+; Code in root, but need to be called via lcall and returns via lret
+; to save/restore xpc!
+; Given an address in a:iy, use ldp to load 16 bit value
+; into hl, if iy is below 0xe000, then A is ignored and IY is read as
+; translated into a physical address assuming it is located in code space.
+; If iy is in xmem (in e000-ffff) then use value in A as XPC.
+; Designed to read out of code space when
+; separate I&D is on, but also works w/o I&D.
+; - destroys af, bc, de, af'
+
+__dk_ldp_LogToPhyCode::
+   ld  xpc, a 					   ; set XPC to segment value as dkcLogicalToPhysical expects it there
+	ld  hl, iy
+	ld	 a,1								; Translate as a logical I-space address
+   call  dkcLogicalToPhysical
+	ex 	de, hl 					; move physical address to a:hl from bcde
+	ld a, c
+	ldp hl, (hl)
+	lret ; lret to restore xpc!!
+#endasm
+
+#asm xmem
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+
+dkAsmSingleStep::
+;#if (DK_ENABLE_TRACING == 1)
+	push	hl
+	bool	hl
+	ld		l,h
+	ld		(dkEntryCount),hl
+   lcall	dkEnableRST28
+	ld		a,_OP_JP					; enable rst 0x28
+	ld		(dkRST28State),a
+;#endif
+	pop	hl
+	; get length of next instruction
+	call	dkCopyNextInstruction
+	ld		iy,dknextasm
+	call	dkOplen								; returns opcode length in hl; fd, ed, dd prefixed in b (3,2,1)
+	ex		de,hl									; de = instruction length
+
+	; check for special cases
+	ld		c,(iy+1)								; if current instruction is prefixed, c will contain byte after prefix
+
+	bit	1,b									; if dkOplen set bit 1 in b, instruction is dd prefixed
+	jp		nz,__dk_checkddprefix			; 2nd byte of opcode is in c (dkOplen increments iy)
+	bit	2,b									; if dkOplen set bit 2 in b, instruction is ed prefixed
+	jp		nz,__dk_checkedprefix			; 2nd byte of opcode is in c (dkOplen increments iy)
+	bit	3,b									; if dkOplen set bit 1 in b, instruction is fd prefixed
+	jp		nz,__dk_checkfdprefix			; 2nd byte of opcode is in c (dkOplen increments iy)
+
+	; check for special cases
+	ld		c,(iy)								; load the current opcode into c to use for all cases
+
+	ld		a,0xcd								; check for call instruction
+	cp		c										; hl contains address of instruction to execute
+	jp		z,__dk_call
+
+	ld		a,0xc9								; check for ret instruction
+	cp		c
+	jp		z,__dk_ret
+
+	ld		a,0xc7								; check for conditional ret instruction
+	and	c
+	cp		0xc0
+	jp		z,__dk_retf
+
+	ld		a,0x10								; check for djnz instruction
+	cp		c
+	jp		z,__dk_djnz
+
+	ld		a,0xe9								; check for hl register indirect jump
+	cp		c
+	jp		z,__dk_jphl
+
+	ld		a,_OP_JP								; check for jump
+	cp		c
+	jp		z,__dk_jp
+
+	ld		a,0xc7								; check for conditional jump
+	and	c
+	cp		0xc2
+	jp		z,__dk_jpf
+
+	ld		a,0xe7								; check for conditional relative jump
+	and	c
+	cp		0x20
+	jp		z,__dk_jrcc
+
+	ld		a,0x18								; check for relative jump
+	cp		c
+	jp		z,__dk_jr
+
+	ld		a,0xcf								; check for long call
+	cp		c
+	jp		z,__dk_lcall
+
+	ld		a,0xc7								; check for long jump
+	cp		c
+	jp		z,__dk_ljp
+
+	ld		a,DK_RST20							; check for rst 0x20
+	cp		c
+	jp		z,__dk_rst2028
+
+	ld		a,DK_RST28							; check for rst 0x28
+	cp		c
+	jp		z,__dk_rst2028
+
+	ljp	__dkCopyToRam						; not a special case instruction, copy to RAM and execute
+
+__dk_checkddprefix::
+	; check for jp (ix)
+	ld		a,0xe9
+	cp		c
+	jp		z,__dk_jpix							; jp (ix) is the only branching dd prefixed instruction
+	jp		__dkCopyToRam						; not a special case instruction, copy to RAM and execute
+
+__dk_checkedprefix::
+	; check for return from interrupt instruction
+	ld		a,0x4d
+	cp		c
+	jp		z,__dk_reti
+	; check for long return
+	ld		a,0x45
+	cp		c
+	jp		z,__dk_lret
+	; check for ld xpc,a
+	ld		a,0x67
+	cp		c
+	jp		z,__dk_ldxpca
+	; check for ld a,xpc
+	ld		a,0x77
+	cp		c
+	jp		z,__dk_ldaxpc
+	; check for ldir
+	ld		a,0xb0
+	cp		c
+	jp		z,__dk_ldir
+; --- New R3000A instructions ---
+#if _CPU_ID_ >= R3000_R1
+	; check for lddsr
+	ld    a,0x98
+   cp    c
+   jp    z,__dk_lddsr
+	; check for ldisr
+	ld    a,0x90
+   cp    c
+   jp    z,__dk_ldisr
+	; check for lsdr
+	ld    a,0xF8
+   cp    c
+   jp    z,__dk_lsdr
+	; check for lsir
+	ld    a,0xF0
+   cp    c
+   jp    z,__dk_lsir
+	; check for lsddr
+	ld    a,0xD8
+   cp    c
+   jp    z,__dk_lsddr
+	; check for lsidr
+	ld    a,0xD0
+   cp    c
+   jp    z,__dk_lsidr
+#endif
+; -------------------------------
+
+__dk_checkfdprefix::
+	; check for jp (iy)
+	ld		a,0xe9
+	cp		c
+	jp		z,__dk_jpiy							; jp (iy) is the only branching fd prefixed instruction
+	jp		__dkCopyToRam						; not a special case instruction, copy to RAM and execute
+
+__dk_call::
+	ld		a,(dkStepFlags)
+	bit	DKF_STEP_INTO,a
+	jp		nz,__dk_stepintocall
+	; the following code takes care of the case where a function being stepped over has a
+	; breakpoint in it.  The rst 20 handler will be able to restore the stack properly in
+	; such a case.
+	ioi	ld	a,(STACKSEG)
+	ld		(dkStackAddress+__dkaddress+xpc),a		 ; save stack seg for current stack
+	bool	hl
+	ld		l,h
+	add	hl,sp												 ; hl = sp;
+	dec	hl
+	dec	hl
+	ld		(dkStackAddress+__dkaddress+offset),hl	 ; save stack logical offset
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	add	hl,de												 ; get return address
+	ld		(dkReturnAddress+__dkaddress+offset),hl ; save return address that should be on stack
+	ld		a,(dkRegisters+__dkregisters+_xpc)
+	ld		(dkReturnAddress+__dkaddress+xpc),a		 ; save return xpc
+	ld		a,(dkStepFlags)								 ; get step flags
+	res	DKF_STEP_LCALL,a								 ; reset lcall flag
+	set	DKF_STEP_CALL,a								 ; set call flag
+	ld		(dkStepFlags),a								 ; save step flags
+	jp		__dkCopyToRam
+
+__dk_stepintocall::							; stepping into function call:
+	ld		a,_OP_JP								; put jp instruction at rst 0x28 vector
+	ld		(dkRST28State),a
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	add	hl,de
+	push	hl										; push return address on stack+
+	ld		hl,(iy+1)							; hl now contains address where call address is located
+	ld		(dkNextAddress+__dkaddress+offset),hl		; save address following call instruction
+	jp		__dkReenterRST18
+
+__dk_ret::
+	pop	hl										; get return address off of stack
+	ld		(dkNextAddress+__dkaddress+offset),hl
+	jp		__dkReenterRST18
+
+__dk_retf::
+	ld		hl,__dk_handle_retf
+	push	hl										; push address of conditional return handler
+	ld		hl,iy
+	ld		c,(hl)								; c = conditional return instruction
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	add	hl,de
+	ld		(dkNextAddress+__dkaddress+offset),hl		; save address of instruction following conditional return
+	ld		ix,(dkptrASMbuf)
+	ld		h,0x33								; inc sp (adjust stack if retf not taken - affects no flags)
+	ld		l,c									; copy into ram
+	ld		(ix),hl
+	ld		hl,0xdf33							; inc sp, followed by rst 0x18
+	ld		(ix+2),hl							; copy to ram (adjust stack and reenter dk if return not taken)
+	jp		__dkExecInRAM
+
+__dk_reti::
+	bool	hl
+	ld		l,h
+	add	hl,sp									; hl = sp
+	ld		a,(hl)								; ip is on top of stack
+	ld		(dkRegisters+__dkregisters+_ip),a
+
+	inc	sp										; move sp past pushed ip
+	pop	hl										; pop return address from stack
+	ld		(dkNextAddress+__dkaddress+offset),hl		; save return address in registers structure
+	jp		__dkReenterRST18
+
+__dk_djnz::
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	add	hl,de
+	ld		(dkNextAddress+__dkaddress+offset),hl		; save next address in registers structure
+	ld		bc,6									; copy six bytes to ram
+	ld		de,(dkptrASMbuf)
+	ld		hl,__dk_do_djnz					; copy code into ram to handle djnz instruction
+#if __SEPARATE_INST_DATA__
+	call inst2data_ldir
+#else
+	ldir
+#endif
+	jp		__dkExecInRAM
+
+__dk_jphl::
+	ld		hl,(dkRegisters+__dkregisters+_hl)				; next address to execute is in hl
+	ld		(dkNextAddress+__dkaddress+offset),hl
+	jp		__dkReenterRST18
+
+__dk_jpix::
+	ld		hl,(dkRegisters+__dkregisters+_ix)
+
+	ld		(dkNextAddress+__dkaddress+offset),hl
+	jp		__dkReenterRST18
+
+__dk_jpiy::
+	ld		hl,(dkRegisters+__dkregisters+_iy)				; next address to execute is in iy
+	ld		(dkNextAddress+__dkaddress+offset),hl
+	jp		__dkReenterRST18
+
+__dk_jp::
+	ld		hl,(iy+1)							; next address to execute is at byte following start of
+	ld		(dkNextAddress+__dkaddress+offset),hl		; current address
+	jp		__dkReenterRST18
+
+__dk_jpf::
+	ld		hl,iy
+	ld		a,(hl)								; a = first byte of instruction
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	add	hl,de
+	ld		(dkNextAddress+__dkaddress+offset),hl		; save next address in registers structure
+	ld		ix,(dkptrASMbuf)
+	ld		(ix),a								; copy 1st byte of instruction (encoded w/flag to check)
+	ld		hl,__dk_handle_jpf
+	ld		(ix+1),hl							; if flag is set/cleared, jump to handler
+	ld		a,0xdf								; rst 0x18 to reenter debug kernel
+	ld		(ix+3),a
+	jp		__dkExecInRAM
+
+__dk_jrcc::
+	ld		c,(iy)								; c = 1st byte of conditional jr instruction
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	add	hl,de
+	ld		(dkNextAddress+__dkaddress+offset),hl		; save next address in registers structure
+	ld		ix,(dkptrASMbuf)
+	ld		h,0x01 								; if condition is met, jump past rst 0x18
+	ld		l,c
+	ld		(ix),hl
+	ld		hl,0xc3df							; rst 0x18, followed by jump to handler
+	ld		(ix+2),hl
+	ld		hl,__dk_handle_djnz				; use the djnz handler for this instruction
+	ld		(ix+4),hl
+	jp		__dkExecInRAM
+
+__dk_jr::
+	bool	hl
+	ld		l,(iy+1)								; use second byte of jr instruction to determine next address
+	ex		de,hl
+	bit	7,e
+	jr		z,__dk_jrnosignext
+	ld		d,0xff
+__dk_jrnosignext:
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	add	hl,de									; nextaddress.offset = offset + (offset+1) + 2
+	inc	hl
+	inc	hl
+	ld		(dkNextAddress+__dkaddress+offset),hl
+	jp		__dkReenterRST18
+
+__dk_lcall::
+	ld		a,(dkStepFlags)
+	bit	DKF_STEP_INTO,a
+	jp		nz,__dk_stepintolcall
+	; the following code takes care of the case where a function being stepped over has a
+	; breakpoint in it.  The rst 20 handler will be able to restore the stack properly in
+	; such a case.
+	ioi	ld	a,(STACKSEG)
+	ld		(dkStackAddress+__dkaddress+xpc),a		 ; save stack seg for current stack
+	bool	hl
+	ld		l,h
+	add	hl,sp												 ; hl = sp;
+	dec	hl
+	dec	hl
+	dec	hl
+	ld		(dkStackAddress+__dkaddress+offset),hl	 ; save stack logical offset
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	add	hl,de												 ; get return address
+	ld		(dkReturnAddress+__dkaddress+offset),hl ; save return address that should be on stack
+	ld		a,(dkRegisters+__dkregisters+_xpc)
+	ld		(dkReturnAddress+__dkaddress+xpc),a		 ; save return xpc
+	ld		a,(dkStepFlags)								 ; get step flags
+	res	DKF_STEP_CALL,a								 ; reset lcall flag
+	set	DKF_STEP_LCALL,a								 ; set call flag
+	ld		(dkStepFlags),a								 ; save step flags
+	jp		__dkCopyToRam
+#endasm
+
+#asm root
+__dk_copylcallreturn::
+	ld		a,(dkNextAddress+__dkaddress+xpc)
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	add   hl, de
+	exx									; save the next address in hl' so we can return it to the caller
+	ld    hl, iy						; next instruction is stored in buffer pointed to by iy
+	inc   hl								; advance to address of instruction
+	ld		de,dkNextAddress
+	ld		bc,3
+	ldir									; Copy xpc:offset into dkNextAddress
+	exx
+	ret
+#endasm
+
+#asm xmem
+__dk_stepintolcall:
+	call	__dk_copylcallreturn
+	ld		a,(dkRegisters+__dkregisters+_xpc)
+	push	af								; push xpc onto stack
+	inc	sp								; adjust sp for single byte push
+	push	hl								; push address following lcall as return value on stack
+	jp		__dkReenterRST18
+
+
+__dk_lret::
+	bool	hl
+	ld		l,h
+	add	hl,sp
+	ld		de,dkNextAddress
+	ld		bc,3
+	ldir											; copy return address to dkNextAddress
+	ld	sp,hl										; adjust stack pointer
+	jp		__dkReenterRST18
+
+__dk_ldxpca::
+	ld		hl,(dkRegisters+__dkregisters+_af)
+	ld		a,h
+	ld		(dkNextAddress+__dkaddress+xpc),a
+	jp		__dkCopyToRam
+
+__dk_ldaxpc::
+	ld    a,(dkRegisters+__dkregisters+_xpc)
+	ld		hl,(dkRegisters+__dkregisters+_af)
+	ld		h, a
+	ld		(dkRegisters+__dkregisters+_af),hl			; performs	ld a, xpc
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	add   hl, de
+	ld		(dkNextAddress+__dkaddress+offset),hl		; skip instruction
+	jp		__dkReenterRST18
+
+; ldir-family single-stepping handler code (assumes hl contains the address
+; of the appropriate handler function, see __dk_lxxx functions below)
+__dk_do_ldir::
+	ld		(dkRegisters+__dkregisters+_pc), hl			; set handler (executes in root so xmem dest/src ldir's work)
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	add	hl,de
+	ld		(dkNextAddress+__dkaddress+offset),hl		; set return address
+
+	call	dkSingleStepExit
+	ljp	dkRestoreContext
+
+__dk_ldir::
+	ld		hl, __dk_handle_ldir
+   jp		__dk_do_ldir
+
+; --- Handlers for new R3000A instructions ---
+#if _CPU_ID_ >= R3000_R1
+__dk_lddsr::
+	ld		hl, __dk_handle_lddsr
+   jp		__dk_do_ldir
+
+__dk_ldisr::
+	ld		hl, __dk_handle_ldisr
+   jp		__dk_do_ldir
+
+__dk_lsdr::
+	ld		hl, __dk_handle_lsdr
+   jp		__dk_do_ldir
+
+__dk_lsir::
+	ld		hl, __dk_handle_lsir
+   jp		__dk_do_ldir
+
+__dk_lsddr::
+	ld		hl, __dk_handle_lsddr
+   jp		__dk_do_ldir
+
+__dk_lsidr::
+	ld		hl, __dk_handle_lsidr
+   jp		__dk_do_ldir
+#endif
+; --------------------------------------------
+
+__dk_ljp::
+	ld		de,dkNextAddress
+	ld		hl,iy
+	inc	hl
+	ld		bc,3
+	ldir											; save ljp target address to dkNextAddress
+	jp		__dkReenterRST18
+
+__dk_rst2028::
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	inc	hl
+	ld		(dkNextAddress+__dkaddress+offset),hl		; skip rst instruction
+	jp		__dkReenterRST18
+
+__dkReenterRST18::
+	ld		hl,(dkptrASMbuf)
+	ld		(hl),0xdf							; rst 0x18
+	jp		__dkExecInRAM						; debug kernel will be immediately reentered
+
+__dkCopyToRam::								; copy instruction to RAM
+	ld		hl,(dkNextAddress+__dkaddress+offset)
+	add	hl,de
+	ld		(dkNextAddress+__dkaddress+offset),hl
+	ld		b,d
+	ld		c,e
+	ld		de,(dkptrASMbuf)
+	ld		hl,iy
+	ldir
+	; place rst after instruction to execute to bring control back to dk
+	ld		a,0xdf								;rst 0x18
+	ld		(de),a
+
+__dkExecInRAM::
+
+	call	dkSingleStepExit
+
+	ld		hl,(dkptrASMbuf)
+	; normalize data buffer address to xmem window and execute in the xmem window
+   xor   a										; Equiv to "ld	a, TC_SYSREAD_LOGICAL_DATA"
+   												; Address is from data space
+   call  dkcLogicalToPhysical				; Convert to physical
+   call  dkcPhysicalToLogical				; convert to XPC:EXXX
+	; put the xpc
+	ld		(dkRegisters+__dkregisters+_xpc),a
+	ld		(dkRegisters+__dkregisters+_pc),hl
+
+	ljp	dkRestoreContext
+#endasm
+
+#asm root
+__dk_do_djnz::
+	djnz	__dkdjnz
+	rst	0x18
+__dkdjnz:
+	jp		__dk_handle_djnz
+
+__dk_handle_djnz::
+	push	af
+	ex		af,af'
+   push	af
+	push	de
+	push	hl
+	push	bc
+	push  iy
+	ld		iy,(dkNextAddress+__dkaddress+offset)		; iy = instruction addr after djnz
+	dec	iy														; iy is pointing at offset delta of djnz
+
+	ld		a,(dkNextAddress+__dkaddress+xpc)
+
+	lcall __dk_ldp_LogToPhyCode							; l contains 2nd byte of djnz opcode (offset delta)
+
+	ld    d,0
+	ld e, l
+	bit	7,e													; if high bit in e is set, load 0xff in d for addition below (jumping backwards)
+	jr		z,__dk_hdjnz_nosignext
+	ld		d,0xff
+__dk_hdjnz_nosignext:
+	ld    hl, iy
+	dec	hl														; hl now contains address of djnz instruction
+	add	hl,de
+	inc	hl
+	inc	hl														; hl now contains jump address
+	ld		(dkNextAddress+__dkaddress+offset),hl		; store jump address in dkNextAddress
+
+	call	dkExit
+
+	pop   iy
+	pop 	bc
+	pop	hl
+	pop	de
+	pop	af
+   ex		af,af'
+   pop	af
+	rst 	0x18
+;	address = hl + (hl+1) + 2!!
+
+__dk_handle_retf::
+	; dkNextAddress is on the stack!
+	push	hl
+	push	bc
+	push	de
+	push	af
+	ld		hl,(sp+8)
+	ld		(dkNextAddress+__dkaddress+offset),hl
+
+   call	dkExit
+
+	pop	af
+	pop	de
+	pop	bc
+	pop	hl
+	inc	sp
+	inc	sp
+	rst	0x18
+
+__dk_handle_jpf::
+   push  hl
+   push  bc
+   push  de
+   push  af
+   ex    af,af'
+   push  af
+   push  iy
+   ld    iy,(dkNextAddress+__dkaddress+offset)     ; dkNextAddress.offset is pointing 1 byte past jump address
+   dec   iy
+   dec   iy
+   ld    a,(dkNextAddress+__dkaddress+xpc)
+   lcall  __dk_ldp_LogToPhyCode
+   ld    (dkNextAddress+__dkaddress+offset),hl     ; hl = jump address
+
+   call  dkExit
+
+   pop   iy
+   pop   af
+   ex    af,af'
+   pop   af
+   pop   de
+   pop   bc
+   pop   hl
+   rst   0x18
+
+__dk_handle_jrcc::
+	jp		__dk_handle_djnz
+
+__dk_handle_ldir::											; Special handler to execute ldir in root code space so xmem dest/src work correctly.
+	ldir
+	rst	0x18
+
+// New R3000A instruction handlers
+#if _CPU_ID_ >= R3000_R1
+__dk_handle_lddsr::
+	lddsr
+   rst   0x18
+
+__dk_handle_ldisr::
+	ldisr
+   rst   0x18
+
+__dk_handle_lsdr::
+	lsdr
+   rst   0x18
+
+__dk_handle_lsir::
+	lsir
+   rst   0x18
+
+__dk_handle_lsddr::
+	lsddr
+   rst   0x18
+
+__dk_handle_lsidr::
+	lsidr
+   rst   0x18
+#endif
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#endasm
+
+#else  // Assembly level single stepping is not supported
+
+#asm xmem
+dkAsmSingleStep::
+	ljp		dkCore
+#endasm
+
+#endif
+
+/*** BeginHeader dkOpsize */
+extern const char dkOpsize[64];
+/*** EndHeader */
+
+#if (DK_ENABLE_ASMSINGLESTEP == 1)
+// This is a packed table where each two bit group represents the length of the
+// associated opcode.  Each byte contains the length of four opcodes.  If an
+// instruction is marked as zero length, it is an instruction prefix.
+const char dkOpsize[64] = {
+(char)((dkST << 4)|dkSS), (char)((dkSS << 4)|dkDS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkDS), /* 00 - 0f */
+(char)((dkDT << 4)|dkSS), (char)((dkSS << 4)|dkDS), (char)((dkDS << 4)|dkSS), (char)((dkSS << 4)|dkDS), /* 10 - 1f */
+(char)((dkDT << 4)|dkTS), (char)((dkSS << 4)|dkDD), (char)((dkDS << 4)|dkTS), (char)((dkSS << 4)|dkDS), /* 20 - 2f */
+(char)((dkDT << 4)|dkTS), (char)((dkSS << 4)|dkDS), (char)((dkDS << 4)|dkTS), (char)((dkSS << 4)|dkDS), /* 30 - 3f */
+(char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), /* 40 - 4f */
+(char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), /* 50 - 5f */
+(char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), /* 60 - 6f */
+(char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkZS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), /* 70 - 7f */
+(char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), /* 80 - 8f */
+(char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), /* 90 - 9f */
+(char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), /* a0 - af */
+(char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), (char)((dkSS << 4)|dkSS), /* b0 - bf */
+(char)((dkSS << 4)|dkTT), (char)((dkDS << 4)|dkDZ), (char)((dkSS << 4)|dkTD), (char)((dkST << 4)|dkDZ), /* c0 - cf */
+(char)((dkSS << 4)|dkTZ), (char)((dkDS << 4)|dkDS), (char)((dkSS << 4)|dkTZ), (char)((dkSZ << 4)|dkDS), /* d0 - df */
+(char)((dkSS << 4)|dkTS), (char)((dkDS << 4)|dkDS), (char)((dkSS << 4)|dkTS), (char)((dkSZ << 4)|dkDS), /* e0 - ef */
+(char)((dkSS << 4)|dkTS), (char)((dkDS << 4)|dkDS), (char)((dkSS << 4)|dkTS), (char)((dkSZ << 4)|dkDS)  /* f0 - ff */
+};
+#endif
+
+
+/*** BeginHeader dkPrefixed */
+extern const char dkPrefixed[64];
+/*** EndHeader */
+
+#if (DK_ENABLE_ASMSINGLESTEP == 1)
+// This table is constructed by combining the opcode mapping tables for for 0xdd
+// and 0xfd (the instructions for both prefixes are the same size), then rotating
+// the table counterclockwise 90 degrees and superimposing it on the opcode table
+// for 0xed.
+// This table contains instruction lengths for 0xed, 0xdd, and 0xfd prefixed
+// instructions.  If an instruction is either 0xdd or 0xfd prefixed, the length
+// of its opcode can be found by the following:
+//              MSN,LSN = 0xf - LSN, MSN
+// For example, if the byte following either a 0xdd or 0xfd is 0x4e, it will
+// be stored in the table as 0x14.  This table is packed just as Opsize is.
+// Prefixed instructions can be two, three or four bytes.  Instruction lengths
+// are stored in this table as length - 1.  If an instruction length is stored
+// as zero, it is either invalid, or one of two possible collisions (0x52 and
+// 0x63).
+//
+
+const char dkPrefixed[64] = {
+(char)((dkZZ << 4)|dkZZ), (char)((dkZZ << 4)|dkZZ), (char)((dkZZ << 4)|dkZZ), (char)((dkZZ << 4)|dkZZ), /* 00 - 0f */
+(char)((dkZZ << 4)|dkZZ), (char)((dkDD << 4)|dkDD), (char)((dkDD << 4)|dkDD), (char)((dkZZ << 4)|dkZZ), /* 10 - 1f */
+(char)((dkZZ << 4)|dkZZ), (char)((dkZZ << 4)|dkTS), (char)((dkZZ << 4)|dkZZ), (char)((dkZZ << 4)|dkZZ), /* 20 - 2f */
+(char)((dkZZ << 4)|dkZZ), (char)((dkZZ << 4)|dkSS), (char)((dkZZ << 4)|dkZZ), (char)((dkSS << 4)|dkSS), /* 30 - 3f */
+(char)((dkZS << 4)|dkST), (char)((dkSS << 4)|dkSS), (char)((dkZS << 4)|dkST), (char)((dkTS << 4)|dkSS), /* 40 - 4f */
+(char)((dkZS << 4)|dkZT), (char)((dkSZ << 4)|dkSS), (char)((dkZS << 4)|dkST), (char)((dkZS << 4)|dkSS), /* 50 - 5f */
+(char)((dkSS << 4)|dkSZ), (char)((dkST << 4)|dkSS), (char)((dkZS << 4)|dkST), (char)((dkST << 4)|dkSS), /* 60 - 6f */
+(char)((dkZZ << 4)|dkST), (char)((dkZS << 4)|dkSS), (char)((dkZZ << 4)|dkST), (char)((dkZS << 4)|dkSS), /* 70 - 7f */
+(char)((dkZZ << 4)|dkZZ), (char)((dkZZ << 4)|dkZD), (char)((dkZZ << 4)|dkZZ), (char)((dkZZ << 4)|dkZZ), /* 80 - 8f */
+(char)((dkSZ << 4)|dkZT), (char)((dkDD << 4)|dkDZ), (char)((dkSD << 4)|dkDD), (char)((dkZZ << 4)|dkZZ), /* 90 - 9f */
+(char)((dkSZ << 4)|dkZD), (char)((dkZZ << 4)|dkSD), (char)((dkSZ << 4)|dkZZ), (char)((dkZZ << 4)|dkSZ), /* a0 - af */
+(char)((dkSZ << 4)|dkZD), (char)((dkZZ << 4)|dkSD), (char)((dkSZ << 4)|dkZZ), (char)((dkDD << 4)|dkDD), /* b0 - bf */
+(char)((dkSZ << 4)|dkSZ), (char)((dkZZ << 4)|dkZD), (char)((dkSZ << 4)|dkZZ), (char)((dkZZ << 4)|dkSZ), /* c0 - cf */
+(char)((dkSZ << 4)|dkTZ), (char)((dkZZ << 4)|dkZD), (char)((dkSZ << 4)|dkZZ), (char)((dkZZ << 4)|dkZZ), /* d0 - df */
+(char)((dkZZ << 4)|dkTZ), (char)((dkZZ << 4)|dkZD), (char)((dkZZ << 4)|dkZZ), (char)((dkZZ << 4)|dkSZ), /* e0 - ef */
+(char)((dkSZ << 4)|dkZZ), (char)((dkZZ << 4)|dkZD), (char)((dkSZ << 4)|dkZZ), (char)((dkZZ << 4)|dkZZ)  /* f0 - ff */
+};
+#endif
+
+
+/*** BeginHeader dkGetOplength, dkOplen*/
+xmem void dkGetOplength(void);
+xmem void dkOplen(void);
+/*** EndHeader */
+
+#if (DK_ENABLE_ASMSINGLESTEP == 1)
+#asm xmem
+; expects table address in ix, opcode to look up in l
+; returns length in hl
+; uses c and de
+dkGetOplength::
+	ex		de,hl					; clear c and l/v, opcode to look up is in e
+	bool	hl
+	ld		c,h
+	rr		de
+	rr		de
+	jr		nc,__dkcheckv
+	set	1,c
+__dkcheckv:
+	jp		lz,__dknoneset
+	set	0,c					; c has opcode mod 4
+__dknoneset:
+	; l - byte offset into dkOplen table
+	; c - half nibble in byte corresponding to opcode
+	ld		d,0x0
+	ld		hl,ix
+	add	hl,de					; hl contains address of opcode information
+	ld		ix,hl
+	ld		hl,(ix)				; l has encoded information
+	ld		h,0
+
+	ld		a,3					; if c == 3, bits 0,1 contain length
+	cp		c
+	jr		z,__dknoshift
+	srl	l
+	srl	l
+	ld		a,2					; if c == 2, bits 2,3 contain length
+	cp		c
+	jr		z,__dknoshift
+	srl	l
+	srl	l
+	ld		a,1					; if c == 1, bits 4,5 contain length
+	cp		c
+	jr		z,__dknoshift
+	srl	l
+	srl	l
+__dknoshift:
+	ld		a,0x03				; mask out any unwanted values
+	and	l
+	ld		l,a
+	ld		h,0
+	lret
+#endasm
+
+#asm xmem
+; expects iy to contain address of opcode to check.
+; returns length of opcode in hl
+; destroys any values in bc, de, ix
+dkOplen::
+__dkopleninit:
+	bool	hl
+	ld		b,h
+__dkoplenstart:
+	ld		l,(iy)
+	; check for ALTD, IOI, IOE prefixes.  If current instruction
+	; is one of these, increment code pointer and start over
+	ld		a,dkALTD
+	cp		l
+	jr		z,__dkoplenrestart
+	ld		a,dkIOI
+	cp		l
+	jr		z,__dkoplenrestart
+	ld		a,dkIOE
+	cp		l
+	jr		z,__dkoplenrestart
+	ld		a,0xdd
+	cp		l
+	jr		z,__dksetddprefix
+	ld		a,0xed
+	cp		l
+	jr		z,__dksetedprefix
+	ld		a,0xfd
+	cp		l
+	jr		z,__dksetfdprefix
+	jr		__dknotprefixed
+__dkoplenrestart:
+	inc	b
+	inc	iy
+	jr		__dkoplenstart
+__dknotprefixed:
+	; instruction is not prefixed - get length from dkOpsize
+	ld		a,0xc7				; ljp xpc,mn is a 4-byte instruction
+	cp		l
+	jp		z,__dkis4byte
+	ld		a,0xcf				; lcall is a 4-byte instruction
+	cp		l
+	jp		z,__dkis4byte
+	ld		ix,dkOpsize			; use dkOpsize table to get instruction length
+	call	dkGetOplength
+	jp		__dkoplendone
+
+__dksetddprefix:
+	set	1,b
+	jr		__dkprefixed
+__dksetedprefix:
+	set	2,b
+	jr		__dkprefixed
+__dksetfdprefix:
+	set	3,b
+
+__dkprefixed:
+	ld		l,(iy+1)
+	bit	2,b
+	jr		nz,__dkedprefix
+
+__dkddfdprefix:				; dd, fd prefixed instruction
+	rlc	l
+	rlc	l
+	rlc	l
+	rlc	l
+	ld		a,0xf0
+	xor	l
+	ld		l,a
+	ld		h,0
+__dkedprefix:
+	ld		a,0x52				; check for collisions in dkPrefixed table
+	cp		l
+	jr		nz,__dkcheck63	;
+	bit	2,b					; if bit 2 is set, ed prefix
+	jp		nz,__dkis2byte		; if ed prefixed, 0x52 is 2 bytes
+	jp		__dkis4byte			; if dd or fd prefixed, 0x52 (actually 0x2a) is 4 bytes
+__dkcheck63:
+	ld		a,0x63
+	cp		l
+	jr		nz,__dkprefix2
+	bit	2,b					; if bit 2 is set, ed prefix
+	jp		nz,__dkis3byte		; if ed prefixed, 0x63 is 3 bytes
+	jp		__dkis2byte			; if dd or fd prefixed, 0x63 (actually 0x39) is 2 bytes
+__dkprefix2:
+	ld		ix,dkPrefixed		; use dkPrefixed table to get instruction length
+	call	dkGetOplength
+	inc	hl						; length of prefixed instructions is stored as length - 1
+	jp		__dkoplendone
+
+__dkis2byte:
+	ld		l,2
+	jr		__dkoplendone
+__dkis3byte:
+	ld		l,3
+	jr		__dkoplendone
+__dkis4byte:
+	ld		l,4
+__dkoplendone:
+	bit	0,b					; if bit 0 in b is set, instruction was IOI, IOE, or ALTD prefixed
+	jr		z,__dkoplenfinished
+	inc	l
+	dec	iy						; need to decrement iy as it was incremented at start
+__dkoplenfinished:
+	ld		h,0x0
+	lret
+#endasm
+#endif
+
+
+/*** BeginHeader dkGetStructMemberAddr */
+xmem void dkGetStructMemberAddr(void);
+/*** EndHeader */
+
+#asm xmem
+; expects -
+; a  = member offset in struct
+; bc = struct length
+; de = logical index into table
+; hl = table start address
+; returns struct member address in hl
+; limitations -
+; 1) index * length cannot be larger than 64k
+; 2) length of struct member cannot be greater than 256 bytes
+dkGetStructMemberAddr::
+	push	hl
+	mul
+	pop	hl
+	add	hl,bc
+	ld		c,a
+	ld		b,0
+	add	hl,bc
+	lret
+#endasm
+
+///////////////////////////////////////////////////////////////
+/*			Watch expression handling 									 */
+///////////////////////////////////////////////////////////////
+
+/*** BeginHeader dkAddWatch, dkDeleteWatch, dkDeleteAllWatches, dkExecuteWatch,
+	  dkExecuteAllWatches, dkSendWatches, dkWatchIndex, dkWatchExpression */
+root void dkAddWatch(void);
+xmem void dkDeleteWatch(void);
+xmem void dkDeleteAllWatches(void);
+xmem void dkExecuteWatch(void);
+xmem void dkExecuteAllWatches(void);
+xmem void dkSendWatches(void);
+extern unsigned int dkWatchIndex;
+extern TypedArg dkWatchExpression;
+extern int dkStructWatchBufferOffset;
+#if (DK_ENABLE_WATCHEXPRESSIONS == 1)
+extern struct __dkwatch dkWatchTable[DK_MAX_WATCHES];
+extern char dkWatchCount;
+#endif
+
+/*** EndHeader */
+
+#if (DK_ENABLE_WATCHEXPRESSIONS == 1)
+char dkWatchCount;
+TypedArg dkWatchExpression;
+struct __dkwatch dkWatchTable[DK_MAX_WATCHES];
+unsigned int dkWatchIndex;
+char __dk_watchcurindex;
+char __dk_watchnumleft;
+char __dk_watchcurxpc;
+unsigned int __dk_watchcuroffset;
+unsigned int __dk_ptrexecwatchret;
+
+
+#asm root
+; expects ix to contain address of watch address to add to table and
+; a to contain the size of the watch being added.  This function must be
+; in root since xpc:ix point to a system buffer containing the watch to add
+dkAddWatch::
+	ex		af,af'
+	ld		a,(dkWatchCount)			; don't add a watch if the table is full
+	cp		DK_MAX_WATCHES
+	ret	z
+
+	bool	hl
+	ld		l,h
+	ld		a,(dkWatchCount)
+	ld		l,a
+	ex		de,hl							; de = logical index into watch table
+	ld		bc,__dkwatch+@LENGTH
+	ld		hl,dkWatchTable
+	ld		a,__dkwatch+Address
+	call	dkGetStructMemberAddr	; hl = struct member address
+	ex		de,hl
+	ld		hl,ix
+	ld		bc,__dkwatch+Size-Address
+	ldir
+	ex		af,af'
+	ld		(de),a						; put size of watch after address
+	ld		hl,dkWatchCount
+	inc	(hl)
+	ret
+#endasm
+
+#asm xmem
+
+; expects de to contain the index to delete
+; returns with zero flag set if attempting to delete from empty table
+; This function first determines the number of bytes to copy to
+; slide all of the compiled watch code down once the desired watch is
+; deleted.  All compiled watches after the deleted watch are moved down
+; to cover the hole left by the deleted watch.  The watch is then deleted
+; from dkWatchTable, and each starting address for each watch in
+; dkWatchTable is then modified to reflect its new starting address. End of
+; watch code is computed as the starting address of the last watch in the
+; table + its size and this value is returned to DC so the compiler knows
+; where to compile the next watch.
+; Returns next free address to compile watch in hl.
+dkDeleteWatch::
+	; need to make sure that index is not beyond end of list!
+	ld		a,(dkWatchCount)
+	cp		0
+	jr		nz,__dk_dwindexok
+	lret
+
+__dk_dwindexok:
+	ld		hl',de						; hl' = index to delete in table
+	xor	a
+	ld		bc,__dkwatch+@LENGTH
+	ld		hl,dkWatchTable
+	call	dkGetStructMemberAddr
+	ld		iy,hl							; iy = start address of watch to delete in table
+
+	ld		hl,(iy+__dkwatch+Size)
+	ex		de',hl						; de' = size of watch deleted
+
+	ld		a,(dkWatchCount)
+	dec	a
+	cp		e
+	jp		z,__dk_dwdone
+
+	; determine number of bytes to copy to move compiled watch code
+;	BytesToCopy =
+;	(dkWatchTable[dkWatchCount - 1].Address + dkWatchTable[dkWatchCount - 1].Size) -
+;	(dkWatchTable[index].Address + dkWatchTable[index].Size);
+
+	; remove compiled watch code
+	inc	de								; increment de to next watch in table
+	ld		a,__dkwatch+Address
+	ld		bc,__dkwatch+@LENGTH
+	ld		hl,dkWatchTable
+	call	dkGetStructMemberAddr
+	ld		hl,(hl)
+	push	hl								; hl = start address for bytes to copy
+
+	ld		de,(dkWatchCount)
+	ld		d,0
+	dec	de
+	ld		a,0
+	ld		bc,__dkwatch+@LENGTH
+	ld		hl,dkWatchTable
+	call	dkGetStructMemberAddr
+	ld		ix,hl
+	ld		hl,(hl+__dkwatch+Address)	; hl = end address of bytes to copy upon return
+
+	xor 	a								; clear carry
+	pop	de
+	sbc	hl,de							; end - start = length of bytes to copy
+	jr		nz,__dk_dwmovewatches
+	ld		hl,(ix+__dkwatch+Size)	; at end of list, just copy size of last watch
+
+__dk_dwmovewatches:
+	ld		b,h								; bc = number of bytes to copy
+	ld		c,l								; de = destination address for bytes to copy
+	ld		hl,(iy+__dkwatch+Address)	; hl = source address for bytes to copy
+	ex		de,hl								; source,destination reversed????
+	ldir										; shift all compiled watches down
+
+	; remove watch from watch table
+	ld		de,__dkwatch+@LENGTH
+	ld		hl,iy
+	add	hl,de
+	push	hl								; sp = number of bytes to remove
+
+	xor	a
+	ld		bc,__dkwatch+@LENGTH
+	ld		hl,dkWatchTable
+	ld		de,(dkWatchCount)
+	ld		d,0
+	call	dkGetStructMemberAddr
+
+	xor	a								; clear carry flag
+	pop	de
+	sbc	hl,de
+	ld		b,h
+	ld		c,l
+	ld		hl,iy
+	ex		de,hl
+	jr		z,__dk_dwdone				; if z was set from sbc, bc is zero - done
+	ldir									; remove watch from table
+
+	; set start address for each of the moved watches in table
+	bool	hl
+	ld		hl,(dkWatchCount)
+	altd	ex	de,hl						; de = index to delete (was in hl')
+	sbc	hl,de
+	dec	hl
+	ld		b,l							; b = number of watches to update
+
+__dk_dwupdateaddress:
+	push 	bc
+	ld		a,__dkwatch+Address
+	ld		bc,__dkwatch+@LENGTH
+	ld		hl,dkWatchTable
+	call	dkGetStructMemberAddr
+	ld		ix,hl
+	ld		hl,(hl)
+	inc	de
+	ex		de,hl'						; hl' = next index to update
+	exx
+	ld		de',de
+	exx									; de = size of watch being deleted
+	xor	a
+	sbc	hl,de							; hl = new watch address
+	ld		(ix),hl
+	ex		de,hl'						; de = next index to update
+	pop	bc
+	djnz	__dk_dwupdateaddress
+
+__dk_dwdone:
+	ld		hl,dkWatchCount			; decrement the watch count
+	dec	(hl)
+	lret
+#endasm
+
+#asm xmem
+dkDeleteAllWatches::
+	xor	a
+	ld		(dkWatchCount),a
+	ld		bc,sizeof(dkWatchTable)
+   ld		hl,dkWatchTable
+   call	dkcClearMemory
+	lret
+#endasm
+
+#asm root
+; expects index of watch to execute in de
+__dk_executewatch::
+	ld		a,xpc								; save current xpc
+	ld		(__dk_watchcurxpc),a
+
+	ld		a,0								; want the start address of structure
+	ld		bc,__dkwatch+@LENGTH
+	ld		hl,dkWatchTable
+	call	dkGetStructMemberAddr
+
+	push	hl
+
+	; disable rst entry points to debug kernel
+	#ifdef DK_ENABLE_ASMSINGLESTEP
+   lcall	dkDisableRST18
+	#endif
+	#ifdef DK_ENABLE_BREAKPOINTS
+   lcall	dkDisableRST20
+	#endif
+   lcall	dkDisableRST28
+
+   pop	hl
+
+	ld		ix,hl								; ix = start of watch in table
+	ld		(__dk_watchcuroffset),hl
+	ld		de,__dkwatch+Address
+	add	ix,de
+	ld		hl,(ix+2)
+	ld		a,l
+	ld		xpc,a								; load xpc portion of address
+	ld		hl,(ix)							; xpc:hl = watch address
+	ld		ix,(dkRegisters+__dkregisters+_ix) ; restore ix for useix functions
+	ld		de,__dk_ewreturn
+	push	de									; push return on stack before running watch
+	jp		(hl)
+
+__dk_ewreturn:
+	ld		de,(__dk_watchcuroffset)	; de = address expression result in table
+	ld		hl,dkWatchExpression
+	ld		bc,__dkwatch+Address
+	ldir										; copy watch value to correct location in table
+
+	; re-enable rst entry points to debug kernel
+	#ifdef DK_ENABLE_ASMSINGLESTEP
+	lcall	dkEnableRST18
+	#endif
+	#ifdef DK_ENABLE_BREAKPOINTS
+	lcall	dkEnableRST20
+	#endif
+	lcall	dkEnableRST28
+
+	ld		a,(__dk_watchcurxpc)			; restore xpc
+	ld		xpc,a
+	ld		hl,(__dk_ptrexecwatchret)	; get return address
+	jp		(hl)								; jump to proper ret addr
+#endasm
+
+int dkStructWatchBufferOffset;
+
+#asm xmem
+dkExecuteWatch::
+	xor	a
+	ld		(dkRequest),a
+	ld		de,(dkWatchIndex)
+	ld		hl,__dk_ewret
+	ld		(__dk_ptrexecwatchret),hl
+	jp		__dk_executewatch
+__dk_ewret:
+	ld		a,(dkRST28State)
+   cp		_OP_JP
+   jr		nz,__dk_ewdisablerst28
+	lcall	dkEnableRST28
+   jr		__dk_ewrst28done
+__dk_ewdisablerst28:
+   lcall	dkDisableRST28
+__dk_ewrst28done:
+	ld		a,(dkRST20State)
+   cp		_OP_JP
+   jr		nz,__dk_ewdisablerst20
+	lcall	dkEnableRST20
+   jr		__dk_ewrst20done
+__dk_ewdisablerst20:
+   lcall	dkDisableRST20
+__dk_ewrst20done:
+	call	dkSendWatches
+	ld		a,(dkStatusFlags)				; clear watch status flag
+   res	DKF_STAT_INWATCH,a
+   ld		(dkStatusFlags),a
+	jp		dkCore
+
+dkExecuteAllWatches::
+   ld    a,(dkInBiosStack)
+   or    a
+   jr    nz,__dk_eawdone
+	ld		a,(dkWatchCount)				; make sure watch table is not empty
+	cp		0
+	jr		z,__dk_eawdone
+
+	ld		a,(dkStatusFlags)				; set watch status flag
+   set	DKF_STAT_INWATCH,a
+   ld		(dkStatusFlags),a
+
+	lcall	dkDisableRST28
+
+	ld		a,(dkWatchCount)
+	ld		b,a
+	ld		(__dk_watchnumleft),a
+	xor	a
+	ld		(__dk_watchcurindex),a
+   bool  hl
+   ld    l,h
+   ld    (dkStructWatchBufferOffset),hl
+
+__dk_eawexecwatch:						; while there are still watches, execute them
+	ld		d,0
+	ld		a,(__dk_watchcurindex)
+	ld		e,a
+	ld		hl,__dk_eawexecret
+	ld		(__dk_ptrexecwatchret),hl
+	jp		__dk_executewatch
+__dk_eawexecret:
+	ld		hl,__dk_watchcurindex
+	inc	(hl)
+	ld		a,(__dk_watchnumleft)
+	ld		b,a
+	ld		hl,__dk_watchnumleft
+	dec	(hl)
+	djnz	__dk_eawexecwatch
+
+__dk_eawdone:
+	ld		a,(dkRST20State)
+   cp		_OP_JP
+   jr		nz,__dk_eawdisablerst20
+	lcall	dkEnableRST20
+   jr		__dk_eawrst20done
+__dk_eawdisablerst20:
+   lcall	dkDisableRST20
+__dk_eawrst20done:
+	ld		a,(dkRequest)					; get current command
+	cp		TC_DEBUG_EXECALLWATCHES		; check to see if explicitly running watches
+	jr		nz,__dk_eawend					; if not, defer sending watches
+;	call	dkSendWatches
+;	ld		e,TC_DEBUG_EXECALLWATCHES|TC_ACK ; ack this request
+;	ld		bc,0
+;	call	dkRespond
+	xor	a
+	ld		(dkRequest),a
+	ld		a,(dkStatusFlags)				; clear watch status flag
+   res	DKF_STAT_INWATCH,a
+   ld		(dkStatusFlags),a
+#if (DK_ENABLE_TRACING == 1)
+   ld		hl,dkTraceFlags
+   bit   DKF_TRACE_WATCH,(hl)
+   jr		z,__dk_eawdone_0
+   lret
+__dk_eawdone_0:
+#endif
+	jp		dkCore
+__dk_eawend:
+	xor	a
+	ld		(dkRequest),a
+	ld		a,(dkStatusFlags)				; clear watch status flag
+   res	DKF_STAT_INWATCH,a
+   ld		(dkStatusFlags),a
+	ljp	__dk_eawret
+
+dkSendWatches::
+	ld		hl,dkWatchTable					; hl has pointer to watchtable
+	ld		bc,sizeof(dkWatchTable)			; bc has length of watchtable
+	ld		d,TC_TYPE_DEBUG					; d has packet type
+	ld		e,TC_DEBUG_WATCHDATA				; e has packet subtype
+
+	call	dkRespond							; send packet
+	lret
+#endasm
+
+#else
+#asm root
+dkAddWatch::
+	ret
+#endasm
+#asm xmem
+dkDeleteWatch::
+dkDeleteAllWatches::
+dkExecuteWatch::
+dkExecuteAllWatches::
+dkSendWatches::
+	lret
+#endasm
+
+#endif
+
+/*** BeginHeader dkDoWatchExpression*/
+nodebug root Typed dkDoWatchExpression();
+enum DKSymbolType {
+	_DK_T_CHAR = 1,
+	_DK_TINT = 2,
+	_DK_TUNSIGNED = 3,
+	_DK_TLONG = 4,
+	_DK_TULONG = 5,
+	_DK_TFLOAT = 7,
+	_DK_TSTRING = 9,
+	_DK_TSTRUCT = 16
+};
+
+#if (DK_ENABLE_WATCHEXPRESSIONS == 1)
+extern unsigned long dkStructWatchMem;
+#asm
+__dkDoWatchExpression: equ dkDoWatchExpression
+#endasm
+#endif
+/*** EndHeader */
+
+#if (DK_ENABLE_WATCHEXPRESSIONS == 1)
+// use old style non-prototype declaration to inhibit type checking
+//nodebug Typed dkDoWatchExpression(WatchExpression)
+
+#define _DK_POINTER 2
+#define _DK_ID_MASK 3
+
+unsigned long dkStructWatchMem;
+
+nodebug root
+Typed
+dkDoWatchExpression(WatchExpression)
+TypedArg WatchExpression;
+{
+
+	#GLOBAL_INIT
+   {
+   	dkStructWatchMem = xalloc(_DK_WATCH_MEM_);
+   }
+
+#if (_DK_WATCH_MEM_ != 0)
+	#asm
+   ;push	ix
+   ;push	iy
+   ;  if (WatchExpression.TypedData.Type >= _DK_TSTRUCT)
+   ;  {
+   ld		hl,_DK_WATCH_MEM_
+   bool	hl
+   jr    z,.dwe_na
+   ld	  	de,[WatchExpression]+TypedData+Type
+   ld	  	hl,WatchExpression
+   add  	hl,sp
+   add  	hl,de
+   ld	  	a,(hl)
+   cp    _DK_TSTRUCT
+   jr	  	z,.dwe_Type_GE_TSTRUCT
+	jr    nc,.dwe_Type_GE_TSTRUCT
+
+.dwe_na:
+
+	jp		.dwe_end   
+
+.dwe_Type_GE_TSTRUCT:
+   ld	  	de,[WatchExpression]+TypedData+Mods
+   ld	  	hl,WatchExpression
+   add	hl,sp
+   add	hl,de
+   ld		a,(hl)
+   and   a, _DK_ID_MASK
+   cp    _DK_POINTER
+   jr		z,.dwe_end  
+
+   ;      if (WatchExpression.TypedData.Mods != _DK_POINTER)
+   ;      {
+
+.dwe_Mods_NE_POINTER:
+
+   ld		de,[WatchExpression]+TypedData+Size
+   ld		hl,WatchExpression
+   add	hl,sp
+   add	hl,de
+   ld		hl,(hl)
+   ld		c,l                  ; bc: WatchExpression.TypedData.Size for ldir
+   ld		b,h
+
+   ld		hl,(dkStructWatchBufferOffset)
+   add   hl,bc
+   ld    de,_DK_WATCH_MEM_
+   xor	a
+   ex		de,hl
+   sbc   hl,de
+   jr    nc,.dwe_ok           ; limit Offset+count to bufferSize
+   add   hl,bc
+   ld		a,h
+   or		l
+   jp    z,.dwe_end           ; quit if no mem left
+   ld    c,l
+   ld    b,h
+   
+.dwe_ok:
+   ld		de,[WatchExpression]+Value+Integer
+   ld		hl,WatchExpression
+   add	hl,sp
+   add	hl,de
+
+   ld    a,xpc
+   push  af
+   push  hl                   ; ldir source address
+
+   push  bc                   ; save count before reusing bc
+   ld		iy,dkStructWatchMem
+   ld		hl,(iy)
+   ld		de,(dkStructWatchBufferOffset)
+   add   hl,de
+   ex    de,hl                ; de: lo word phys addr watchMem + Offset, carry?
+   ld		hl,(iy+2)
+   ld    bc,0
+   adc   hl,bc
+   ld    b,h
+   ld    c,l                  ; bc: hi word phys addr watchMem + Offset + carry
+   push	de
+   pop	ix                   ; ix: lo byte of dest xmem address
+   push	hl
+   pop	iy                   ; iy: hi byte of dest xmem address
+   call  dkcPhysicalToLogical ; xmem address of ldir dest now in a:hl
+   ld    xpc,a
+   ex    de,hl                ; de: ldir dest,   watchMem+Offset (xmem address)
+   pop   bc                   ; bc: ldir count,  WatchExpression.TypedData.Size
+   pop   hl                   ; hl: ldir source, &WatchExpression.Value union
+   push	hl                   ; Address, to update with xmem dest after ldir
+   push	bc
+
+   ldir                       ; source is &WatchExpression.Value on stack, 1st 4
+                              ;  bytes of struct, the rest were pushed on stack
+   pop	bc                   ; bc=0 after ldir, now is 16 bit Size (count)
+   ld		hl,(dkStructWatchBufferOffset)
+   add	hl,bc
+   ld    (dkStructWatchBufferOffset),hl ; dkStructWatchBufferOffset += ..Size
+
+   push	ix
+   pop	hl
+   push	iy
+   pop	bc
+   pop   ix                   ; &WatchExpression.Value union
+   ld		(ix),hl              ; lo word phys addr to WatchExpression.Value.Addr
+   ld		h,b
+   ld		l,c
+   ld		(ix+2),hl            ; hi word phys addr to WatchExpression.Value.Addr
+   pop   af
+   ld    xpc,a
+
+.dwe_end:
+	;pop	iy
+	;pop	ix
+   #endasm
+#endif // (_DK_WATCH_MEM_ != 0)
+
+	dkWatchExpression = WatchExpression; // WatchExpression.Value already updated
+}
+#endif
+
+
+
+/*** BeginHeader dkGetCharFromStdio, dkCharData, dkCharReady */
+xmem void dkGetCharFromStdio(void);
+extern char dkCharData;
+extern char dkCharReady;
+/*** EndHeader */
+
+char dkCharData;
+char dkCharReady;
+
+#asm xmem
+dkGetCharFromStdio::
+	push	ix
+	ld		hl,dkLocks
+	bit	DKF_GETCHAR_LOCK,(hl)
+	set	DKF_GETCHAR_LOCK,(hl)
+	jr		nz,dkGetCharFromStdio
+
+	ld		e,TC_DEBUG_SENDCHAR
+	ld		bc,0
+	call	dkRespond
+
+	call	dkSetGetCharTimer
+__dk_gcfswaitforlock:
+	call	dkCheckGetCharTimeOut
+	ld		hl,dkLocks
+	bit	DKF_GETCHAR_LOCK,(hl)
+	jr		nz,__dk_gcfswaitforlock
+	pop	ix
+	lret
+#endasm
+
+#if (DK_ENABLE_TRACING == 1)
+#asm xmem
+dkSendTrace::
+	push	af
+	ex		af,af'
+	push	af
+	push	bc
+	push	de
+	push	hl
+	exx
+	push	bc
+	push	de
+	push	hl
+	push	ix
+	push	iy
+
+	call	dkProlog
+
+; assign dkDebugTraceMsg.type
+	ld		hl,dkDebugTraceMsg+__dkDebugTraceMsg+type
+   xor	a
+   ld		(hl),a
+   ld		a,(dkTraceFlags)
+   bit	DKF_TRACE_ON,a
+   jr		nz,.__dk_sendtracefentry
+   bit   DKF_TRACE_MACRO,a
+   jp		z,.__dk_sendtracedone
+.__dk_sendtracefentry:
+   bit	DKF_TRACE_FENTRY,a
+   jr		z,.__dk_sendtrace_fexit
+   set   DK_TRACEMSG_FENTRY,(hl)
+   jr    .__dk_sendtracechecklock
+.__dk_sendtrace_fexit:
+   bit	DKF_TRACE_FEXIT,a
+   jr		z,.__dk_sendtrace_macro
+   set   DK_TRACEMSG_FEXIT,(hl)
+   jr    .__dk_sendtracechecklock
+.__dk_sendtrace_macro:
+   bit	DKF_TRACE_MACRO,a
+   jr		z,.__dk_sendtrace_rst
+   set   DK_TRACEMSG_MACRO,(hl)
+   jr    .__dk_sendtracechecklock
+.__dk_sendtrace_rst:
+   set   DK_TRACEMSG_RST,(hl)
+.__dk_sendtracechecklock:
+	ld		a,(dkStatusFlags)
+   bit	DKF_STAT_STEPMODE,a
+   jr		z,.__dk_sendtracerun
+	ld		a,(dkStepFlags)
+   bit	DKF_STEP_OVER,a
+   jr		z,.__dk_sendtracepostrun
+   set   DK_TRACE_STEPPING,(hl)
+   push	hl
+	ld		hl,(dkEntryCount)
+   bool	hl
+   pop	hl
+	jr		z,.__dk_sendtracepostrun
+.__dk_sendtracerun:
+   set   DK_TRACE_RUNNING,(hl)
+.__dk_sendtracepostrun:
+#if _USER
+	call	_sys_dk_pollserialport
+#else
+	call	dkPollSerialPort
+#endif
+	ld		hl,dkLocks
+	bit	DKF_STDIO_LOCK,(hl)
+	set	DKF_STDIO_LOCK,(hl)
+	jr		nz,.__dk_sendtracepostrun
+
+c   dkDebugTraceMsg.registers = dkRegisters;
+	ld		hl,dkDebugTraceMsg
+	ld		bc,sizeof(dkDebugTraceMsg)
+	ld		d,TC_TYPE_DEBUG				; d has packet type
+	ld		e,TC_DEBUG_TRACEMSG			; e has packet subtype
+
+	call	dkRespond						; send packet (bc has length)
+
+	ld		a,(dkStatusFlags)				; get status flags
+	bit	DKF_STAT_INWATCH,a			; check if watch is executing
+	jr		z,.__dk_sendtracenotinwatch; jump if not executing watch expression
+   call	dkUnlockStdio					; this is a watch, clear stdio lock
+	jr		.__dk_sendtracedone
+
+.__dk_sendtracenotinwatch:
+	call	dkSetStdioTimer
+
+.__dk_sendtracewaitforlock:
+#if _USER
+	call	_sys_dk_pollserialport
+#else
+	call	dkPollSerialPort
+#endif
+	call	dkCheckStdioTimeOut
+	bool	hl
+   jr		nz,.__dk_sendtracedone
+	ld		hl,dkLocks
+	bit	DKF_STDIO_LOCK,(hl)
+	jr		nz,.__dk_sendtracewaitforlock
+
+.__dk_sendtracedone:
+	call	dkEpilog
+
+	pop	iy
+	pop	ix
+	pop	hl
+	pop	de
+	pop	bc
+	exx
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	ex		af,af'
+	pop	af
+	lret
+#endasm
+#endif
+
+/*** BeginHeader dkSendStdio */
+xmem void dkSendStdio(void);
+/*** EndHeader */
+#asm xmem
+; expects hl to contain address of zero-terminated string to send
+dkSendStdio::
+	push	ix
+	ld		ix,hl							; save address in ix
+
+	call	dkProlog
+
+__dk_sschecklock:
+	ld		hl,dkLocks
+	bit	DKF_STDIO_LOCK,(hl)
+	set   DKF_STDIO_LOCK,(hl)
+
+__dk_ssgotlock:
+	ld		bc,0							; set bc to zero
+	ld		hl,ix							; restore pointer to string
+
+__dk_ssloop:
+	ld		a,(hl)						; check byte for 0 terminator
+	or		a								; check if current byte is 0
+	jr		z,__dk_ssatend				; found end
+	inc	bc								; bump counter
+	inc	hl								; move to next byte
+	jr		__dk_ssloop
+
+__dk_ssatend:
+	ld		hl,ix							; restore pointer to string
+	ld		d,TC_TYPE_DEBUG			; d has packet type
+	ld		e,TC_DEBUG_STDIO			; e has packet subtype
+
+	call	dkRespond					; send packet (bc has length)
+
+	ld		a,(dkStatusFlags)			; get status flags
+	bit	DKF_STAT_INWATCH,a		; check if watch is executing
+	jr		z,__dk_ssnotinwatch		; jump if not executing watch expression
+   call	dkUnlockStdio				; this is a watch, clear stdio lock
+	jr		__dk_ssdone
+
+__dk_ssnotinwatch:
+	call	dkSetStdioTimer
+
+__dk_sswaitforlock:
+#if _USER
+	call	_sys_dk_pollserialport
+#else
+	call	dkPollSerialPort
+#endif
+	call	dkCheckStdioTimeOut
+	bool	hl
+	jr		nz,__dk_ssdone
+	ld		hl,dkLocks
+	bit	DKF_STDIO_LOCK,(hl)
+	jr		nz,__dk_sswaitforlock
+
+__dk_ssdone:
+	call	dkEpilog
+
+	pop	ix
+	lret
+#endasm
+
+/*** BeginHeader dkRespond */
+root void dkRespond(void);
+/*** EndHeader */
+
+#asm root
+; expects -
+; a : source xpc
+; hl: pointer to root data buffer
+; bc: length of data
+; e : subtype of packet
+dkRespond::
+#if _USER
+	; user program compile, must go through syscall interface
+	ex		de',hl
+	bool	hl
+	ld		l,e
+	push	hl					; subtype
+	push	bc    			; length
+	ex		de',hl
+	push	hl    			; addr
+	bool	hl
+	ld		l,a
+	push	hl    			; source xpc
+	call	_sys_dk_write
+	add	sp,8
+#else
+	jp		dkBuildResponse
+#endif
+	ret
+#endasm
+
+/*** BeginHeader dkEnableRST28, dkDisableRST28 */
+xmem void dkEnableRST28(void);
+xmem void dkDisableRST28(void);
+xmem void dkEnableRST20(void);
+xmem void dkDisableRST20(void);
+xmem void dkEnableRST18(void);
+xmem void dkDisableRST18(void);
+
+#define DKF_RST_RST28	0
+#define DKF_RST_RST20	1
+#define DKF_RST_RST18	2
+
+/*** EndHeader */
+
+#asm xmem
+#if _USER
+dkEnableRST28::
+	exx
+	push	hl
+	ld		hl,0x0001
+	jr		__dk_erst28
+dkDisableRST28::
+	push	hl
+	bool	hl
+   ld		l,h
+__dk_erst28:
+	push	bc
+   push	de
+
+	push	hl
+   set	DKF_RST_RST28,l
+   push	hl
+   call	_sys_dk_setrstenables
+   add	sp,4
+
+   pop	de
+   pop	bc
+   pop	hl
+   exx
+   lret
+#else
+dkEnableRST28::
+	#if (CPU_ID_MASK(_CPU_ID_)) >= R3000
+   xor	a
+   ioi	ld (BDCR),a
+   #else
+   ld		a,_OP_JP
+   ld		(INTVEC_BASE+RST28_OFS),a
+   #endif
+   lret
+dkDisableRST28::
+	#if (CPU_ID_MASK(_CPU_ID_)) >= R3000
+   ld		a,0x80
+   ioi	ld (BDCR),a
+   #else
+   ld		a,0xc9
+   ld		(INTVEC_BASE+RST28_OFS),a
+   #endif
+   lret
+#endif
+
+#if _USER
+dkEnableRST20::
+	ld		hl,0x0001
+   jr		__dk_erst20
+dkDisableRST20::
+	bool	hl
+   ld		l,h
+__dk_erst20:
+	push	hl
+   set	DKF_RST_RST20,l
+   push	hl
+   call	_sys_dk_setrstenables
+   add	sp,4
+   lret
+#else
+dkEnableRST20::
+	ld		a,_OP_JP
+   ld		(INTVEC_BASE+RST20_OFS),a
+   lret
+dkDisableRST20::
+	ld		a,_OP_RET
+   ld		(INTVEC_BASE+RST20_OFS),a
+   lret
+#endif
+
+
+#if _USER
+dkEnableRST18::
+	ld		hl,0x0001
+   jr		__dk_erst18
+dkDisableRST18::
+	bool	hl
+   ld		l,h
+__dk_erst18:
+	push	hl
+   set	DKF_RST_RST18,l
+   push	hl
+   call	_sys_dk_setrstenables
+   add	sp,4
+   lret
+#else
+dkEnableRST18::
+	ld		a,_OP_JP
+   ld		(INTVEC_BASE+RST18_OFS),a
+   lret
+dkDisableRST18::
+	ld		a,0xc9
+   ld		(INTVEC_BASE+RST18_OFS),a
+   lret
+#endif
+#endasm
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

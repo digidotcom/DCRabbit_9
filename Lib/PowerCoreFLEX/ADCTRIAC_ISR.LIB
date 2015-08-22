@@ -1,0 +1,164 @@
+/*** Beginheader */
+#ifndef __ADCTRIAC_ISR_LIB
+#define __ADCTRIAC_ISR_LIB
+/*** EndHeader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+ADCTRIAC_ISR.LIB
+
+DESCRIPTION:	This library contains the ISR for the triac control and
+					the ADC ramp circuit. The triac control is intended for
+               use on all R3000 based designs and the A/D ramp is only
+               for use on PowerCore FLEX series core modules.
+
+REVISION HISTORY:
+	06/25/04	EK 	Initial Creation
+
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader	_triac_isr,
+						_ramp_isr,
+                  _triac_isr_bitmask,
+                  _adcramp_interrupt,
+                  _zeroXing_interrupt */
+
+root interrupt void _triac_isr();
+root interrupt void _ramp_isr();
+extern int _adcramp_interrupt;
+extern int _zeroXing_interrupt;
+
+extern char _old_zeroX_level;
+extern char _current_zeroX_level;
+extern char _old_ramp_level;
+extern char _current_ramp_level;
+extern char _triac_isr_bitmask;
+/*** EndHeader */
+
+
+int _adcramp_interrupt;
+int _zeroXing_interrupt;
+
+char _old_zeroX_level;
+char _current_zeroX_level;
+char _old_ramp_level;
+char _current_ramp_level;
+char _triac_isr_bitmask;
+
+#asm root nodebug
+_triac_isr::
+_ramp_isr::
+
+	push	af
+   push	bc
+   push	de
+   push	hl
+   push	ix
+   push	iy
+   push	ip
+
+#ifdef __TRIAC_LIB
+   ld    a,(_zeroXing_interrupt)
+   or		a,a
+   jr    z,.external_isr_continue
+
+   ld		a,(_triac_isr_bitmask)
+   ld		b,a
+;   ioi	ld	a,(PEDR)
+	IOREAD_A(PEDR)
+   and   a,b
+   ld		(_current_zeroX_level),a
+   ld    a,(_old_zeroX_level)
+   ld    b,a
+   ld    a,(_current_zeroX_level)
+   cp		a,b
+   jr    z,.external_isr_continue
+
+#ifdef PHASECONTROL
+	#ifndef TIMEPROPORTIONAL
+   call	_triac_phasecontrol
+   #endif
+#endif
+
+#ifdef TIMEPROPORTIONAL
+	#ifndef PHASECONTROL
+   call	_triac_timeproportional
+	#endif
+#endif
+
+ 	ld		a,(_current_zeroX_level)
+ 	ld		(_old_zeroX_level),a
+.external_isr_continue:
+#endif
+
+#ifdef __ADCRAMP_LIB
+   ld		a,(_adcramp_interrupt)
+   or		a,a
+   jr		z,.external_isr_exit
+
+;   ioi	ld	a,(PGDR)
+	IOREAD_A(PGDR)
+   and   a,0x01
+   ld		(_current_ramp_level),a
+   ld		b,a
+
+   ld    a,(_old_ramp_level)
+   cp		a,b
+   jp    z,.external_isr_exit
+	ld		a,b
+   ld		(_old_ramp_level),a
+
+   // Re-enable ramp interrupt
+   ipset	1
+   ipres
+   call  _ramp_routine
+#endif
+
+.external_isr_exit:
+   pop	ip
+   pop	iy
+   pop	ix
+   pop	hl
+   pop	de
+   pop	bc
+   pop	af
+
+   ipres							; restore interrupts
+	ret							; return
+#endasm
+
+
+/*** BeginHeader _initialize_isr_variables */
+void _initialize_isr_variables(void);
+/*** EndHeader */
+
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_initialize_isr_variables	<ADCTRIAC_ISR.LIB>
+
+SYNTAX:        void _initialize_isr_variables(void);
+
+DESCRIPTION:   Function to initialize the ISR control flags to be put into
+					a known state for proper error checking. Called by triac and
+               or ramp A/D init functions.
+
+               This function is intended for internal use only!
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void _initialize_isr_variables(void)
+{
+	#GLOBAL_INIT{_zeroXing_interrupt = 0;}
+   #GLOBAL_INIT{_adcramp_interrupt  = 0;}
+   #GLOBAL_INIT{_old_ramp_level = 0;}
+   #GLOBAL_INIT{_old_zeroX_level = 0;}
+}
+
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */
+
+
+

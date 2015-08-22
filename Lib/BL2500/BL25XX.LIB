@@ -1,0 +1,2156 @@
+/*** Beginheader */
+#ifndef __BL25XX_LIB
+#define __BL25XX_LIB
+
+#if (_BOARD_TYPE_ < BL2500A || _BOARD_TYPE_ > (BL2500A+0x00FF))
+#error "BL25XX.LIB only supports BL2500 series boards."
+#endif
+/*** Endheader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+BL25XX.LIB
+Copyright (c) 2002, Z-World
+
+DESCRIPTION:	Support for the BL25XX series controllers.
+
+SUPPORT LIBS:
+
+REVISION HISTORY:
+
+	12/16/02		pel	Increased settling time to analog input drivers.
+	11/22/02		pel	Revised for initial release.
+	07/18/02		pel	Proto-test.
+
+END DESCRIPTION **********************************************************/
+
+
+/*** Beginheader __brdinitflag, __pwminitflag */
+
+extern int __brdinitflag;
+extern int __pwminitflag;
+
+/*** endheader */
+
+// Function execution flags
+int __brdinitflag;				//Board init function flag
+int __pwminitflag;				//PWM init flag
+
+
+/*** BeginHeader _msDelay */
+void _msDelay(unsigned int delay);
+/*** EndHeader */
+nodebug
+void _msDelay(unsigned int delay)
+{
+	auto unsigned long done_time;
+
+	done_time = MS_TIMER + delay;
+   while( (long) (MS_TIMER - done_time) < 0 );
+}
+
+/*** BeginHeader _setpwmcycle */
+void _setpwmcycle(int pwmchannel, int countcycle, int msbshadow, int lsbshadow);
+
+extern const char _andbitmask[4];
+extern const char _orbitmask[4];
+
+/*** EndHeader */
+
+const char _andbitmask[4] = {0xef, 0xdf, 0xbf, 0x7f};
+const char _orbitmask[4] = {0x10, 0x20, 0x40, 0x80};
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_setpwmcycle                 <BL25XX.LIB>
+
+SYNTAX:	void _setpwmcycle(int pwmchannel, int countcycle,
+				int msbshadow, int lsbshadow);
+
+DESCRIPTION:   The count cycle is placed into the appropriate pulse-width
+					modulator registers to change the 1024-clock count cycle.
+					Register values are saved into the appropriate shadow
+					registers.
+
+PARAMETER1:		PWM channels:
+					0, PWM0 (PF4)
+					1, PWM1 (PF5)
+					2, PWM2 (PF6)
+					3, PWM3 (PF7)
+
+PARAMETER2:		The count cycle can be a value from 0 to 1024, where
+					0 is logic low the whole time, and 1024 is logic high.
+
+PARAMETER3:		Most significant bit shadow register:
+					PWM0RShadow, for PWM0
+					PWM1RShadow, for PWM1
+					PWM2RShadow, for PWM2
+					PWM3RShadow, for PWM3
+
+PARAMETER4:		Least significant bit shadow register:
+					PWL0RShadow, for PWM0
+					PWL1RShadow, for PWM1
+					PWL2RShadow, for PWM2
+					PWL3RShadow, for PWM3
+
+RETURN VALUE:	None
+
+SEE ALSO: 	pwmOutConfig, pwm_init
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void _setpwmcycle(int pwmchannel, int countcycle, int msbshadow, int lsbshadow)
+{
+#asm
+	ld		hl,(sp+@sp+countcycle)
+	bool	hl											;check data for zero value
+	jp		nz,.changecycle
+	ld		bc,0
+	ld		hl,(sp+@sp+pwmchannel)
+	ld		c,l
+	ld		hl,_andbitmask							;and bitmask for channel
+	add	hl,bc										;add in offset
+	ld		a,(PFDRShadow)							;data output low
+	and	(hl)
+;	ioi	ld	(PFDR),a
+	IOWRITE_A(PFDR)
+	ld		(PFDRShadow),a
+	ld		a,(PFFRShadow)							;set channel for normal output
+	and	(hl)
+	jp		.done
+
+.changecycle:
+	ld		hl,(sp+@sp+countcycle)
+	dec	hl											;counts are n+1
+	add	hl,hl										;shift bits into register position
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ex		de,hl
+
+	ld		bc,0
+	ld		hl,(sp+@sp+pwmchannel)				;get channel
+	sla	l
+	ld		c,l										;create offset
+	ld		hl,PWL0R									;start register address
+	add	hl,bc										;add offset
+
+	ld		iy,(sp+@sp+lsbshadow)
+	ld		a,(iy)									;use bit 0 configuration
+	and	01h
+	or		e
+	ioi	ld (hl),a								;lsb reg
+	ld		(iy),a
+
+	ld		iy,(sp+@sp+msbshadow)
+	ld		a,d
+	inc	hl
+	ioi	ld (hl),a								;msb reg
+	ld		(iy),a									;save bit 0 configuration
+
+	ld		bc,0
+	ld		hl,(sp+@sp+pwmchannel)
+	ld		c,l
+	ld		hl,_orbitmask							;or bitmask for channel
+	add	hl,bc										;add in offset
+	ld		a,(PFFRShadow)							;data output high
+	or		(hl)
+
+.done:
+;	ioi	ld	(PFFR),a
+	IOWRITE_A(PFFR)
+	ld		(PFFRShadow),a
+
+	ld		bc,0
+	ld		hl,(sp+@sp+pwmchannel)
+	ld		c,l
+	ld		hl,_orbitmask							;or bitmask for channel
+	add	hl,bc										;add in offset
+	ld		a,(PFDDRShadow)						;data output high
+	or		(hl)
+;	ioi	ld (PFDDR),a
+	IOWRITE_A(PFDDR)
+	ld		(PFDDRShadow),a
+#endasm
+}
+
+/*** BeginHeader pwmOutConfig */
+
+void pwmOutConfig(int channel, int pwmoption);
+
+#define PWM_NORMAL 0					//normal operation
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+pwmOutConfig                 <BL25XX.LIB>
+
+SYNTAX:		   void pwmOutConfig(int channel, int pwmoption);
+
+DESCRIPTION:   Option flags are used to enable features on an individual
+					PWM channels.  Use pwm_init() to set frequency.
+
+					An exception error will occur if brdInit() has not been
+					called previously.
+
+					This function is non-reentrant.
+
+PARAMETER1:		The PWM output channel to write:
+					0 for DA0,
+					1 for DA1.
+
+PARAMETER2:		options - combination of the following bit masks:
+
+					PWM_NORMAL - normal push-pull logic	output.
+
+					PWM_SPREAD - sets pulse spreading. The duty cycle
+							is spread over four separate pulses to increase
+							the pulse frequency.
+
+					PWM_OPENDRAIN - sets the PWM output pin to be
+							open-drain.
+
+RETURN VALUE:	None
+
+SEE ALSO:  pwm_init, brdInit()
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void pwmOutConfig(int channel, int pwmoption)
+{
+	auto char tmpreg, *tmpshadow;
+	auto unsigned int pwmchannel;
+
+	#GLOBAL_INIT {__brdinitflag = FALSE;}
+	#GLOBAL_INIT {__pwminitflag   = FALSE;}
+
+	if	(__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	__pwminitflag = TRUE;
+
+	if (channel < 0 || channel > 1)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	//only pwm2 and pwm3 are used here
+	pwmchannel = channel+2;
+
+	tmpreg = PWL0R+(pwmchannel*2);
+	switch (pwmchannel)
+	{
+		case 0:
+			tmpshadow = &PWL0RShadow;
+			break;
+		case 1:
+			tmpshadow = &PWL1RShadow;
+			break;
+		case 2:
+			tmpshadow = &PWL2RShadow;
+			break;
+		case 3:
+			tmpshadow = &PWL3RShadow;
+			break;
+	}
+
+	if (pwmoption & PWM_OPENDRAIN)
+	{	//open drain
+		BitWrPortI(PFDCR, &PFDCRShadow, 1, pwmchannel+4); 	//pwm0=pf4, pwm1=pf5, etc
+	}
+	else
+	{	//normal logic
+		BitWrPortI(PFDCR, &PFDCRShadow, 0, pwmchannel+4); 	//pwm0=pf4, pwm1=pf5, etc
+	}
+
+	if (pwmoption & PWM_SPREAD)
+	{
+		BitWrPortI(tmpreg, tmpshadow, 1, 0);		//spreader on
+	}
+	else
+	{
+		BitWrPortI(tmpreg, tmpshadow, 0, 0);		//spreader off
+	}
+}
+
+/*** BeginHeader pwmOut */
+
+int pwmOut(int channel, int rawdata);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+pwmOut						<BL25XX.LIB>
+
+SYNTAX:			int pwmOut(int channel, int rawdata);
+
+DESCRIPTION:	Sets a voltage (0 to Vdd) on an analog output channel
+					given a data value of the 1024-clock count cycle.
+
+					Call pwmOutConfig() and pwm_init() before using this
+					function.  An exception error will occur if these functions
+				 	were not been called previously.
+
+					This function is non-reentrant.
+
+PARAMETER1:		The PWM output channel to write:
+					0 for DA0,
+					1 for DA1.
+
+PARAMETER2:		Data value of 0 to 1024 corresponding to a 1024-clock
+					count cycle.  Value may be calculated using the percent duty
+					cycle	value (percentage that is on or high) of 1024 clock
+					count	cycle.  For example, 0.25*1024.
+
+RETURN VALUE:	0
+
+SEE ALSO:		pwmOutConfig, pwm_init
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int pwmOut(int channel, int rawdata)
+{
+	auto int msbshadow, lsbshadow, pwmchannel;
+
+	#GLOBAL_INIT {__pwminitflag   = FALSE;}
+
+	if (__pwminitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel < 0 || channel > 1)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// pwm2 and pwm3 are used here
+	pwmchannel = channel+2;
+
+	switch (pwmchannel)
+	{
+		case 0:
+			msbshadow = (int)&PWM0RShadow;
+			lsbshadow = (int)&PWL0RShadow;
+			break;
+		case 1:
+			msbshadow = (int)&PWM1RShadow;
+			lsbshadow = (int)&PWL1RShadow;
+			break;
+		case 2:
+			msbshadow = (int)&PWM2RShadow;
+			lsbshadow = (int)&PWL2RShadow;
+			break;
+		case 3:
+			msbshadow = (int)&PWM3RShadow;
+			lsbshadow = (int)&PWL3RShadow;
+			break;
+	}
+
+	_setpwmcycle(pwmchannel, rawdata, msbshadow, lsbshadow);
+	return 0;
+}
+
+
+/*** BeginHeader _anaIn, settletime */
+
+unsigned int _anaIn(int pwmchannel);
+
+extern const unsigned int settletime[11];
+
+/*** EndHeader */
+
+const unsigned int settletime[11] = {15,14,12,11,9,8,6,5,4,2,0};
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_anaIn                <BL25XX.LIB>
+
+SYNTAX:	unsigned int _anaIn(int pwmchannel);
+
+DESCRIPTION:   Figures out which shadow registers and raw count values to
+					pass onto to _setpwmcyle().  Initial raw count value starts
+					at 512 with step increment start at 256.  Raw count will go
+					higher or lower depending on PB3 and PB2 and step increments
+					are divided in half each time till a match is found.
+
+					PB3	PB2	Description
+					===	===	========================
+					0		0	 	match found
+					0		1		count too low, increase
+					1		0		count too high, decrease
+					1		1		overflow
+
+					There is a time delay for settling after pwm cycle is
+					set before reading PB3 and PB2.  Settling time is based
+					on the settletime table.
+					Total time to do a 10-step approximation is 86 msec.
+
+PARAMETER1:		PWM channels:
+					0, PWM0 (PF4)
+					1, PWM1 (PF5)
+					2, PWM2 (PF6)
+					3, PWM3 (PF7)
+
+RETURN VALUE:	An integer value between 0 and 1024, which corresponds
+					to	a voltage between 0.0 and 3.3 volts, on the analog
+					input channel.
+					-1, if out of range.
+
+SEE ALSO: 	pwmOutConfig, pwm_init, _setpwmcycle
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+unsigned int _anaIn(int pwmchannel)
+{
+	static int count, step, i;
+
+#asm
+	ld		hl,(sp+@sp+pwmchannel)
+	ld		a,l
+	cp		0
+	jp		nz,.reg1
+	ld		iy,PWL0RShadow
+	ld		bc,PWM0RShadow
+	jp		.setcycle
+.reg1:
+	cp		1
+	jp		nz,.reg2
+	ld		hl,PWL1RShadow
+	ld		bc,PWM1RShadow
+	jp		.setcycle
+.reg2:
+	cp		2
+	jp		nz,.reg3
+	ld		hl,PWL2RShadow
+	ld		bc,PWM2RShadow
+	jp		.setcycle
+.reg3:
+	ld		hl,PWL3RShadow
+	ld		bc,PWM3RShadow
+
+.setcycle:
+	push	hl						;save shadow registers parameters
+	push	bc
+
+	ld		hl,0
+	ld		(count),hl			;count is the offset to determine settletime from table
+	ld		hl,0100h				;start step at 256
+	ld		(step),hl
+	ld		iy,(sp+@sp+pwmchannel+4)
+	ld		hl,0200h				;start raw value at 512
+
+.loopstep:
+	push	hl						;save raw value parameter
+	push	iy						;save pwm channel parameter
+	call	_setpwmcycle		;saved shadow registers already on stack
+	ld		hl,settletime		;get settletime from table
+	ld		bc,(count)			;calc offset
+	add	hl,bc
+	ld		hl,(hl)
+	push  hl       			;use settletime as delay parameter
+   call _msDelay
+   add	sp,2					;pop previous parameter
+   ld		hl,(count)			;increment count
+   inc	hl
+   inc	hl
+   ld		(count),hl
+   ld		de,(step)			;get step value
+	pop	iy						;get channel
+	pop	hl						;get raw value
+
+;	ioi	ld	a,(PBDR)			;check PF6 and PF7
+	IOREAD_A(PBDR)
+	and	0ch
+.loopmatch:
+	ld		b,a
+;	ioi	ld	a,(PBDR)			;wait to settle
+	IOREAD_A(PBDR)
+	and	0ch
+	cp		b
+	jp		nz,.loopmatch
+
+	bit	3,a					;check bit 3 first
+	jp		z,.bit2low
+	bit	2,a					;check bit 2 high
+	jp		nz,.over				;if not zero, overflow
+	xor	a						;clear carry flag
+	sbc	hl,de					;value too high so step decrease raw value
+	jp		.step
+.bit2low:
+	bit	2,a					;check bit 2 low
+	jp		z,.done				;if zero, match found
+	add	hl,de					;otherwise value too low so step increase raw value
+.step:
+	xor	a						;clear carry flag
+	rr		de						;decrease step in half
+	jp		z,.done				;done if no more steps
+	ld		(step),de			;save it
+	jp		.loopstep
+.over:
+	ld		hl,0ffffh			;overflow
+.done:							;return value in hl
+	add	sp,4					;clean up previous hl and bc pushes
+#endasm
+}
+
+/*** BeginHeader anaIn */
+
+unsigned int anaIn (unsigned int channel);
+
+#define ADOVERFLOW -4096
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaIn							<BL25XX.LIB>
+
+SYNTAX:		unsigned int anaIn(unsigned int channel);
+
+DESCRIPTION:	Analog input.  Uses D/A channel DA0 to search through the
+					full voltage range for a match to the input voltage on
+					AD0.  Therefore DA0, should not be used when AD0 is
+					is in use.  A step approximation is used in this
+					conversion taking approximately 86 msec, nominal case.
+					For a cofunction version, see cof_anaIn.
+
+					Call pwmOutConfig() and pwm_init() before using this
+					function.  An exception error will occur if these functions
+				 	were not been called previously.
+
+					This function is non-reentrant.
+
+PARAMETER1:		channel number 0 for AD0.
+
+
+RETURN VALUE:	An integer value between 0 and 1024, which corresponds
+					to	a voltage between 0.0 and 3.3 volts, on the analog
+					input channel.
+					-1, if out of range.
+
+SEE ALSO:		anaInVolts
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+unsigned int anaIn(unsigned int channel)
+{
+	auto int rdata;
+
+	#GLOBAL_INIT {__pwminitflag   = FALSE;}
+
+	//pwm frequency and options should have been previously set
+	if(__pwminitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel != 0)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// only pwm2 used here
+	rdata = _anaIn(channel+2);
+	_setpwmcycle(channel+2, 0, (int)&PWM2RShadow, (int)&PWL2RShadow); 		//turn off
+
+	return rdata;
+}
+
+
+/*** BeginHeader cof_anaIn */
+cofunc int cof_anaIn(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+cof_anaIn							<BL25XX.LIB>
+
+SYNTAX:	void cof_anaIn(int channel);
+
+PARAMETER1:		channel 0 is the input channel number.
+
+DESCRIPTION:	Cofunction version of the analog input for analog input
+channel (AD0).  See anaIn for details on how it works.  This version will
+"yield" on each step approximation in a costate and will take ten steps to
+complete the A/D conversion. Additionally, the function will also process
+costates while waiting for each approximation to settle.
+
+WARNINGS:	All restrictions mentioned in the anaIn function description apply
+here as well.
+
+RETURN VALUE:	An integer value between 0 and 1024, which corresponds
+					to	a voltage between 0.0 and 3.3 volts, on the analog
+					input channel.
+					-1, if out of range.
+
+SEE ALSO:		anaIn
+
+END DESCRIPTION ***************************************************************/
+
+nodebug
+cofunc int cof_anaIn(int channel)
+{
+	static int value, pwmchannel, step, pwl, pwm, count;
+
+	#GLOBAL_INIT {__pwminitflag   = FALSE;}
+
+	//pwm frequency and options should have been previously set
+	if(__pwminitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel != 0)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	pwmchannel = channel+2;
+	value = 512;
+	step = 256;
+	count = 0;
+
+#asm
+	ld		hl,(pwmchannel)
+	ld		a,l
+	cp		0
+	jp		nz,.reg1
+	ld		iy,PWL0RShadow
+	ld		bc,PWM0RShadow
+	jp		.setcycle
+.reg1:
+	cp		1
+	jp		nz,.reg2
+	ld		hl,PWL1RShadow
+	ld		bc,PWM1RShadow
+	jp		.setcycle
+.reg2:
+	cp		2
+	jp		nz,.reg3
+	ld		hl,PWL2RShadow
+	ld		bc,PWM2RShadow
+	jp		.setcycle
+.reg3:
+	ld		hl,PWL3RShadow
+	ld		bc,PWM3RShadow
+
+.setcycle:
+	ld		(pwl),hl				;save shadow registers
+	ld		(pwm),bc
+
+.loopstep:
+	ld		hl,(pwl)
+	push	hl
+	ld		hl,(pwm)
+	push	hl
+	ld		hl,(value)
+	push	hl						;save raw value
+	ld		hl,(pwmchannel)
+	push	hl						;save pwm channel
+	call	_setpwmcycle
+	add	sp,8
+#endasm
+	waitfor(DelayMs(settletime[count]));
+#asm
+   ld		hl,(count)			;increase count and save
+   inc	hl
+   ld		(count),hl
+	ld		hl,(step)			;get step value
+   ex		de,hl
+	ld		iy,(pwmchannel)	;get channel
+	ld		hl,(value)			;get raw value
+
+;	ioi	ld	a,(PBDR)			;check PF6 and PF7
+	IOREAD_A(PBDR)
+	and	0ch
+.loopmatch:
+	ld		b,a
+;	ioi	ld	a,(PBDR)			;wait to settle
+	IOREAD_A(PBDR)
+	and	0ch
+	cp		b
+	jp		nz,.loopmatch
+
+	bit	3,a					;check bit 3 first
+	jp		z,.bit2low
+	bit	2,a					;check bit 2 high
+	jp		nz,.over				;if not zero, overflow
+	xor	a						;clear carry flag
+	sbc	hl,de					;value too high so step decrease raw value
+	jp		.step
+.bit2low:
+	bit	2,a					;check bit 2 low
+	jp		z,.done				;if zero, match found
+	add	hl,de					;otherwise value too low so step increase raw value
+.step:
+	ld		(value),hl
+	xor	a						;clear carry flag
+	rr		de						;decrease step in half
+	jp		z,.done				;done if no more steps
+	ld		(step),de			;save step
+#endasm
+	yield;
+#asm
+	jp		.loopstep
+.over:
+	ld		hl,0ffffh			;overflow
+	ld		(value),hl
+.done:							;return value in hl
+#endasm
+
+	_setpwmcycle(pwmchannel, 0, (int)&PWM2RShadow, (int)&PWL2RShadow); 		//turn off
+	return value;
+}
+
+
+/*** BeginHeader ALLCHAN */
+
+#define ALLCHAN ADCHANNELS+DACHANNELS
+
+//Analog calibration constant data structure
+
+typedef struct
+{
+	float kconst;			// kconst = (volt2-volt1)/(data2-data1)
+	float offset;			// offset = kconst*data2 - volt2
+} __adccalib;
+
+/*** EndHeader */
+
+/*** BeginHeader ADC_CALIB_ADDRS, _adcCalibS */
+
+#define ADCHANNELS 1	//total number of AD single-ended channels
+
+extern __adccalib _adcCalibS[ADCHANNELS];
+
+// Offset into flash userblock for the calibration constants 1k below system block
+#define ADC_CALIB_ADDRS	(4096*GetIDBlockSize()-0x400)				//single-ended input
+
+/*** EndHeader */
+
+// Array for the gain and offset values for each A/D channel
+__adccalib _adcCalibS[ADCHANNELS];
+
+/*** BeginHeader anaInCalib */
+
+int anaInCalib(int channel, int value1, float volts1,int value2, float volts2);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInCalib					<BL25XX.LIB>
+
+SYNTAX:	int anaInCalib(int channel, int value1, float volts1,
+						int value2, float volts2);
+
+DESCRIPTION:	Calibrates the response of the ADC channel desired as a
+               linear function using the two conversion points provided.
+
+               Values are calculated and placed into global table
+               _adcCalibS for analog inputs to be later stored into
+               simulated eeprom using the function anaInEEWr().
+
+               Each channel will have the following information:
+						a linear constant,
+						a voltage offset.
+
+PARAMETER1:		channel number 0 for AD0.
+
+PARAMETER2:		The first ADC value between 0 and 1024 (usually
+					a value of 310 which corresponds to 1.0 volts)
+
+PARAMETER3:		The voltage corresponding to the first ADC parameter
+					value, between 0 and 3.3 volts.
+
+PARAMETER4:		The second ADC value between 0 and 1024 (usually
+					a value of 930 which corresponds to 3.0 volts)
+
+PARAMETER5:		The voltage corresponding to the second ADC parameter
+					value	between 0 and 3.3 volts.
+
+RETURN VALUE:	0, if sucessful.
+					-1, if not able to make calibration constants.
+
+SEE ALSO:		anaIn, anaInEERd, anaInEEWr
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaInCalib(int channel, int value1, float volts1, int value2, float volts2)
+{
+	auto float os, kc;
+
+	if (channel != 0)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if( (volts1 == volts2) || (value1 == value2) ) return -1;
+
+	os = (volts2*value1 - volts1*value2)/(volts2-volts1);
+	if (os == value1)
+		kc = volts2/(value2 - os);
+	else
+		kc = volts1/(value1 - os);
+
+	_adcCalibS[channel].offset = os;
+	_adcCalibS[channel].kconst = kc;
+
+	return 0;
+}
+
+
+/*** BeginHeader DAC_CALIB_ADDRS, _dacCalibS */
+
+#define DACHANNELS 2	//total number of DA single-ended channels
+
+extern __adccalib _dacCalibS[DACHANNELS];
+
+// Offset into flash userblock for the calibration constants 1k below system block
+#define DAC_CALIB_ADDRS	(ADC_CALIB_ADDRS+sizeof(_adcCalibS))	//single-ended output
+
+
+/*** EndHeader */
+
+// Array for the gain and offset values for each A/D channel
+__adccalib _dacCalibS[DACHANNELS];
+
+/*** BeginHeader anaOutCalib */
+
+int anaOutCalib(int channel, int value1, float volts1,int value2, float volts2);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutCalib					<BL25XX.LIB>
+
+SYNTAX:	int anaOutCalib(int channel, int value1, float volts1,
+						int value2, float volts2);
+
+DESCRIPTION:	Calibrates the response of the DAC channel desired as a
+               linear function using the two conversion points provided.
+
+               Values are calculated and placed into global table
+               _dacCalibS for analog outputs to be later stored into
+               simulated eeprom using the function anaOutEEWr().
+
+               Each channel will have the following information:
+						a linear constant,
+						a voltage offset.
+
+PARAMETER1:		channel number 0 for DA0 or 1 for DA1.
+
+PARAMETER2:		The first ADC value between 0 and 1024 (usually
+					a value of 310 which corresponds to 1.0 volts)
+
+PARAMETER3:		The voltage corresponding to the first ADC parameter
+					value, between 0 and 3.3 volts.
+
+PARAMETER4:		The second ADC value between 0 and 1024 (usually
+					a value of 930 which corresponds to 3.0 volts)
+
+PARAMETER5:		The voltage corresponding to the second ADC parameter
+					value	between 0 and 3.3 volts.
+
+RETURN VALUE:	0, if sucessful.
+					-1, if not able to make calibration constants.
+
+SEE ALSO:		pwmOut, anaOutEERd, anaOutEEWr
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaOutCalib(int channel, int value1, float volts1,int value2, float volts2)
+{
+	auto float os, kc;
+
+	if (channel < 0 || channel > 1)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if( (volts1 == volts2) || (value1 == value2) ) return -1;
+
+	os = (volts2*value1 - volts1*value2)/(volts2-volts1);
+	if (os == value1)
+		kc = volts2/(value2 - os);
+	else
+		kc = volts1/(value1 - os);
+
+	_dacCalibS[channel].offset = os;
+	_dacCalibS[channel].kconst = kc;
+
+	return 0;
+}
+
+
+/*** BeginHeader pwmOutVolts */
+
+void pwmOutVolts(int channel, float voltage);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+pwmOutVolts						<BL25XX.LIB>
+
+SYNTAX:			void pwmOutVolts(int channel, float voltage)
+
+DESCRIPTION:	Sets the voltage of an analog output channel by using the
+					previously set calibration constants to calculate the
+					correct data values.
+
+					Call pwmOutConfig() and pwm_init() before using this
+					function.  An exception error will occur if these functions
+				 	were not been called previously.
+
+				 	This function is non-reentrant.
+
+PARAMETER1:		The PWM output channel to write:
+					0 for DA0,
+					1 for DA1.
+
+PARAMETER2:		The voltage desired on the output channel, 0 to 3.1 volts.
+
+RETURN VALUE:	None
+
+SEE ALSO:		pwmOut, pwmOutConfig, pwm_init
+
+END DESCRIPTION **********************************************************/
+nodebug
+void pwmOutVolts(int channel, float voltage)
+{
+	auto int rawdata;
+
+	#GLOBAL_INIT {__pwminitflag   = FALSE;}
+
+	if (__pwminitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel < 0 || channel > 1)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (voltage <= 0.0)
+		rawdata = 0;
+	else
+		rawdata = (int)(_dacCalibS[channel].offset + (voltage/_dacCalibS[channel].kconst));
+	if (rawdata < 0)
+		rawdata = 0;
+	if (rawdata > 1023)
+		rawdata = 1023;
+
+	// only pwm2 and pwm3 used here
+	pwmOut(channel, rawdata);
+
+}
+
+
+/*** BeginHeader anaInVolts */
+
+float anaInVolts(unsigned int channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInVolts					<BL25XX.LIB>
+
+SYNTAX:			float anaInVolts(unsigned int channel)
+
+DESCRIPTION:	Reads the voltage of the analog input channel.
+					Uses D/A channel DA0 for comparison to find a
+					match to the input voltage on AD0.  Therefore DA0
+					should not be used when AD0 is in use.
+					A step approximation is used in this conversion
+					and takes approximately 86 msec, nominal case.
+
+					Call pwmOutConfig() and pwm_init() before using this
+					function.  An exception error will occur if these functions
+				 	were not been called previously.
+
+				 	This function is non-reentrant.
+
+PARAMETER1:		channel of 0 for AD0.
+
+RETURN VALUE:	A value from 0 to 3.1 volts,
+					ADOVERFLOW (defined macro = -4096) if overflow or out of range
+
+SEE ALSO:		anaIn, pwmOutConfig, pwm_init
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+float anaInVolts(unsigned int channel)
+{
+	auto unsigned int rawdata;
+	auto float value;
+
+	#GLOBAL_INIT {__pwminitflag   = FALSE;}
+
+	if (__pwminitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel != 0)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// only pwm2 used here
+	rawdata = _anaIn(channel+2);
+	_setpwmcycle(channel+2, 0, (int)&PWM2RShadow, (int)&PWL2RShadow); 		//turn off
+
+	if (rawdata == ADOVERFLOW)
+		return ADOVERFLOW;		//overflow
+
+	value = (rawdata - _adcCalibS[channel].offset)*(_adcCalibS[channel].kconst);
+	if (value <= 0.00)
+		return (0.000);
+	else
+		return value;
+}
+
+/*** BeginHeader anaInEERd */
+
+root int anaInEERd(unsigned int channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInEERd					<BL35XX.LIB>
+
+SYNTAX:			int anaInEERd(unsigned int channel);
+
+DESCRIPTION:	Reads the calibration constants, gain and offset, from
+					designated positions in flash	--previously placed into
+					simulated eeprom in flash located at the top 1K of user
+					block:
+
+					ADC_CALIB_ADDRS, for address start of analog input channels
+
+					--and placed into global table _adcCalibS for analog inputs.
+
+               See the user manual for the size of the reserved UserBlock
+               memory area.
+
+					This function cannot be run in RAM and is non-reentrant.
+
+PARAMETER1:		channel number 0 for AD0.
+
+RETURN VALUE:	 0, If successful.
+					-1, invalid address or range.
+
+SEE ALSO:		anaInEEWr, anaInCalib
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaInEERd(unsigned int channel)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	if ((channel != 0) && (channel != ALLCHAN))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// Calculate the offset into the user block of where the calibration
+	// constants are stored for a given A/D channel.
+	// and read calibration constants from flash
+	if (channel == ALLCHAN)
+	{
+		memset(_adcCalibS, 0, sizeof(_adcCalibS));				//clear table
+		status=readUserBlock(&_adcCalibS, ADC_CALIB_ADDRS, sizeof(_adcCalibS));	//get whole block
+	}
+	else
+	{
+		offset = ADC_CALIB_ADDRS;
+		offset += ((char*) &_adcCalibS[channel] - (char*)_adcCalibS);
+		status = readUserBlock(&_adcCalibS[channel], offset, sizeof(_adcCalibS[channel]));
+	}
+
+	return (status);
+}
+
+/*** BeginHeader anaInEEWr */
+root int anaInEEWr(unsigned int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaInEEWr					<LP35XX.LIB>
+
+SYNTAX:			int anaInEEWr(unsigned int channel);
+
+DESCRIPTION:	Writes the calibration constants, gain and offset,
+					--previously placed into global table _adcCalibS for analog
+					inputs, see anaInCalib()--
+					to designated positions	in simulated eeprom in flash,
+					located at the top 1K of user	block:
+
+					ADC_CALIB_ADDRS, for address start of analog input channels
+
+ 	            See the user manual for the size of the reserved UserBlock
+               memory area.
+
+					This function cannot be run in RAM and is non-reentrant.
+
+PARAMETER1:		channel number 0 for AD0.
+
+RETURN VALUE:	 0, successful write to simulated eeprom.
+					-1, invalid address or range.
+
+SEE ALSO:		anaInEERd, anaInCalib
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaInEEWr(unsigned int channel)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	if ((channel != 0) && (channel != ALLCHAN))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// Calculate the offset into the user block of where the calibration
+	// constants are stored for a given A/D channel.
+	// and write calibration constants to flash
+	if (channel == ALLCHAN)
+	{
+		status = writeUserBlock(ADC_CALIB_ADDRS, &_adcCalibS, sizeof(_adcCalibS));  //save whole block
+	}
+	else
+	{
+		offset = ADC_CALIB_ADDRS;
+		offset += ((char*) &_adcCalibS[channel] - (char*)_adcCalibS);
+		status = writeUserBlock(offset, &_adcCalibS[channel], sizeof(_adcCalibS[channel]));
+	}
+
+	return(status);
+}
+
+/*** BeginHeader anaOutEERd */
+
+root int anaOutEERd(unsigned int channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutEERd					<BL35XX.LIB>
+
+SYNTAX:			int anaOutEERd(unsigned int channel);
+
+DESCRIPTION:	Reads the calibration constants, gain and offset, from
+					designated positions in flash	--previously placed into
+					simulated eeprom in flash located at the top 1K of user
+					block:
+
+					DAC_CALIB_ADDRS, for address start of analog output channels
+
+					--and placed into global table _dacCalibS for analog outputs.
+
+               See the user manual for the size of the reserved UserBlock
+               memory area.
+
+					This function cannot be run in RAM and is non-reentrant.
+
+PARAMETER1:		channel number 0 for DA0, 1 for DA1 or ALLCHAN.
+
+RETURN VALUE:	 0, If successful.
+					-1, invalid address or range.
+
+SEE ALSO:		anaOutEEWr, anaOutCalib
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaOutEERd(unsigned int channel)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	if ((channel < 0 || channel > 1) && channel != ALLCHAN)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// Calculate the offset into the user block of where the calibration
+	// constants are stored for a given A/D channel.
+	// and read calibration constants from flash
+	if (channel == ALLCHAN)
+	{
+		memset(_dacCalibS, 0, sizeof(_dacCalibS));				//clear table
+		status=readUserBlock(&_dacCalibS, DAC_CALIB_ADDRS, sizeof(_dacCalibS));	//get whole block
+	}
+	else
+	{
+		offset = DAC_CALIB_ADDRS;
+		offset += ((char*) &_dacCalibS[channel] - (char*)_dacCalibS);
+		status = readUserBlock(&_dacCalibS[channel], offset, sizeof(_dacCalibS[channel]));
+	}
+
+	return (status);
+}
+
+/*** BeginHeader anaOutEEWr */
+root int anaOutEEWr(unsigned int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+anaOutEEWr					<LP35XX.LIB>
+
+SYNTAX:			int anaOutEEWr(unsigned int channel);
+
+DESCRIPTION:	Writes the calibration constants, gain and offset,
+					--previously placed into global table and _dacCalibS
+					for analog outputs, see anaCalib()-- to designated
+					positions in simulated eeprom in flash, located at
+					the top 1K of user block:
+
+					DAC_CALIB_ADDRS, for address start of analog output channels.
+
+ 	            See the user manual for the size of the reserved UserBlock
+               memory area.
+
+					This function cannot be run in RAM and is non-reentrant.
+
+PARAMETER1:		channel number 0 for DA0, 1 for DA1 or ALLCHAN.
+
+RETURN VALUE:	 0, successful write to simulated eeprom.
+					-1, invalid address or range.
+
+SEE ALSO:		anaOutEERd, anaOutCalib
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int anaOutEEWr(unsigned int channel)
+{
+	auto int	status;
+	auto unsigned int offset;
+
+	if ((channel < 0 || channel > 1) && channel != ALLCHAN)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	// Calculate the offset into the user block of where the calibration
+	// constants are stored for a given A/D channel.
+	// and write calibration constants to flash
+	if (channel == ALLCHAN)
+	{
+		status = writeUserBlock(DAC_CALIB_ADDRS, &_dacCalibS, sizeof(_dacCalibS));  //save whole block
+	}
+	else
+	{
+		offset = DAC_CALIB_ADDRS;
+		offset += ((char*) &_dacCalibS[channel] - (char*)_dacCalibS);
+		status = writeUserBlock(offset, &_dacCalibS[channel], sizeof(_dacCalibS[channel]));
+	}
+
+	return(status);
+}
+
+/*** Beginheader serMode */
+
+int serMode(int mode);
+
+/*** endheader */
+
+#warns "serMode function is no longer required. Refer to user manual and sample programs for configurations."
+
+/* START FUNCTION DESCRIPTION ********************************************
+serMode						<BL25XX.LIB>
+
+SYNTAX:	      int serMode(int mode);
+
+DESCRIPTION:	This function call is no longer required.  Refer to the
+					user manual and sample programs for 3-wire and 5-wire
+					configurations.
+
+RETURN VALUE:	1.
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int serMode(int mode)
+{
+	return (1);
+}
+
+
+/*** Beginheader ser485Tx */
+root void ser485Tx( void );
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Tx						<BL25XX.LIB>
+
+SYNTAX:	      void ser485Tx( void );
+
+DESCRIPTION:   Enables the RS485 transmitter using PA4.
+
+					Puts the RS485 device into send mode allowing data
+					to be	sent to the RS485 interface from TXD.
+
+					Transmitted data is echoed back into the receive data
+					buffer. The echoed data may be used as an indictator for
+					disabling the transmitter by using one of the following
+					methods:
+
+               a) Byte mode...disable the transmitter after the same byte
+                  that is transmitted, is detected in the receive data
+                  buffer.
+
+               b) Block data mode...disable the transmitter after the same
+                  number of bytes transmitted are detected in the receive
+                  data buffer.
+
+					Initialize serial port with serDopen() and as described
+					in Dynamic C manuals and sample programs prior to using
+					this function.
+
+					An exception error will occur if brdInit() was not been
+					called previously.
+
+					This function is non-reentrant.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		ser485Rx, serDopen, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void ser485Tx( void )
+{
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+
+	if (__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+#asm
+	push	ip							;save off IP state
+	ipset	1							;set interrupt priority to level 1
+	ld		a,(PADRShadow)			;get copy of shadow reg
+	or		0x10						;set bit 4 high
+;	ioi	ld	(PADR),a				;set PA4 high
+	IOWRITE_A(PADR)
+	ld		(PADRShadow),a			;update shadow reg
+	pop	ip							;restore IP to the previous state
+	ret
+#endasm
+}
+
+/*** Beginheader ser485Rx */
+root void ser485Rx( void );
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser485Rx						<BL25XX.LIB>
+
+SYNTAX:	      void ser485Rx( void );
+
+DESCRIPTION:  	Disables the RS485 transmitter using PA4.
+
+					Puts the RS485 device into listen mode allowing data
+					to be	received from the RS485 interface to RXD.
+
+					Initialize serial port with serDopen() and as described
+					in Dynamic C manuals and sample programs prior to using
+					this function.
+
+					An exception error will occur if brdInit() was not been
+					called previously.
+
+					This function is non-reentrant.
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:		ser485Tx, serDopen, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void ser485Rx( void )
+{
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+
+	if (__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+#asm
+	push	ip							;save off IP state
+	ipset	1							;set interrupt priority to level 1
+	ld		a,(PADRShadow)			;get copy of shadow reg
+	and	0xef						;set bit 4 low
+;	ioi	ld	(PADR),a				;set PA4 low
+	IOWRITE_A(PADR)
+	ld		(PADRShadow),a			;update shadow reg
+	pop	ip							;restore IP to the previous state
+	ret
+#endasm
+}
+
+
+/*** BeginHeader	digOut */
+void digOut(int, int);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digOut						<BL25XX.LIB>
+
+SYNTAX:			void digOut(int channel, int value);
+
+DESCRIPTION:	Sets the state of a digital output (OUT0 - OUT7).
+
+					OUT0 to OUT7 are sinking outputs.
+
+					To drive outputs, connect +K to external power source.
+
+					Note: A runtime error will occur if the channel or value
+					parameter is out of range or if brdInit() has not been
+					called first.
+
+PARAMETER1:		Digital output channel 0 to 7.
+
+PARAMETER2:		Output logic value 0 will output 0,
+					Output logic value 1 will output 1.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		digIn, digBankOut, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+root void digOut(int channel, int value)
+{
+
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+
+	if(__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if ((channel < 0) || (channel > 7) || (value < 0) || (value > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if (channel >= 6)
+	{
+		BitWrPortI(PBDR, &PBDRShadow, !value, channel-2);		//bits 4,5
+	}
+	else
+	{
+		if (channel >= 4)
+			BitWrPortI(PDDR, &PDDRShadow, !value, channel);		//bits 4,5
+		else
+			BitWrPortI(PADR, &PADRShadow, !value, channel);		//bits 0,1,2,3
+	}
+}
+
+
+/*** BeginHeader digIn */
+root int  digIn(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digIn							<BL25XX.LIB>
+
+SYNTAX:			int digIn(int channel);
+
+DESCRIPTION:	Reads the state of a digital input channel.
+
+					Protected inputs
+					--------------
+					IN00 - IN07  (input voltage range -36V to +36V)
+
+					Digital inputs
+					--------------
+					IN08 - IN15
+
+					Note: A runtime error will occur if the channel parameter
+					is out of range or if brdInit() has not been
+					called first.
+
+PARAMETER1:		Digital input channel 0 - 15.
+
+RETURN VALUE:	The logic state of the input (0 or 1).
+
+SEE ALSO:		digOut, digBankIn, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int digIn(int channel)
+{
+	auto int input_state;
+
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+
+	if(__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if ((channel < 0) || (channel > 15))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	switch (channel)
+	{
+		case 0:
+			input_state = BitRdPortI(PEDR, 1);				//ch 0; bit 1
+			break;
+		case 1:
+			input_state = BitRdPortI(PEDR, channel+2);	//ch 1; bit 3
+			break;
+		case 2:
+		case 3:
+			input_state = BitRdPortI(PEDR, channel+4);	//ch 2,3; bits 6,7
+			break;
+		case 4:
+		case 5:
+			input_state = BitRdPortI(PGDR, channel-4);	//ch 4,5; bits 0,1
+			break;
+		case 6:
+		case 7:
+			input_state = BitRdPortI(PGDR, channel-2);	//ch 6,7; bits 4,5
+			break;
+		case 8:
+			input_state = BitRdPortI(PFDR, 2);				//ch 8; bit 2
+			break;
+		case 9:
+			input_state = BitRdPortI(PFDR, 3);				//ch 9; bit 3
+			break;
+		case 10:
+			input_state = BitRdPortI(PFDR, 4);				//ch 10; bit 4
+			break;
+		case 11:
+			input_state = BitRdPortI(PFDR, 5);				//ch 11; bit 5
+			break;
+		case 12:
+			input_state = BitRdPortI(PEDR, 5);				//ch 12; bit 5
+			break;
+		case 13:
+			input_state = BitRdPortI(PEDR, 4);				//ch 13; bit 4
+			break;
+		case 14:
+			input_state = BitRdPortI(PCDR, 3);				//ch 14; bit 3
+			break;
+		case 15:
+			input_state = BitRdPortI(PFDR, 0);				//ch 15; bit 0
+			break;
+		default:
+			break;
+	}
+
+	return (input_state);
+}
+
+
+/*** BeginHeader	digBankOut */
+void digBankOut(int bank, int value);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digBankOut						<BL25XX.LIB>
+
+SYNTAX:			void digBankOut(int bank, int value);
+
+DESCRIPTION:	Writes the state of a block of designated digital
+					output channels.  First bank consists of OUT0-OUT7.
+					Connect +K to external power source to drive outputs.
+
+					This call is quicker than setting individual channels,
+					but does not output states simultaneously.
+					States are written in succession from OUT7 to OUT0.
+
+					A runtime error will occur if the channel or value
+					parameter is out of range or if brdInit() has not been
+					called first.
+
+PARAMETER1:		0 for digital outputs OUT0 to OUT7.
+
+PARAMETER2:		An 8-bit output value, where each bit corresponds to
+					one channel.  OUT0 and OUT8 is least significant bit 0.
+					For example, to send out odd channels high:
+
+							digBankOut(0, 0xaa);
+
+RETURN VALUE:	None.
+
+SEE ALSO:		digBankIn, digOut, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void digBankOut(int bank, int value)
+{
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+
+	if(__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if ((bank < 0) || (bank > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+#asm
+	ld		hl,(sp+@sp+value)			;get byte value
+
+	ld		a,l
+	xor	0ffh							;complement bits for sinking source
+	and	0c0h							;save bits 7,6
+	ld		e,a
+	srl	e								;shift to bits 5,4 position
+	srl	e
+;	ioi	ld	a,(PBDR)
+	IOREAD_A(PBDR)
+	and	0cfh							;clean out PBDR bits 5,4
+	or		e								;put in new bit value
+;	ioi	ld (PBDR),a					;for PBDR
+	IOWRITE_A(PBDR)
+	ld		(PBDRShadow),a
+
+	ld		a,l
+	xor	0ffh							;complement bits for sinking source
+	and	030h							;save bits 5,4
+	ld		e,a
+;	ioi	ld	a,(PDDR)
+	IOREAD_A(PDDR)
+	and	0cfh							;clean out PDDR bits 5,4
+	or		e								;put in new bit value
+;	ioi	ld (PDDR),a					;for PDDR
+	IOWRITE_A(PDDR)
+	ld		(PDDRShadow),a
+
+	ld		a,l
+	xor	0ffh							;complement bits for sinking source
+	and	00fh							;save bits 3,2,1,0
+	ld		e,a
+;	ioi	ld	a,(PADR)
+	IOREAD_A(PADR)
+	and	0f0h							;clean out PADR bits 3,2,1,0
+	or		e								;put int new bit value
+;	ioi	ld (PADR),a					;for PADR
+	IOWRITE_A(PADR)
+	ld		(PADRShadow),a
+#endasm
+}
+
+/*** BeginHeader digBankIn */
+int  digBankIn(int bank);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+digBankIn						<BL25XX.LIB>
+
+SYNTAX:			int digBankIn(int bank);
+
+DESCRIPTION:	Reads the state of a block of designated digital
+					input channels.  First bank consists of IN0-IN7.
+					Second bank consists of IN8-IN15.
+					Connect +K to external power source to drive inputs.
+
+					This call is quicker than reading individual channels,
+					but does not read states simultaneously.  States are read
+					in succession from IN15 to IN8 or IN7 to IN0.
+
+					A runtime error will occur if the bank parameter is out
+					of range if	brdInit() has not been	called first.
+
+PARAMETER1:		0 for digital inputs IN0 to IN7.
+					1 for digital inputs IN8 to IN15.
+
+RETURN VALUE:	An input value in the lower byte, where each bit corresponds
+					to one channel. IN0 and IN8 are in bit 0 place.
+					For example, to read inputs 8 to 15:
+
+									upper8 = digBankIn(1);
+
+SEE ALSO:		digBankOut, digIn, brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+int digBankIn(int bank)
+{
+	auto int input_state;
+
+	#GLOBAL_INIT {__brdinitflag   = FALSE;}
+
+	if (__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if ((bank < 0) || (bank > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+#asm
+	ld		hl,(sp+@sp+bank)
+	ld		a,l
+	cp		0
+	jp		nz,.bank1
+	ld		hl,0
+;	ioi	ld	a,(PGDR)		;PGDR bits 5,4,1,0 are channels 7,6,5,4
+	IOREAD_A(PGDR)
+.bit7:
+	bit	5,a
+	jp		z,.bit6
+	set	7,l
+.bit6:
+	bit	4,a
+	jp		z,.bit5
+	set	6,l
+.bit5:
+	bit	1,a
+	jp		z,.bit4
+	set	5,l
+.bit4:
+	bit	0,a
+	jp		z,.bit3
+	set	4,l
+.bit3:
+;	ioi	ld	a,(PEDR)		;PEDR bits 7,6,3,0 are channels 3,2,1,0
+	IOREAD_A(PEDR)
+	bit	7,a
+	jp		z,.bit2
+	set	3,l
+.bit2:
+	bit	6,a
+	jp		z,.bit1
+	set	2,l
+.bit1:
+	bit	3,a
+	jp		z,.bit0
+	set	1,l
+.bit0:
+	bit	1,a
+	jp		z,.done
+	set	0,l
+	jp		.done
+.bank1:
+	ld		hl,0
+;	ioi	ld	a,(PFDR)		;PFDR bits 5,4,3,2,0 are channels 11,10,9,8,15
+	IOREAD_A(PFDR)
+.bit11:
+	bit	5,a
+	jp		z,.bit10
+	set	3,l
+.bit10:
+	bit	4,a
+	jp		z,.bit9
+	set	2,l
+.bit9:
+	bit	3,a
+	jp		z,.bit8
+	set	1,l
+.bit8:
+	bit	2,a
+	jp		z,.bit15
+	set	0,l
+.bit15:
+	bit	0,a
+	jp		z,.bit12
+	set	7,l
+.bit12:
+;	ioi	ld	a,(PEDR)		;PEDR bits 5,4 are channels 12,13
+	IOREAD_A(PEDR)
+	bit	5,a
+	jp		z,.bit13
+	set	4,l
+.bit13:
+	bit	4,a
+	jp		z,.bit14
+	set	5,l
+.bit14:
+;	ioi	ld	a,(PCDR)		;PCDR bit 3 is channel 14
+	IOREAD_A(PCDR)
+	bit	3,a
+	jp		z,.done
+	set	6,l
+.done:
+	;return value in hl
+#endasm
+}
+
+
+/*** BeginHeader ledOut */
+void ledOut(int led, int value);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ledOut						<BL25XX.LIB>
+
+SYNTAX:			void ledOut(int led, int value)
+
+DESCRIPTION:	On board LED ON/OFF control only.
+					This function is non-reentrant.
+
+					Note: A runtime error will occur if the channel or value
+					parameter is out of range or if brdInit() has not been
+					called first.
+
+PARAMETER1:		LED to control.
+						0  = DS1
+						1  = DS2
+						2  = DS3
+						3  = DS4
+
+PARAMETER2:		value used to control LED.
+						0 = OFF
+						1 = ON
+
+RETURN VALUE:	None
+
+SEE ALSO: 	brdInit
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void ledOut(int led, int value)
+{
+	auto unsigned char outputBit;
+
+	#GLOBAL_INIT {__brdinitflag = FALSE;}
+
+	if	(__brdinitflag == FALSE)
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if ((led < 0) || (led > 3) || (value < 0) || (value > 1))
+	{
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	switch (led)
+	{
+		case 0:
+			BitWrPortI(PBDR, &PBDRShadow, !value, 6);		//DS1
+			break;
+		case 1:
+			BitWrPortI(PBDR, &PBDRShadow, !value, 7);		//DS2
+			break;
+		case 2:
+			BitWrPortI(PADR, &PADRShadow, !value, 7);		//DS3
+			break;
+		case 3:
+			BitWrPortI(PADR, &PADRShadow, !value, 6);		//DS4
+			break;
+	}
+}
+
+/*** BeginHeader brdInit */
+
+void brdInit ( void );
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+brdInit						<BL25XX.LIB>
+
+SYNTAX:			void brdInit (void);
+
+DESCRIPTION:	Call this function at the beginning of application code
+					to initialize the controller's I/O ports A through G.
+
+	Summary of initialization
+	-------------------------
+	1. RS485 is not initialized.
+	2. RS232 is not initialized.
+	3.	Unused configurable I/O are either pulled-up inputs or outputs set high.
+	4. PWM for DAC0 and DAC1 are set to 57600 Hz and output voltage is zero. Uses
+		functions pwm_init(), pwmOutConfig() and pwmOut();
+	5. Calibration constants for analog channels, AD0, DA0 and DA1 are read from
+		flash user block.
+
+Port	Function 						I/O		brdInit( ) I/O State
+----- ----------------------- 	-------- --------------------------------------------
+PA0	OUT0 - Sinking Output		Output	Low
+PA1	OUT1 - Sinking Output		Output	Low
+PA2	OUT2 - Sinking Output		Output	Low
+PA3	OUT3 - Sinking Output		Output	Low
+PA4	RS485 Transmit enable		Output	Low (disables transmit)
+PA5	SPI Select         			Output	Low select SPI1  (high selects SPI2)
+PA6	LED - DS4						Output	High (disables)
+PA7	LED - DS3						Output	High (disables)
+PB0	CLKB - SPI						Output	High (driven by serial clock driver)
+PB1	CLKA - programming port		Input		High when not driven by programming port
+PB2	AD0 low comparator  			Input		Driven by comparator
+PB3	AD0 high comparator  		Input		Driven by comparator
+PB4	OUT6 - Sinking Output		Output	Low
+PB5	OUT7 - Sinking Output		Output	Low
+PB6	LED - DS1						Output	High (disables)
+PB7	LED - DS2						Output	High (disables)
+PC0	TXD - RS485						Output	High (serial set by driver)
+PC1	RXD - RS485						Input		Pulled-up (seri driver)
+PC2	Configurable       			Output	High
+PC3	IN14 - Protected input 		Input		Pulled-up
+PC4	TXB - SPI						Output	High (serial set by serial drivers)
+PC5	RXB - SPI						Input		Pulled-up (serial set by serial drivers)
+PC6	TXA - programming port		Output	High when not driven by programming port
+PC7	RXA - programming port		Input		Pulled-up when not driven by programming port
+PD0	Ethernet	RSTDRV				Output	High when not driven by ethernet
+PD1	Not connected					Output	High
+PD2	Ethernet configurable		Output	High
+PD3	Ethernet configurable 		Output	High
+PD4	OUT4 - Sinking Output		Output	Low
+PD5	OUT5 - Sinking Output		Output	Low
+PD6	Ethernet	configurable		Output	High
+PD7	Ethernet configurable		Output	High
+PE0	Not connected					Output	High
+PE1	IN0 - Protected input		Input		Pulled-up
+PE2	Realtek  AEN					Output	High when not driven by ethernet
+PE3	IN1 - Protected input		Input		Pulled-up
+PE4	IN13 - Protected input 		Input		Pulled-up
+PE5	IN12 - Protected input 		Input		Pulled-up
+PE6	IN2 - Protected input		Input		Pulled-up
+PE7	IN3 - Protected input		Input		Pulled-up
+PF0	IN15 - Protected input 		Input		Pulled-up
+PF1	Configurable 					Input		Pulled-up
+PF2	IN8 - Protected input 		Input		Pulled-up
+PF3	IN9 - Protected input 		Input		Pulled-up
+PF4	IN10 - Protected input 		Input		Pulled-up
+PF5	IN11 - Protected input 		Input		Pulled-up
+PF6	DAC0 PWM Output				Output	High (PWM set by pwm driver)
+PF7	DAC1 PWM Output				Output	High (PWM set by pwm driver)
+PG0	IN4 - Protected input		Input		Pulled-up
+PG1	IN5 - Protected input		Input		Pulled-up
+PG2	TXF - RS232						Output	High (serial set by serial drivers)
+PG3	RXF - RS232						Input		Pulled-up (serial set by serial drivers)
+PG4	IN6 - Protected input		Input		Pulled-up
+PG5	IN7 - Protected input		Input		Pulled-up
+PG6	TXE - RS232						Output	High (serial set by serial drivers)
+PG7	RXE - RS232						Input		Pulled-up (serial set by serial drivers)
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+
+SEE ALSO:
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void brdInit (void)
+{
+	auto int tdivisor;
+
+	#GLOBAL_INIT {__brdinitflag  = FALSE;}
+	#GLOBAL_INIT {__pwminitflag   = FALSE;}
+
+	__brdinitflag = TRUE;
+
+	//---------------------------------------------------------------------
+	// Port B configuration
+	//
+	// PB0	CLKB - SPI						Output	High (driven by serial clock driver)
+	// PB1	CLKA - programming port		Input		High when not driven by programming port
+	// PB2	AD0 low comparator  			Input		Driven by comparator
+	// PB3	AD0 high comparator  		Input		Driven by comparator
+	// PB4	OUT6 - Sinking Output		Output	Low
+	// PB5	OUT7 - Sinking Output		Output	Low
+	// PB6	LED - DS1						Output	High (disables)
+	// PB7	LED - DS2						Output	High (disables)
+	//---------------------------------------------------------------------
+	WrPortI(PBDR, &PBDRShadow, 0xC1);  		// Set bits 7,6,0
+	WrPortI(PBDDR, &PBDDRShadow, 0xF1);		// Set bits 7,6,5,4,0 to output, rest inputs
+
+	//---------------------------------------------------------------------
+	// Port C configuration
+	//
+	// PC0	TXD - RS485						Output	High (serial set by driver)
+	// PC1	RXD - RS485						Input		Pulled-up (seri driver)
+	// PC2	Configurable       			Output	High
+	// PC3	IN14 - Protected input 		Input		Pulled-up
+	// PC4	TXB - SPI						Output	High (serial set by serial drivers)
+	// PC5	RXB - SPI						Input		Pulled-up (serial set by serial drivers)
+	// PC6	TXA - programming port		Output	High when not driven by programming port
+	// PC7	RXA - programming port		Input		Pulled-up when not driven by programming port
+	//---------------------------------------------------------------------
+	WrPortI(PCFR, &PCFRShadow, PCFRShadow&0xC0);		//set bits 5,4,3,2,1,0 to normal
+	WrPortI(PCDR, &PCDRShadow, PCDRShadow|0x15);		//set bits 4,2,0 high
+
+	//---------------------------------------------------------------------
+	// Port D configuration
+	//
+	// PD0	Ethernet	RSTDRV				Output	High when not driven by ethernet
+	// PD1	Not connected					Output	High
+	// PD2	Ethernet configurable		Output	High
+	// PD3	Ethernet configurable 		Output	High
+	// PD4	OUT4 - Sinking Output		Output	Low
+	// PD5	OUT5 - Sinking Output		Output	Low
+	// PD6	Ethernet	configurable		Output	High
+	// PD7	Ethernet configurable		Output	High
+	//---------------------------------------------------------------------
+	WrPortI(PDCR, &PDCRShadow, 0x00);			//clear all bits to pclk/2
+	WrPortI(PDFR, &PDFRShadow, 0x00);			//clear all bits to normal function
+	WrPortI(PDDCR, &PDDCRShadow, 0x00);			//clear all bits to drive high and low
+	WrPortI(PDDR, &PDDRShadow, 0xcf);			//clear all bits to output high, except bits 4,5
+	WrPortI(PDDDR, &PDDDRShadow, 0xfd);			//set all bits to output, except bit 1
+
+	//---------------------------------------------------------------------
+	// Port E configuration
+	//
+	// PE0	Not connected					Output	High
+	// PE1	IN0 - Protected input		Input		Pulled-up
+	// PE2	Realtek  AEN					Output	High when not driven by ethernet
+	// PE3	IN1 - Protected input		Input		Pulled-up
+	// PE4	IN13 - Protected input 		Input		Pulled-up
+	// PE5	IN12 - Protected input 		Input		Pulled-up
+	// PE6	IN2 - Protected input		Input		Pulled-up
+	// PE7	IN3 - Protected input		Input		Pulled-up
+	//---------------------------------------------------------------------
+	WrPortI(PECR, &PECRShadow, 0x00);		//clear all bits to pclk/2
+	WrPortI(PEFR, &PEFRShadow, 0x00);		//clear all bits to normal function
+	WrPortI(PEDR, &PEDRShadow, 0x05);		//set bits 2,0 output high
+	WrPortI(PEDDR, &PEDDRShadow, 0x05);		//set bits 2,0 to output
+														//clear bits 7,6,5,4,3,1 to input
+
+	//---------------------------------------------------------------------
+	// Port F configuration
+	//
+	// PF0	IN15 - Protected input 		Input		Pulled-up
+	// PF1	Configurable 					Input		Pulled-up
+	// PF2	IN8 - Protected input 		Input		Pulled-up
+	// PF3	IN9 - Protected input 		Input		Pulled-up
+	// PF4	IN10 - Protected input 		Input		Pulled-up
+	// PF5	IN11 - Protected input 		Input		Pulled-up
+	// PF6	DAC0 PWM Output				Output	High (PWM set by pwm driver)
+	// PF7	DAC1 PWM Output				Output	High (PWM set by pwm driver)
+	//---------------------------------------------------------------------
+	WrPortI(PFCR, &PFCRShadow, 0x00);		//clear all bits for pclk/2
+	WrPortI(PFFR, &PFFRShadow, 0x00);		//clear all bits for normal function
+	WrPortI(PFDCR, &PFDCRShadow, 0x00);		//clear all bits to drive high and low
+	WrPortI(PFDR, &PFDRShadow, 0xc0);		//set bits 7,6 output high
+	WrPortI(PFDDR, &PFDDRShadow, 0xc0);		//set bits 7,6 to output
+														//clear bits 5,4,3,2,1,0 to input
+
+	//---------------------------------------------------------------------
+	// Port G configuration
+	//
+	// PG0	IN4 - Protected input		Input		Pulled-up
+	// PG1	IN5 - Protected input		Input		Pulled-up
+	// PG2	TXF - RS232						Output	High (serial set by serial drivers)
+	// PG3	RXF - RS232						Input		Pulled-up (serial set by serial drivers)
+	// PG4	IN6 - Protected input		Input		Pulled-up
+	// PG5	IN7 - Protected input		Input		Pulled-up
+	// PG6	TXE - RS232						Output	High (serial set by serial drivers)
+	// PG7	RXE - RS232						Input		Pulled-up (serial set by serial drivers)
+	//---------------------------------------------------------------------
+	WrPortI(PGCR, &PGCRShadow, 0x00);		//clear all bits for pclk/2
+	WrPortI(PGFR, &PGFRShadow, 0x00);		//clear all bits for normal function
+	WrPortI(PGDCR, &PGDCRShadow, 0x00);		//clear bits 6,2 drive output
+	WrPortI(PGDR, &PGDRShadow, 0x44);		//set bits 6,2
+	WrPortI(PGDDR, &PGDDRShadow, 0x44);		//set bits 6,2 to output, rest inputs
+
+	//---------------------------------------------------------------------
+	// Port A configuration (after port F configurations due to TN228)
+	//
+	// PA0	OUT0 - Sinking Output		Output	Low
+	// PA1	OUT1 - Sinking Output		Output	Low
+	// PA2	OUT2 - Sinking Output		Output	Low
+	// PA3	OUT3 - Sinking Output		Output	Low
+	// PA4	RS485 Transmit enable		Output	Low (disables transmit)
+	// PA5	SPI Select         			Output	Low select SPI1  (high selects SPI2)
+	// PA6	LED - DS4						Output	High (disables)
+	// PA7	LED - DS3						Output	High (disables)
+	//---------------------------------------------------------------------
+	WrPortI(PADR, &PADRShadow, 0xc0);		// clear all bits, except bits 6,7
+	WrPortI(SPCR, &SPCRShadow, 0x84);		// set all bits as outputs
+
+#ifdef DAC_ONBOARD
+	//initialize pwm for analog
+	__pwminitflag = TRUE;
+	WrPortI(TAT9R, &TAT9RShadow, 0);	//establishes timer to run at clock/256
+												// use this here instead of pwm_init()
+	pwmOutConfig(0, PWM_SPREAD);		//DA0=PWM2
+	pwmOutConfig(1, PWM_SPREAD);		//DA1=PWM3
+	pwmOut(0, 0);							//DA0 off
+	pwmOut(1, 0);							//DA1 off
+
+	memset(_dacCalibS, 0, sizeof(_dacCalibS));
+	anaOutEERd(ALLCHAN);
+#endif
+
+#ifdef ADC_ONBOARD
+	// clear table and read all calibration constants
+	memset(_adcCalibS, 0, sizeof(_adcCalibS));
+	anaInEERd(ALLCHAN);
+#endif
+
+	/*****
+	// setup sclk for spi interface for 19200 baud
+	tdivisor = (int)((freq_divider * 19200.0/19200.0 + 0.5) - 1L);
+	BitWrPortI (PCFR, &PCFRShadow, 1, 4);		//set PC4 (and PC5) as TXB and RXB
+	WrPortI (TAT5R, &TAT5RShadow, tdivisor);	// set the SPI bit rate for serial B
+	WrPortI (SBCR, &SBCRShadow, 0x00);			//set CLKB transfer clock
+	*****/
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */
+
+

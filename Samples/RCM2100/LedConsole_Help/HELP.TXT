@@ -1,0 +1,13 @@
+
+Available commands: (type "help <command>" for more info)
+ led2 off				- Turn off DS2
+ led2 on				- Turn on DS2
+ led2 pwm <on-millis> <off-millis>	- Pulse Width modulate DS2.
+ led3 off				- Turn off DS3
+ led3 on				- Turn on DS3
+ led3 pwm <on-millis> <off-millis>	- Pulse Width modulate DS3.
+ show					- Show current configuration.
+ hello world				- Print cute message.
+ reset					- Reset everything to "factory" 
+					  defaults.
+ help					- This helpful screen.

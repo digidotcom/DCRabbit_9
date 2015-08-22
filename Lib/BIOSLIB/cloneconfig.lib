@@ -1,0 +1,99 @@
+/*** BeginHeader *************************************************************/
+/***** Cloning Information *******************************************
+ When after cloning starts, the LED on the cloning board goes out.
+ It begins toggling about every second after the initial loaders
+ are transfered and running.
+ When cloning is finished, the LED stays on. If any error occurs
+ while cloning the LED will start blinking. Possible errors are
+ autobaud failed, flash write failed, checksum incorrect.
+**********************************************************************/
+
+#define ENABLE_CLONING         0 // Set to 1 to enable cloning.
+
+#define CL_CHECKSUM_ENABLED    1 // Do Internet checksum for cloning.
+                                 //  Setting this to 0 will save some code
+                                 //  size and a little time. Uses RFC 1071,
+                                 //  1624 method.
+
+#define CL_ASSUME_SAME_CRYSTAL 0 // 0 Assumes crystal speed is different on master
+                                 //  and slave. Setting to 1 saves code space
+                                 //  for the crystal speed measurement and
+                                 //  autobauding. Autobauding works by setting
+                                 //  the slave and master to the highest baud
+                                 //  rate possible, and lowering the master's
+                                 //  baud rate until they match. This MUST be
+                                 //  set to 0 if the slave's crystal is or
+                                 //  might be slower than the master's. If this is
+                                 //  set to 1, make sure CL_DOUBLE_CLONE_CLOCK and
+                                 //  CLOCK_DOUBLED are set the same if copying
+                                 //  to like speed boards, since no autobauding
+                                 //  will take place.
+
+#define STERILE_CLONES         0 // Setting to 1 causes cloned boards to bypass
+                                 //  the check for the cloning cable, thereby
+                                 //  disabling cloning of clones
+
+#define CL_RUN_AFTER_COPYING   1 // Set to 0 to not run program on slave after
+                                 //  cloning.
+
+#define CLONE_WHOLE_FLASH      0 // Set to 1 to copy entire flash device to
+                                 //  excludes system ID block unless
+                                 //  CL_INCLUDE_ID_BLOCKS is set to 1 also.
+                                 //  Excludes secondary flash device, but
+                                 //  but if the program being cloned extends
+                                 //  into the second flash, it will be copied
+                                 //  regardless of this setting.
+
+#define CL_COPY_2NDFLASH       0 // Set to 1 to clone second flash also. This
+                                 //  is separate from USE_2NDFLASH_CODE so that
+                                 //  files in the 2nd flash can be copied too if
+                                 //  desired. This will cause the second flash
+                                 //  to be copied unconditionally even if the
+                                 //  the program doesn't span two flashes.
+
+#define CL_INCLUDE_ID_BLOCKS   0 // Set to 1 to copy system ID and user block
+                                 //  areas when cloning. Setting this to 1 will
+                                 //  cause the ID blocks to be copied
+                                 //  unconditionally.
+
+#ifndef CL_DOUBLE_CLONE_CLOCK    // If the cloned board has or might have a
+#define CL_DOUBLE_CLONE_CLOCK  0 //  crystal speed more than 12.9MHz, this MUST
+#endif                           //  be set to 0. This macro is independent of
+                                 //  the CLOCK_DOUBLED macro. It only applies
+                                 //  clock doubling WHILE cloning.
+
+#define INITIAL_SLV_BAUD_DIV   0 // If the slave is faster than, or might be
+                                 //  faster than the master, increase this to
+                                 //  the value needed to to achieve the fastest
+                                 //  common baud rate that works on both boards.
+                                 //  0 will always work when the slave crystal
+                                 //  speed is equal to the master crystal speed.
+                                 //  (This is the value that goes in the divisor
+                                 //  register, the actual divisor is this plus 1.)
+                                 //  The divisor register value is determined as
+                                 //  follows:
+                                 //  divisor reg. value = (crystal frequency in Hz)
+                                 //                        -----------------------  - 1
+                                 //                           (32 * baud rate)
+                                 //  For achievable baud rates, this should within
+                                 //  4% of an integral value.
+                                 //
+                                 //  Max baud rate = (crystal frequency in Hz) /32
+                                 //
+                                 //  If CL_DOUBLE_CLONE_CLOCK = 1, the crystal
+                                 //  frequency is the double the crystal frequency.
+                                 //
+                                 //  Use this macro also if mismatched crystal speeds
+                                 //  will prevent the master from achieving a common
+                                 //  baud rate with the slave if the slave's div. reg.
+                                 //  is 0. For example, set to 4 if the master is 12.8MHz
+                                 //  and the slave is 9.2MHz.
+
+#if (ENABLE_CLONING == 1)
+   #if RAM_COMPILE==1
+      #error "Cannot enable cloning when compiling to RAM."
+      #undef ENABLE_CLONING
+      #define ENABLE_CLONING 0
+   #endif
+#endif
+/*** EndHeader ***************************************************************/

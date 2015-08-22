@@ -1,0 +1,9 @@
+/*** BeginHeader */
+#ifndef __DBUGKERN_LIB
+#define __DBUGKERN_LIB
+/*** EndHeader */
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */
+

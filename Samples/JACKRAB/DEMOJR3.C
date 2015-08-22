@@ -1,0 +1,75 @@
+/*****************************************************
+
+     demojr3.c
+     Z-World, 1999
+
+     Demonstration of using the Jackrabbit Development Board and costatements
+
+     This program will flash DS4 on the Jackrabbit Development Board once per
+     second (bit 3 on port A).  This program will also watch button S1 (port B
+     bit 2) and toggle LED DS1 (port A bit 0) on/off when pressed.  Note that
+     the button is debounced by the software.
+
+     Port A can be set for all outputs or all inputs via the slave port control
+     register (SPCTRL).  If the slave port is being used then port A should not
+     be used.
+
+     Port B bits 0-5 are always inputs, and bits 6-7 are always outputs.  If the
+     slave port is being used then port B should not be used.
+
+******************************************************/
+//  Set a default of declaring all local variables "auto" (on stack)
+#class auto
+
+
+void main()
+{
+	static int vswitch;		// state of virtual switch controlled by button S1
+
+   WrPortI(SPCR, &SPCRShadow, 0x84);	// setup parallel port A as output
+   WrPortI(PADR, &PADRShadow, 0xff);		// turn off all LED's
+   
+
+   vswitch=0;				   // initialize virtual switch as off
+       
+	while (1) {					// endless loop
+	  BigLoopTop();			// begin a big endless loop
+	
+     // First task will flash LED DS4 for 200ms once per second.
+     costate {    
+       BitWrPortI(PADR, &PADRShadow, 0, 3);		// turn LED on
+       waitfor(DelayMs(200));							// wait 200 milliseconds
+       BitWrPortI(PADR, &PADRShadow, 1, 3);		// turn LED off
+       waitfor(DelayMs(800)); 						// wait 800 milliseconds
+     }
+
+          
+     // Second task will debounce switch S1 and toggle virtual switch vswitch.
+     // also check button 1 and toggle vswitch on or off
+     costate {
+         if (BitRdPortI(PBDR, 2))
+         	abort;				// if button not down skip out of costatement
+
+         waitfor(DelayMs(50));		// wait 50 ms
+
+         if(BitRdPortI(PBDR,2))
+         	abort;				// if button not still down skip out
+         
+         vswitch = !vswitch;	// toggle virtual switch since button was down 50 ms
+  
+         // now wait for the button to be up for at least 200 ms before considering another toggle
+         while (1) {
+           waitfor(BitRdPortI(PBDR, 2));		// wait for button to go up
+           waitfor(DelayMs(200));				// wait additional 200 milliseconds
+           if (BitRdPortI(PBDR,2))
+           		break;				// if button still up break out of while loop
+			}
+      } // end of costate
+               
+		// make led agree with vswitch if vswitch has changed
+		if( (PADRShadow & 1) == vswitch)
+			BitWrPortI(PADR, &PADRShadow, !vswitch, 0);
+     
+	}  // end of while loop
+
+}  // end of main

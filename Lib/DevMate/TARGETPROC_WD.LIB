@@ -1,0 +1,309 @@
+/* START LIBRARY DESCRIPTION *********************************************
+TARGETPROC_WD.LIB
+	Copyright (c) 2001, ZWorld. (jjb)
+
+DESCRIPTION:
+	DeviceMate Watchdog Target Library
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+
+#ifndef TC_WD_H
+	#use tc_wd.lib
+#endif
+
+#ifndef __TARGETPROC_APP_LIB
+	#use "targetproc_app.lib"
+#endif
+
+
+/*
+ *		Target processor configurable variables
+ */
+
+#ifndef TARGETPROC_WD_NUMTXBUF
+	#define TARGETPROC_WD_NUMTXBUF 	1
+#endif
+
+#ifndef TARGETPROC_WD_NUMRXBUF
+	#define TARGETPROC_WD_NUMRXBUF 	2
+#endif
+
+#ifndef TARGETPROC_WD_MAXWD
+	#define TARGETPROC_WD_MAXWD		12
+#endif
+
+#ifndef TARGETPROC_WD_RESETFUNCTION
+	#define TARGETPROC_WD_RESETFUNCTION _targetproc_wd_resetfunction
+#endif
+
+
+
+typedef struct
+{
+	uint32 updatewith;
+	uint32 timeout;
+	char name[DEVMATE_WD_MAXNAME];
+} TargetProcWd;
+
+typedef struct
+{
+	faraddr_t rxbuffer;
+	faraddr_t txbuffer;
+	faraddr_t rxbuffers;
+	faraddr_t txbuffers;
+	faraddr_t rxprocessing;
+
+	void (*resetfunction)();
+} TargetProcWdControl;
+
+#funcchain __targetproc_init _targetproc_wd_init
+#funcchain __targetproc_tick _targetproc_wd_tick
+
+/*** EndHeader */
+
+/*** BeginHeader _targetproc_wd_init, _targetproc_wd_tick */
+
+void _targetproc_wd_init(void);
+void _targetproc_wd_tick(void);
+
+extern TargetProcWdControl _targetproc_wdctrl;
+extern TargetProcWd _targetproc_wd[TARGETPROC_WD_MAXWD];
+
+/*** EndHeader */
+
+TargetProcWdControl _targetproc_wdctrl;
+TargetProcWd _targetproc_wd[TARGETPROC_WD_MAXWD];
+
+void _targetproc_initwd(void);
+int _targetproc_addwd(char* name, uint32 updatewith);
+int _targetproc_rmvwd(char* name);
+
+TargetProcWd* _targetproc_findwd(char* name);
+
+
+wd_nodebug root
+int targetproc_wd_callback(uint16 flags, uint8 type, uint8 subtype, uint16 length,
+									faraddr_t buffer, long userdata)
+{
+#asm
+		ld		hl,(sp+@SP+flags)
+
+		bit	7,h								; flags&TC_SYSBUF?
+		jr		nz,__targetproc_wd_done	
+
+		bit	0,l								; !(flags&TC_RECEIVE)?
+		jr		nz,__targetproc_wd_rx
+
+__targetproc_wd_tx:		
+c		_tc_queue_buffer(&_targetproc_wdctrl.txbuffers,buffer); /* return tx buffer */
+		jr		__targetproc_wd_done
+
+__targetproc_wd_rx:
+c		_tc_queue_buffer(&_targetproc_wdctrl.rxprocessing,buffer); /* place rx buffer on queue */
+
+__targetproc_wd_done:
+#endasm
+}
+
+wd_nodebug
+void _targetproc_wd_resetfunction(void)
+{
+#ifdef TARGETPROC_WD_DEBUG
+	printf("_targetproc_wd_resetfunction\n");
+#endif
+}
+
+wd_nodebug
+void _targetproc_wd_init(void)
+{
+	auto faraddr_t buffer;
+	
+	#GLOBAL_INIT
+	{
+		memset(&_targetproc_wdctrl,0,sizeof(_targetproc_wdctrl));
+		
+		_targetproc_initwd();
+		_targetproc_wdctrl.txbuffer=xalloc((DEVMATE_WD_PKTSIZE+sizeof(_TCHeader))*TARGETPROC_WD_NUMTXBUF);
+		_targetproc_wdctrl.rxbuffer=xalloc((DEVMATE_WD_PKTSIZE+sizeof(_TCHeader))*TARGETPROC_WD_NUMRXBUF);
+		_targetproc_wdctrl.resetfunction=TARGETPROC_WD_RESETFUNCTION;
+	
+		if(_targetproc_wdctrl.txbuffer==0 || _targetproc_wdctrl.rxbuffer==0) {
+			exit(-1);
+		}
+	}
+
+	_tc_create_queue(&_targetproc_wdctrl.txbuffers,_targetproc_wdctrl.txbuffer,
+		DEVMATE_WD_PKTSIZE+sizeof(_TCHeader),TARGETPROC_WD_NUMTXBUF);
+	_tc_create_queue(&_targetproc_wdctrl.rxbuffers,_targetproc_wdctrl.rxbuffer,
+		DEVMATE_WD_PKTSIZE+sizeof(_TCHeader),TARGETPROC_WD_NUMRXBUF);
+
+	targetproc_registercallback(TC_TYPE_WD,targetproc_wd_callback);
+
+	while(buffer=_tc_get_buffer(&_targetproc_wdctrl.rxbuffers))
+		targetproc_recvbuf(TC_TYPE_WD,DEVMATE_WD_PKTSIZE,buffer,0);
+}
+
+wd_nodebug
+TargetProcWd* _targetproc_findwd(char* name)
+{
+	auto int x;
+
+	for(x=0;x<TARGETPROC_WD_MAXWD;x++) {
+		if(strcmp(_targetproc_wd[x].name,name)==0)
+			return &_targetproc_wd[x];
+	}
+	return NULL;
+}
+
+wd_nodebug
+int _targetproc_addwd(char* name, uint32 updatewith)
+{
+	auto TargetProcWd* wd;
+
+	wd=_targetproc_findwd(name);
+	
+	if(wd==NULL) {
+		if(wd=_targetproc_findwd(""))
+			strncpy(wd->name,name,sizeof(wd->name));
+		else
+			return -1;
+	}
+
+	wd->updatewith=updatewith;
+	wd->timeout=MS_TIMER+updatewith;
+	return 0;
+}
+
+wd_nodebug
+int _targetproc_rmvwd(char* name)
+{
+	auto TargetProcWd* wd;
+
+	if(wd=_targetproc_findwd(name)) {
+		wd->name[0]='\0';
+		return 0;
+	}
+	return -1;
+}
+
+wd_nodebug
+int _targetproc_hitwd(char* name)
+{
+	auto TargetProcWd* wd;
+
+	if(wd=_targetproc_findwd(name))
+		wd->timeout=MS_TIMER+wd->updatewith;
+
+	return 0;
+}
+
+wd_nodebug
+void _targetproc_initwd(void)
+{
+	memset(&_targetproc_wd,0,sizeof(_targetproc_wd));
+}
+
+wd_nodebug
+void _targetproc_wd_respond(TCDevMateWd* tc_wd, uint8 subtype)
+{
+	auto faraddr_t txbuffer;
+	auto int len;
+	
+	txbuffer=_tc_get_buffer(&_targetproc_wdctrl.txbuffers);
+	if(txbuffer) {
+#ifdef TARGETPROC_WD_DEBUG
+		printf("_targetproc_wd_respond \"%s\", %02x, seq=%u\n",tc_wd->name,(int)subtype,tc_wd->sequence);
+#endif	
+		for (len = 0; len < sizeof(tc_wd->name); len++)
+			if (!tc_wd->name[len])
+				break;
+		root2xmem(txbuffer+sizeof(_TCHeader),tc_wd,sizeof(*tc_wd));
+		targetproc_send(TC_TYPE_WD, subtype, DEVMATE_WD_PKTHDRSIZE + len, txbuffer, 0);
+#ifdef TARGETPROC_WD_DEBUG
+	} else {
+		printf("_targetproc_wd_respond:  no buffer\n");
+#endif
+	}
+}
+
+wd_nodebug
+void _targetproc_wd_tick(void)
+{
+   auto _TCHeader header;
+   auto TCDevMateWd tc_wd;
+   auto faraddr_t rxbuffer;
+   auto int x;
+
+   rxbuffer=_tc_get_buffer(&_targetproc_wdctrl.rxprocessing);
+
+	if(rxbuffer) {
+      xmem2root(&header,rxbuffer,sizeof(_TCHeader));
+      xmem2root(&tc_wd,rxbuffer+sizeof(_TCHeader),sizeof(tc_wd));
+		if (header.length < sizeof(tc_wd))
+			((char *)&tc_wd)[header.length] = 0;	// Null-terminate name
+
+      switch(header.subtype) {
+		case DEVMATE_WD_INIT:
+			/*
+			 *		Initialize the watchdog tables
+			 */
+
+			_targetproc_initwd();
+			_targetproc_wd_respond(&tc_wd, TC_ACK|DEVMATE_WD_INIT);
+			break;
+
+		case DEVMATE_WD_ADD:
+			/*
+			 *		Add a watchdog to the table.  If it already
+			 *		exists update the information. If there is
+			 *		no available table entries nak the request
+			 */
+
+			if(_targetproc_addwd(tc_wd.name,tc_wd.updatewith))
+				_targetproc_wd_respond(&tc_wd, TC_NAK|DEVMATE_WD_ADD);
+			else
+				_targetproc_wd_respond(&tc_wd, TC_ACK|DEVMATE_WD_ADD);
+			break;
+
+		case DEVMATE_WD_REMOVE:
+			/*
+			 *		Remove a watchdog to the table.  If it does
+			 *		not exist nak the request.
+			 */
+
+			if(_targetproc_rmvwd(tc_wd.name))
+				_targetproc_wd_respond(&tc_wd, TC_NAK|DEVMATE_WD_REMOVE);
+			else
+				_targetproc_wd_respond(&tc_wd, TC_ACK|DEVMATE_WD_REMOVE);
+			break;
+
+		case DEVMATE_WD_HIT:
+			_targetproc_hitwd(tc_wd.name);
+			break;
+		}
+
+		/*
+		 *		return the receive buffer
+		 */
+      targetproc_recvbuf(TC_TYPE_WD,DEVMATE_WD_PKTSIZE,rxbuffer,0);
+	}
+
+	/*
+	 *		call reset function if any of the watchdogs have
+	 * 	not been hit within their time.
+	 *
+	 */
+
+	for(x=0;x<TARGETPROC_WD_MAXWD;x++) {
+		if(_targetproc_wd[x].name[0]!='\0' &&
+		   (long)(_targetproc_wd[x].timeout - MS_TIMER) <= 0) {
+			if(_targetproc_wdctrl.resetfunction) {
+				memset(&_targetproc_wd,0,sizeof(_targetproc_wd));
+				_targetproc_wdctrl.resetfunction();
+			}
+		}
+	}
+}

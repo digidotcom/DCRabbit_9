@@ -1,0 +1,314 @@
+/*
+ * FLASH low-level FS driver, that uses the FIRST flash.
+ *
+ * !!! IMPORTANT NOTE !!!
+ *
+ * Given that this uses the FIRST flash, care must be taken to make
+ * sure that the filesystem doesn't clobber any existing code/data,
+ * or the System ID-Block at the end of the flash.
+ *
+ * Therefor, to compute what to pass to fs_format(), use the following
+ * code:
+
+	long fs_start; // where to start the filesystem
+
+	fs_start = END_OF_XMEMORY; // start at the end of xmem
+	fs_start = fs_start / FS_BLOCK_SIZE; // divide out the blocksize, to meet the requirements for fs_format
+	if((fs_start * FS_BLOCK_SIZE) != END_OF_XMEMORY) {
+		// rounding error - we need to move up one block so we don't clobber the
+		// end of the xmem area
+		fs_start++;
+	}
+
+ * END_OF_XMEMORY is defined in the BIOS. This code will make sure the value is on
+ * a nice FS_BLOCSIZE boundary. Because the value computed might be modified from
+ * the actuall END_OF_XMEMORY, to place it on the block boundary, it might be
+ * necessary to reserve more space in the BIOS than is necessary, to still get the
+ * same number of block in your filesystem.
+ *
+ * Unfortunetly, though, END_OF_XMEMORY is usually set to be the size of
+ * the entire flash XMEM area, to allow DynamicC to use the entire flash
+ * for program code. Therefor, to use this filesystem, you need to
+ * explicitly change the value of END_OF_XMEMORY in the BIOS. This can be done
+ * through the macro XMEM_RESERVE_SIZE at the top of the BIOS, in rabbitbios.c.
+ *
+ *
+ */
+
+/*** BeginHeader fs_block_init */
+
+/* size of the block */
+#ifndef FS_BLOCK_SIZE
+	#define FS_BLOCK_SIZE 4096L
+#endif
+
+#define FS_SECTOR_SIZE fs_sector_size
+#define FS_SECTORS_PER_BLOCK (((int)FS_BLOCK_SIZE)/FS_SECTOR_SIZE)
+
+#define FS_TEMPBUF_SIZE	1024
+
+int fs_block_init(long baseaddress, int num_blocks);
+int fs_block_read(int block_num, int offset, char *buf, int len);
+int fs_block_write(int block_num, char *buf, int len);
+int fs_block_move(long to, int block, int offset, int len);
+char *fs_block_pushxpc(int block_num);
+
+extern int fs_sector_size;
+long fs_block_baseaddress;
+/*** EndHeader */
+
+#if(_BOARD_TYPE_ == 0x1300)
+	#error "OLD FILESYSTEM will not work with RCM 3200 Boards."
+#endif
+
+int fs_sector_size;
+
+
+int fs_block_num_blocks;
+int fs_sector_offset;
+
+/*
+ * Initilize the low-level driver, starting at baseaddress (relative to start of flash),
+ * with num_blocks blocks of size FS_BLOCK_SIZE
+ */
+nodebug
+int fs_block_init(long baseaddress, int num_blocks)
+{
+	auto int *id_tab;
+	auto unsigned long	sizeMask, idBlockAddr;
+	auto unsigned long	sectorMask, flashDst, len;
+	/* sanity check these values? */
+
+#ifdef _RAM_
+	#error	"Flash filesystem will not work in RAM - use the RAM filesystem."
+#endif
+
+#ifdef FS_DEBUG_FLASH
+	printf("Initilizing FLASH fs driver at offset: %lx\n",baseaddress);
+#endif
+	fs_block_baseaddress = baseaddress;
+	fs_block_num_blocks = num_blocks;
+
+	/* get flash sector size */
+	if(_FlashInfo.sectorSize != 0) {
+		fs_sector_size = _FlashInfo.sectorSize;
+#ifdef FS_DEBUG_FLASH
+		printf("Flash sector size == %d\n",fs_sector_size);
+#endif
+	} else {
+		/* FLASH TYPE NOT FOUND! */
+#ifdef FS_DEBUG_FLASH
+		printf("Unknown flash type!\n");
+#endif
+		return 1;
+	}
+
+	/* verify the block size relative to the sector size */
+	fs_sector_offset = (int)(FS_BLOCK_SIZE / FS_SECTOR_SIZE);
+	if((FS_BLOCK_SIZE < FS_SECTOR_SIZE) ||
+		((FS_SECTOR_SIZE*fs_sector_offset) != FS_BLOCK_SIZE)
+		) {
+#ifdef FS_DEBUG_FLASH
+		printf("FS_BLOCK_SIZE is not a multiple of FS_SECTOR_SIZE!\n");
+#endif
+		return 1;
+	}
+
+	/* verify the sector boundary */
+	fs_sector_offset = (int)(baseaddress / FS_SECTOR_SIZE); /* offset into flash, in sectors */
+	if((long)fs_sector_offset*FS_SECTOR_SIZE != baseaddress) {
+#ifdef FS_DEBUG_FLASH
+		printf("Not on sector boundary!\n(FS_SECTOR_SIZE == %x, baseaddress == %lx, fs_sector_offset == %x)\n",
+			FS_SECTOR_SIZE,baseaddress,fs_sector_offset);
+#endif
+		return 1; /* not on FS_SECTOR_SIZE boundary */
+	}
+
+	// check for write attempt into ID blocks...
+	if (SysIDBlock.idBlockSize != 0x0000) {
+		idBlockAddr = (unsigned long)_FlashInfo.sectorSize *
+						  (unsigned long)_FlashInfo.numSectors;
+		sizeMask = idBlockAddr - 0x0001ul;
+		idBlockAddr = (idBlockAddr - SysIDBlock.idBlockSize) & sizeMask;
+		// this variable is reused later for something else!
+		sectorMask = (unsigned long)_FlashInfo.sectorSize;
+		sectorMask = ~sectorMask + 0x01ul;
+		idBlockAddr = idBlockAddr & sectorMask;
+
+		flashDst = fs_block_baseaddress;
+		len = fs_block_num_blocks*FS_BLOCK_SIZE;
+
+		if ( ((flashDst & sizeMask) >= idBlockAddr) ||
+		  (((flashDst + len) & sizeMask) > idBlockAddr) ||
+		  ((flashDst + len) >= ((unsigned long)_FlashInfo.sectorSize * (unsigned long)_FlashInfo.numSectors))) {
+#ifdef FS_DEBUG_FLASH
+			printf("Filesystem will overwrite the system ID block!\n");
+#endif
+			return 1;							// attempt to write to flash ID blocks
+		}
+	}
+
+	return 0;
+}
+
+/*
+ * read from block_num/offset into buf/len
+ * offset == number of bytes from beginning of the block
+ */
+nodebug
+int fs_block_read(int block_num, int offset, char *buf, int len)
+{
+	/*
+	 * check the checksum here
+	 *
+	 * crc == block[16] & block[17]
+	 * first byte == block[2] & block[3]
+	 * last byte == block[4] & block[5]
+	 */
+
+#ifdef FS_DEBUG_FLASH
+	if(offset != 0)
+		printf("FLASH> Reading from block %d, offset %d, len %d\n",block_num,offset,len);
+#endif
+
+	return xmem2root(buf, (block_num*FS_BLOCK_SIZE) + offset + fs_block_baseaddress, len);
+}
+
+/*
+ * Replacement for xmem2xmem() - move a block of data from flash to xmem
+ */
+nodebug
+int fs_block_move(long to, int block, int offset, int len)
+{
+#ifdef FS_DEBUG_FLASH
+	printf("FLASH> Moving from block %d, offset %d, len %d\n",block,offset,len);
+#endif
+
+	return xmem2xmem(to, (block*FS_BLOCK_SIZE) + offset + fs_block_baseaddress, len);
+}
+
+/*
+ * Write the given block (described in buf/len),
+ * to block number block_num (always start at offset=0 in the block)
+ */
+nodebug
+int fs_block_write(int block_num, char *buf, int len)
+{
+#ifdef FS_DEBUG_FLASH
+	printf("FLASH> Writing block %d\n",block_num);
+#endif
+
+	return WriteFlash(fs_block_baseaddress + (block_num*FS_BLOCK_SIZE), buf, len);
+}
+
+/*
+ *	write a sector out. (buf is a physical address, probably in xmem)
+ */
+/*** BeginHeader fs_writesector **************/
+int fs_writesector(int sector, long buf, int len);
+/*** EndHeader ****************/
+nodebug
+root useix int fs_writesector(int sector, long buf, int len)
+{
+	static char saveXPC;
+	static char flashBase;
+	static int flashAddr,retval;
+	static long addr32,src;
+
+	src = buf;
+
+#ifdef FS_DEBUG_FLASH
+	printf("FLASH> Writing sector %d, %d bytes, from address 0x%lx\n",sector,len,buf);
+#endif
+
+	if(len > FS_SECTOR_SIZE) {
+#ifdef FS_DEBUG_FLASH
+		printf("\tError: len <%d> is larger than FS_SECTOR_SIZE <%d>!\n",len,FS_SECTOR_SIZE);
+#endif
+		return 1;
+	}
+
+	// calculate  xpc and offset of flash as xmem address
+	addr32 = fs_block_baseaddress + ((long)sector*FS_SECTOR_SIZE) -0xe000ul;
+	flashBase = (char)((addr32&0x000ff000L)>>12);
+	flashAddr = (unsigned)((addr32&0x00000fffL)|0xe000L);
+
+	//printf("\tTarget sector: %02x:%04x\n",flashBase,flashAddr);
+
+#asm
+	; save the XPC
+	ld		a,xpc
+	ld		(saveXPC),a
+
+	; turn off interrupts
+	push	ip
+	ipset	3
+
+	; store the data in the flashwrite buffer
+	c	xmem2xmem(flash_buf_phys, src, len);
+
+	ld		a,(_FlashInfo+writeMode)
+	cp		0x02
+	jr		z,skip_erase_sector
+
+	; erase the sector!
+	ld  	a,(flashBase)
+	ld  	xpc,a
+	ld    hl,(flashAddr)
+	ex		de,hl
+	call	_EraseFlashSect
+
+skip_erase_sector:
+	; set the XPC window
+	ld  	a,(flashBase)
+	ld  	xpc,a
+
+	; write the flash sector - 'a' should still have the XPC value!
+	ld    hl,(flashAddr)				// put offset in hl
+	ex  	de,hl							// WriteFlash expects it in de
+	ld		hl,(sp+@SP+len+1)			// get the length of the write (+1 for the "push ip" above)
+	ld		b,h
+	ld		c,l							// ...and put it in bc
+	call	_WriteFlash
+	ld    (retval),hl					// hl has return value
+
+	; Restore interrupts...
+	pop	ip
+
+	; ...and the XPC
+	ld		a,(saveXPC)
+	ld		xpc,a
+#endasm
+
+	if(retval)
+		printf("\tretval was: %d\n",retval);
+	return retval;
+}
+
+/*
+ * set the XPC such that the given block is in the window, and
+ * return a pointer to the beginning of the block, as accessable
+ * through the xpc window.
+ */
+nodebug
+root char *fs_block_pushxpc(int block_num)
+{
+	auto unsigned long addr32;
+	auto unsigned xAddr;
+	auto char	  xBase;
+
+	// calculate  xpc and offset of flash as xmem address
+	addr32 = (fs_block_baseaddress + (block_num*FS_BLOCK_SIZE))-0xe000ul;
+	xBase = (char)((addr32&0x000ff000L)>>12);
+	xAddr = (unsigned)((addr32&0x00000fffL)|0xe000L);
+
+	// store the new XPC
+#asm
+	ld		hl, (sp+@SP+xBase)
+	ld		a, l
+	ld		xpc, a
+#endasm
+
+	/* return a pointer to the buffer */
+	return (char *)xAddr;
+}

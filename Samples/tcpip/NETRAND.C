@@ -1,0 +1,103 @@
+/*******************************************************************************
+        Samples\TCPIP\netrand.c
+        Z-World, 2002
+
+        Initialize the network interface(s).  Every time a packet arrives for
+        this host, the inter-packet timings will be used to add randomness
+        to the entropy table (see RAND.LIB documentation).
+
+        Each bit of randomness is printed out as soon as it is available.
+
+        Send packets to this host using, e.g., "ping" from another host.
+        From Unix, become root user then issue "ping -f <IP address>" to
+        really stress test the program (flood ping).
+*******************************************************************************/
+#class auto
+
+
+/***********************************
+ * Configuration                   *
+ ***********************************/
+
+#define TCPCONFIG		1			// 1 = static single ethernet
+
+#define NET_ADD_ENTROPY			// Define this to get DCRTCP to record inter-packet timings.
+
+#define BITS_2_COLLECT	500	// Number of bits to accumulate before printing stats.
+ 
+/********************************
+ * End of configuration section *
+ ********************************/
+ 
+#memmap xmem
+#use dcrtcp.lib
+
+#define MAXSEQ	4
+word singles[2];
+word pairs[4];
+word triples[8];
+word quads[16];
+
+word oneseqs[32];
+word zeroseqs[32];
+
+word * const seqs[MAXSEQ] = { singles, pairs, triples, quads };
+
+
+void main()
+{
+	unsigned long seq, mask;
+	word accum;
+	word i, j;
+	int k;
+
+	accum = 0;
+	memset(singles, 0, sizeof(singles));
+	memset(pairs, 0, sizeof(pairs));
+	memset(triples, 0, sizeof(triples));
+	memset(quads, 0, sizeof(quads));
+	memset(oneseqs, 0, sizeof(oneseqs));
+	memset(zeroseqs, 0, sizeof(zeroseqs));
+	seed_init(NULL);
+	
+	// Set timer B running at maximum rate to increase clock resolution.
+	// This gives more random bits per observation.
+	WrPortI(TBCR, &TBCRShadow, 0x00);	// clock timer B with (perclk/2) and
+													//     set interrupt level to 0 (off)
+	WrPortI(TBCSR, &TBCSRShadow, 0x01);	// enable timer B
+
+   sock_init();
+	ip_print_ifs();
+	
+   for (;;) { 
+      tcp_tick(NULL);
+      while (seed_bits()) {
+      	accum++;
+      	seq = seq << 1 | seed_getbits(1);
+      	printf("%lu", seq & 1);
+
+      	for (i = 0; i < MAXSEQ && i < accum; i++)
+      		(*(seqs[i] + (word)(seq & (2<<i)-1)))++;
+      	for (i = 0; i < 32 && i < accum; i++) {
+      		mask = (2uL << i) - 1;
+      		if ((seq & mask) == mask)
+      			oneseqs[i]++;
+      		else if (!(seq & mask))
+      			zeroseqs[i]++;
+      	}
+
+      	if (accum % BITS_2_COLLECT == 0) {
+      		printf("\nAccumulated %u bits...\n", accum);
+      		for (i = 0; i < MAXSEQ; i++) {
+      			for (j = 0; j < (2<<i); j++) {
+      				for (k = i; k >= 0; k--)
+      					printf("%u", (j>>k) & 1);
+      				printf(": %u\n", seqs[i][j]);
+      			}
+      		}
+      		for (i = 0; i < 32; i++)
+      			printf("%2u x 0's: %5u  %2u x 1's: %5u\n", i+1, zeroseqs[i], i+1, oneseqs[i]);
+      	}
+      }
+   }
+}

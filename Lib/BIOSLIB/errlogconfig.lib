@@ -1,0 +1,42 @@
+/*** BeginHeader *************************************************************/
+//***** Error Logging information *******************************************
+// Extended RAM for the error logging is pre-allocated in 4096 byte chunks.
+// When ENABLE_ERROR_LOGGING is non-zero the default configuration uses a single
+//  4096 byte chunk.
+#define ENABLE_ERROR_LOGGING   0 // non-zero to enable error logging
+#define ERRLOG_NBLOCKS         1 //  number of 4096 byte chunks to preallocate
+#define ERRLOG_USE_REG_DUMP    1 //  include register dump in log entries
+#define ERRLOG_STACKDUMP_SIZE 16 //  include stack dump of this size in entries
+#define ERRLOG_USE_MESSAGE     0 //  Use this to include an 8 byte message in
+                                 //   the log entries. The default exception
+                                 //   handler currently makes no use of this.
+
+#if RAM_COMPILE
+	#if ENABLE_ERROR_LOGGING
+		#error "Error logging not available when compiling to RAM."
+		#undef ENABLE_ERROR_LOGGING
+		#define ENABLE_ERROR_LOGGING 0
+	#endif
+#endif
+
+#if FLASH_COMPILE && RUN_IN_RAM_CS == 0x2
+	#if ENABLE_ERROR_LOGGING
+		#error "Error logging not available on this board when compiling to Flash."
+		#error "Try 'Compile to Flash, Run in RAM' mode instead."
+		#undef ENABLE_ERROR_LOGGING
+		#define ENABLE_ERROR_LOGGING 0
+	#endif
+#endif
+
+#if ENABLE_ERROR_LOGGING && (ERRLOG_NBLOCKS > 0)
+	#define ERRLOG_NUM_ENTRIES ((ERRLOG_NBLOCKS*4096-sizeof(struct _errLogInfo))\
+	                            /sizeof(struct _errLogEntry))
+	#define ERRLOG_LOG_SIZE (ERRLOG_NUM_ENTRIES*sizeof(struct _errLogEntry)\
+	                         +sizeof(struct _errLogInfo))
+#else
+	#undef ERRLOG_NBLOCKS
+	#define ERRLOG_NBLOCKS 0
+	#define ERRLOG_NUM_ENTRIES 0
+	#define ERRLOG_LOG_SIZE 0
+#endif
+/*** EndHeader ***************************************************************/

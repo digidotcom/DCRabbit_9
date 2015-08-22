@@ -1,0 +1,94 @@
+/*** BeginHeader Precompile **********************************/
+/* Functions to be compiled immediately after the bios
+ * (precompiled) should be placed in a comma separated list
+ * in a #precompile directive.  Precompiles are useful for
+ * decreasing the download time when developing your program,
+ * since these functions will be compiled and downloaded with
+ * the BIOS, rather than each time you compile and download
+ * your program.
+ *
+ * LIMITATIONS:
+ *      - Precompiled functions must be marked
+ *        nodebug.
+ *      - Any functions to be precompiled must be in
+ *        a library, and that library must be included
+ *        either in the BIOS using a #use, or recursively
+ *        included by those libraries. To precompile
+ *        your own functions, #use your library in this
+ *        file, before the #precompile directives.
+ *        *Be careful of functions that are in
+ *        libraries that are conditionally included.
+ *      - Internal BIOS functions will precompile,
+ *        but will not result in any improvement, since
+ *        these functions are already downloaded with
+ *        the BIOS.
+ *      - Libraries that require the user to define
+ *        parameters before being used can only be
+ *        precompiled if those dependencies are resolved
+ *        prior to the #precompile statement. An example
+ *        of this is shown below.
+ *        parameters before they can be included.
+ *      - Function chains and functions using segment
+ *        chains cannot be precompiled.
+ *      - Precompiled functions will be placed in xmem,
+ *        unless specifically marked root.
+ *      - All dependencies must be resolved (Macros,
+ *        variables, other functions, etc) before a
+ *        function can be precompiled. This may involve
+ *        precompiling other functions first.
+ *
+ * Some examples of legal precompiled functions
+ * are listed below.
+ */
+
+/**************************************************************
+ * Support function examples. These functions are declared    *
+ * in the BIOS, or BIOS libraries, but are only compiled and  *
+ * downloaded if they are used or precompiled.                *
+ **************************************************************/
+//#precompile strcmpi, strncmp, tolower  // String functions
+//#precompile printf, gets, ftoa         // I/O functions
+//#precompile sin, acos, ceil            // Math functions
+
+/**************************************************************
+ * Example - Precompile the entire string.lib                 *
+ * Multiple #precompile statements may be used for long       *
+ * lists of functions for precompile.                         *
+ **************************************************************/
+//#precompile strtod,strtol,atof,atoi,atol,memset,strcpy,strncpy
+//#precompile strcat,strncat,strcmp,strcmpi,strncmp,strncmpi,strchr,strcspn,strpbrk
+//#precompile memcpy,memchr,strlen,strspn,strtok,strstr,strrchr,memcmp
+//#precompile toupper,tolower,islower,isupper,isdigit,isxdigit,ispunct,isspace,isprint
+//#precompile isalpha,isalnum,isgraph,iscntrl
+
+/**************************************************************
+ * Some functions require parameters to be defined before     *
+ * being used. This example shows some serial functions       *
+ * (from RS232.LIB) that require two macros to be defined     *
+ * before the precompile can take place. Any functions that   *
+ * need parameters defined before use can be precompiled this *
+ * way.                                                       *
+ **************************************************************/ 
+ 
+//#define AINBUFSIZE  7
+//#define AOUTBUFSIZE 7 
+//#precompile serAgetc,serAread,serAputc
+
+/**************************************************************
+ * Example of a precompile with a library not included with   *
+ * the BIOS. The #use must come before the #precompile.       *
+ * This example shows the use of precompile for someone       *
+ * who writes programs that use Jackrabbit functions and      *
+ * compile their own programs frequently. Precompiling these  *
+ * functions will save some time compiling and downloading    *
+ * during development.                                        *
+ * NOTE: Some library functions may not precompile correctly  *
+ *       if they have dependencies that are not defined       *
+ *       before the #precompile. Make sure that any           *
+ *       dependencies for precompile functions are also       *
+ *       precompiled.                                         *
+ **************************************************************/
+//#use "jrio.lib"
+//#precompile jrioInit, digOn, digOff // Jackrabbit board-specific functions
+
+/*** EndHeader ***********************************************/

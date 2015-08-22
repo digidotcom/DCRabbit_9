@@ -1,0 +1,4 @@
+
+DELETE
+   Usage: "delete <filename>"
+   The file named <filename> is deleted from the web server.

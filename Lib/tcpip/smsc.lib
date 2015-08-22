@@ -1,0 +1,2903 @@
+/*** BeginHeader  ********************************************/
+#ifndef __SMSC_LIB
+#define __SMSC_LIB
+/*** EndHeader ***********************************************/
+
+/* START LIBRARY DESCRIPTION *********************************************
+SMSC.LIB
+	Copyright (c) 2002, ZWorld.
+
+DESCRIPTION:
+	SMSC LAN91C113 Ethernet packet driver
+
+SUPPORT LIB'S:
+
+REVISION HISTORY:
+15-OCT-03 pel	Changed IB2CR from 0xc8 to 0xc9 in pd_setup_RCM3300().
+					RCM3300 uses memory bus for this device.
+
+03-SEP-04 bri	Conditionally for RCM3360A/B/70A, set up IB2CR to 0x89 in
+					pd_setup_RCM3300().  Necessary for nand flash, which shares
+					memory bus with the SMSC ethernet.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader _SMSCController */
+
+#define USING_SMSC 1		// Only supports one SMSC chip currently.
+
+#if PLD_ETH_COMPILING == 1
+	#define smsc_internal_call(xlabel) 	asm db 0xcd $ dw logical_addr(xlabel)
+   #define smsc_internal_func				xmem __call__ nodebug nouseix
+   #define smsc_external_func				xmem nodebug nouseix
+#else
+	#define smsc_internal_call(xlabel)	asm call xlabel
+   #define smsc_internal_func 			xmem _pktdrv_debug nouseix
+   #define smsc_external_func      		xmem _pktdrv_debug nouseix
+#endif
+
+typedef struct
+{
+	NetControllerDevice * ncd;
+#if PLD_ETH_COMPILING || USE_ETH_PRELOADED_DRIVER
+   void * pld_rscblock;
+#endif
+   word	iface;			// Interface number
+	int	iobase;
+
+	char	reset_port;
+	char*	reset_port_shadow;
+	char	reset_mask;
+   char	hwa[6];					// Current MAC address (shadow)
+	int 	flags;
+	int	(*io_init)();
+
+	word pd_overruns;
+	word pd_trashed;
+	word pd_toobig;
+	word pd_nobufs;
+	word pd_received;
+
+} _SMSCConfig;
+
+#if PLD_ETH_COMPILING == 0 && USE_ETH_PRELOADED_DRIVER == 0
+_SMSCConfig _smsc_conf[USING_SMSC];
+#endif
+
+#if PLD_ETH_COMPILING == 1
+void _SMSCController(void);
+#else
+extern const NetControllerDevice _SMSCController;
+#endif
+
+// These macros are used by net.lib to properly initialize all instances.  Each macro is a C initializer
+// (with trailing comma if not null).  First element points to NetControllerDevice, second is a void
+// pointer which points to the specific state structure for the instance, third field is instance number.
+#if PLD_ETH_COMPILING == 0 && USE_ETH_PRELOADED_DRIVER == 0
+#define SMSC_TABLE1  { &_SMSCController, (void *)_smsc_conf, 0 },
+#define SMSC_TABLE2
+#else
+#define SMSC_TABLE1
+#define SMSC_TABLE2
+#endif
+
+/* ***************************************************************************/
+// SMSC-specific #defines
+#define SMSC_BANK		0x0e
+
+#define SMSC_TCR		0x00
+#define SMSC_EPH		0x02
+#define SMSC_RCR		0x04
+#define SMSC_CNT		0x06
+#define SMSC_MIR		0x08
+#define SMSC_RPCR		0x0a
+
+#define SMSC_CFG		0x00
+#define SMSC_BASE		0x02
+#define SMSC_IA0		0x04
+#define SMSC_IA1		0x05
+#define SMSC_IA2		0x06
+#define SMSC_IA3		0x07
+#define SMSC_IA4		0x08
+#define SMSC_IA5		0x09
+#define SMSC_GEN		0x0a
+#define SMSC_CTRL		0x0c
+
+#define SMSC_MMU		0x00
+#define SMSC_PNR		0x02
+#define SMSC_FIFO		0x04
+#define SMSC_PTR		0x06
+#define SMSC_DATA0	0x08
+#define SMSC_DATA2	0x0a
+#define SMSC_INT		0x0c
+
+#define SMSC_MT0		0x00
+#define SMSC_MT1		0x01
+#define SMSC_MT2		0x02
+#define SMSC_MT3		0x03
+#define SMSC_MT4		0x04
+#define SMSC_MT5		0x05
+#define SMSC_MT6		0x06
+#define SMSC_MT7		0x07
+#define SMSC_MGMT		0x08
+#define SMSC_REV		0x0a
+#define SMSC_ERCV		0x0c
+
+/*
+ *		The SMSC_CONV(X) builds the register address
+ *		insuring that A4 === ~A0.  This is because of
+ *		the way that even and odd addressing is handled
+ *		on this chip.
+ *
+ */
+
+#define SMSC_CONV(X)			((X|(((X&0x01)^0x01)<<4))&0x1f)
+
+
+
+/*** EndHeader */
+
+// Pointer to this is stored in IFTEntry.ncd field - basically, pointers to specific driver functions.
+#if PLD_ETH_COMPILING || USE_ETH_PRELOADED_DRIVER
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+#asm xmem
+_SMSCController::
+	dw		sizeof(_SMSCConfig)
+   dw		NCD_POLL
+   db		6
+   dw		USING_SMSC
+   dw		0x0000
+   dw		0x0000
+	dw		0x0000
+	dw		0x0000
+   dw		0x0000
+#endasm
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+#else
+
+const NetControllerDevice _SMSCController =
+{
+	sizeof(_SMSCConfig)			// sizeof_state
+  ,NCD_POLL							// flags
+  ,6									// sizeof_hwa
+  ,USING_SMSC						// instances
+  ,smsc_receive 					// receive()
+  ,smsc_sendpacket				// sendpacket()
+  ,smsc_ioctl						// ioctl()
+#ifdef PKTDRV_VERBOSE
+  ,smsc_prt_nicreg  				// prtregs()
+#else
+  ,NULL
+#endif
+  ,smsc_ifctl						// ifctl()
+};
+#endif
+
+/*** BeginHeader pd_setup_RCM3400 */
+smsc_internal_func void pd_setup_RCM3400(_SMSCConfig* cfg);
+/*** EndHeader */
+
+#ifndef PORTA_AUX_IO
+#error "PORTA_AUX_IO must be defined at the top of your program to use Ethernet on the RCM3400"
+#endif
+
+/*
+ *		This function intializes the interface for the
+ *		SMSC chip on the RCM3400 module which is hooked
+ *		up as follows:
+ *
+ *		Rabbit			SMSC
+ *		------			------
+ *		PB2(A0)	->		BE0
+ *		~PB2(A0)	->		BE1
+ *		PB3(A1)	->		A1
+ *		PB4(A2)	->		A2
+ *		PB5(A3)	->		A3
+ *
+ *		PA0(D0)	<->	D0,D8
+ *		PA1(D1)	<->	D1,D9
+ *		PA2(D2)	<->	D2,D10
+ *		PA3(D3)	<->	D3,D11
+ *		PA4(D4)	<->	D4,D12
+ *		PA5(D5)	<->	D5,D13
+ *		PA6(D6)	<->	D6,D14
+ *		PA7(D7)	<->	D7,D15
+ *
+ *		PE2		->		AEN	(I/O address in 0x4000 range)
+ *		IORD		->		IORD
+ *		IOWR		->		IOWR
+ *
+ *		PG1		->		RESET
+ *
+ *		Note how the address lines are connected.  In
+ *		8-bit mode the SMSC chip requires that BE0 and
+ *		BE1 be opposite of each other.  The data gets
+ *		sent on either the high or low part of the
+ *		address.  Since we have the data busses tied
+ *		together, there could be a bus fight if we
+ *		we enabled both values.
+ *
+ *		PE2 is set up as a chip select.
+ *
+ */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+_pktdrv_debug
+smsc_internal_func nouseix void pd_setup_RCM3400(_SMSCConfig* cfg)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = cfg->pld_rscblock;
+#endif
+#asm _pktdrv_debug
+
+#if PLD_ETH_COMPILING == 1
+		; setup ix to point at the base of the shadow register array
+      ld    hl,(sp+@sp+res_block)
+      ld    de,[res_block]+shadows
+      add   hl,de
+      ld    hl,(hl)
+      ld    ix,hl
+#endif
+
+		ld		iy,(sp+@SP+cfg)
+
+		;
+		; Set up the chip select
+		;
+
+#if PLD_ETH_COMPILING == 1
+      ld		hl,(ix+PLD_ETH_PEFRSHADOW_OFS)
+		ld		a,(hl)                     ; clear the 0x4000-0x6000 ioe range
+#else
+		ld		a,(PEFRShadow)					; clear the 0x4000-0x6000 ioe range
+#endif
+		or		a,0x04							; function register
+#if PLD_ETH_COMPILING == 1
+		ld		(hl),a
+#else
+		ld		(PEFRShadow),a
+#endif
+ioi	ld		(PEFR),a
+
+#if PLD_ETH_COMPILING == 1
+	   ld		hl,(ix+PLD_ETH_PEDDRSHADOW_OFS)
+      ld		a,(hl)							; Set PE2 to output
+#else
+		ld		a,(PEDDRShadow)				; Set PE2 to output
+#endif
+		or		a,0x04
+#if PLD_ETH_COMPILING == 1
+		ld		(hl),a
+#else
+		ld		(PEDDRShadow),a
+#endif
+ioi	ld		(PEDDR),a
+
+		ld		a,0xc8							; use the 0x4000-0x6000 ioe range
+#if PLD_ETH_COMPILING == 1
+	   ld		hl,(ix+PLD_ETH_IB2CRSHADOW_OFS)
+      ld		(hl),a                     ; ws=1, chip select, writes allowed
+#else
+		ld		(IB2CRShadow),a				; ws=1, chip select, writes allowed
+#endif
+ioi	ld		(IB2CR),a
+
+		;
+		; Enable the SMSC
+		;
+
+		ld		a,(PGDRShadow)					; put SMSC into reset
+		or		a,0x02
+		ld		(PGDRShadow),a
+ioi	ld		(PGDR),a
+
+		;
+		; Set up the reset line (PG1)
+		;
+#if PLD_ETH_COMPILING == 1
+	   ld		hl,(ix+PLD_ETH_PGDDRSHADOW_OFS)
+      ld		a,(hl)
+#else
+		ld		a,(PGDDRShadow)				; set PG1 as output
+#endif
+		or		a,0x02
+#if PLD_ETH_COMPILING == 1
+	   ld		(hl),a
+#else
+		ld		(PGDDRShadow),a
+#endif
+ioi	ld		(PGDDR),a
+
+		ld		hl,1000							; wait 1000ms
+#if PLD_ETH_COMPILING == 1
+		PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 0)
+#else
+      call	tickwait
+#endif
+
+#if PLD_ETH_COMPILING == 1
+	   ld		hl,(ix+PLD_ETH_PGDRSHADOW_OFS)
+      ld		a,(hl)
+#else
+		ld		a,(PGDRShadow)
+#endif
+		and	a,0xfd
+#if PLD_ETH_COMPILING == 1
+		ld		(hl),a
+#else
+		ld		(PGDRShadow),a
+#endif
+ioi	ld		(PGDR),a
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+
+/*** BeginHeader pd_setup_RCM3300 */
+smsc_internal_func void pd_setup_RCM3300(_SMSCConfig* cfg);
+/*** EndHeader */
+
+/*
+ *		This function intializes the interface for the
+ *		SMSC chip on the Rabbit System Module which
+ *		is hooked up as follows:
+ *
+ *		Rabbit			SMSC
+ *		------			------
+ *		PB2(A0)	->		BE0
+ *		PB3(A1)	->		A1
+ *		PB4(A2)	->		A2
+ *		PB5(A3)	->		A3
+ *		PB6(A4)	->		BE1
+ *
+ *		PA0(D0)	<->	D0,D8
+ *		PA1(D1)	<->	D1,D9
+ *		PA2(D2)	<->	D2,D10
+ *		PA3(D3)	<->	D3,D11
+ *		PA4(D4)	<->	D4,D12
+ *		PA5(D5)	<->	D5,D13
+ *		PA6(D6)	<->	D6,D14
+ *		PA7(D7)	<->	D7,D15
+ *
+ *		PE2		->		AEN	(I/O address in 0x4000 range)
+ *		IORD		->		IORD
+ *		IOWR		->		IOWR
+ *
+ *		Note how the address lines are connected.  In
+ *		8-bit mode the SMSC chip requires that BE0 and
+ *		BE1 be opposite of each other.  The data gets
+ *		sent on either the high or low part of the
+ *		address.  Since we have the data busses tied
+ *		together, there could be a bus fight if we
+ *		we enabled both values.
+ *
+ *		PE2 is set up as a chip select.
+ *
+ */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+_pktdrv_debug
+smsc_internal_func nouseix void pd_setup_RCM3300(_SMSCConfig* cfg)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = cfg->pld_rscblock;
+#endif
+#asm _pktdrv_debug
+
+#if PLD_ETH_COMPILING == 1
+		; setup ix to point at the base of the shadow register array
+      ld    hl,(sp+@sp+res_block)
+      ld    de,[res_block]+shadows
+      add   hl,de
+      ld    hl,(hl)
+      ld    ix,hl
+#endif
+
+		ld		iy,(sp+@SP+cfg)
+
+		;
+		; Set up the chip select
+		;
+
+#if PLD_ETH_COMPILING == 1
+      ld		hl,(ix+PLD_ETH_PEFRSHADOW_OFS)
+		ld		a,(hl)                     ; clear the 0x4000-0x6000 ioe range
+#else
+		ld		a,(PEFRShadow)					; clear the 0x4000-0x6000 ioe range
+#endif
+		or		a,0x04							; function register
+#if PLD_ETH_COMPILING == 1
+		ld		(hl),a
+#else
+		ld		(PEFRShadow),a
+#endif
+ioi	ld		(PEFR),a
+
+#if PLD_ETH_COMPILING == 1
+	   ld		hl,(ix+PLD_ETH_PEDDRSHADOW_OFS)
+      ld		a,(hl)							; Set PE2 to output
+#else
+		ld		a,(PEDDRShadow)				; Set PE2 to output
+#endif
+		or		a,0x04
+#if PLD_ETH_COMPILING == 1
+		ld		(hl),a
+#else
+		ld		(PEDDRShadow),a
+#endif
+ioi	ld		(PEDDR),a
+
+#if ((_BOARD_TYPE_ == RCM3360A) || (_BOARD_TYPE_ == RCM3360B) || \
+     (_BOARD_TYPE_ == RCM3370A))
+		ld		a,0x89							; use the 0x4000-0x6000 ioe range,
+													; ws=3, chip select, writes allowed
+#else
+		ld		a,0xc9							; use the 0x4000-0x6000 ioe range,
+													; ws=1, chip select, writes allowed
+#endif
+
+#if PLD_ETH_COMPILING == 1
+	   ld		hl,(ix+PLD_ETH_IB2CRSHADOW_OFS)
+      ld		(hl),a
+#else
+		ld		(IB2CRShadow),a
+#endif
+ioi	ld		(IB2CR),a
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+
+/*** BeginHeader pd_setup_RCM3800_SMSC */
+smsc_internal_func void pd_setup_RCM3800_SMSC(_SMSCConfig* cfg);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+_pktdrv_debug
+smsc_internal_func nouseix void pd_setup_RCM3800_SMSC(_SMSCConfig* cfg)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = cfg->pld_rscblock;
+#endif
+
+#asm _pktdrv_debug
+
+#if PLD_ETH_COMPILING == 1
+		; setup ix to point at the base of the shadow register array
+      ld    hl,(sp+@sp+res_block)
+      ld    de,[res_block]+shadows
+      add   hl,de
+      ld    hl,(hl)
+      ld    ix,hl
+#endif
+		;
+		; set iobase
+		ld		iy,(sp+@SP+cfg)
+
+		; Set up the chip select
+#if PLD_ETH_COMPILING == 1
+      ld		hl,(ix+PLD_ETH_PEFRSHADOW_OFS)
+		ld		a,(hl)                     ; clear the 0x4000-0x6000 ioe range
+#else
+		ld		a,(PEFRShadow)					; clear the 0x4000-0x6000 ioe range
+#endif
+		or		a,0x04							; function register
+#if PLD_ETH_COMPILING == 1
+		ld		(hl),a
+#else
+		ld		(PEFRShadow),a
+#endif
+ioi	ld		(PEFR),a
+
+#if PLD_ETH_COMPILING == 1
+	   ld		hl,(ix+PLD_ETH_PEDDRSHADOW_OFS)
+      ld		a,(hl)							; Set PE2 to output
+#else
+		ld		a,(PEDDRShadow)				; Set PE2 to output
+#endif
+		or		a,0x04
+#if PLD_ETH_COMPILING == 1
+		ld		(hl),a
+#else
+		ld		(PEDDRShadow),a
+#endif
+ioi	ld		(PEDDR),a
+
+		ld		a,0xc9							; use the 0x4000-0x6000 ioe range,
+#if PLD_ETH_COMPILING == 1
+	   ld		hl,(ix+PLD_ETH_IB2CRSHADOW_OFS)
+      ld		(hl),a                     ; ws=1, chip select, writes allowed
+#else
+		ld		(IB2CRShadow),a				; ws=1, chip select, writes allowed
+#endif
+ioi	ld		(IB2CR),a
+
+		; Enable the SMSC
+#if PLD_ETH_COMPILING == 1
+	   ld		hl,(ix+PLD_ETH_PDDRSHADOW_OFS)
+		ld		a,(hl)
+#else
+		ld		a,(PDDRShadow)					; put SMSC into reset
+#endif
+		or		a,0x01
+#if PLD_ETH_COMPILING == 1
+		ld		(hl),a
+#else
+		ld		(PDDRShadow),a
+#endif
+ioi	ld		(PDDR),a
+
+		; Set up the reset line (PD0)
+#if PLD_ETH_COMPILING == 1
+	   ld		hl,(ix+PLD_ETH_PDDDRSHADOW_OFS)
+		ld		a,(hl)                     ; set PD0 as output
+#else
+		ld		a,(PDDDRShadow)				; set PD0 as output
+#endif
+		or		a,0x01
+#if PLD_ETH_COMPILING == 1
+		ld		(hl),a
+#else
+		ld		(PDDDRShadow),a
+#endif
+ioi	ld		(PDDDR),a
+
+		ld		hl,1000							; wait 1000ms
+#if PLD_ETH_COMPILING == 1
+		PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 0)
+#else
+      call	tickwait
+#endif
+
+#if PLD_ETH_COMPILING == 1
+	   ld		hl,(ix+PLD_ETH_PDDRSHADOW_OFS)
+		ld		a,(hl)                     ; set PD0 as output
+#else
+		ld		a,(PDDRShadow)
+#endif
+		and	a,0xfe
+#if PLD_ETH_COMPILING == 1
+		ld		(hl),a
+#else
+		ld		(PDDRShadow),a
+#endif
+ioi	ld		(PDDR),a
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader smsc_drvinit */
+#if PLD_ETH_COMPILING == 1
+smsc_external_func int smsc_drvinit(pld_eth_rscblk_t* rscblk);
+#endif
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg pld_eth_xcode		resume
+#endif
+
+smsc_external_func int smsc_drvinit(pld_eth_rscblk_t* rscblk)
+{
+#asm
+	; if version field is 0, first time called
+   ld		ix,(sp+@sp+rscblk)
+   ld		hl,(ix+[pld_eth_rscblk_t]+version)
+   bool	hl
+   jr		nz,.smsc_di2nd
+.smsc_di1st:
+	; fill in version field
+	ld		hl,PLD_ETH_SMSC_VER
+   ld		(ix+[pld_eth_rscblk_t]+version),hl
+   ; fill in root memory request
+   ld		de,[pld_eth_rscblk_t]+res
+   add	ix,de
+   ld		a,PLD_RES_TYPE_MEM
+   ld		(ix+[pld_generic_resource]+resrc_id),a
+	bool	hl
+   ld		hl,sizeof(_SMSCConfig) * 2
+   ld    (ix+[pld_generic_resource]+ressize),hl
+	ld		l,h
+   ld    (ix+[pld_generic_resource]+ressize+2),hl
+   ;fill in pointer to NetControllerDevice request
+   ld		de,sizeof(pld_generic_resource)
+   add	ix,de
+   ld		a,PLD_RES_TYPE_ETHCONTROLLER_PTR
+   ld		(ix+[pld_generic_resource]+resrc_id),a
+   jr		.smsc_didone
+
+.smsc_di2nd:
+   ld		b,PLD_MAX_GENERIC_RES							; loop counter, ix=rscblk
+   ld		de,[pld_eth_rscblk_t]+res                ; de = res array offset
+.smsc_dinextres:
+   add	ix,de                                     ; ix = cur offset in res array
+   ld		a,(ix+[pld_generic_resource]+resrc_id)    ; a = resource id
+   cp		PLD_RES_TYPE_ETHCONTROLLER_PTR            ; check for pointer to NetControllerDevice
+   jr		z,.smsc_dihaveptr                          ; jump if correct id
+   ld		de,sizeof(pld_generic_resource)           ; de = size of res entry
+   djnz  .smsc_dinextres                            ; if not done, check next entry
+	jr		.smsc_didone                               ; done - we've looked at all entries
+
+.smsc_dihaveptr:
+   ld		hl,(ix+[pld_generic_resource]+address)
+   ex		de,hl                           		; de = destination address
+   ld		hl,logical_addr(_SMSCController) 	; hl = e000 _SMSCController addr
+   ld		bc,sizeof(NetControllerDevice)      ; bc = number of bytes to copy
+.smsc_dicopyloop:
+	ldi
+   jp		v,.smsc_dicopyloop
+
+.smsc_didone:
+#endasm
+	return 0;
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+
+/*** BeginHeader smsc_writeonetophy, smsc_writezerotophy */
+smsc_internal_func void smsc_writeonetophy();
+smsc_internal_func void smsc_writezerotophy();
+/*** EndHeader */
+
+/*
+ *		The smsc_writeonetophy and smsc_writezerotophy
+ *		routines assume that iy is set to the base I/O
+ *		address of the SMSC chip and the chip has bank
+ *		three selected.
+ *
+ *		There is more information about these routines
+ *		in the comment on smsc_writephy and smsc_readphy.
+ *
+ */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+smsc_internal_func void smsc_writeonetophy()
+{
+#asm
+		ld		a,0x33
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x39
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),a
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x3d
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),a
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x39
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),a
+#endasm
+}
+
+smsc_internal_func void smsc_writezerotophy()
+{
+#asm
+		ld		a,0x33
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x38
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),a
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x3c
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),a
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x38
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),a
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader smsc_writephy */
+smsc_internal_func smsc_writephy(_SMSCConfig* cfg, int phy, int reg, int value);
+/*** EndHeader */
+
+/*
+ *		The PHY on the SMSC chip is communicated with using
+ *		the SMSC_MGMT register which controls the clock and
+ *		data lines on the serial MII interface to the PHY.
+ *
+ *		To write to the PHY we need to toggle the clock low,
+ *		change the data either high or low depending on if
+ *		we want to write a one or zero to the PHY, toggle the
+ *		clock high where the value is read, and toggle the
+ *		the clock low again.
+ *
+ *		The serial MII interface does not care about how
+ *		long the transistions are as long as they are no
+ *		faster than about a half usec.
+ *
+ *		The smsc_writezerotophy and smsc_writeonetophy
+ *		assembly routines handle writing the appropriate
+ *		values to the MGMT register.
+ *
+ *		When writing to the SMSC chip, you write a preamble
+ *		which is a series of clock changes with data of one,
+ *		a start bit, the operation, the physical address,
+ *		the register addresss, and finally the data.
+ *
+ *		11...111				preamble
+ *		01						start bit
+ *		01						write operation, 10 for read operation
+ *		00000					PHY address
+ *		xxxxx					register address
+ *
+ *		z0						turnaround time
+ *
+ *		xxxxxxxxxxxxxxxx	data
+ *
+ *		The turnaround time toggles the MDOE on the first bit
+ *		and writes a zero on the second.
+ *
+ *		More information about the MII interface can be found
+ *		in the LAN91C111/LAN91C113 documentation or in AN-96.
+ *
+ */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+_pktdrv_debug
+smsc_internal_func nouseix smsc_writephy(_SMSCConfig* cfg, int phy, int reg, int value)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = cfg->pld_rscblock;
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_LOCKGLOBAL, 0)
+	#endasm
+#else
+	LOCK_GLOBAL(TCPGlobalLock);
+#endif
+
+#asm _pktdrv_debug
+		ld		hl,(sp+@SP+cfg)
+		ld		hl,(hl+[cfg]+iobase)
+		ld		iy,hl
+
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x03	; bank 3
+
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x39
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+
+		ld		b,32
+_smsc_wp0:
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x39
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x3d
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+		djnz	_smsc_wp0
+
+		smsc_internal_call(smsc_writezerotophy)			; start bit
+		smsc_internal_call(smsc_writeonetophy)
+
+		smsc_internal_call(smsc_writezerotophy)			; write operation
+		smsc_internal_call(smsc_writeonetophy)
+
+		;
+		; physical address
+		;
+
+		ld		hl,(sp+@SP+phy)
+		ld		b,5
+_smsc_wp1:
+		bit	4,l
+		jr		z,_smsc_wp1_0
+		smsc_internal_call(smsc_writeonetophy)
+		jr		_smsc_wp1_1
+_smsc_wp1_0:
+		smsc_internal_call(smsc_writezerotophy)
+_smsc_wp1_1:
+		add	hl,hl
+		djnz	_smsc_wp1
+
+		;
+		; register address
+		;
+
+		ld		hl,(sp+@SP+reg)
+		ld		b,5
+_smsc_wp2:
+		bit	4,l
+		jr		z,_smsc_wp2_0
+		smsc_internal_call(smsc_writeonetophy)
+		jr		_smsc_wp2_1
+_smsc_wp2_0:
+		smsc_internal_call(smsc_writezerotophy)
+_smsc_wp2_1:
+		add	hl,hl
+		djnz	_smsc_wp2
+
+		;
+		; send turnaround bits Z0 for MDIO pin
+		;
+
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x30
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x34
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x30
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+
+		smsc_internal_call(smsc_writezerotophy)
+
+		;
+		; write the data
+		;
+
+		ld		hl,(sp+@SP+value)
+		ld		b,16
+_smsc_wp3:
+		add	hl,hl
+		jr		nc,_smsc_wp3_0
+		smsc_internal_call(smsc_writeonetophy)
+		jr		_smsc_wp3_1
+_smsc_wp3_0:
+		smsc_internal_call(smsc_writezerotophy)
+_smsc_wp3_1:
+		djnz	_smsc_wp3
+#endasm
+
+#if PLD_ETH_COMPILING == 1
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_UNLOCKGLOBAL, 0)
+	#endasm
+#else
+	UNLOCK_GLOBAL(TCPGlobalLock);
+#endif
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+
+/*** BeginHeader smsc_readphy */
+smsc_internal_func int smsc_readphy(_SMSCConfig* cfg, int phy, int reg);
+/*** EndHeader */
+
+/*
+ *		The smsc_readphy function reads from the PHY on the
+ *		SMSC chip.  This function is like the smsc_writephy
+ *		function, but instead of a write operation we do a
+ *		read operation and we are reading the data instead
+ *		of writing it.
+ *
+ *		This routine reads the data after lowering the clock.
+ *
+ *		More information about the MII interface can be found
+ *		in the LAN91C111/LAN91C113 documentation or in AN-96.
+ *
+ */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+_pktdrv_debug
+smsc_internal_func nouseix int smsc_readphy(_SMSCConfig* cfg, int phy, int reg)
+{
+	auto int rval;
+
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = cfg->pld_rscblock;
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_LOCKGLOBAL, 0)
+	#endasm
+#else
+	LOCK_GLOBAL(TCPGlobalLock);
+#endif
+
+#asm _pktdrv_debug
+		ld		hl,(sp+@SP+cfg)
+		ld		hl,(hl+[cfg]+iobase)
+		ld		iy,hl
+
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x03	; bank 3
+
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x39
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+
+		ld		b,32
+_smsc_rp0:
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x39
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x3d
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+		djnz	_smsc_rp0
+
+		smsc_internal_call(smsc_writezerotophy)			; start bit
+		smsc_internal_call(smsc_writeonetophy)
+
+		smsc_internal_call(smsc_writeonetophy)			; read operation
+		smsc_internal_call(smsc_writezerotophy)
+
+		;
+		; physical address
+		;
+
+		ld		hl,(sp+@SP+phy)
+		ld		b,5
+_smsc_rp1:
+		bit	4,l
+		jr		z,_smsc_rp1_0
+		smsc_internal_call(smsc_writeonetophy)
+		jr		_smsc_rp1_1
+_smsc_rp1_0:
+		smsc_internal_call(smsc_writezerotophy)
+_smsc_rp1_1:
+		add	hl,hl
+		djnz	_smsc_rp1
+
+		;
+		; register address
+		;
+
+		ld		hl,(sp+@SP+reg)
+		ld		b,5
+_smsc_rp2:
+		bit	4,l
+		jr		z,_smsc_rp2_0
+		smsc_internal_call(smsc_writeonetophy)
+		jr		_smsc_rp2_1
+_smsc_rp2_0:
+		smsc_internal_call(smsc_writezerotophy)
+_smsc_rp2_1:
+		add	hl,hl
+		djnz	_smsc_rp2
+
+		;
+		; send turnaround bits Z0 for MDIO pin
+		;
+
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x30
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x34
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x30
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+
+		smsc_internal_call(smsc_writezerotophy)
+
+		;
+		; read the data
+		;
+
+		bool	hl
+		ld		l,h
+		ld		b,16
+_smsc_rp3:
+		adc	hl,hl
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x30
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+
+ioe	ld		a,(iy+SMSC_CONV(SMSC_MGMT))
+		and	a,0x02
+
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x34
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT)),0x30
+ioe	ld		(iy+SMSC_CONV(SMSC_MGMT+1)),0x33
+
+		jr		z,_smsc_rp3_0
+		ccf
+_smsc_rp3_0:
+		djnz	_smsc_rp3
+
+		adc	hl,hl
+      ld		(sp+@SP+rval),hl
+#endasm
+
+#if PLD_ETH_COMPILING == 1
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_UNLOCKGLOBAL, 0)
+	#endasm
+#else
+	UNLOCK_GLOBAL(TCPGlobalLock);
+#endif
+
+   return rval;
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader smsc_initreg */
+smsc_internal_func int smsc_initreg(_SMSCConfig* cfg);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+_pktdrv_debug
+smsc_internal_func nouseix int smsc_initreg(_SMSCConfig* cfg)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = cfg->pld_rscblock;
+#endif
+
+#asm _pktdrv_debug
+		push	ix
+		ld		ix,(sp+@SP+cfg+2)
+		ld		hl,(ix+[cfg]+iobase)
+		ld		iy,hl
+
+		;
+		; software reset
+		;
+
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x00	; bank 0
+ioe	ld		(iy+SMSC_CONV(SMSC_RCR+1)),0x80	; reset
+
+		push	ix
+		ld		hl,50
+		push	hl
+#if PLD_ETH_COMPILING == 1
+		PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 6)
+#else
+      call	tickwait
+#endif
+		add	sp,2
+      pop	ix
+
+		;
+		; bring out of reset, disable tx and rx
+		;
+
+ioe	ld		(iy+SMSC_CONV(SMSC_RCR+1)),0x00	; bring out of reset RX disabled
+ioe	ld		(iy+SMSC_CONV(SMSC_TCR)),0x00		; TX disabled
+
+		;
+		; set MAC address in Chip and EthAddress1
+		;
+		push	ix
+
+#if PLD_ETH_COMPILING == 1
+		ld		hl,ix
+   	ld		de,[cfg]+hwa
+	   add	hl,de
+		push	hl
+   	PLD_IMPORT_CALL(res_block, PLD_ETH_GETMACADDR, 6)
+   	add	sp,2
+#else
+;c    memcpy(cfg->hwa,SysIDBlock.macAddr,sizeof(SysIDBlock.macAddr));
+		ld		hl,sizeof(SysIDBlock.macAddr)
+      push	hl
+      ld		hl,SysIDBlock
+      ld		de,[SysIDBlock]+macAddr
+      add	hl,de
+      push	hl
+		ld		hl,(sp+@sp+cfg+8)
+      ld		de,[cfg]+hwa
+      add	hl,de
+      push	hl
+      call	memcpy
+      add	sp,6
+#endif
+      pop	ix
+		xor	a
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x01	; bank 1
+
+		ld		hl,(ix+[cfg]+hwa)
+		or		h
+		or		l
+ioe	ld		(iy+SMSC_CONV(SMSC_IA0)),l
+ioe	ld		(iy+SMSC_CONV(SMSC_IA1)),h
+		ld		hl,(ix+[cfg]+hwa+2)
+		or		h
+		or		l
+ioe	ld		(iy+SMSC_CONV(SMSC_IA2)),l
+ioe	ld		(iy+SMSC_CONV(SMSC_IA3)),h
+		ld		hl,(ix+[cfg]+hwa+4)
+		or		h
+		or		l
+ioe	ld		(iy+SMSC_CONV(SMSC_IA4)),l
+ioe	ld		(iy+SMSC_CONV(SMSC_IA5)),h
+
+		or		a									; MAC Address all 0's error?
+		jr		nz,_smsc_ir0
+#if PLD_ETH_COMPILING == 1
+		ld		hl,-ERR_INVALIDMACADDR
+		push	hl
+		PLD_IMPORT_CALL(res_block, PLD_ETH_EXCEPTION, 4)
+		add	sp,2
+#else
+c		exception(-ERR_INVALIDMACADDR);
+#endif
+		jr		_smsc_irdone
+
+		;
+		; enable the transmitter
+		;
+
+_smsc_ir0:
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x00	; bank 0
+ioe	ld		(iy+SMSC_CONV(SMSC_RCR+1)),0x01	; enable rx
+ioe	ld		(iy+SMSC_CONV(SMSC_RCR)),0x00
+ioe	ld		(iy+SMSC_CONV(SMSC_TCR)),0x01		; enable tx
+
+		;
+		; reset MMU
+		;
+
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x02	; bank 2
+ioe	ld		(iy+SMSC_CONV(SMSC_MMU)),0x40		; mmu reset
+
+		;
+		; reserve a packet for transmissions
+		; tx packet always:  0
+		;
+
+ioe	ld		(iy+SMSC_CONV(SMSC_MMU)),0x20		; mmu allocate
+smsc_ir1:
+ioe	ld		a,(iy+SMSC_CONV(SMSC_INT))
+		bit	3,a
+		jr		z,smsc_ir1
+
+ioe	ld		(iy+SMSC_CONV(SMSC_INT)),0x00
+ioe	ld		(iy+SMSC_CONV(SMSC_INT+1)),0x00
+
+		ld		hl,50
+#if PLD_ETH_COMPILING == 1
+		push	ix
+		PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 4)
+      pop	ix
+#else
+      call	tickwait
+#endif
+
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x00	; bank 0
+ioe	ld		(iy+SMSC_CONV(SMSC_RPCR)),0x80	; setup LEDs
+ioe	ld		(iy+SMSC_CONV(SMSC_RPCR+1)),0x08	; auto negotiate
+
+		;
+		; enable the PHY
+		;
+
+		ld		hl,0x1000
+		push	hl
+		ld		hl,0x0000
+		push	hl
+		push	hl
+		push	ix
+		smsc_internal_call(smsc_writephy)
+		add	sp,8
+
+_smsc_irdone:
+		pop	ix
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader smsc_sendpacket */
+smsc_external_func int smsc_sendpacket(_SMSCConfig * nic, ll_Gather * packet);
+/*** EndHeader */
+
+/*
+ *		In the initial setup for the SMSC chip we did not
+ *		turn on the autoreleasing of transmit buffers.
+ *		This is important because we want to always have a
+ *		buffer reserved for transmissions.  Since we always
+ *		allocate this buffer after an MMU resetwith the PHY
+ *		disabled we assume that the bufferis going to be the
+ *		first internal buffer.
+ *
+ *		When we go to transmit a packet we wait for the
+ *		current packet to finish and then copy this packet
+ *		to the interface.  At 10Mbits, this could cause
+ *		this routine to block for about 1.5ms though it is
+ *		only 150us at 100Mbits.
+ *
+ *		After the buffer is free we copy the data to the
+ *		buffer and start it sending.
+ *
+ */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+_pktdrv_debug
+smsc_external_func nouseix int smsc_sendpacket(_SMSCConfig * nic, ll_Gather * packet)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = nic->pld_rscblock;
+#endif
+
+#asm _pktdrv_debug
+		push	ix
+      ld		ix,(sp+@sp+nic+2)
+      ld		hl,(ix+[nic]+iobase)
+		ld		iy,hl
+
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x02	; bank 2
+
+		;
+		; wait for the tx buffer to free up.
+		;
+
+pds_txpending:
+ioe	ld		a,(iy+SMSC_CONV(SMSC_INT))
+		and	0x04
+		jr		z,pds_txpending
+
+ioe	ld		(iy+SMSC_CONV(SMSC_PNR)),0x00
+ioe	ld		(iy+SMSC_CONV(SMSC_PTR)),0x00
+ioe	ld		(iy+SMSC_CONV(SMSC_PTR+1)),0x40
+
+		;
+		; gather/prepare packet
+		;
+
+		ld		hl,(sp+@SP+packet+2)
+
+pds_gatherpacket:
+		push	ix
+		ld		ix,hl
+		ld		hl,(ix+[_llg_]+len1)						; ll_Gather.len1
+		ex		de,hl
+		ld		hl,(ix+[_llg_]+len2)						; ll_Gather.len2
+		add	hl,de
+		ex		de,hl
+		ld		hl,(ix+[_llg_]+len3)						; ll_Gather.len3
+		add	hl,de
+		ld		b,h
+		ld		c,l								; BC = total gathered length
+		ld		hl,ETH_MIN-1
+		or		a
+		sbc	hl,bc
+		jr		c,pds_glenok
+		; Total length too small.  Adjust len3 to compensate (will transmit rubbish at end, but doesn't matter)
+		inc	hl
+		ex		de,hl
+		ld		hl,(ix+[_llg_]+len3)			; ll_Gather.len3
+		add	hl,de
+		ld		(ix+[_llg_]+len3),hl			; ll_Gather.len3 updated to make total length correct
+		ld		bc,ETH_MIN						; adjust to minimum length of 60
+pds_glenok:
+		ld		hl,ix
+		pop	ix
+
+pds_getpacket:
+		ex		de,hl								; DE = ll_Gather
+
+		;
+		; status word
+		;
+
+ioe	ld		(iy+SMSC_CONV(SMSC_DATA0)),0x00
+ioe	ld		(iy+SMSC_CONV(SMSC_DATA0+1)),0x00
+
+		;
+		; length
+		;
+
+		bool	hl
+		ld		l,0x06
+		add	hl,bc
+
+ioe	ld		(iy+SMSC_CONV(SMSC_DATA0)),l
+ioe	ld		(iy+SMSC_CONV(SMSC_DATA0+1)),h
+
+		push	bc
+
+pds_gather:
+		ld		hl,iy								; Save I/O base
+		push	hl
+		push	ix
+		ld		l,0+SMSC_CONV(SMSC_DATA0)
+		ex		de,hl
+		ld		ix,hl
+		; IX points to ll_Gather struct
+		; DE = NIC data port address
+		ld		hl,(ix+[_llg_]+len1)						; ll_Gather.len1
+		ld		b,h
+		ld		c,l
+		bool	hl
+		jr		z,pds_sect2
+		ld		hl,(ix+[_llg_]+data1)					; ll_Gather.data1 (logical addr)
+		; HL = source data address
+		; BC = length of 1st section
+		; DE = NIC data port address
+#if PLD_ETH_COMPILING == 1
+		push	ix
+		PLD_IMPORT_CALL(res_block, PLD_ETH_XMEM_MVC_MEM2IOE, 10)
+      pop	ix
+#else
+      _XMEM_MVC_MEM2IOE						; Lcall the root stub to do the move
+#endif
+
+pds_sect2:
+		ld		hl,(ix+[_llg_]+len2)						; ll_Gather.len2
+		ld		b,h
+		ld		c,l
+		bool	hl
+		jr		z,pds_sect3
+		ld		hl,(ix+[_llg_]+data2)						; ll_Gather.data2 (16 LSBs of paddr)
+		ld		a,(ix+[_llg_]+data2+2)						; ll_Gather.data2 (8 MSBs of paddr)
+		_LIN2SEG									; A/HL is now segmented address
+#if PLD_ETH_COMPILING == 1
+		push	ix
+		PLD_IMPORT_CALL(res_block, PLD_ETH_XMEM_MVC_MEM2IOE, 10)
+      pop	ix
+#else
+      _XMEM_MVC_MEM2IOE						; Lcall the root stub to do the move
+#endif
+
+pds_sect3:
+		ld		hl,(ix+[_llg_]+len3)						; ll_Gather.len3
+		ld		b,h
+		ld		c,l
+		bool	hl
+		jr		z,pds_sect3_end
+		ld		hl,(ix+[_llg_]+data3)						; ll_Gather.data3 (16 LSBs of paddr)
+		ld		a,(ix+[_llg_]+data3+2)						; ll_Gather.data3 (8 MSBs of paddr)
+		_LIN2SEG									; A/HL is now segmented address
+#if PLD_ETH_COMPILING == 1
+		push	ix
+		PLD_IMPORT_CALL(res_block, PLD_ETH_XMEM_MVC_MEM2IOE, 10)
+      pop	ix
+#else
+      _XMEM_MVC_MEM2IOE						; Lcall the root stub to do the move
+#endif
+
+pds_sect3_end:
+		pop	ix									; restore I/O bases
+		pop	iy
+
+pds_endgather:
+		pop	bc									; restore count
+
+		;
+		; write out pad if odd then write
+		; out status byte
+		;
+
+		bit	0,c
+		ld		a,0x30
+		jr		nz,pds_nopad
+ioe	ld		(iy+SMSC_CONV(SMSC_DATA0)),0x00
+		ld		a,0x10
+pds_nopad:
+ioe	ld		(iy+SMSC_CONV(SMSC_DATA0)),a
+
+		;
+		; start the transmission
+		;
+
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x00	; bank 0
+ioe	ld		(iy+SMSC_CONV(SMSC_TCR)),0x01
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x02	; bank 2
+ioe	ld		(iy+SMSC_CONV(SMSC_MMU)),0xc0
+
+		bool	hl									; return 0
+		ld		l,h
+      pop	ix
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader smsc_receive */
+smsc_external_func int smsc_receive(_SMSCConfig * nic);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+_pktdrv_debug
+smsc_external_func nouseix int smsc_receive(_SMSCConfig * nic)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = nic->pld_rscblock;
+#endif
+
+	;
+#asm _pktdrv_debug
+		push	ix
+      ld		ix,(sp+@sp+nic+2)
+      ld		hl,(ix+[nic]+iobase)
+		ld		iy,hl
+
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x02	; bank 2
+
+		;
+		; anything to do?
+		;
+
+ioe	ld		a,(iy+SMSC_CONV(SMSC_INT))	; check for any pending packets
+		bit	0,a
+		ld		hl,0x0001
+		jp		z,pdr_done
+
+		;
+		; start read
+		;
+
+ioe	ld		(iy+SMSC_CONV(SMSC_PTR)),0x00
+ioe	ld		(iy+SMSC_CONV(SMSC_PTR+1)),0xe0
+
+		;
+		; get the DMA header (status and length)
+		;
+
+ioe	ld		a,(iy+SMSC_CONV(SMSC_DATA0))
+ioe	ld		a,(iy+SMSC_CONV(SMSC_DATA0))
+ioe	ld		c,(iy+SMSC_CONV(SMSC_DATA0))
+
+ioe	ld		b,(iy+SMSC_CONV(SMSC_DATA0))
+
+		cp		a,0xac
+		jp		z,pdr_overrun
+
+		dec	bc									; subtract out header
+		dec	bc
+		dec	bc
+		dec	bc
+		dec	bc
+		dec	bc
+
+		ld		hl,0+ETH_BUFSIZE
+		or		a
+		sbc	hl,bc
+		jp		c,pdr_tosspacket
+
+pdr_allocpacket:
+		push	ix
+      push	iy					; Save I/O base
+		push	bc									; save length
+      ld		de,1								; Indicate MUST obtain all xmem buffers (else error)
+#if PLD_ETH_COMPILING == 1
+		PLD_IMPORT_CALL(res_block, PLD_ETH_PB_RESERVE, 8)
+#else
+		lcall	_pb_reserve						; allocate a buffer (ll_prefix) to get pkt in
+#endif
+
+      pop	bc
+		jr		c,pdr_nobuf					; save the pkt for another time if no buffers
+
+		push	bc									; save length
+
+pdr_readpacket:
+		; If length is odd, round up to read the next byte as well (SMSC likes 16-bit reads)
+      inc	bc
+      ld		a,c
+      and	0xFE
+      ld		c,a
+      inc	bc				; ...then do one more read for good luck
+		ld		hl,(sp+2)						; Get I/O source address (pushed before _pb_reserve call)
+		ld		l,0+SMSC_CONV(SMSC_DATA0)
+
+#if PLD_ETH_COMPILING == 1
+		PLD_IMPORT_CALL(res_block, PLD_ETH_PB_IOE2BUF, 8)
+#else
+      lcall _pb_ioe2buf						; Copy BC bytes from ioe(HL) to xmem buffers
+#endif
+
+		pop	bc									; retrieve length
+
+		ld		hl,(sp+2)
+      ld		hl,(hl+[nic]+iface-1)		; Load interface number into H (not L, hence the -1)
+      ld		l,LL_READY					 	; Interface number in H, flags in L
+		ld		e,14								; Length of link-layer (ethernet) header
+#if PLD_ETH_COMPILING == 1
+		PLD_IMPORT_CALL(res_block, PLD_ETH_PB_FINISH, 6)
+#else
+      lcall	_pb_finish						; finish up the pkt (set interface number)
+#endif
+
+      pop	iy
+      pop	ix
+
+      ld		hl,(ix+[nic]+pd_received)
+      inc	hl
+      ld		(ix+[nic]+pd_received),hl
+
+		;
+		; free receive buffer
+		;
+
+ioe	ld		(iy+SMSC_CONV(SMSC_INT)),0x11
+ioe	ld		(iy+SMSC_CONV(SMSC_MMU)),0x80
+
+		bool	hl
+		ld		l,h
+		jp		pdr_done
+
+pdr_overrun:
+      ld		hl,(ix+[nic]+pd_overruns)
+      inc	hl
+      ld		(ix+[nic]+pd_overruns),hl
+      jr		pdr_tosspacket
+
+pdr_nobuf:
+		pop	iy
+      pop	ix
+      ld		hl,(ix+[nic]+pd_nobufs)
+      inc	hl
+      ld		(ix+[nic]+pd_nobufs),hl
+
+pdr_tosspacket:
+ioe	ld		(iy+SMSC_CONV(SMSC_INT)),0x01
+ioe	ld		(iy+SMSC_CONV(SMSC_MMU)),0x80
+		ld		hl,0x0001
+pdr_done:
+		pop	ix
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader smsc_resetinterface */
+smsc_internal_func int smsc_resetinterface(_SMSCConfig * smsc, word instance, int iface);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING || USE_ETH_PRELOADED_DRIVER
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+#asm xmem
+_smsc_config::
+	dw		logical_addr(_SMSCController)		// ncd
+   dw		0x0000                           // pld resource block
+	dw		0x0000                           // iface (this gets overwritten)
+	dw		SMSC_IOBASE                      // I/O base address (read and write)
+	db		SMSC_RESPORT                     // reset_port
+	dw		SMSC_RESSHAD                     // reset_port_shadow
+	db		SMSC_RESMASK                     // reset_mask
+	db		0,0,0,0,0,0                      // hwa (gets overwritten)
+	dw		SMSC_INIT_FLAGS                  // flags
+	dw  	logical_addr(SMSC_INIT_FUNC)		// io_init()
+   dw		0,0,0,0,0                        // last 10 bytes of config struct
+#endasm
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+#else
+
+static const _SMSCConfig _smsc_config[USING_SMSC] =
+{
+	{
+	   &_SMSCController        	// ncd
+	  ,0                          // iface
+	  ,SMSC_IOBASE                // I/O base address (read and write)
+	  ,SMSC_RESPORT               // reset_port
+	  ,&SMSC_RESSHAD              // reset_port_shadow
+	  ,SMSC_RESMASK               // reset_mask
+	  ,{ 0, }                     // hwa
+	  ,SMSC_INIT_FLAGS            // flags
+	  ,SMSC_INIT_FUNC             // io_init()
+	}
+};
+#endif
+
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+_pktdrv_debug
+smsc_internal_func nouseix int smsc_resetinterface(_SMSCConfig * smsc, word instance, int ifc)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = smsc->pld_rscblock;
+#endif
+
+#asm
+   //if (instance >= USING_SMSC)
+   //	return -6;	// No such instance
+	xor	a
+   ld		hl,(sp+@sp+instance)
+   ld		de,USING_SMSC
+   sbc   hl,de
+   jr		c,.smsc_instanceok
+	ld		hl,-6
+   jp 	.doreturn
+.smsc_instanceok:
+
+#if PLD_ETH_COMPILING == 1
+   ld		hl,sizeof(_SMSCConfig)
+
+	ex		de,hl                           ; de = sizeof(_RealTekConfig)
+   ld		hl,(sp+@sp+instance+2)          ; hl = instance
+   ld		b,h
+   ld		c,l                             ; bc = instance
+   mul                                   ; bc = instance * sizeof(_SMSCConfig)
+   ld		hl,logical_addr(_smsc_config)   ; hl = _smsc_config
+   ex		de,hl									  ; de = _smsc_config
+   ld		h,b
+   ld		l,c                             ; hl = instance * sizeof(_SMSCConfig)
+   add	hl,de                           ; hl = _SMSCConfig instance
+
+   ex		de,hl
+   ld		hl,(sp+@sp+smsc)
+   ex		de,hl
+   ld		bc,sizeof(_SMSCConfig)
+.smsc_ricopyloop:
+	ldi
+   jp		v,.smsc_ricopyloop
+#else
+	;memcpy(smsc, _smsc_config + instance, sizeof(*smsc));
+   ld		hl,sizeof(_SMSCConfig)
+   push	hl
+
+	ex		de,hl                           ; de = sizeof(_SMSCConfig)
+   ld		hl,(sp+@sp+instance+2)          ; hl = instance
+   ld		b,h
+   ld		c,l                             ; bc = instance
+   mul                                   ; bc = instance * sizeof(_SMSCConfig)
+   ld		hl,_smsc_config                 ; hl = _smsc_config
+   ex		de,hl									  ; de = _smsc_config
+   ld		h,b
+   ld		l,c                             ; hl = instance * sizeof(_SMSCConfig)
+   add	hl,de                           ; hl = _SMSCConfig instance
+   push	hl
+
+	ld		hl,(sp+@sp+smsc+4)
+   push	hl
+   call	memcpy
+   add	sp,6
+#endif
+
+#if PLD_ETH_COMPILING == 1
+c	smsc->pld_rscblock = res_block;
+#endif
+
+;   smsc->iface = iface;
+   ld		hl,(sp+@sp+smsc)
+   ld		de,[_SMSCConfig]+iface
+   add	hl,de
+   ld		ix,hl
+   ld		hl,(sp+@sp+ifc)
+   ld		(ix),hl
+
+	/*
+	 * Setup the peripheral IO interface, and fill in the reset of the _SMSCConfig struct
+	 */
+	;if (smsc->io_init)
+	;	smsc->io_init(smsc);
+	ld		hl,(sp+@sp+smsc)
+   ld		de,[_SMSCConfig]+io_init
+   add	hl,de
+   ld		hl,(hl)
+
+   ld		a,h
+   or		l
+   jr		z,.io_init_notset
+	ex		de,hl
+   ld		hl,(sp+@sp+smsc)
+   push	hl
+   ld		hl,.io_init_ret
+   push	hl
+   ex		de,hl
+   jp		(hl)
+.io_init_ret:
+	add	sp,2
+.io_init_notset:
+
+	;smsc_initreg(smsc);
+	ld		hl,(sp+@sp+smsc)
+   push	hl
+   smsc_internal_call(smsc_initreg)
+   add	sp,2
+   bool	hl
+   ld		l,h
+.doreturn:
+#endasm
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader smsc_prt_readreg */
+smsc_internal_func void smsc_prt_readreg(_SMSCConfig * cfg, void* buf);
+
+typedef struct
+{
+	char bank[5][15];
+   int bank0;
+   int bank1;
+   unsigned int MIICtrl;
+   unsigned int MIIStatus;
+   unsigned int MIIPhyid1;
+   unsigned int MIIPhyid2;
+   unsigned int MIIAutoNegAdvert;
+   unsigned int MIIAutoNegRemote;
+   unsigned int Config1;
+   unsigned int Config2;
+   unsigned int Status;
+   unsigned int Mask;
+} SMSCRegs;
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+smsc_internal_func
+void smsc_prt_readreg(_SMSCConfig * cfg, void* buf)
+{
+	SMSCRegs * regs;
+	int iobase;
+  	int x,y;
+
+   regs = (SMSCRegs*)buf;
+
+#if 0
+	iobase=cfg->iobase;
+ 	LOCK_GLOBAL(TCPGlobalLock);
+
+	regs->bank0=RdPortE(iobase+SMSC_CONV(0x0e));
+	regs->bank1=RdPortE(iobase+SMSC_CONV(0x0f));
+
+	for(x=0;x<4;x++) {
+		WrPortE(iobase+SMSC_CONV(0xe),NULL,x);
+		for(y=0;y<15;y++) {
+			regs->bank[x][y]=RdPortE(iobase+SMSC_CONV(y));
+		}
+	}
+
+	WrPortE(iobase+SMSC_CONV(0xe),NULL,7);
+	for(y=0;y<15;y++) {
+		tickwait(50);
+		regs->bank[4][y]=RdPortE(iobase+SMSC_CONV(y));
+	}
+
+
+#asm
+	;regs->MIICtrl = smsc_readphy(cfg,0,0);
+	bool	hl
+   ld		l,h
+   push	hl
+   push	hl
+   ld		hl,(sp+@sp+cfg+4)
+   push	hl
+   smsc_internal_call(smsc_readphy)
+   add	sp,6
+	ld		ix,(sp+@sp+regs)
+   ld		(ix+[SMSCRegs]+MIICtrl),hl
+
+   ;regs->MIIStatus = smsc_readphy(cfg,0,1);
+	ld		hl,0x0001
+   push	hl
+	bool	hl
+   ld		l,h
+   push	hl
+   ld		hl,(sp+@sp+cfg+4)
+   push	hl
+   smsc_internal_call(smsc_readphy)
+   add	sp,6
+	ld		ix,(sp+@sp+regs)
+   ld		(ix+[SMSCRegs]+MIIStatus),hl
+   ;regs->MIIPhyid1 = smsc_readphy(cfg,0,2);
+	ld		hl,0x0002
+   push	hl
+	bool	hl
+   ld		l,h
+   push	hl
+   ld		hl,(sp+@sp+cfg+4)
+   push	hl
+   smsc_internal_call(smsc_readphy)
+   add	sp,6
+	ld		ix,(sp+@sp+regs)
+   ld		(ix+[SMSCRegs]+MIIPhyid1),hl
+   ;regs->MIIPhyid2 = smsc_readphy(cfg,0,3);
+	ld		hl,0x0003
+   push	hl
+	bool	hl
+   ld		l,h
+   push	hl
+   ld		hl,(sp+@sp+cfg+4)
+   push	hl
+   smsc_internal_call(smsc_readphy)
+   add	sp,6
+	ld		ix,(sp+@sp+regs)
+   ld		(ix+[SMSCRegs]+MIIPhyid2),hl
+   ;regs->MIIAutoNegAdvert = smsc_readphy(cfg,0,4);
+	ld		hl,0x0004
+   push	hl
+	bool	hl
+   ld		l,h
+   push	hl
+   ld		hl,(sp+@sp+cfg+4)
+   push	hl
+   smsc_internal_call(smsc_readphy)
+   add	sp,6
+	ld		ix,(sp+@sp+regs)
+   ld		(ix+[SMSCRegs]+MIIAutoNegAdvert),hl
+   ;regs->MIIAutoNegRemote = smsc_readphy(cfg,0,5);
+	ld		hl,0x0005
+   push	hl
+	bool	hl
+   ld		l,h
+   push	hl
+   ld		hl,(sp+@sp+cfg+4)
+   push	hl
+   smsc_internal_call(smsc_readphy)
+   add	sp,6
+	ld		ix,(sp+@sp+regs)
+   ld		(ix+[SMSCRegs]+MIIAutoNegRemote),hl
+   ;regs->Config1 = smsc_readphy(cfg,0,16);
+	ld		hl,0x0010
+   push	hl
+	bool	hl
+   ld		l,h
+   push	hl
+   ld		hl,(sp+@sp+cfg+4)
+   push	hl
+   smsc_internal_call(smsc_readphy)
+   add	sp,6
+	ld		ix,(sp+@sp+regs)
+   ld		(ix+[SMSCRegs]+Config1),hl
+   ;regs->Config2 = smsc_readphy(cfg,0,17);
+	ld		hl,0x0011
+   push	hl
+	bool	hl
+   ld		l,h
+   push	hl
+   ld		hl,(sp+@sp+cfg+4)
+   push	hl
+   smsc_internal_call(smsc_readphy)
+   add	sp,6
+	ld		ix,(sp+@sp+regs)
+   ld		(ix+[SMSCRegs]+Config2),hl
+   ;regs->Status = smsc_readphy(cfg,0,18);
+	ld		hl,0x0012
+   push	hl
+	bool	hl
+   ld		l,h
+   push	hl
+   ld		hl,(sp+@sp+cfg+4)
+   push	hl
+   smsc_internal_call(smsc_readphy)
+   add	sp,6
+	ld		ix,(sp+@sp+regs)
+   ld		(ix+[SMSCRegs]+Status),hl
+   ;regs->Mask = smsc_readphy(cfg,0,19);
+	ld		hl,0x0013
+   push	hl
+	bool	hl
+   ld		l,h
+   push	hl
+   ld		hl,(sp+@sp+cfg+4)
+   push	hl
+   smsc_internal_call(smsc_readphy)
+   add	sp,6
+	ld		ix,(sp+@sp+regs)
+   ld		(ix+[SMSCRegs]+Mask),hl
+#endasm
+
+	WrPortE(iobase+SMSC_CONV(0x0e),NULL,regs->bank0);
+
+	UNLOCK_GLOBAL(TCPGlobalLock);
+#endif
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader smsc_prt_nicreg */
+smsc_internal_func void smsc_prt_nicreg(_SMSCConfig * nic);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+#ifdef PKTDRV_VERBOSE
+_pktdrv_debug
+smsc_internal_func nouseix void smsc_prtnicreg(_SMSCConfig* cfg)
+{
+	int x,y;
+	char bank[5][15];
+	int bank0,bank1;
+	int iobase;
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+#endif
+
+	iobase=cfg->iobase;
+
+#if PLD_ETH_COMPILING == 1
+   res_block = cfg->pld_rscblock;
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_LOCKGLOBAL, 0)
+	#endasm
+#else
+	LOCK_GLOBAL(TCPGlobalLock);
+#endif
+
+	bank0=RdPortE(iobase+SMSC_CONV(0x0e));
+	bank1=RdPortE(iobase+SMSC_CONV(0x0f));
+
+	for(x=0;x<4;x++) {
+		WrPortE(iobase+SMSC_CONV(0xe),NULL,x);
+		for(y=0;y<15;y++) {
+			bank[x][y]=RdPortE(iobase+SMSC_CONV(y));
+		}
+	}
+
+	WrPortE(iobase+SMSC_CONV(0xe),NULL,7);
+	for(y=0;y<15;y++) {
+		tickwait(50);
+		bank[4][y]=RdPortE(iobase+SMSC_CONV(y));
+	}
+
+	printf("TCR=%02x%02x\tCFG=%02x%02x\tMMU=%02x%02x\tMT0-1=%02x%02x\t%02x%02x\n",
+		bank[0][1],bank[0][0],
+		bank[1][1],bank[1][0],
+		bank[2][1],bank[2][0],
+		bank[3][1],bank[3][0],
+		bank[4][1],bank[4][0]);
+
+	printf("EPH=%02x%02x\tBASE=%02x%02x\tPNR=%02x%02x\tMT2-3=%02x%02x\t%02x%02x\n",
+		bank[0][3],bank[0][2],
+		bank[1][3],bank[1][2],
+		bank[2][3],bank[2][2],
+		bank[3][3],bank[3][2],
+		bank[4][3],bank[4][2]);
+
+	printf("RCR=%02x%02x\tIA0-1=%02x%02x\tFIFO=%02x%02x\tMT4-5=%02x%02x\t%02x%02x\n",
+		bank[0][5],bank[0][4],
+		bank[1][5],bank[1][4],
+		bank[2][5],bank[2][4],
+		bank[3][5],bank[3][4],
+		bank[4][5],bank[4][4]);
+
+	printf("CNT=%02x%02x\tIA2-3=%02x%02x\tPTR=%02x%02x\tMT6-7=%02x%02x\t%02x%02x\n",
+		bank[0][7],bank[0][6],
+		bank[1][7],bank[1][6],
+		bank[2][7],bank[2][6],
+		bank[3][7],bank[3][6],
+		bank[4][7],bank[4][6]);
+
+	printf("MIR=%02x%02x\tIA4-5=%02x%02x\tDATA=%02x%02x\tMGMT=%02x%02x\t%02x%02x\n",
+		bank[0][9],bank[0][8],
+		bank[1][9],bank[1][8],
+		bank[2][9],bank[2][8],
+		bank[3][9],bank[3][8],
+		bank[4][9],bank[4][8]);
+
+	printf("RPCR=%02x%02x\tGEN=%02x%02x\tDATA=%02x%02x\tREV=%02x%02x\t%02x%02x\n",
+		bank[0][11],bank[0][10],
+		bank[1][11],bank[1][10],
+		bank[2][11],bank[2][10],
+		bank[3][11],bank[3][10],
+		bank[4][11],bank[4][10]);
+
+	printf("XXX=%02x%02x\tCTRL=%02x%02x\tINT=%02x%02x\tERCV=%02x%02x\t%02x%02x\n",
+		bank[0][13],bank[0][12],
+		bank[1][13],bank[1][12],
+		bank[2][13],bank[2][12],
+		bank[3][13],bank[3][12],
+		bank[4][13],bank[4][12]);
+
+	printf("BANK=%02x%02x\n\n",bank1,bank0);
+
+	printf("MII CTRL=%04x\n",smsc_readphy(cfg,0,0));
+	printf("MII STATUS=%04x\n",smsc_readphy(cfg,0,1));
+	printf("MII PHYID #1=%04x\n",smsc_readphy(cfg,0,2));
+	printf("MII PHYID #2=%04x\n",smsc_readphy(cfg,0,3));
+	printf("MII AUTO NEG ADVERT=%04x\n",smsc_readphy(cfg,0,4));
+	printf("MII AUTO NEG REMOTE=%04x\n",smsc_readphy(cfg,0,5));
+	printf("CONFIG 1=%04x\n",smsc_readphy(cfg,0,16));
+	printf("CONFIG 2=%04x\n",smsc_readphy(cfg,0,17));
+	printf("STATUS=%04x\n",smsc_readphy(cfg,0,18));
+	printf("MASK=%04x\n",smsc_readphy(cfg,0,19));
+
+	WrPortE(iobase+SMSC_CONV(0x0e),NULL,bank0);
+
+#if PLD_ETH_COMPILING == 1
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_UNLOCKGLOBAL, 0)
+	#endasm
+#else
+	UNLOCK_GLOBAL(TCPGlobalLock);
+#endif
+}
+
+_pktdrv_debug
+smsc_internal_func
+nouseix void smsc_prt_nicreg(_SMSCConfig * nic)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = nic->pld_rscblock;
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_LOCKGLOBAL, 0)
+	#endasm
+#else
+	LOCK_GLOBAL(TCPGlobalLock);
+#endif
+
+	smsc_prtnicreg(nic);
+
+#if PLD_ETH_COMPILING == 1
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_UNLOCKGLOBAL, 0)
+	#endasm
+#else
+	UNLOCK_GLOBAL(TCPGlobalLock);
+#endif
+}
+
+#endif
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader smsc_ioctl */
+smsc_external_func int smsc_ioctl(_SMSCConfig* nic, int cmd, ...);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+smsc_external_func _pktdrv_debug int smsc_ioctl(_SMSCConfig * nic, int cmd, ...)
+{
+	auto char * stack;
+   auto int retval;
+   stack = (char *)(&cmd + 1);
+#asm
+	; switch (cmd) {
+	ld		hl,(sp+@sp+cmd)      ; load command
+	ex		de,hl
+   ld		hl,PD_HASFEATURE     ; check for PD_HASFEATURE
+   xor	a
+   sbc   hl,de
+   jp		z,.smsc_ioctl_hasfeature
+   ld		hl,PD_INITIALIZE
+   xor	a
+   sbc	hl,de
+   jp		z,.smsc_ioctl_initialize
+   ld		hl,PD_HAVELINK
+   xor	a
+   sbc	hl,de
+   jp		z,.smsc_ioctl_havelink
+   ld		hl,PD_POWER
+   xor	a
+   sbc	hl,de
+   jp		z,.smsc_ioctl_power
+	ld		hl,PD_SETHWA
+   xor	a
+   sbc	hl,de
+   jp		z,.smsc_ioctl_sethwa
+   ld		hl,PD_GETHWA
+   xor	a
+   sbc	hl,de
+   jp		z,.smsc_ioctl_gethwa
+#ifdef USE_MULTICAST
+	ld		hl,PD_ADDMULTICAST
+   xor	a
+   sbc	hl,de
+   jp		z,.smsc_ioctl_addmulticast
+   ld		hl,PD_REMOVEMULTICAST
+   xor	a
+   sbc	hl,de
+   jp		z,.smsc_ioctl_removemulticast
+#endif
+	ld		hl,PD_DUMPREGS
+   xor	a
+   sbc	hl,de
+   jp		z,.smsc_ioctl_readreg
+   jp    .smsc_ioctl_return
+
+.smsc_ioctl_hasfeature:
+   ;case PD_HASFEATURE:
+		;cmd = *(int *)stack;
+      ;return cmd >= PD_HASFEATURE && cmd <=
+      ;  #ifdef USE_MULTICAST
+      ;  		PD_REMOVEMULTICAST
+      ;  #else
+      ;  		PD_GETHWA
+      ;  #endif
+
+      ld    hl,(sp+@sp+stack)    ; point at first parameter
+      ld    hl,(hl)              ; derefernce first parameter
+      ld    b,h
+      ld    c,l                  ; save in bc for later
+   #ifdef USE_MULTICAST
+      ld    de,PD_REMOVEMULTICAST
+   #else
+      ld    de,PD_GETHWA
+   #endif
+		xor	a
+      sbc   hl,de
+      jr		z,.smsc_featuresupported
+      jr    nc,.smsc_featurenotsupported
+      ld    h,b
+      ld    l,c
+      ld    de,PD_HASFEATURE
+      xor   a
+      sbc   hl,de
+      jr    nc,.smsc_featuresupported
+      jr		z,.smsc_featuresupported
+   .smsc_featurenotsupported:
+      ld    hl,0x0000
+      jr		.smsc_hasfeaturedone
+   .smsc_featuresupported:
+   	ld		hl,0x0001
+   .smsc_hasfeaturedone:
+      ld    (sp+@sp+retval),hl
+		jp		.smsc_ioctl_return
+
+.smsc_ioctl_initialize:
+   ;case PD_INITIALIZE:
+   ;	return smsc_resetinterface(nic, *(word *)stack, *(int *)(stack+sizeof(word)));
+      	ld		hl,(sp+@sp+stack)
+         ld    hl,(hl+sizeof(word))
+         push  hl
+         ld    hl,(sp+@sp+stack+2)
+         ld    hl,(hl)
+         push  hl
+         ld    hl,(sp+@sp+nic+4)
+         push  hl
+         smsc_internal_call(smsc_resetinterface)
+         add   sp,6
+         ld		(sp+@sp+retval),hl
+			jp		.smsc_ioctl_return
+
+.smsc_ioctl_havelink:
+   ;case PD_HAVELINK:
+   ;	return smsc_havelink(nic);
+         ld    hl,(sp+@sp+nic)
+         push  hl
+         smsc_internal_call(smsc_havelink)
+         add   sp,2
+         ld		(sp+@sp+retval),hl
+			jp		.smsc_ioctl_return
+
+.smsc_ioctl_power:
+   ;case PD_POWER:
+   ;	if (*(int *)stack)
+   ;   	return smsc_powerup(nic);
+   ;   else
+   ;		return smsc_powerdown(nic);
+			ld		hl,(sp+@sp+stack)
+         ld		hl,(hl)
+         bool	hl
+         ld    hl,(sp+@sp+nic)
+         push  hl
+         jr		z,.smsc_ioctl_powerdown
+         smsc_internal_call(smsc_powerup)
+         jr		.smsc_ioctl_powerdone
+.smsc_ioctl_powerdown:
+			smsc_internal_call(smsc_powerdown)
+.smsc_ioctl_powerdone:
+         add   sp,2
+         ld		(sp+@sp+retval),hl
+			jp		.smsc_ioctl_return
+
+.smsc_ioctl_sethwa:
+   ;case PD_SETHWA:
+   ;	smsc_sethwaddr(nic, *(char **)stack);
+      	ld		hl,(sp+@sp+stack)
+         ld		hl,(hl)
+         push	hl
+         ld		hl,(sp+@sp+nic+2)
+         push	hl
+         smsc_internal_call(smsc_sethwaddr)
+         add	sp,4
+         bool	hl
+         ld		l,h
+         ld		(sp+@sp+retval),hl
+			jp		.smsc_ioctl_return
+
+.smsc_ioctl_gethwa:
+   ;case PD_GETHWA:
+   ;	**(char ***)stack = nic->hwa;
+   ;   return sizeof(nic->hwa);
+         ld		hl,(sp+@sp+nic)
+         ld		de,[nic]+hwa
+         add	hl,de
+         ex		de,hl
+         ld		hl,(sp+@sp+stack)
+         ld		hl,(hl)
+         ld		(hl),e
+         inc	hl
+         ld		(hl),d
+         ld		hl,sizeof(nic->hwa)
+         ld		(sp+@sp+retval),hl
+			jp		.smsc_ioctl_return
+
+#ifdef USE_MULTICAST
+.smsc_ioctl_addmulticast:
+   ;case PD_ADDMULTICAST:
+   ;	return smsc_addmulticast(nic, *(char **)stack, *(int **)(stack + sizeof(char *)));
+         ld		hl,(sp+@sp+stack)
+         ld		de,sizeof(char*)
+         add	hl,de
+         ld		hl,(hl)
+         push	hl
+         ld		hl,(sp+@sp+stack+2)
+         ld		hl,(hl)
+         push	hl
+         ld		hl,(sp+@sp+nic+4)
+         push	hl
+         smsc_internal_call(smsc_addmulticast)
+         add	sp,6
+         ld		(sp+@sp+retval),hl
+			jp		.smsc_ioctl_return
+.smsc_ioctl_removemulticast:
+   ;case PD_REMOVEMULTICAST:
+   ;	return smsc_removemulticast(nic, *(char **)stack);
+      	ld		hl,(sp+@sp+stack)
+         ld		hl,(hl)
+         push	hl
+         ld		hl,(sp+@sp+nic+2)
+         push	hl
+         smsc_internal_call(smsc_removemulticast)
+         add	sp,4
+         ld		(sp+@sp+retval),hl
+			jp		.smsc_ioctl_return
+
+#endif
+.smsc_ioctl_readreg:
+	;case PD_DUMPREGS
+   	;return smsc_prt_readreg(nic, (char*)stack);
+      	ld		hl,(sp+@sp+stack)
+         ld		hl,(hl)
+         push	hl
+         ld		hl,(sp+@sp+nic+2)
+         push	hl
+         smsc_internal_call(smsc_prt_readreg)
+         add	sp,4
+         ld		(sp+@sp+retval),hl
+         jp		.smsc_ioctl_return
+.smsc_ioctl_return:
+	ld		hl,(sp+@sp+retval)
+#endasm
+
+   return retval;
+}
+
+/*** BeginHeader smsc_ifctl */
+smsc_external_func int smsc_ifctl(_SMSCConfig* nic, int up, int change);
+/*** EndHeader */
+
+smsc_external_func _pktdrv_debug int smsc_ifctl(_SMSCConfig * nic, int up, int change)
+{
+	// Just a stub for the default ethernet interface control.
+	return ifctl_ethernet(nic->iface, up, change);
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader smsc_powerdown */
+smsc_internal_func int smsc_powerdown(_SMSCConfig* nic);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+_pktdrv_debug
+smsc_internal_func nouseix int smsc_powerdown(_SMSCConfig* nic)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = nic->pld_rscblock;
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_LOCKGLOBAL, 0)
+	#endasm
+#else
+	LOCK_GLOBAL(TCPGlobalLock);
+#endif
+
+	nic->iobase;
+
+#asm _pktdrv_debug
+		;
+		;	power down MAC
+		;
+
+		ld		iy,hl
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x01
+ioe	ld		(iy+SMSC_CONV(SMSC_CFG)),0xb1
+ioe	ld		(iy+SMSC_CONV(SMSC_CFG+1)),0x20
+
+	/*
+	 *		power down PHY
+	 */
+
+	;smsc_writephy(nic, 0, 0, 0x1800);
+   ld		hl,0x1800
+   push	hl
+   bool	hl
+   ld		l,h
+   push	hl
+   push	hl
+   ld		hl,(sp+@sp+nic+6)
+   smsc_internal_call(smsc_writephy)
+   add	sp,6
+#endasm
+
+#if PLD_ETH_COMPILING == 1
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_UNLOCKGLOBAL, 0)
+	#endasm
+#else
+	UNLOCK_GLOBAL(TCPGlobalLock);
+#endif
+	return 0;
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader smsc_powerup */
+smsc_internal_func int smsc_powerup(_SMSCConfig* nic);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+_pktdrv_debug
+smsc_internal_func nouseix int smsc_powerup(_SMSCConfig* nic)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = nic->pld_rscblock;
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_LOCKGLOBAL, 0)
+	#endasm
+#else
+	LOCK_GLOBAL(TCPGlobalLock);
+#endif
+
+	nic->iobase;
+#asm _pktdrv_debug
+		;
+		; power up MAC
+		;
+
+		ld		iy,hl
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x01
+ioe	ld		(iy+SMSC_CONV(SMSC_CFG)),0xb1
+ioe	ld		(iy+SMSC_CONV(SMSC_CFG+1)),0xa0
+
+		;
+		; reset MMU
+		;
+
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x02	; bank 2
+ioe	ld		(iy+SMSC_CONV(SMSC_MMU)),0x40
+
+		;
+		; reserve a packet for transmissions
+		; tx packet always:  0
+		;
+
+ioe	ld		(iy+SMSC_CONV(SMSC_MMU)),0x20
+pdpu_0:
+ioe	ld		a,(iy+SMSC_CONV(SMSC_INT))
+		bit	3,a
+		jr		z,pdpu_0
+
+		;smsc_writephy(nic, 0, 0, 0x1000); // bring out of powerdown
+		;tickwait(50);
+		;smsc_writephy(nic, 0, 0, 0x1000); // enable interface
+      ld		hl,0x1000
+      push	hl
+      bool	hl
+      ld		l,h
+      push	hl
+      push	hl
+      ld		hl,(sp+@sp+nic+6)
+      push	hl
+      smsc_internal_call(smsc_writephy)
+      add	sp,6
+
+      ld		hl,50
+#if PLD_ETH_COMPILING == 1
+		PLD_IMPORT_CALL(res_block, PLD_ETH_TICKWAIT, 0)
+#else
+      call	tickwait
+#endif
+
+      ld		hl,0x1000
+      push	hl
+      bool	hl
+      ld		l,h
+      push	hl
+      push	hl
+      ld		hl,(sp+@sp+nic+6)
+      push	hl
+      smsc_internal_call(smsc_writephy)
+      add	sp,6
+
+#endasm
+
+#if PLD_ETH_COMPILING == 1
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_UNLOCKGLOBAL, 0)
+	#endasm
+#else
+	UNLOCK_GLOBAL(TCPGlobalLock);
+#endif
+	return 0;
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader smsc_havelink */
+smsc_internal_func int smsc_havelink(_SMSCConfig* nic);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+_pktdrv_debug
+smsc_internal_func nouseix int smsc_havelink(_SMSCConfig* nic)
+{
+#asm
+	;return smsc_readphy(nic,0,1) & 0x0020;
+   	ld		hl,1
+      push	hl
+      bool	hl
+      ld		l,h
+      push	hl
+      ld		hl,(sp+@sp+nic+4)
+      push	hl
+      smsc_internal_call(smsc_readphy)
+      add	sp,6
+      xor	a
+      ld		de,0x0020
+      and	hl,de
+#endasm
+
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader smsc_sethwaddr */
+smsc_internal_func int smsc_sethwaddr(_SMSCConfig* nic, char* hwaddr);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+_pktdrv_debug
+smsc_internal_func nouseix int smsc_sethwaddr(_SMSCConfig* nic, char* hwaddr)
+{
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+#endif
+
+#asm
+	;memcpy(nic->hwa,hwa,6);
+   ld    hl,(sp+@sp+nic)
+   ld    de,[_SMSCConfig]+hwa
+   add   hl,de
+   ex    de,hl
+   ld    hl,(sp+@sp+hwaddr)
+   ld    bc,6
+.smsc_swacopyloop:
+	ldi
+   jp		v,.smsc_swacopyloop
+#endasm
+
+
+#if PLD_ETH_COMPILING == 1
+   res_block = nic->pld_rscblock;
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_LOCKGLOBAL, 0)
+	#endasm
+#else
+	LOCK_GLOBAL(TCPGlobalLock);
+#endif
+
+	nic->iobase;
+
+#asm _pktdrv_debug
+		ld		iy,hl
+ioe	ld		(iy+SMSC_CONV(SMSC_BANK)),0x01
+
+		ld		hl,(sp+@SP+hwaddr)
+		ld		a,(hl)
+		inc	hl
+ioe	ld		(iy+SMSC_CONV(SMSC_IA0)),a
+		ld		a,(hl)
+		inc	hl
+ioe	ld		(iy+SMSC_CONV(SMSC_IA1)),a
+		ld		a,(hl)
+		inc	hl
+ioe	ld		(iy+SMSC_CONV(SMSC_IA2)),a
+		ld		a,(hl)
+		inc	hl
+ioe	ld		(iy+SMSC_CONV(SMSC_IA3)),a
+		ld		a,(hl)
+		inc	hl
+ioe	ld		(iy+SMSC_CONV(SMSC_IA4)),a
+		ld		a,(hl)
+ioe	ld		(iy+SMSC_CONV(SMSC_IA5)),a
+#endasm
+
+#if PLD_ETH_COMPILING == 1
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_UNLOCKGLOBAL, 0)
+	#endasm
+#else
+	UNLOCK_GLOBAL(TCPGlobalLock);
+#endif
+	return 0;
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader smsc_addmulticast, smsc_removemulticast */
+smsc_internal_func int smsc_addmulticast(_SMSCConfig* nic, char* EthAddress, int* slot);
+smsc_internal_func int smsc_removemulticast(_SMSCConfig* nic, char* EthAddress);
+/*** EndHeader */
+
+#if PLD_ETH_COMPILING == 1
+	#xcodorg	pld_eth_xcode		resume
+#endif
+
+_pktdrv_debug
+smsc_internal_func nouseix int smsc_addmulticast(_SMSCConfig* nic, char* EthAddress, int* slot)
+{
+	auto word hash;
+	auto unsigned long crc;
+	auto int i;
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = nic->pld_rscblock;
+#endif
+
+#if PLD_ETH_COMPILING == 1
+
+   #asm
+      ld    hl,(sp+@sp+EthAddress)
+      push  hl
+      PLD_IMPORT_CALL(res_block, PLD_ETH_CALC_CRC, 2)
+      add   sp,2
+      ld    (sp+@sp+hash),hl
+      ex    de,hl       ; de = hash
+      ld    hl,(sp+@sp+slot)
+      ld    ix,hl
+      bool  hl
+      jr    z,.smsc_amnoslot
+      ex    de,hl
+      ld    (ix),hl
+
+   .smsc_amnoslot:
+      PLD_IMPORT_CALL(res_block, PLD_ETH_LOCKGLOBAL, 0)
+   #endasm
+
+#else
+	// Only upper 6 bits used in the hash
+	crc = 0xffffffff;
+	for (i = 0; i < 6; i++) {
+		crc = pd_calc_crc(EthAddress[i], crc);
+	}
+	hash = (word)(crc >> 26);
+	if (slot) {
+		*slot = hash;
+	}
+
+	LOCK_GLOBAL(TCPGlobalLock);
+#endif
+
+	nic->iobase; // load base into hl
+#asm _pktdrv_debug
+	ld		iy,hl
+
+	; Load the hashed address
+	ld		hl, (sp+@SP+hash)
+	ld		c, L		; save the hash value
+
+	; Compute the MAR register to update
+	ld		a, L
+	srl	a
+	srl	a
+	srl	a
+	; We now have the correct MAR register offset -- place in de,
+	; and save a copy in b
+	ld		d, 0
+	ld		e, a
+	ld		b, a
+	; Load page 3
+	ioe ld (iy+SMSC_CONV(SMSC_BANK)),0x03
+	; Read the MARx register
+	ld		hl, iy
+	add	hl, de
+	ld		de, SMSC_MT0 & 0x0f
+	add	hl, de
+
+	;
+	; Make sure A4 == ~A0
+	;
+
+	bit	0,l
+	jr		nz,_pdam_0
+	set	4,l
+_pdam_0:
+
+	ioe ld a, (hl)
+
+	; a contains the value of the appropriate MARx register
+	; b contains the offset of the appropriate MARx register
+	; c contains the 6-bit hash value
+
+	; Start computation of the new value of the MARx register
+	; Compute the bit number we need to turn on/off
+	ld		e, b		; save the offset of the appropriate MARx register
+	ld		d, a		; save the value of the MARx register
+	ld		a, 0x07
+	and	c
+
+	; We now need to create the mask with which to OR the current
+	; MARx value
+	inc	a
+	ld		b, a
+	xor	a
+	scf
+.loop:
+	rla
+	djnz	.loop
+
+	; a now contains the OR mask, and d contains the value of the MARx
+	; register
+	or		d
+	; Load the new value
+	ld		d, 0
+	ld		hl, iy
+	add	hl, de
+	ld		de, SMSC_MT0 & 0x0f
+	add	hl, de
+
+	;
+	; Make sure A4 == ~A0
+	;
+
+	bit	0,l
+	jr		nz,_pdam_1
+	set	4,l
+_pdam_1:
+
+	ioe ld (hl), a
+#endasm
+
+#if PLD_ETH_COMPILING == 1
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_UNLOCKGLOBAL, 0)
+	#endasm
+#else
+	UNLOCK_GLOBAL(TCPGlobalLock);
+#endif
+
+	return 0;
+}
+
+smsc_internal_func
+int smsc_removemulticast(_SMSCConfig* nic, char* EthAddress)
+{
+	auto word hash;
+	auto unsigned long crc;
+	auto int i;
+#ifdef USE_IGMP
+	auto word hashcheck;
+#endif
+#if PLD_ETH_COMPILING == 1
+	auto pld_eth_rscblk_t* res_block;
+   res_block = nic->pld_rscblock;
+#endif
+
+#if PLD_ETH_COMPILING == 1
+	#asm
+	ld		hl,(sp+@sp+EthAddress)
+   push	hl
+	PLD_IMPORT_CALL(res_block, PLD_ETH_CALC_CRC, 2)
+   add	sp,2
+	ld		(sp+@sp+hash),hl
+
+	#ifdef USE_IGMP
+	// Make sure we aren't removing the hash entry that lets us
+	// receive the ALL-HOSTS (224.0.0.1) IGMP messages
+c  _IGMP_ALL_HOSTS_IPADDR;
+	push	bc
+   push	de
+   ld		hl,EthAddress
+   push	hl
+   PLD_IMPORT_CALL(res_block, PLD_ETH_MULTICAST_IPTOHW, 6)
+   add	sp,6
+	ld		hl,(sp+@sp+EthAddress)
+   push	hl
+	PLD_IMPORT_CALL(res_block, PLD_ETH_CALC_CRC, 2)
+   add	sp,2
+   ex		de,hl
+   ld		hl,(sp+@sp+hash)
+   xor	a
+   sbc	hl,de
+   jp		z,.smsc_rmdone
+	#endif
+
+	PLD_IMPORT_CALL(res_block, PLD_ETH_LOCKGLOBAL, 0)
+	#endasm
+
+#else
+	// Only upper 6 bits used in the hash
+	crc = 0xffffffff;
+	for (i = 0; i < 6; i++) {
+		crc = pd_calc_crc(EthAddress[i], crc);
+	}
+	hash = (word)(crc >> 26);
+
+	#ifdef USE_IGMP
+	// Make sure we aren't removing the hash entry that lets us
+	// receive the ALL-HOSTS (224.0.0.1) IGMP messages
+	multicast_iptohw(EthAddress, _IGMP_ALL_HOSTS_IPADDR);
+	crc = 0xffffffff;
+	for (i = 0; i < 6; i++) {
+		crc = pd_calc_crc(EthAddress[i], crc);
+	}
+	hashcheck = (word)(crc >> 26);
+	if (hash == hashcheck) {
+		return 0;
+	}
+	#endif
+
+	LOCK_GLOBAL(TCPGlobalLock);
+#endif
+	nic->iobase; // load base into hl
+#asm _pktdrv_debug
+	ld		iy,hl
+
+	; Load the hashed address
+	ld		hl, (sp+@SP+hash)
+	ld		c, L		; save the hash value
+	; Compute the MAR register to update
+	ld		a, L
+	srl	a
+	srl	a
+	srl	a
+	; We now have the correct MAR register offset -- place in de,
+	; and save a copy in b
+	ld		d, 0
+	ld		e, a
+	ld		b, a
+	; Load page 3
+	ioe ld (iy+SMSC_CONV(SMSC_BANK)),0x03
+	; Read the MARx register
+	ld		hl, iy
+	add	hl, de
+	ld		de, SMSC_MT0 & 0x0f
+	add	hl, de
+
+	;
+	; Make sure A4 == ~A0
+	;
+
+	res	4,l
+	bit	0,l
+	jr		nz,_pdrm_0
+	set	4,l
+_pdrm_0:
+
+	ioe ld a, (hl)
+
+	; a contains the value of the appropriate MARx register
+	; b contains the offset of the appropriate MARx register
+	; c contains the 6-bit hash value
+
+	; Compute the new value of the MARx register
+	; First, compute the bit number we need to turn on
+	ld		e, b		; save the offset of the appropriate MARx register
+	ld		d, a		; save the value of the MARx register
+	ld		a, 0x07
+	and	c
+	; We now need to create the mask with which to AND the current
+	; MARx value
+	inc	a
+	ld		b, a
+	ld		a, 0xff
+	scf
+	ccf
+.loop:
+	rla
+	djnz	.loop
+
+	; a now contains the AND mask, and d contains the value of the MARx
+	; register
+	and	d
+	; Load the new value
+	ld		d, 0
+	ld		hl, iy
+	add	hl, de
+	ld		de, SMSC_MT0 & 0x0f
+	add	hl, de
+
+	;
+	; Make sure A4 == ~A0
+	;
+
+	bit	0,l
+	jr		nz,_pdrm_1
+	set	4,l
+_pdrm_1:
+
+	ioe ld (hl), a
+
+#endasm
+#if PLD_ETH_COMPILING == 1
+	#asm
+	PLD_IMPORT_CALL(res_block, PLD_ETH_UNLOCKGLOBAL, 0)
+.smsc_rmdone:
+	#endasm
+#else
+	UNLOCK_GLOBAL(TCPGlobalLock);
+#endif
+	return 0;
+}
+
+#if PLD_ETH_COMPILING == 1
+  	#xcodorg defaultxcode	resume
+#endif
+
+/*** BeginHeader  ********************************************/
+#endif /* __SMSC_LIB */
+/*** EndHeader ***********************************************/

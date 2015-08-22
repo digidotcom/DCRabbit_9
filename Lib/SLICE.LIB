@@ -1,0 +1,404 @@
+/*** BeginHeader  ********************************************/
+#ifndef __SLICE_LIB
+#define __SLICE_LIB
+/*** EndHeader ***********************************************/
+
+
+/*** Beginheader SliceData, FSP */
+#define SLICING
+#define PERIODIC_TIMERS
+typedef long STACKPOINTER;
+
+typedef struct
+{
+	int    time_out;
+	void*	 my_sp;
+	void*	 save_sp;
+	CoData codata;
+} SliceData;
+
+extern void *FSP,*DBGFSP; // slice statement context pointer
+
+/*** Endheader */
+#ifdef MCOS
+  	#error "Slice statements and uC/OS-II cannot be used together"
+#endif
+
+void *FSP,*DBGFSP; // slice statement context pointer
+nodebug
+void slicefsp_init()
+{
+#asm xmemok
+	push	ip
+	ipset	1
+
+	bool	hl
+	ld		l,h
+
+	ld		(FSP),hl
+	ld		(DBGFSP),hl
+
+	pop	ip
+#endasm
+}
+
+#funcchain _GLOBAL_INIT slicefsp_init
+
+/*** Beginheader __slice_tick */
+
+root void __slice_tick();
+
+/*** Endheader */
+
+#asm
+;
+; __slice_tick - this routine forms the basis for scheduling
+; for slice statements. it is called from the periodic interrupt
+; once per tick.
+;
+; When the debugger kernel is running slicing is disabled by the
+; dbg_prolog/epilog in the debugger kernel library.
+;
+; worst case:
+; slicing active:		71
+; slicing inactive:	23
+;
+#ifdef MCOS
+  	#error "Slice statements and uC/OS-II cannot be used together"
+#endif
+
+#ifdef DCRTCP
+  	#error "Slice statements and DCRTCP cannot be used together"
+#endif
+
+#if _USER
+	#error "Slice statements and RabbitSys cannot be used together"
+#endif
+
+__slice_tick::
+#if _SYSTEM
+	ld		a,(_RK_TICK_COUNTER) ; every other time around the periodic
+#else
+	ld		a,(__TICK_COUNTER) ; every other time around the periodic
+#endif
+	bit	0,a
+	ret	z
+
+	ld		hl,(FSP)			; 11,	FSP!=0 then slicing is active
+	ld		a,h				; 2
+	or		l					; 2
+	ret	z					; 2/8
+
+	ld		e,(hl)			; 5,	decrement the time_out counter
+	inc	hl					; 2
+	ld		d,(hl)			; 5
+	dec	de					; 2
+	ld		(hl),d			; 6
+	dec	hl					; 2
+	ld		(hl),e			; 6
+
+	ld		a,d				; 2,	timeout hit zero?
+	or		e					; 2
+	ret	nz					; 2/8, no return to interrupt routine
+
+	inc	a					; 2
+#if _SYSTEM
+	ld		(_rk_bios_swpend),a ; 10
+#else
+	ld		(bios_swpend),a ; 10
+#endif
+	ret						; 8
+
+#endasm
+
+/*** Beginheader __slice_entry, __slice_yield, __slice_abort,
+__slice_isr, __slice_sched, slice_yield, __slice_exit, __slice_waitfor */
+
+root void slice_yield();
+root void __slice_entry();
+root void __slice_exit();
+root void __slice_yield();
+root void __slice_abort();
+root void __slice_waitfor();
+/*** Endheader */
+
+#ifdef MCOS
+  	#error "Slice statements and uC/OS-II cannot be used together"
+#endif
+#ifdef DCRTCP
+  	#error "Slice statements and DCRTCP cannot be used together"
+#endif
+#if _USER
+	#error "Slice statements and RabbitSys cannot be used together"
+#endif
+
+#asm nodebug
+;
+; __slice_entry
+;
+; This routine is called on the way into a slice.  It saves the
+; interrupt register and the frame pointer to the system stack.
+; It initializes the tick counter in the buffer.  On a first
+; time call it initializes the other data structures in the
+; buffer and returns to 3 bytes after the return address
+; that was on the stack.  On a continuation call it does a
+; long return which will restore the registers and continue
+; where the slice statement previous left off.
+;
+;
+; on call:
+; sp+2 = ticks
+; sp+4 = buffer size
+; sp+6 = buffer
+;
+; hl = CoData in buffer
+;
+; return:
+;   nothing
+;
+
+__slice_entry::
+	push	ip
+	push	ix
+	ld		a,xpc
+	lcall	__sliceentry2
+
+	;
+	; restore registers and stack after lret
+	;
+	pop	ix
+	pop	ip
+	pop	hl
+	add	sp,6			; 8 after segment/stacklen added
+	jp		(hl)
+
+__sliceentry2:
+	ld		xpc,a
+
+	ld		iy,(sp+12)
+
+	ld		hl,(sp+8)	; set timeout value
+	ld		(iy+0),hl
+
+	ld		b,(iy+6)		; restart slice?
+	bit 	1, b
+	jr		z,__DC_se_2
+
+	ld		(iy+6),0x00
+
+	bool	hl
+	ld		l,h
+	add	hl,sp			; store current stack pointer
+	ld		(iy+4),hl
+
+	ld		hl,iy
+	ex		de,hl
+	ld		hl,(sp+10)	; calculate my stack pointer
+	add	hl,de
+
+	ld		iy,(sp+6)	; get the return value
+
+	ld   	sp,hl			; change the stack
+	;
+	; change segment
+	;
+	ex   	de,hl
+	ld   	(FSP),hl		; set the slice data in the global structure
+
+	ld		hl,iy			; return to the first slice instruction
+	inc	hl
+	inc	hl
+	inc	hl
+	jp		(hl)
+
+__DC_se_2:
+	bool	hl				; ld hl,sp
+	ld		l,h
+	add	hl,sp
+	ld		(iy+4),hl	; store stack pointer into save_stack
+	ld		hl,(iy+2)	; get the slice's stack pointer
+
+	ld   	sp,hl			; change stack
+	;
+	; change segment
+	;
+	ld   	(FSP),iy		; set slice data pointer
+
+	lret
+
+;
+; __slice_exit
+;
+; This routine is called after the last statement in the
+; slice statement has completed.  It disables slicing,
+; restarts the slice statement data structure, switches the
+; stack, and returns to the call of the __slice_enter.
+; routine.  Directly following the __slice_enter call is a
+; jump to the statement which follows the slice statement.
+; execution continues there.
+;
+; on call:
+;   nothing
+;
+; return:
+;   nothing
+;
+
+__slice_exit::
+	ld		iy,(FSP)
+
+	bool	hl
+	ld		l,h
+	ld		(FSP),hl
+
+	ld   	(iy+6),_CS_INIT
+	ld		hl,(iy+4)
+	ld   	sp,hl
+
+	lret
+
+;
+; slice_yield()
+;
+; This function can be placed in the libraries to
+; indicate that the current task has finished what it
+; can for a while.  It does a forced yield of the
+; current slice statement if one is active.  Otherwise
+; it has no effect.
+;
+; call:
+;   nothing
+;
+; return:
+;   nothing
+;
+
+slice_yield::
+	ld		hl,(FSP)			; make sure slicing is active
+	bool	hl
+	ret	z
+
+;
+; __slice_yield
+;
+; This internal routine is called as a result of
+; a yield statement in a slice statement.  It saves
+; the interrupt mask and the frame pointer on the
+; slice statements stack, saves the current context
+; and returns to just after the __slice_entry call
+; which then jumps the statement directly following
+; the slice statement.
+;
+; call:
+;   nothing
+;
+; return:
+;   nothing
+;
+
+__slice_yield::
+	push	ip
+	push	ix
+	lcall	__slice_yield2
+
+	;
+	; restore context after lret
+	;
+	pop	ix
+	pop	ip
+	ret
+
+__slice_yield2:
+	xor	a
+	ld		hl,(FSP)
+
+	ex		de,hl
+
+	bool	hl					; disable slicing ld (FSP),0
+	ld		l,h
+	ld		(FSP),hl
+
+	add	hl,sp
+	ex		de,hl
+
+	inc	hl
+	inc	hl
+	ld		(hl),e			; save the slice sp to the slice data
+	inc	hl
+	ld		(hl),d
+	inc	hl
+	ld		a,(hl)			; get the system stack pointer
+	inc	hl
+	ld		h,(hl)
+	ld		l,a
+
+	ld		sp,hl				; restore the old stack
+
+	ipres
+	lret
+
+;
+; __slice_abort
+;
+; This routine is called as a result of an abort
+; statement inside of a slice statement.  It disables
+; slicing, restarts the slice data structure, changes
+; the stack back to the slice statement, and returns
+; to just after the slice statement.
+;
+; call:
+;	 hl=slice's CoData
+;
+; return:
+;   nothing
+;
+
+__slice_abort::
+	ld		iy,hl
+
+	bool	hl					; stop slicing
+	ld		l,h
+	ld		(FSP),hl
+
+	ex		de,hl
+
+	ld   	(iy),_CS_INIT|_CS_STOPPED	; reset the CoData
+
+	ld		hl,(iy-2)
+	ld   	sp,hl
+	lret
+
+;
+; __slice_waitfor
+;
+; This routine is called when a slice statement needs to
+; yield as a result of a waitfor(...) statement.  It updates
+; the next address in the CoData and rearranges the return
+; value to match up with a call to __slice_yield.
+;
+; call:
+;   hl=slice's CoData
+;
+; return:
+;   hl=slice's CoData
+;
+
+
+__slice_waitfor::
+	pop  	iy
+	push 	hl
+	inc  	hl
+	ld   	e,(hl)
+	inc  	hl
+	ld   	d,(hl)
+	pop  	hl
+	push 	de
+	jp   	__slice_yield
+
+	call	funcblk_init		; dummy to bring costatement code
+
+#endasm
+
+/*** BeginHeader  ********************************************/
+#endif
+/*** EndHeader ***********************************************/

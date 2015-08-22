@@ -1,0 +1,1979 @@
+/* START LIBRARY DESCRIPTION *********************************************
+TC_XTC.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains the majority of XTC (eXtended Target
+   Communications) which is common to both the target and DeviceMate
+   processors.
+
+PORTING NOTE:
+   For non-Rabbit target processors with an ANSI C compiler, there are
+   equivalent .c and .h files in the LIB\Target subdirectory.
+
+CONFIGURATION MACROS:
+	The following macros may be defined before inclusion of this library.
+	These are all oriented towards debugging, causing more or less
+	copious output via printf().
+
+	XTC_DEBUG
+	   Enables Dynamic-C debugging, and enables more runtime testing.
+
+	XTC_VERBOSE
+	   Print change-of-state and other interesting happenings.
+
+	XTC_PRINTPKT
+	   Print each XTC packet in great detail.  The following macros are
+	   only effective if this is defined.
+
+	XTC_PRINTPKT_XBUF
+	   Print each XTC packet buffer management info.
+
+	XTC_PRINTPKT_DATA
+	   Print each XTC packet actual data content.
+
+	XTC_PRINTPKT_COLOR_LIGHTBG
+	   Print each XTC packet in color, to look good on a light background.
+	   The color codes assume you have a terminal that supports ANSI
+	   escape sequences.  The DC stdio window does, as do most VT100
+	   terminal emulators.
+
+	XTC_PRINTPKT_COLOR_DARKBG
+	   Print each XTC packet in color, to look good on a dark background.
+
+GLOBAL VARIABLES:
+   None defined.  All required data is passed via XTCApp and XTCChan
+   data structure pointers.  Global data is defined in DM_XTC.LIB
+   and TARGETPROC_XTC.LIB, mainly to keep track of registered
+   applications.
+
+API FUNCTIONS:
+   The functions in this library are called internally by other libraries
+   and should not be called by end-user application code.  For this
+   reason they are not formally documented.
+
+END DESCRIPTION **********************************************************/
+ 
+/*** BeginHeader rxcolor, txcolor, dfltcolor */
+#ifndef TC_XTC_H
+#define TC_XTC_H
+
+
+#ifndef __TC_LIB
+	#use "tc.lib"
+#endif
+
+#ifndef XBUF_H
+	#use "xbuf.lib"
+#endif
+
+
+#ifdef XTC_DEBUG
+	#define xtc_nodebug
+#else
+	#ifndef __DC__
+		#define xtc_nodebug
+	#else
+		#define xtc_nodebug nodebug
+	#endif
+#endif
+
+
+
+#define TC_XTC_BCAST		0xFF		// Subtype field value for XTC "broadcast"
+#define TC_XTC_TYPE		0x80		// This bit set if XTC subtype
+#define TC_XTC_MASK		0x7F		// Bit mask for XTC channel identification
+
+#ifndef XTC_MAX_TIMEOUT
+	#define XTC_MAX_TIMEOUT 4000	// Maximum retransmit timeout (ms)
+#endif
+
+// Header sent with all XTC packets
+typedef struct _XTCHdr
+{
+	uint8		flags;					// Flags as follows:
+#define XTC_F_SYN		0x80				// Synchronize
+#define XTC_F_ACK		0x40				// Acknowledge
+#define XTC_F_FIN		0x20				// Finish
+#define XTC_F_NEG		0x10				// Negotiate/reset
+#define XTC_M_WIN		0x0F				// Mask for window.  Window value is floor log base 2 of actual
+												// receive window.  0 or 1 window is coded as 0, however the
+												// receiver should assume 0 in this case.  The window edge cannot
+												// retract leftwards.
+												// With NEG flag, this contains XTC protocol version (currently 0).
+	uint16	seqnum;					// Sequence number of this data
+	uint16	acknum;					// Acknowledgment sequence number if ACK flag set.
+	// Data follows...
+} XTCHdr;
+
+#define XTC_HDRSIZE	5		// Size of header on wire, not sizeof(XTCHdr)!
+
+// Packet format for NEGotiate/reset packets.
+typedef struct _XTCNeg
+{
+	XTCHdr	h;							// basic header
+	uint16	mss;						// Max seg size
+	uint8		maxchans;				// Maximum number of channels (1..127)
+	uint8		negcode;					// Reason code...
+// Reason codes sent with NEG packet
+#define XTC_NEGCODE_ABORTED	0x01		// Channel reset by application (not sent in packet)
+#define XTC_NEGCODE_RESET		0x02		// Channel reset by peer (sent in packet)
+#define XTC_NEGCODE_INIT		0x03		// XTC initializing
+#define XTC_NEGCODE_INITR		0x04		// Response to XTC initializing
+#define XTC_NEGCODE_NOCHAN		0x05		// Channel not available
+#define XTC_NEGCODE_UNKNOWN	0x0F		// Unknown reason (this is last official negcode)
+#define XTC_NEGCODE_APP			0xC0		// First of app-defined error codes
+	uint8		pacing;					// Number of milliseconds transmit pacing.  0 if no pacing.
+// Other reason codes and following state are for diagnostic purposes only.  Following fields
+// are optional and may not always be transmitted.
+#ifdef XTC_HELPFUL
+	uint8		state;					// Channel state (0=closed, 1=synsent etc.) of sender
+	char		data[64];				// Diagnostic data
+#endif
+} XTCNeg;
+
+#ifdef XTC_HELPFUL
+	#define XTC_NEGSIZE	75		// Size of NEG packet on wire, not sizeof(XTCNeg)!
+#else
+	#define XTC_NEGSIZE	10
+#endif
+
+#ifdef FUNCPTR_PROTOTYPES
+	typedef struct _XTCApp * _xtcappptr;
+#endif
+
+// XTC channel state structure
+typedef struct _XTCChan
+{
+	uint8		chno;						// channel number (subtype in TC packet) - initialized to constant
+											// 0x80, 0x81 ... 0xFE.  Channel 0x80 is always opened passively
+											// by the DeviceMate.  It is typically used as a "control" channel
+											// for the subsystem.
+	uint8		errcode;					// Error code (any of the NEGCODE values plus diagnostics)
+	uint8		rtcount;					// Retransmit counter
+	uint8		dupct;					// Duplicate ACK counter
+	uint16	state;					// State as follows.  Note that bits are used for ease of comparison against
+											// multiple states, however only one bit must be set at a time.
+											// Note that we don't need TCP's TIMEWT since we only ever have one peer.
+#define XTC_S_CLOSED		0x0001		// Initial and final state; fully closed.
+#define XTC_S_SYNSENT	0x0002		// Attempting to actively connect to peer
+#define XTC_S_SYNREC		0x0004		// Active connection attempt received; reply sent
+#define XTC_S_ESTAB		0x0008		// Connection established for symmetric read/write
+#define XTC_S_FINWT1		0x0010		// Application closed, FIN sent, can still read
+#define XTC_S_FINWT2		0x0020		// App closed, peer has acknowledged, can still read
+#define XTC_S_CLOSING	0x0040		// Simultaneous close
+#define XTC_S_CLOSWT		0x0080		// Peer sent FIN, waiting for app close, can still write
+#define XTC_S_LASTACK	0x0100		// Both closed, waiting for peer's final ack
+#define XTC_S_SENDLA		0x0200		// Sending our final ack.  Transient state, goes to CLOSED.
+#define XTC_S_SENDNEG	0x0400		// Send NEG packet.  Transient state, returns to LISTEN or CLOSED
+#define XTC_S_SFSENT		0x0800		// Transaction sent
+#define XTC_S_SFREC		0x1000		// Transaction received; reply sent
+#define XTC_S_LISTEN		0x2000		// Passive open; idle
+	uint16	pstate;					// Previous state
+	xbuf		rx;						// XTC smart buffer for receive processing
+	xbuf		tx;						// XTC smart buffer for transmit processing
+	struct _XTCChan * nexttx;		// Next in line for transmit
+	struct _XTCChan * nextto;		// Next in line for timeout
+#ifdef FUNCPTR_PROTOTYPES
+	// Transaction handler callback.  buf/len is physical address and length of the transaction
+	// request data.  tx is a parameter which is passed to xbuf_append() to set the reply data.
+	// e.g. xbuf_append(tx, reply, replylen), where reply is a (long) physical address.  The
+	// reply length should be no greater than app->mss bytes.
+	int		(*handler)(_xtcappptr app, struct _XTCChan * c, xbuf * tx, faraddr_t buf, uint16 len);
+#else
+	int		(*handler)();
+#endif
+	uint16	timeout;					// Timeout time from MS_TIMER LSBs (max 32sec)
+	uint16	rtstart;					// Start time of sampled RTT measurement
+	uint16	rtseq;					// Sequence number of sample
+	uint16	endwin;					// Sequence number of the end of his advertised window
+	uint16	expack;					// Expected acknum (i.e. last data seq we sent, + 1)
+	uint8		chnflags;				// Channel flags
+#define XTC_A_NONAG		0x01			// Turn off Nagle algorithm
+#define XTC_A_TOMASK		0x30			// Mask for timeout reasons:
+	#define XTC_TO_NONE		0x00			// No timeout
+	#define XTC_TO_RETRANS	0x10			// Normal timeout (expecting response)
+#define XTC_A_ZWIN		0x40			// Advertised zero window last time
+#define XTC_A_SAMPLE		0x80			// RTT sampling in progress
+
+} XTCChan;
+
+// Channel-specific options
+#define XTC_OPT_NONAG		1
+
+
+// XTC application state structure.  One of these must be registered using xxxxxxproc_xtc_register()
+// for each TC application which uses XTC before calling xxxxxproc_init().
+typedef struct _XTCApp
+{
+	/*****************************************************************
+	 * Fields set up before calling xxxxproc_xtc_register().
+	 *****************************************************************/
+	uint8		appno;					// Application code
+	uint8		numchans;				// Number of channels in following array
+	uint16	txbufsize;				// Transmit buffer size (not counting TC header)
+	uint16	rxbufsize;				// Receive buffer size (not counting TC header)
+	XTCChan * chans;					// Channel array
+
+	/*****************************************************************
+	 * Other fields initialized by application's _xxxx_init().
+	 *****************************************************************/
+	uint8		numtxbufs;				// Number of transmit buffers (usually 1, maybe 2 for high speed)
+	uint8		numrxbufs;				// Number of receive buffers
+	uint16	reqpacing;				// Our requested pacing (sent to peer).
+	uint8		aflags;					// Application flags as follows:
+#define XTC_AF_READY		0x01			// App is ready to establish channels with peer
+#define XTC_AF_BCASTNEG	0x02			// Broadcast NEG, waiting for response
+#define XTC_AF_SERVER	0x80			// This is a DeviceMate app struct (else TP)
+#define XTC_AF_CONTROL	0x40			// DeviceMate: automatically listen on channel 0 (control).
+												// Target processor: automatically active open channel 0.
+												// If this flag is set in both, then the control channel will be
+												// opened whenever xxxproc_xtc_ready() returns true. 
+#ifdef FUNCPTR_PROTOTYPES
+	void		(*tc_handler)(_xtcappptr app, _TCHeader * hdr, faraddr_t data);
+#else
+	void		(*tc_handler)();		// Handler for app subtypes which are not XTC
+#endif
+
+	/*****************************************************************
+	 * Fields initialized by xxxx_xtc_init(), for all registered apps.
+	 *****************************************************************/
+	   /* First time only... */
+	faraddr_t	txbuffer;			// All transmit buffers (array of numtxbufs elements)
+	faraddr_t	rxbuffer;			// All receive buffers (array of numrxbufs elements)
+
+	   /* Every time... */
+	faraddr_t	txbuffQ;				// The TC queue of tx buffers
+	faraddr_t	rxbuffQ;				// The TC queue of rx buffers
+	faraddr_t	rxprocessing;		// Secondary rx buffer queue - TC callback adds, handler removes.
+	uint8		txrdy;					// Number of transmit buffers ready (inc. in callback when TXDONE).
+	XTCChan * towait;					// Channel(s) scheduled for timeout, earliest first
+	XTCChan * txwait;					// Channel(s) waiting for tx buffer, first come first served
+	uint16	minrto;					// Minimum allowable timeout (ms) - typically 2 times the min
+											// possible RTT for maximum size TC packets.  This gives
+											// time to transmit it, the other side to formulate a response,
+											// and transmit the reply.
+	uint16	rtt;						// Round-trip time estimate in 1/8ms units
+#ifdef FUNCPTR_PROTOTYPES
+	int		(*sendfunc)(uint8 type, uint8 subtype, uint16 length, faraddr_t buffer, long userdata);
+	int		(*recvbuf)(uint8 type, uint16 length, faraddr_t buffer, long userdata);
+#else
+	int		(*sendfunc)();			// Function to send a packet
+	int		(*recvbuf)();			// Function to return receive buffer to appropriate queue
+#endif
+	uint16	pacing;					// Transmit pacing specified by peer (ms), 0 for no pacing.
+	
+	/*****************************************************************
+	 * Internal fields.
+	 *****************************************************************/
+	uint16	mss;						// MSS option from negotiation (minimum of our tx and his rx)
+	uint16	negto;					// Broadcast NEG retransmit timeout
+	uint16	paceto;					// Current pacing release time (rel. MS_TIMER)
+	uint8		pacehold;				// Boolean indicating whether to hold back transmission for pacing.
+	uint8		negrsn;					// Broadcast NEG reason code
+	uint8		negrtcount;				// B Neg retransmit counter
+#ifdef TC_LOCKING
+	TC_LOCKTYPE lock;					// Application/subsystem lock
+#endif
+
+} XTCApp;
+
+#ifndef TC_LOCKING
+	// If no locking, make these macros null
+	#define TC_LOCK(x)
+	#define TC_UNLOCK(x)
+#endif
+
+// Application-wide options:
+#define XTC_OPT_SERVER	128		// This peer is to act as "DeviceMate"
+#define XTC_OPT_CONTROL	129		// Automatically listen on control channel (0)
+
+
+#ifdef XTC_PRINTPKT
+extern const char rxcolor[];
+extern const char txcolor[];
+extern const char dfltcolor[];
+#endif
+
+/*** EndHeader */
+
+#ifdef XTC_PRINTPKT
+	#ifdef XTC_PRINTPKT_COLOR_DARKBG
+		const char rxcolor[] = "\033[36m";	// cyan
+		const char txcolor[] = "\033[37m";	// white
+		const char dfltcolor[] = "\033[0m";		// normal
+	#else
+		#ifdef XTC_PRINTPKT_COLOR_LIGHTBG
+			const char rxcolor[] = "\033[34m";	// blue
+			const char txcolor[] = "\033[30m";	// grey
+			const char dfltcolor[] = "\033[0m";		// normal
+		#else
+			const char rxcolor[] = "";
+			const char txcolor[] = "";
+			const char dfltcolor[] = "";
+		#endif
+	#endif
+#endif
+
+
+
+/*** BeginHeader xtc_fmtstate */
+char * xtc_fmtstate(uint16 s);
+/*** EndHeader */
+const char * states[] = {
+	"CLOSED"
+  ,"SYNSENT"
+  ,"SYNREC"
+  ,"ESTAB"
+  ,"FINWT1"
+  ,"FINWT2"
+  ,"CLOSING"
+  ,"CLOSWT"
+  ,"LASTACK"
+  ,"SENDLA"
+  ,"SENDNEG"
+  ,"SFSENT"
+  ,"SFREC"
+  ,"LISTEN"
+};
+
+xtc_nodebug
+char * xtc_fmtstate(uint16 s)
+{
+	auto int i;
+
+	i = 0;
+	while (s && !(s & 1)) {
+		i++;
+		s >>= 1;
+	}
+	if (!s)
+		return "Nothing";
+	if (s != 1)
+		return "Mixed";
+	else
+		return (char *)states[i];
+}
+
+/*** BeginHeader xtc_setstate */
+void xtc_setstate(XTCChan * c, uint16 newstate);
+/*** EndHeader */
+xtc_nodebug
+void xtc_setstate(XTCChan * c, uint16 newstate)
+{
+	if (newstate != c->state) {
+		c->pstate = c->state;
+#ifdef XTC_VERBOSE
+		printf("CH %2X  %s --> %s\n", (int)c->chno, xtc_fmtstate(c->state), xtc_fmtstate(newstate));
+#endif
+	}
+	c->state = newstate;
+}
+
+/*** BeginHeader xtc_init_chan */
+void xtc_init_chan(XTCApp * app, XTCChan * c, uint8 code);
+/*** EndHeader */
+xtc_nodebug
+void xtc_init_chan(XTCApp * app, XTCChan * c, uint8 code)
+{
+	xtc_setstate(c, XTC_S_CLOSED);
+	// Reset buffers
+	xbuf_discard(&c->tx);
+	xbuf_discard(&c->rx);
+	// Remove from linked lists
+	xtc_unlink_tx(app, c);
+	xtc_unlink_to(app, c);
+	if (code == XTC_NEGCODE_NOCHAN || code == XTC_NEGCODE_INIT) {
+		// Default sequence bases are 0 for initialization conditions
+		c->tx.seqbase = 0;
+		c->rx.seqbase = 0;
+	}
+	c->chnflags = 0;
+	c->expack = c->tx.seqbase;
+	c->dupct = 0;
+}
+
+/*** BeginHeader xtc_new */
+XTCChan * xtc_new(XTCApp * app, uint8 chan);
+/*** EndHeader */
+xtc_nodebug
+XTCChan * xtc_new(XTCApp * app, uint8 chan)
+{
+	auto XTCChan * c;
+	auto int i;
+
+	if (chan >= app->numchans)
+		return NULL;
+	c = app->chans + chan;
+	if (!(c->state & XTC_S_CLOSED))
+		return NULL;	// Still open
+	xtc_init_chan(app, c, XTC_NEGCODE_UNKNOWN);
+	c->errcode = 0;
+	return c;
+}
+
+
+/*** BeginHeader xtc_init_app */
+int xtc_init_app(XTCApp * app, uint16 rxlen, uint16 txlen);
+/*** EndHeader */
+xtc_nodebug
+int xtc_init_app(XTCApp * app, uint16 rxlen, uint16 txlen)
+{
+	// This must be called once only, since it calls xalloc to allocate
+	// channel rx/tx buffers.
+	auto int i;
+	auto XTCChan * c;
+	
+	for (i = 0; i < app->numchans; i++) {
+		c = app->chans + i;
+		c->rx.blen = rxlen;
+		c->rx.bufp = xalloc(rxlen);
+		c->tx.blen = txlen;
+		c->tx.bufp = xalloc(txlen);
+		if (c->rx.blen < app->rxbufsize - XTC_HDRSIZE)
+			return -2;
+		if (c->tx.blen < app->txbufsize - XTC_HDRSIZE)
+			return -3;
+		c->chno = i + TC_XTC_TYPE;
+	}
+	return 0;
+}
+
+/*** BeginHeader xtc_reset */
+int xtc_reset(XTCApp * app);
+/*** EndHeader */
+xtc_nodebug
+int xtc_reset(XTCApp * app)
+{
+	// App lock must be held by caller.
+	app->negrtcount = 0;
+	xtc_sendneg(app, NULL, TC_XTC_BCAST, XTC_NEGCODE_INIT);
+	return 0;
+}
+
+
+/*** BeginHeader xtc_set_pacing */
+void xtc_set_pacing(XTCApp * app, uint8 pace);
+/*** EndHeader */
+xtc_nodebug
+void xtc_set_pacing(XTCApp * app, uint8 pace)
+{
+	// Set pacing.  This should be called before initializing the connection if non-zero
+	// pacing from peer is required.
+	app->reqpacing = pace;
+}
+
+
+/*** BeginHeader xtc_unlink_tx */
+void xtc_unlink_tx(XTCApp * app, XTCChan * c);
+/*** EndHeader */
+xtc_nodebug
+void xtc_unlink_tx(XTCApp * app, XTCChan * c)
+{
+	auto XTCChan ** p;
+
+#ifdef XTC_VERBOSE
+	//printf("unsched_tx for %02X\n", (int)c->chno);
+#endif
+	p = &app->txwait;
+	while (*p) {
+		if (*p == c) {
+			*p = c->nexttx;
+			c->nexttx = NULL;
+			return;
+		}
+		p = &(*p)->nexttx;
+	}
+}
+
+/*** BeginHeader xtc_sched_tx */
+// Add to end of FCFS queue waiting for a tx buffer.  If newstate is not 0,
+// change the state too.
+void xtc_sched_tx(XTCApp * app, XTCChan * c, uint16 newstate);
+/*** EndHeader */
+xtc_nodebug
+void xtc_sched_tx(XTCApp * app, XTCChan * c, uint16 newstate)
+{
+	auto XTCChan ** p;
+
+#ifdef XTC_VERBOSE
+	//printf("sched_tx for %02X\n", (int)c->chno);
+#endif
+	if (newstate)
+		xtc_setstate(c, newstate);
+	p = &app->txwait;
+	while (*p) {
+		if (*p == c)
+			return;				// don't sched twice!
+		p = &(*p)->nexttx;	// find end of Q
+	}
+	*p = c;
+	c->nexttx = NULL;
+}
+
+/*** BeginHeader xtc_unlink_to */
+void xtc_unlink_to(XTCApp * app, XTCChan * c);
+/*** EndHeader */
+xtc_nodebug
+void xtc_unlink_to(XTCApp * app, XTCChan * c)
+{
+	auto XTCChan ** p;
+
+#ifdef XTC_VERBOSE
+	//printf("unsched_timeout for %02X\n", (int)c->chno);
+#endif
+	p = &app->towait;
+	while (*p) {
+		if (*p == c) {
+			*p = c->nextto;
+			c->nextto = NULL;
+			return;
+		}
+		p = &(*p)->nextto;
+	}
+}
+
+/*** BeginHeader xtc_timeout_ms */
+// Compute timeout based on rtt and retransmit count.  Maximum 4 seconds, minimum
+// as specified by caller.
+uint16 xtc_timeout_ms(uint16 rtt, uint16 minrto, uint8 rtcount);
+/*** EndHeader */
+xtc_nodebug
+uint16 xtc_timeout_ms(uint16 rtt, uint16 minrto, uint8 rtcount)
+{
+	auto uint32 tt;
+	auto uint16 tto;
+	
+	tt = rtt << rtcount >> 3;
+	if (tt >= XTC_MAX_TIMEOUT)
+		return XTC_MAX_TIMEOUT;
+	tto = (uint16)tt;
+	if (tto < minrto)
+		tto = minrto;
+	return tto;
+}
+	
+
+/*** BeginHeader xtc_sched_to */
+// Schedule timeout for this channel in msec milliseconds from now, for given reason
+void xtc_sched_to(XTCApp * app, XTCChan * c, uint16 msec, uint8 rsn);
+/*** EndHeader */
+xtc_nodebug
+void xtc_sched_to(XTCApp * app, XTCChan * c, uint16 msec, uint8 rsn)
+{
+	auto XTCChan ** p, * q;
+
+#ifdef XTC_VERBOSE
+	//printf("sched_timeout for %02X\n", (int)c->chno);
+#endif
+	p = &app->towait;
+	msec += (uint16)MS_TIMER;
+	q = *p;
+	while (q) {
+		if ((int16)(q->timeout - msec) >= 0)
+			break;
+		p = &q->nextto;
+		q = *p;
+	}
+	c->nextto = q;
+	*p = c;
+	c->chnflags &= ~XTC_A_TOMASK;
+	c->chnflags |= rsn & XTC_A_TOMASK;
+	c->timeout = msec;
+}
+
+
+/*** BeginHeader xtc_find */
+// For functions which take a channel number (chan), the number ranges from 0 to
+// the max channels defined - 1.  This basically indexes the array of channel
+// structs from the application.  The chno field in the channel struct is set to
+// the index plus 0x80, which is the subtype code to use for target comms.
+#ifdef XTC_DEBUG
+	#define xtc_find(app, chan) ((chan) < (app)->numchans ? (app)->chans + (chan) : (XTCChan *)NULL)
+#else
+	#define xtc_find(app, chan) ((app)->chans + (chan))
+#endif
+/*** EndHeader */
+
+/*** BeginHeader xtc_error */
+int xtc_error(XTCApp * app, uint8 chan);
+/*** EndHeader */
+xtc_nodebug
+int xtc_error(XTCApp * app, uint8 chan)
+{
+#ifdef XTC_DEBUG
+	auto XTCChan * c;
+	
+	c = xtc_find(app, chan);
+	if (!c)
+		return -1;
+	return c->errcode;
+#else
+	return xtc_find(app, chan)->errcode;
+#endif
+}
+
+
+/*** BeginHeader xtc_estab */
+int xtc_estab(XTCApp * app, uint8 chan);
+/*** EndHeader */
+xtc_nodebug
+int xtc_estab(XTCApp * app, uint8 chan)
+{
+	auto XTCChan * c;
+	
+	c = xtc_find(app, chan);
+#ifdef XTC_DEBUG
+	if (!c)
+		return 0;
+#endif
+	if (c->state & XTC_S_CLOSED && c->errcode)
+		// special case: closed with error.  Returns established, but call to xtc_error() will
+		// return non-zero.  Returning -1 indicates opened, but aborted and no data sent/received.
+		return -1;
+	return !(c->state &
+		(XTC_S_SYNSENT|XTC_S_SFSENT|XTC_S_LISTEN|XTC_S_SFREC|XTC_S_SYNREC));
+}
+
+
+/*** BeginHeader xtc_readable */
+// Returns number of bytes ready to read in rx buffer, plus 1.  0 if channel
+// not in a readable state.  Hence the return may be considered a boolean indicating
+// that the channel is able to be read, or as the number of bytes which may be read
+// from the buffer (if 1 is subtracted).
+int xtc_readable(XTCApp * app, uint8 chan);
+/*** EndHeader */
+xtc_nodebug
+int xtc_readable(XTCApp * app, uint8 chan)
+{
+	auto XTCChan * c;
+	auto uint8 flags;
+	auto uint16 rdy;
+	
+	c = xtc_find(app, chan);
+#ifdef XTC_DEBUG
+	if (c)
+#endif
+		rdy = xbuf_ready(&c->rx, &flags);
+	if (
+#ifdef XTC_DEBUG
+		!c ||
+#endif
+		c->state & (XTC_S_SYNSENT|XTC_S_SFSENT|XTC_S_SENDNEG) ||
+		   c->state & (XTC_S_CLOSED|XTC_S_CLOSWT|XTC_S_LASTACK|XTC_S_CLOSING|XTC_S_SENDLA) && !rdy)
+		return 0;
+	return (int)rdy + 1;
+}
+
+
+/*** BeginHeader xtc_writable */
+// Returns number of bytes that may be written to the tx buffer, plus 1.  0 if channel
+// not in writable state (because not open, or pending close).
+int xtc_writable(XTCApp * app, uint8 chan);
+/*** EndHeader */
+xtc_nodebug
+int xtc_writable(XTCApp * app, uint8 chan)
+{
+	auto XTCChan * c;
+	
+	c = xtc_find(app, chan);
+	if (
+#ifdef XTC_DEBUG
+		!c ||
+#endif
+		c->tx.flags & XBUF_F_E || !(c->state & (XTC_S_ESTAB|XTC_S_CLOSWT|XTC_S_SYNSENT)))
+		return 0;
+	return (int)xbuf_window(&c->tx) + 1;
+}
+
+
+/*** BeginHeader xtc_closed */
+// Note that the channel may be closed yet readable i.e. the app did not finish reading
+// data.  xtc_readable() is a better test for closed channel when it is important that
+// all data be read.
+int xtc_closed(XTCApp * app, uint8 chan);
+/*** EndHeader */
+xtc_nodebug
+int xtc_closed(XTCApp * app, uint8 chan)
+{
+	auto XTCChan * c;
+	
+	c = xtc_find(app, chan);
+	return
+#ifdef XTC_DEBUG
+		!c ||
+#endif
+		c->state & XTC_S_CLOSED;
+}
+
+/*** BeginHeader xtc_open */
+int xtc_open(XTCApp * app, uint8 chan);
+/*** EndHeader */
+xtc_nodebug
+int xtc_open(XTCApp * app, uint8 chan)
+{
+	auto XTCChan * c;
+
+	TC_LOCK(app->lock);
+	c = xtc_new(app, chan);
+	if (!c) {
+		TC_UNLOCK(app->lock);
+		return -1;	// Still open or non-existent
+	}
+	xbuf_start(&c->tx);
+	xtc_sched_tx(app, c, XTC_S_SYNSENT);
+	TC_UNLOCK(app->lock);
+	return 0;
+}
+
+/*** BeginHeader xtc_listen */
+#ifndef FUNCPTR_PROTOTYPES
+	#define XTC_HANDLER_ARGS ()
+#else
+	#define XTC_HANDLER_ARGS (_xtcappptr app, struct _XTCChan * c, xbuf * tx, faraddr_t buf, uint16 len)
+#endif
+int xtc_listen(XTCApp * app, uint8 chan, int (*handler)XTC_HANDLER_ARGS);
+/*** EndHeader */
+xtc_nodebug
+int xtc_listen(XTCApp * app, uint8 chan, int (*handler)XTC_HANDLER_ARGS)
+{
+	auto XTCChan * c;
+	auto uint8 flags;
+
+	TC_LOCK(app->lock);
+	c = xtc_new(app, chan);
+	if (!c) {
+		TC_UNLOCK(app->lock);
+		return -1;	// Still open or non-existent
+	}
+	c->handler = handler;
+	xtc_setstate(c, XTC_S_LISTEN);
+	TC_UNLOCK(app->lock);
+	return 0;
+}
+
+
+
+
+/*** BeginHeader xtc_close */
+int xtc_close(XTCApp * app, uint8 chan);
+/*** EndHeader */
+xtc_nodebug
+int xtc_close(XTCApp * app, uint8 chan)
+{
+	auto XTCChan * c;
+	auto uint8 flags;
+	
+	c = xtc_find(app, chan);
+#ifdef XTC_DEBUG
+	if (!c)
+		return -1;
+#endif
+	TC_LOCK(app->lock);
+	if (!xtc_writable(app, chan)) {
+		if (c->state & XTC_S_LISTEN) {
+			// Rapid close, not yet established
+			xtc_setstate(c, XTC_S_CLOSED);
+			TC_UNLOCK(app->lock);
+			return 0;
+		}
+		if (c->tx.flags & XBUF_F_E || c->state & XTC_S_CLOSED) {
+			TC_UNLOCK(app->lock);
+			return -1;	// Already closing or closed
+		}
+	}
+	xbuf_end(&c->tx);
+	xtc_sched_tx(app, c, 0);
+	TC_UNLOCK(app->lock);
+	return 0;
+}
+
+/*** BeginHeader xtc_opts */
+int xtc_opts(XTCApp * app, uint8 chan, uint8 optnum, uint16 value);
+/*** EndHeader */
+xtc_nodebug
+int xtc_opts(XTCApp * app, uint8 chan, uint8 optnum, uint16 value)
+{
+	auto XTCChan * c;
+	auto uint8 * flags;
+	auto uint8 bit;
+
+	TC_LOCK(app->lock);
+	bit = 0;
+	if (optnum & 0x80) {
+		// Application-wide
+		flags = &app->aflags;
+		switch (optnum) {
+			case XTC_OPT_SERVER:
+				bit = XTC_AF_SERVER;
+				goto __TC_ret_ok;
+			case XTC_OPT_CONTROL:
+				bit = XTC_AF_CONTROL;
+				goto __TC_ret_ok;
+		}
+	}
+	else {
+		// channel-specific
+		c = xtc_find(app, chan);
+#ifdef XTC_DEBUG
+		if (!c)
+			goto __TC_ret_bad;
+#endif
+		flags = &c->chnflags;
+		switch (optnum) {
+			case XTC_OPT_NONAG:
+				bit = XTC_A_NONAG;
+				goto __TC_ret_ok;
+		}
+	}
+__TC_ret_bad:
+	TC_UNLOCK(app->lock);
+	return -1;
+__TC_ret_ok:
+	if (value)
+		*flags |= bit;
+	else
+		*flags &= ~bit;
+	TC_UNLOCK(app->lock);
+	return 0;
+}
+
+
+/*** BeginHeader xtc_abort, xtc_abort_code */
+int xtc_abort_code(XTCApp * app, uint8 chan, uint8 code);
+int xtc_abort(XTCApp * app, uint8 chan);
+/*** EndHeader */
+xtc_nodebug
+int xtc_abort_code(XTCApp * app, uint8 chan, uint8 code)
+{
+	auto XTCChan * c;
+	auto uint8 flags;
+	
+	c = xtc_find(app, chan);
+#ifdef XTC_DEBUG
+	if (!c)
+		return -1;
+#endif
+	TC_LOCK(app->lock);
+	if (c->state & (XTC_S_LISTEN|XTC_S_CLOSED))
+		xtc_setstate(c, XTC_S_CLOSED);
+	else
+		// Send reset to peer
+		xtc_sched_tx(app, c, XTC_S_SENDNEG);
+	c->errcode = code;
+	TC_UNLOCK(app->lock);
+	return 0;
+}
+
+xtc_nodebug
+int xtc_abort(XTCApp * app, uint8 chan)
+{
+	return xtc_abort_code(app, chan, XTC_NEGCODE_ABORTED);
+}
+
+
+/*** BeginHeader xtc_write, xtc_writep */
+int xtc_writep(XTCApp * app, uint8 chan, faraddr_t data, uint16 len);
+#define xtc_write(app, chan, data, len) xtc_writep(app, chan, paddr(data), len)
+/*** EndHeader */
+xtc_nodebug
+int xtc_writep(XTCApp * app, uint8 chan, faraddr_t data, uint16 len)
+{
+	auto XTCChan * c;
+	auto uint16 wlen, unacked;
+	auto uint8 flags;
+	
+	TC_LOCK(app->lock);
+	if (!xtc_writable(app, chan)) {
+		TC_UNLOCK(app->lock);
+		return -1;
+	}
+	c = xtc_find(app, chan);
+	unacked = xbuf_ready(&c->tx, &flags);
+	wlen = xbuf_window(&c->tx);
+	if (!wlen) {
+		TC_UNLOCK(app->lock);
+		return 0;
+	}
+	if (len > wlen)
+		len = wlen;
+	xbuf_append(&c->tx, data, len);
+	// If no unacked data, schedule transmit
+	if ((!unacked || c->chnflags & XTC_A_NONAG) && len)
+		xtc_sched_tx(app, c, 0);
+	TC_UNLOCK(app->lock);
+	return len;
+}
+
+
+/*** BeginHeader xtc_awrite, xtc_awritep */
+int xtc_awritep(XTCApp * app, uint8 chan, faraddr_t data, uint16 len);
+#define xtc_awrite(app, chan, data, len) xtc_awritep(app, chan, paddr(data), len)
+/*** EndHeader */
+xtc_nodebug
+int xtc_awritep(XTCApp * app, uint8 chan, faraddr_t data, uint16 len)
+{
+	auto uint16 wable;
+	auto XTCChan * c;
+	auto uint16 wlen, unacked;
+	auto uint8 flags;
+	
+	c = xtc_find(app, chan);
+#ifdef XTC_DEBUG
+	if (!c)
+		return -2;
+#endif
+	if (len > c->tx.blen)
+		return -1;
+	TC_LOCK(app->lock);
+	wable = xtc_writable(app, chan);
+	if (!wable) {
+		TC_UNLOCK(app->lock);
+		return -2;
+	}
+	if (wable <= len) {
+		TC_UNLOCK(app->lock);
+		return 0;
+	}
+	unacked = xbuf_ready(&c->tx, &flags);
+	xbuf_append(&c->tx, data, len);
+	// If no unacked data, schedule transmit
+	if (!unacked || c->chnflags & XTC_A_NONAG)
+		xtc_sched_tx(app, c, 0);
+	TC_UNLOCK(app->lock);
+	return len;
+}
+
+
+
+/*** BeginHeader xtc_flush */
+int xtc_flush(XTCApp * app, uint8 chan);
+/*** EndHeader */
+xtc_nodebug
+int xtc_flush(XTCApp * app, uint8 chan)
+{
+	auto XTCChan * c;
+	
+	if (!xtc_writable(app, chan))
+		return -1;
+	c = xtc_find(app, chan);
+	TC_LOCK(app->lock);
+	if (c->expack != xbuf_next_expected(&c->tx))
+		xtc_sched_tx(app, c, 0);
+	TC_UNLOCK(app->lock);
+	return 0;
+}
+
+
+/*** BeginHeader xtc_read, xtc_readp */
+int xtc_readp(XTCApp * app, uint8 chan, faraddr_t data, uint16 len);
+#define xtc_read(app, chan, data, len) xtc_readp(app, chan, paddr(data), len)
+/*** EndHeader */
+xtc_nodebug
+int xtc_readp(XTCApp * app, uint8 chan, faraddr_t data, uint16 len)
+{
+	auto XTCChan * c;
+	auto uint8 flags;
+	auto uint16 rdy;
+	
+	TC_LOCK(app->lock);
+	if (!xtc_readable(app, chan)) {
+		TC_UNLOCK(app->lock);
+		return -1;
+	}
+	c = xtc_find(app, chan);
+	if (data)
+		len = xbuf_read(&c->rx, &flags, data, len);
+	else {
+		// Null pointer, just discard data
+		rdy = xbuf_ready(&c->rx, &flags);
+		if (len > rdy)
+			len = rdy;
+		//printf("Discarding %d\n", len);
+	}
+	if (len)
+		xbuf_delete(&c->rx, len);
+	if (c->chnflags & XTC_A_ZWIN) {
+		// Advertised zero window.  If our rx window has opened up to at least one MTU
+		// or half the rx buffer size, then schedule an ACK with the opened window
+		rdy = xbuf_window(&c->rx);
+		if (rdy >= app->mss || rdy >= c->rx.blen>>1) {
+#ifdef XTC_VERBOSE
+			printf("Send in read because zwin (%02X)\n", (int)c->chno);
+#endif
+			xtc_sched_tx(app, c, 0);
+		}
+	}
+	TC_UNLOCK(app->lock);
+	return len;
+}
+
+
+/*** BeginHeader xtc_aread, xtc_areadp */
+int xtc_areadp(XTCApp * app, uint8 chan, faraddr_t data, uint16 len);
+#define xtc_aread(app, chan, data, len) xtc_areadp(app, chan, paddr(data), len)
+/*** EndHeader */
+xtc_nodebug
+int xtc_areadp(XTCApp * app, uint8 chan, faraddr_t data, uint16 len)
+{
+	auto XTCChan * c;
+	auto uint8 flags;
+	auto uint16 rdable;
+	auto int rc;
+	
+	TC_LOCK(app->lock);
+	if (!(rdable = xtc_readable(app, chan))) {
+		TC_UNLOCK(app->lock);
+		return -2;
+	}
+	c = xtc_find(app, chan);
+	if (len > c->rx.blen)
+		rc = -1;
+	else if (rdable <= len) {
+		if (c->state & (XTC_S_CLOSED|XTC_S_CLOSWT|XTC_S_LASTACK|XTC_S_CLOSING|XTC_S_SENDLA))
+			rc = -2;	// Data in buffer, but not as much as requested, and will not get any more.
+		else
+			rc = 0;
+	}
+	else {
+		xbuf_read(&c->rx, &flags, data, len);
+		xbuf_delete(&c->rx, len);
+		rc = (int)len;
+	}
+	TC_UNLOCK(app->lock);
+	return rc;
+}
+
+
+/*** BeginHeader xtc_preread, xtc_prereadp */
+int xtc_prereadp(XTCApp * app, uint8 chan, faraddr_t data, uint16 len);
+#define xtc_preread(app, chan, data, len) xtc_prereadp(app, chan, paddr(data), len)
+/*** EndHeader */
+xtc_nodebug
+int xtc_prereadp(XTCApp * app, uint8 chan, faraddr_t data, uint16 len)
+{
+	auto XTCChan * c;
+	auto uint8 flags;
+	
+	if (!xtc_readable(app, chan))
+		return -1;
+	TC_LOCK(app->lock);
+	c = xtc_find(app, chan);
+	len = xbuf_read(&c->rx, &flags, data, len);
+	TC_UNLOCK(app->lock);
+	return len;
+}
+
+
+
+/*** BeginHeader print_data */
+void print_data(int clr, faraddr_t b, int len);
+/*** EndHeader */
+xtc_nodebug
+void print_data(int clr, faraddr_t b, int len)
+{
+#ifdef XTC_PRINTPKT
+	auto char buf[16];
+	auto char pb[65];
+	auto int i, j, k;
+	auto uint8 c;
+	
+
+	for (i = 0; i < len; i+=16) {
+		xmem2root(buf, b + i, 16);
+		memset(pb, ' ', sizeof(pb));
+		for (j = i; j < len && j < i+16; j++) {
+			c = buf[k = j-i];
+			k *= 3;
+			pb[k] = "0123456789abcdef"[c>>4];
+			pb[k+1] = "0123456789abcdef"[c&15];
+			k = j-i + 50;
+			if (c < ' ' || c > 0x7e)
+				pb[k] = '.';
+			else
+				pb[k] = c;
+				
+		}
+		pb[k+1] = 0;
+		if (clr)
+			printf("%s%s%s\n", rxcolor, pb, dfltcolor);
+		else
+			printf("%s%s%s\n", txcolor, pb, dfltcolor);
+	}
+#endif // XTC_PRINTPKT
+}
+
+
+/*** BeginHeader xtc_callback */
+#ifdef __DC__
+root
+#endif
+int xtc_callback(uint16 flags, uint8 type, uint8 subtype, uint16 length,
+								faraddr_t buffer, long userdata);
+/*** EndHeader */
+
+#ifdef __DC__
+nodebug
+root
+#endif
+int xtc_callback(uint16 flags, uint8 type, uint8 subtype, uint16 length,
+								faraddr_t buffer, long userdata)
+{
+	auto XTCApp * app;
+#ifdef MS_PROTO
+	static int tog;
+	#GLOBAL_INIT { tog = 0; }
+#endif
+
+	app = (XTCApp *)userdata;
+
+	if (flags & TC_RECEIVE) {
+#ifdef MS_PROTO
+		DEVBOARD_LED1_SET(tog = !tog);
+#endif
+		_tc_queue_buffer(&app->rxprocessing, buffer); // place rx buffer on queue
+	}
+	else if (flags & TC_TXDONE) {
+		_tc_queue_buffer(&app->txbuffQ, buffer); // return tx buffer
+		app->txrdy++;
+	}
+	return 0;
+}
+
+
+/*** BeginHeader xtc_timeout */
+void xtc_timeout(XTCApp * app);
+/*** EndHeader */
+xtc_nodebug
+void xtc_timeout(XTCApp * app)
+{
+	auto XTCChan * c;
+
+	c = app->towait;
+	xtc_unlink_to(app, c);	// Remove it from timer queue
+
+	if (c->rtcount < 8)
+		c->rtcount++;
+#ifdef XTC_VERBOSE
+	printf("Timeout popped %02X, rtcount = %d\n", (int)c->chno, (int)c->rtcount);
+#endif
+	// Reset expected ack so that we retransmit from the start
+	c->expack = xbuf_first_seq(&c->tx);
+	xtc_sched_tx(app, c, 0);
+}
+
+
+/*** BeginHeader xtc_sendref */
+int xtc_sendref(XTCApp * app, uint8 chan, XTCHdr * h, int negpkt, xbuf_ref * ref);
+/*** EndHeader */
+xtc_nodebug
+int xtc_sendref(XTCApp * app, uint8 chan, XTCHdr * h, int negpkt, xbuf_ref * ref)
+{
+#ifdef TC_NEEDS_XFORM
+	auto uint8 hbuf[XTC_NEGSIZE];		// Storage for packed header
+	auto uint8 temp;
+#endif
+	auto faraddr_t buffer;
+	auto int rc, i, len;
+#ifdef XTC_PRINTPKT
+	auto XTCChan * c;
+#endif
+#ifdef MS_PROTO
+	static int tog;
+	#GLOBAL_INIT { tog = 0; }
+#endif
+
+	buffer = _tc_get_buffer(&app->txbuffQ);
+	if (!buffer)
+		return -3;
+	
+	if (negpkt)
+		len = XTC_NEGSIZE;
+	else
+		len = XTC_HDRSIZE;
+
+#ifdef TC_NEEDS_XFORM
+	// Pack header or neg data into wire format
+	hbuf[0] = h->flags;
+	hbuf[1] = (uint8)h->seqnum;
+	hbuf[2] = (uint8)(h->seqnum >> 8);
+	hbuf[3] = (uint8)h->acknum;
+	hbuf[4] = (uint8)(h->acknum >> 8);
+	if (negpkt) {
+		// This assumes rest of neg packet (mss and beyond) is already packed, which it should be
+		// since it's arranged in largest to smallest field order.
+		memcpy(hbuf + XTC_HDRSIZE, &((XTCNeg *)h)->mss, XTC_NEGSIZE - XTC_HDRSIZE);
+		#ifdef TC_BIG_ENDIAN
+			// Swap mss field only
+			temp = hbuf[XTC_HDRSIZE];
+			hbuf[XTC_HDRSIZE] = hbuf[XTC_HDRSIZE+1];
+			hbuf[XTC_HDRSIZE+1] = temp;
+		#endif
+	}
+#endif
+
+#ifdef MS_PROTO
+	DEVBOARD_LED0_SET(tog = !tog);
+#endif
+
+#ifdef XTC_PRINTPKT
+	c = xtc_find(app, chan&TC_XTC_MASK);
+	printf("%sSnd %2X len=%3u f=%s%s%s%s w=%1X seq=%5u ack=%5u%s\n",
+		txcolor,
+		(int)chan,
+		ref ? ref->len1+ref->len2 : 0,
+		h->flags & XTC_F_SYN ? "S" : " ",
+		h->flags & XTC_F_ACK ? "A" : " ",
+		h->flags & XTC_F_FIN ? "F" : " ",
+		h->flags & XTC_F_NEG ? "N" : " ",
+		(int)(h->flags & XTC_M_WIN),
+		h->seqnum,
+		h->acknum,
+		dfltcolor
+		);
+#ifdef XTC_PRINTPKT_DATA
+	if (ref) {
+		print_data(0, ref->buf1, ref->len1);
+		if (ref->len2)
+			print_data(0, ref->buf2, ref->len2);
+	}
+#endif
+#ifdef XTC_PRINTPKT_XBUF
+	if ((chan & TC_XTC_MASK) != TC_XTC_MASK) {
+		printf("%s  base=%u p0=%u(%u) p1=%u(%u) f=%2X%s\n",
+			txcolor,
+			c->tx.seqbase,
+			c->tx.p0, c->tx.seqbase+c->tx.p0,
+			c->tx.p1, c->tx.seqbase+c->tx.p1,
+			(int)c->tx.flags,
+			dfltcolor
+			);
+	}
+#endif
+#endif	
+
+	app->txrdy--;
+
+#ifdef TC_NEEDS_XFORM
+	root2xmem(buffer + sizeof(_TCHeader), (char *)hbuf, len);
+#else
+	root2xmem(buffer + sizeof(_TCHeader), (char *)h, len);
+#endif
+	if (ref) {
+		len += sizeof(_TCHeader);
+		if (ref->len1) {
+			xmem2xmem(buffer + len, ref->buf1, ref->len1);
+			len += ref->len1;
+		}
+		if (ref->len2) {
+			xmem2xmem(buffer + len, ref->buf2, ref->len2);
+			len += ref->len2;
+		}
+		len -= sizeof(_TCHeader);
+	}
+	rc = app->sendfunc(app->appno, chan, len, buffer, (long)app);
+	return rc;
+}
+
+
+/*** BeginHeader xtc_sendneg */
+void xtc_sendneg(XTCApp * app, XTCChan * c, uint8 chan, uint8 code);
+/*** EndHeader */
+
+xtc_nodebug
+void xtc_sendneg(XTCApp * app, XTCChan * c, uint8 chan, uint8 code)
+{
+	auto XTCNeg n;
+	auto uint16 s;
+
+	if (!(app->aflags & XTC_AF_READY)) {
+		chan = TC_XTC_BCAST;
+		code = XTC_NEGCODE_INIT;
+	}
+
+	if (chan == TC_XTC_BCAST) {
+		c = NULL;
+		app->aflags |= XTC_AF_BCASTNEG;
+		app->negrsn = code;
+	}
+	
+	if (!app->txrdy) {
+		if (chan == TC_XTC_BCAST)
+			app->negto = (uint16)MS_TIMER + 100;	// Try again in 100 ms (waiting for tx buffer)
+		return;		// Forget it for the moment if no tx buffer
+	}
+	n.h.flags = XTC_F_NEG;		// NEG + Version 0
+	n.maxchans = app->numchans;
+	n.negcode = code;
+	n.pacing = (uint8)app->reqpacing;
+	n.mss = app->rxbufsize - XTC_HDRSIZE;
+	if (c) {
+		xbuf_discard(&c->rx);
+		n.h.acknum = xbuf_next_expected(&c->rx);
+		n.h.seqnum = c->rx.blen;
+#ifdef XTC_HELPFUL
+		for (s = c->pstate, n.state = 0; s > 1; s >>= 1, n.state++);
+		memcpy(n.data, c, sizeof(n.data));
+#endif
+		if (c->pstate & XTC_S_LISTEN)
+			// Bounce back to listen state if sent NEG from that state
+			xtc_setstate(c, c->pstate);
+	}
+	else {
+		n.h.acknum = 0;
+		n.h.seqnum = n.mss;
+		if (chan == TC_XTC_BCAST)
+			if (code == XTC_NEGCODE_INIT)
+				// Expo backoff retry, but only if broadcast INIT
+				app->negto = (uint16)MS_TIMER + xtc_timeout_ms(app->rtt, app->minrto, app->negrtcount+2);
+			else
+				app->aflags &= ~XTC_AF_BCASTNEG;
+	}
+#ifdef XTC_VERBOSE
+	printf("Sending NEG: %2X mss=%u code=%u\n", (int)(c ? c->chno : 0xFF), n.mss, (int)n.negcode);
+#endif
+	xtc_sendref(app, chan, &n.h, 1, NULL);
+
+}
+
+
+/*** BeginHeader xtc_tick */
+void xtc_tick(XTCApp * app);
+/*** EndHeader */
+
+xtc_nodebug
+void xtc_tick(XTCApp * app)
+{
+	// App lock must be held by caller.
+	
+	auto faraddr_t bufferpointer;
+	auto _TCHeader header;
+	auto int rc;
+
+	// Turn off pacing hold if timeout expired
+	if (app->pacing && (int16)((uint16)MS_TIMER - app->paceto) > 0)
+		app->pacehold = 0;
+
+	// Process incoming packets
+	if (bufferpointer = _tc_get_buffer(&app->rxprocessing)) {
+		xmem2root(&header, bufferpointer, sizeof(_TCHeader));
+		if ((uint8)header.subtype < TC_XTC_TYPE) {
+			// Not one of ours, pass to registered handler if any
+			if (app->tc_handler)
+				app->tc_handler(app, &header, bufferpointer + sizeof(_TCHeader));
+		}
+		else {
+			if (app->pacing) {
+				app->paceto = (uint16)MS_TIMER + app->pacing;
+				app->pacehold = 1;
+			}
+			xtc_handler(app, header.subtype, bufferpointer + sizeof(_TCHeader), header.length);
+		}
+
+		rc = app->recvbuf(app->appno, sizeof(_TCHeader) + app->rxbufsize, bufferpointer, (long)app);
+		//printf("XTC: returned buffer %lx to app %d\n", bufferpointer, (int)app->appno);
+#ifdef XTC_VERBOSE
+		if (rc)
+			printf("recvbuf error?\n");
+#endif
+	}
+
+	if (app->txrdy) {
+		if (app->aflags & XTC_AF_BCASTNEG &&
+	   	 (int16)((uint16)MS_TIMER - app->negto) >= 0) {
+			// If waiting for broadcast NEG reponse, check if retransmit required.
+			// Broadcast NEG has highest priority for use of TX buffer, since it is
+			// resetting the entire state.
+			if (app->negrtcount < 8)
+				app->negrtcount++;
+			xtc_sendneg(app, NULL, TC_XTC_BCAST, app->negrsn);
+			if (app->negrsn != XTC_NEGCODE_INIT)
+				app->aflags &= ~XTC_AF_BCASTNEG;	// Only do once if not INIT.
+		}
+		else if (app->txwait)
+			// If there is a channel waiting for a tx buffer, and tx buffer available,
+			// call tx processing.  This is subject to "pacing".  Pacing is a minimum
+			// time interval (specified by the peer) between receipt/transmission of the
+			// last packet by us, and us sending the next packet.  This allows the peer
+			// to throttle our transmissions to a maximum allowable rate.  Very useful
+			// when the peer must action something based on our last request, but the
+			// action requires that the peer becomes "deaf" temporarily, for example
+			// when writing to program flash.
+			if (!app->pacing || !app->pacehold)
+				xtc_transmit(app);
+	}
+
+	// If there is a channel with expired timeout, process the timeout
+	if (app->towait && (int16)((uint16)MS_TIMER - app->towait->timeout) >= 0)
+		xtc_timeout(app);
+
+}
+
+/*** BeginHeader xtc_transmit */
+void xtc_transmit(XTCApp * app);
+/*** EndHeader */
+xtc_nodebug
+void xtc_transmit(XTCApp * app)
+{
+	auto XTCChan * c;
+	auto XTCHdr h;
+	auto uint8 f, flags, ourwin;
+	auto uint16 len, bwin;
+	auto xbuf_ref ref;
+
+	c = app->txwait;
+	xtc_unlink_tx(app, c);	// Remove it from FCFS queue
+
+	if (c->state & XTC_S_SENDNEG) {
+		xtc_sendneg(app, c, c->chno, c->errcode ? c->errcode : XTC_NEGCODE_RESET);
+		xtc_setstate(c, c->pstate & XTC_S_LISTEN ? XTC_S_LISTEN : XTC_S_CLOSED);
+		return;
+	}
+
+	if (c->dupct >= 2) {
+#ifdef XTC_VERBOSE
+		printf("Resetting transmit seq %02X\n", (int)c->chno);
+#endif
+		c->expack = xbuf_first_seq(&c->tx);
+		c->dupct = 0;
+	}
+	len = app->mss;	// Max to extract
+	if (!(c->state & (XTC_S_SFSENT|XTC_S_SYNSENT))) {
+		bwin = c->endwin - c->expack;	// How much of his window?
+		if (!bwin && c->expack == xbuf_first_seq(&c->tx)) {
+			// 2nd condition ensures don't force window open if there is still
+			// unacknowledged tx data.  We wait for him to catch up before trying
+			// to advance into closed window.
+#ifdef XTC_VERBOSE
+			printf("His window zero %02X\n", (int)c->chno);
+#endif
+			len = 1;		// Force open to 1 byte if his window closed
+		}
+		else if (len > bwin)
+			len = bwin;
+	}
+	else
+		bwin = app->mss;	// Initial assumed window of 1 MSS
+	len = xbuf_extract(&c->tx, &f, c->expack, &ref, len);
+	if (!(c->state & (XTC_S_SFSENT|XTC_S_SYNSENT)))
+		f |= XTC_F_ACK;
+	if (f & XTC_F_FIN) {
+	   if (c->state & (XTC_S_ESTAB|XTC_S_CLOSWT))
+			xtc_setstate(c, c->state & XTC_S_ESTAB ? XTC_S_FINWT1 : XTC_S_LASTACK);
+		else if (c->state & XTC_S_SYNSENT)
+			xtc_setstate(c, XTC_S_SFSENT);
+	}
+	
+	h.flags = f;
+	h.seqnum = c->expack;
+	if (bwin)
+		// Only advance expectation if his window is open (otherwise it's probably
+		// a waste of bandwidth to advance any further).
+		c->expack += len;
+	if (f & XTC_F_SYN)
+		c->expack++;
+	if (f & XTC_F_FIN)
+		c->expack++;
+	h.acknum = xbuf_next_expected(&c->rx);
+	bwin = xbuf_window(&c->rx);
+	for (ourwin = 0; bwin > 1; bwin >>= 1, ourwin++);	// Compute floor log base 2
+	h.flags |= ourwin;
+	if (!ourwin)
+		c->chnflags |= XTC_A_ZWIN;	// Remember that we advertised zero window
+	else
+		c->chnflags &= ~XTC_A_ZWIN;
+	xtc_sendref(app, c->chno, &h, 0, &ref);
+	if ((int)(h.seqnum+len - c->rtseq) > 0 || f & XTC_F_SYN) {
+		if (!(c->chnflags & XTC_A_SAMPLE)) {
+			//printf("transmit seq %u->%u\n", c->rtseq, h.seqnum);
+			c->rtseq = h.seqnum+1;
+			c->rtstart = (uint16)MS_TIMER;
+			c->chnflags |= XTC_A_SAMPLE;
+		}
+	}
+	else {
+		c->chnflags &= ~XTC_A_SAMPLE;	// Retransmission, don't sample (Karn's algo)
+		//printf("retransmit seq %u\n", h.seqnum);
+	}
+	
+	// Schedule next timeout.  Starts at estimated RTT, plus exponential backoff
+	// for retransmissions.
+	if (xbuf_used(&c->tx)) {
+		// Schedule retransmit timeout if he has not acked everything we sent
+		xtc_unlink_to(app, c);	// Remove it from timeout queue.  This is rarely needed, but must
+										// ensure not queued twice!
+		xtc_sched_to(app, c, xtc_timeout_ms(app->rtt, app->minrto, c->rtcount), XTC_TO_RETRANS);
+	}
+	else if (c->state & XTC_S_SENDLA)
+		xtc_setstate(c, XTC_S_CLOSED);
+
+	// If pacing, throttle next transmission
+	if (app->pacing) {
+		app->paceto = (uint16)MS_TIMER + app->pacing;
+		app->pacehold = 1;
+	}
+}
+
+
+
+
+/*
+ * Handlers for the various packets we get from the SP.
+ */
+/*** BeginHeader xtc_set_mss */
+void xtc_set_mss(XTCApp * app, uint16 mss);
+/*** EndHeader */
+
+xtc_nodebug
+void xtc_set_mss(XTCApp * app, uint16 mss)
+{
+	if (mss < app->txbufsize - XTC_HDRSIZE)
+		app->mss = mss;
+	else
+		app->mss = app->txbufsize - XTC_HDRSIZE;
+}
+
+
+/*** BeginHeader xtc_pktrec */
+// Main demultiplexed packet receive handler.
+void xtc_pktrec(XTCApp * app, XTCChan * c, XTCHdr * h, faraddr_t b, uint16 len);
+/*** EndHeader */
+
+xtc_nodebug
+void xtc_pktrec(XTCApp * app, XTCChan * c, XTCHdr * h, faraddr_t b, uint16 len)
+{
+	auto XTCNeg nn;
+	auto XTCChan * pc;
+	auto int rc, adv, unack, gap;
+	auto uint16 hiswin, rttsamp, newstate, xlen;
+	auto uint8 gotsyn, gotfin, gotack, whichack, acksyn, ackfin,
+			flags, retrfin, retrsyn, aflags;
+
+	xtc_unlink_to(app, c);
+	xtc_unlink_tx(app, c);
+	newstate = 0;		// No state change
+	if (h->flags & XTC_F_NEG) {
+		// Negotiate/reset?
+		xmem2root(&nn.h + 1, b, sizeof(nn) - sizeof(nn.h));
+		
+#ifdef XTC_VERBOSE
+		printf(" Rcv NEG: mss=%u code=%u pacing=%u\n", nn.mss, (int)nn.negcode, (int)nn.pacing);
+#endif
+#ifdef XTC_HELPFUL
+		pc = (XTCChan *)nn.data;
+		printf("   tx. flags=%x seqbase=%u p0=%u p1=%u\n",
+			(int)pc->tx.flags, pc->tx.seqbase, pc->tx.p0, pc->tx.p1);
+		printf("   rx. flags=%x seqbase=%u p0=%u p1=%u\n",
+			(int)pc->rx.flags, pc->rx.seqbase, pc->rx.p0, pc->rx.p1);
+#endif
+		c->tx.flags = 0;
+		c->tx.seqbase = h->acknum;	// Set initial sequence as he wants
+		xtc_set_mss(app, nn.mss);
+		app->pacing = nn.pacing;
+		if (c->state & XTC_S_LISTEN)
+			return;
+		xtc_init_chan(app, c, nn.negcode);
+		c->errcode = nn.negcode + 100;
+		return;
+	}
+
+	retrfin = h->flags & XTC_F_FIN;
+	retrsyn = h->flags & XTC_F_SYN;
+	gotack = h->flags & XTC_F_ACK;
+	if (c->state & (XTC_S_CLOSED|XTC_S_LISTEN|XTC_S_SENDNEG|XTC_S_SENDLA|XTC_S_SYNSENT|XTC_S_SFSENT)) {
+		if (c->state & (XTC_S_SENDNEG|XTC_S_SENDLA)) {
+			// Complete the transmission
+			xtc_sched_tx(app, c, 0);
+			return;
+		}
+		// In closed state, we may receive retransmitted FIN from previous session.  This is OK
+		// so long as the sequence numbers match (we just ACK it).  -- this depends on
+		// tx buffer having been empty before entering current state.
+		xlen = 0;
+		if (retrfin)
+			xlen++;
+		if (retrsyn)
+			xlen++;
+		if (retrfin && gotack && h->acknum == xbuf_first_seq(&c->tx) &&
+			 h->seqnum + len + xlen == xbuf_next_expected(&c->rx)) {
+#ifdef XTC_VERBOSE
+			printf("ACKing old FIN\n");
+#endif
+			xtc_sched_tx(app, c, 0);
+			return;
+		}
+		if (c->state & ~(XTC_S_LISTEN|XTC_S_SYNSENT|XTC_S_SFSENT)) {
+			if (c->state & XTC_S_CLOSED && retrsyn && h->seqnum == xbuf_next_expected(&c->rx))
+				// New syn for currently closed channel.  Just ignore this for now in the expectation
+				// that the app is going to listen on this channel again.
+				return;
+			// not listen or synsent, must be error.  Else perform more tests.
+			c->errcode = 70;
+			goto __TC_sendneg;
+		}
+
+		// Must be listen or synsent
+		if (!retrsyn) {
+			// Require SYN in this state
+			c->errcode = 80;
+			goto __TC_sendneg;
+		}
+	}
+
+	// Put data into rx buffer
+	aflags = h->flags;
+	rc = xbuf_insert(&c->rx, &aflags, h->seqnum, b, len);
+	gap = rc == -1;	// gap in transmission
+	adv = rc > 0;		// advanced, i.e. we need to ack new data
+	if (!adv && h->seqnum != xbuf_last_seq(&c->rx)) {
+		// No advance, maybe he missed our ACK.
+		c->dupct++;
+#ifdef XTC_VERBOSE
+		printf("Dupct increased to %d because no advance\n", (int)c->dupct);
+#endif
+		if (c->dupct > 1)
+			adv = 1;		// Force retransmission
+	}
+	gotsyn = aflags & XTC_F_SYN;
+	gotfin = aflags & XTC_F_FIN;
+	retrfin &= ~gotfin;	// retrfin set if retransmitted FIN
+	retrsyn &= ~gotsyn;
+	if (retrsyn && c->state & (XTC_S_LISTEN|XTC_S_SYNSENT|XTC_S_SFSENT) && h->seqnum != xbuf_first_seq(&c->rx)) {
+		// Syn must always be start of buffer in these states.
+		c->errcode = 79;
+		goto __TC_sendneg;
+	}
+
+	// Handle ACK of our tx buffer
+	acksyn = 0;
+	ackfin = 0;
+	unack = 1;
+	whichack = 0;
+	if (gotack) {
+		whichack = xbuf_acked(&c->tx, h->acknum);
+		unack = h->acknum != c->expack;	// If still unacked tx data
+		if (!whichack && unack) {
+			c->dupct++;
+#ifdef XTC_VERBOSE
+			printf("Dupct increased to %d because unacknowledged\n", (int)c->dupct);
+#endif
+		}
+		else if (whichack) {
+#ifdef XTC_VERBOSE
+			//printf("Ack advanced, reset dupct\n");
+#endif
+			c->dupct = 0;
+		}
+		acksyn = whichack & XTC_F_SYN;
+		ackfin = whichack & XTC_F_FIN;
+		if (rc && c->chnflags & XTC_A_SAMPLE)
+			if ((int)(h->acknum - c->rtseq) >= 0) {
+				// Acked a sequence that we were timing.  Update rtt estimator
+				rttsamp = (uint16)MS_TIMER - c->rtstart;
+				if (rttsamp > 2000)
+					rttsamp = 2000;
+				app->rtt = app->rtt - (app->rtt >> 3) + rttsamp;
+				//printf("....RTT now %ums (samp=%u)\n", app->rtt >> 3, rttsamp);
+				c->chnflags &= ~XTC_A_SAMPLE;
+			}
+			//else
+			//	printf("no ack adv: seq=%u\n", c->rtseq);
+	}
+	//printf("*** gs=%d gf=%d as=%d af=%d rf=%d adv=%d unack=%d\n",
+	//	!!gotsyn, !!gotfin, !!acksyn, !!ackfin, !!retrfin, !!adv, unack);
+
+	if (whichack || !gotack)
+		// Reset retransmit counter
+		c->rtcount = 0;
+		
+	// Get his window
+	hiswin = 1u << (h->flags & XTC_M_WIN);
+	if (hiswin == 1)
+		// If only 1, assume zero, since both 0 and 1 are coded as 0.
+		hiswin = 0;
+	if (gotack) {
+		hiswin += h->acknum;		// Convert to equivalent sequence number
+		if ((int16)(hiswin - c->endwin) > 0)
+			c->endwin = hiswin;	// His right edge of receive window has advanced - it cannot regress.
+	}
+	else
+		c->endwin = xbuf_first_seq(&c->tx) + hiswin;
+
+	// If no state change, bypass all the following tests.
+	if (!(gotsyn|gotfin|acksyn|ackfin))
+		goto __TC_transmit_decision;
+
+	// Basic flags validity check
+	if (gotsyn && !(c->state & (XTC_S_SFSENT|XTC_S_SYNSENT|XTC_S_LISTEN))) {
+		c->errcode = 73;
+		goto __TC_sendneg;
+	}
+		
+	// Change state as appropriate
+	if (c->state & XTC_S_ESTAB && gotfin) {
+		newstate = XTC_S_CLOSWT;
+	}
+	else if (c->state & XTC_S_SFSENT) {
+		if (gotsyn && gotfin && ackfin)
+			newstate = XTC_S_SENDLA;
+		else if (gotsyn && !gotfin && acksyn)
+			newstate = XTC_S_FINWT1;
+		else {
+			c->errcode = 74;
+			goto __TC_sendneg;	// bad response to transaction
+		}
+	}
+	else if (c->state & XTC_S_SYNSENT) {
+		if (gotsyn && acksyn && !gotfin) {
+			newstate = XTC_S_ESTAB;
+		}
+		else {
+			c->errcode = 75;
+#ifdef XTC_HELPFUL
+			if (gotsyn)
+				c->errcode += 10;
+			if (acksyn)
+				c->errcode += 20;
+			if (!gotfin)
+				c->errcode += 40;
+#endif
+			goto __TC_sendneg;
+		}
+	}
+	else if (c->state & XTC_S_LISTEN) {
+		if (gotsyn && !gotfin) {
+			xbuf_start(&c->tx);
+			newstate = XTC_S_SYNREC;
+		}
+		else if (gotsyn && gotfin) {
+			xbuf_start(&c->tx);
+			if (c->handler) {
+				// Handler may use xbuf_append() to add reply data.
+				rc = c->handler(app, c, &c->tx, b, len);
+				if (rc < 0) {
+					c->errcode = 81;
+					goto __TC_sendneg;
+				}
+			}
+			xbuf_end(&c->tx);
+			newstate = XTC_S_SFREC;
+		}
+		else {
+#ifdef XTC_VERBOSE
+			printf("LISTEN: gotsyn=%d gotfin=%d\n", (int)gotsyn, (int)gotfin);
+#endif
+			c->errcode = 76;
+			goto __TC_sendneg;
+		}
+	}
+	else if (c->state & XTC_S_SYNREC) {
+		if (acksyn && !gotfin)
+			xtc_setstate(c, XTC_S_ESTAB);
+		else if (acksyn && gotfin)
+			newstate = XTC_S_CLOSWT;
+		else {
+			c->errcode = 77;
+			goto __TC_sendneg;
+		}
+	}
+	else if (c->state & XTC_S_SFREC) {
+		if (ackfin) {
+			xtc_setstate(c, XTC_S_CLOSED);
+			return;
+		}
+		c->errcode = 78;
+		goto __TC_sendneg;	// bad response to transaction
+	}
+	else if (c->state & XTC_S_FINWT1) {
+		if (gotfin && !ackfin)
+			newstate = XTC_S_CLOSING;
+		else if (gotfin && ackfin)
+			newstate = XTC_S_SENDLA;
+		else if (ackfin)
+			newstate = XTC_S_FINWT2;
+	}
+	else if (c->state & XTC_S_FINWT2 && gotfin)
+		newstate = XTC_S_SENDLA;
+	else if (c->state & (XTC_S_LASTACK|XTC_S_CLOSING) && ackfin) {
+		xtc_setstate(c, XTC_S_CLOSED);
+		return;
+	}
+
+	// Make decision about whether to transmit, or timeout waiting for response.
+	// Transmit immediately if peer sent data that we need to acknowledge (adv),
+	// or if the peer sent ahead of time (gap, i.e. we must have missed a previous segment),
+	// or if we have new data to send, or if entering a new state, or if we adversised a
+	// zero window previously, but now can receive at least one MSS.
+	// Otherwise, if we have any unacknowledged transmit data a timeout is scheduled.
+__TC_transmit_decision:
+	if (adv || gap || (int16)(xbuf_next_expected(&c->tx) - c->expack) > 0 || newstate ||
+		 c->chnflags & XTC_A_ZWIN && xbuf_window(&c->rx) >= app->mss)
+		xtc_sched_tx(app, c, newstate);
+	else if (xbuf_used(&c->tx))
+		xtc_sched_to(app, c, xtc_timeout_ms(app->rtt, app->minrto, c->rtcount+2), XTC_TO_RETRANS);
+		
+	return;
+	
+__TC_sendneg:
+	xtc_sched_tx(app, c, XTC_S_SENDNEG);
+	return;
+}
+
+/*** BeginHeader xtc_handler */
+void xtc_handler(XTCApp * app, uint8 chan, faraddr_t b, uint16 len);
+/*** EndHeader */
+
+/*
+ * Main handler for packets received from DeviceMate for XTC apps.
+ * app points to the registered application XTC state.  chan is the channel
+ * number (0x80-0xFE, or 0xFF for broadcast).  h is the XTC packet header,
+ * b is the paddr of the data payload, len is length of that data.
+ * Caller (tick fn.) is responsible for returning buffer to Rx queue.
+ */
+xtc_nodebug
+void xtc_handler(XTCApp * app, uint8 chan, faraddr_t b, uint16 len)
+{
+#ifdef TC_NEEDS_XFORM
+	auto uint8 hbuf[XTC_NEGSIZE];
+#endif
+	auto int i, autoopen;
+	auto XTCChan * c;
+	auto XTCNeg nn;
+#ifdef XTC_DROP
+	static uint16 drop;
+	#ifdef __DC__
+		#GLOBAL_INIT { drop = 0; }
+	#endif
+#endif
+
+	if (len < XTC_HDRSIZE)
+		return;
+
+#ifdef TC_NEEDS_XFORM
+	xmem2root((char *)hbuf, b, XTC_HDRSIZE);
+	nn.h.flags = hbuf[0];
+	nn.h.seqnum = (uint16)hbuf[2] << 8 | hbuf[1]; 
+	nn.h.acknum = (uint16)hbuf[4] << 8 | hbuf[3]; 
+#else
+	xmem2root((char *)&nn.h, b, XTC_HDRSIZE);
+#endif
+	b += XTC_HDRSIZE;
+	len -= XTC_HDRSIZE;
+	
+
+#ifdef XTC_PRINTPKT
+	printf("%sRcv %2X len=%3u f=%s%s%s%s w=%1X seq=%5u ack=%5u%s\n",
+		rxcolor,
+		(int)chan,
+		len,
+		nn.h.flags & XTC_F_SYN ? "S" : " ",
+		nn.h.flags & XTC_F_ACK ? "A" : " ",
+		nn.h.flags & XTC_F_FIN ? "F" : " ",
+		nn.h.flags & XTC_F_NEG ? "N" : " ",
+		(int)(nn.h.flags & XTC_M_WIN),
+		nn.h.seqnum,
+		nn.h.acknum,
+		dfltcolor
+		);
+#ifdef XTC_PRINTPKT_DATA
+	print_data(1, b, len);
+#endif
+#ifdef XTC_PRINTPKT_XBUF
+	if ((chan & TC_XTC_MASK) != TC_XTC_MASK) {
+		c = xtc_find(app, chan & TC_XTC_MASK);
+		printf("%s  base=%u p0=%u(%u) p1=%u(%u) f=%2X%s\n",
+			rxcolor,
+			c->rx.seqbase,
+			c->rx.p0, c->rx.seqbase+c->rx.p0,
+			c->rx.p1, c->rx.seqbase+c->rx.p1,
+			(int)c->rx.flags,
+			dfltcolor
+			);
+	}
+#endif
+#endif
+
+#ifdef XTC_DROP
+	drop++;
+	if (drop >= XTC_DROP) {
+		printf("Above packet dropped!\n");
+		drop = 0;
+		return;
+	}
+#endif
+	
+	if (chan == TC_XTC_BCAST) {
+		if (!(nn.h.flags & XTC_F_NEG))
+			return;	// Ignore if not NEG packet
+		// Assumes packed storage
+		xmem2root(&nn.mss, b, XTC_NEGSIZE - XTC_HDRSIZE);
+#ifdef TC_BIG_ENDIAN
+		nn.mss = nn.mss >> 8 | nn.mss << 8;
+#endif
+		xtc_set_mss(app, nn.mss);
+		app->pacing = nn.pacing;
+#ifdef XTC_VERBOSE
+		printf("   Rcv NEG: mss=%u code=%u\n", nn.mss, (int)nn.negcode);
+#endif
+		app->aflags &= ~XTC_AF_BCASTNEG;
+		app->aflags |= XTC_AF_READY;	// Ready, since got bcast neg.
+		// Auto control channel.  If it's currently closed with no error, set
+		// a flag to open or re-open it.
+		autoopen = app->aflags & XTC_AF_CONTROL && xtc_closed(app, 0) && !xtc_error(app, 0);
+		for (i = 0; i < app->numchans; i++) {
+			c = app->chans + i;
+			xtc_init_chan(app, c, nn.negcode);
+			c->errcode = nn.negcode;
+		}
+		if (nn.negcode == XTC_NEGCODE_INIT || nn.negcode == XTC_NEGCODE_NOCHAN)
+			// Respond with bcast neg init response.
+			xtc_sendneg(app, NULL, chan, XTC_NEGCODE_INITR);
+
+		if (autoopen)
+			// If classed as a "server", the "control channel" (0) is
+			// automatically set to listen state, ready for the "client" to connect, else
+			// active open (client->server).
+			if (app->aflags & XTC_AF_SERVER) {
+				xtc_listen(app, 0, NULL);
+			} else {
+				//xtc_open(app, 0);
+				c = xtc_new(app, 0);
+				if (c) {
+					xbuf_start(&c->tx);
+					xtc_sched_tx(app, c, XTC_S_SYNSENT);
+				}
+			}
+	}
+	else {
+		if (!(app->aflags & XTC_AF_READY)) {
+			// If not ready, respond with broadcast NOCHAN - peer should respond with INITR to
+			// acknowledge that it has realized we were not ready - we become ready when
+			// response received.
+			xtc_sendneg(app, NULL, TC_XTC_BCAST, XTC_NEGCODE_NOCHAN);
+			return;
+		}
+		
+		// Demultiplex to channel
+		for (i = 0; i < app->numchans; i++) {
+			c = app->chans + i;
+			if (c->chno == chan) {
+				xtc_pktrec(app, c, &nn.h, b, len);
+				break;
+			}
+		}
+
+		// Send NEG if not found and wasn't a NEG and this is not auto control channel.
+		// The exception for auto control channel prevents race condition when peer re-inits
+		// then tries to open the control channel before we listen on it.  The peer XTC just
+		// retries in this case and the peer application doesn't see any error.
+		if (i == app->numchans && !(nn.h.flags & XTC_F_NEG) &&
+			 (chan & TC_XTC_MASK || !(app->aflags & XTC_AF_CONTROL)))
+			xtc_sendneg(app, NULL, chan, XTC_NEGCODE_NOCHAN);
+	}
+}
+
+
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

@@ -1,0 +1,14 @@
+<HTML>
+<HEAD>
+<TITLE>DeviceMate Variable Demonstration Page</TITLE>
+</HEAD>
+<BODY>
+<H1>DeviceMate Variable Demonstration Page</H1>
+It has been <!--#echo var="seconds"--> seconds since
+this program has started.
+<P>
+Here's a string test: <!--#echo var="string"-->
+<P>
+And a floating point test: <!--#echo var="float"-->
+</BODY>
+</HTML>

@@ -1,0 +1,245 @@
+/* START LIBRARY DESCRIPTION *********************************************
+DEVMATE_XTC.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains the small part of XTC (eXtended Target
+   Communications) which is specific to the target processor.
+
+PORTING NOTE:
+   For non-Rabbit target processors with an ANSI C compiler, there are
+   equivalent .c and .h files in the LIB\Target subdirectory.
+
+CONFIGURATION MACROS:
+	The following macros may be defined before inclusion of this library.
+
+	TC_MAX_XTC_APPS
+	   Defaults to 4, which allows for the currently-defined set of XTC-
+	   based TC applications, namely TCP/IP, filesystem, variables and
+	   email.
+
+GLOBAL VARIABLES:
+   TCXTCState _xts;
+      One instance of this structure contains all necessary state
+      information for XTC communication.  This library is thereby
+      made non-reentrant, however application code may serialize access
+      to these API functions so that the library may be used in a multi-
+      tasking environment.
+
+API FUNCTIONS:
+   The functions in this library are called internally by other libraries
+   and should not be called by end-user application code.  For this
+   reason they are not formally documented.
+
+END DESCRIPTION **********************************************************/
+ 
+
+/*** BeginHeader _xts */
+#ifndef DEVMATE_XTC_H
+#define DEVMATE_XTC_H
+
+#ifdef __DC__
+	#ifndef __DEVMATE_APP_LIB
+		#use "dm_app.lib"
+	#endif
+#endif
+
+#ifndef TC_XTC_H
+	#use "tc_xtc.lib"
+#endif
+
+// maximum number of TC applications which can use XTC
+#ifndef TC_MAX_XTC_APPS
+	#define TC_MAX_XTC_APPS		4
+#endif
+
+#ifdef MS_PROTO
+#define PEDReg PEDR,&PEDRShadow
+#define PEFReg PEFR,&PEFRShadow
+#define PEDDReg PEDDR,&PEDDRShadow
+#define DEVBOARD_LED0_SET(d) BitWrPortI(PEDReg, (d)?0:1, 1)
+#define DEVBOARD_LED0_ON() BitWrPortI(PEDReg, 0, 1)
+#define DEVBOARD_LED0_OFF() BitWrPortI(PEDReg, 1, 1)
+#define DEVBOARD_LED1_SET(d) BitWrPortI(PEDReg, (d)?0:1, 7)
+#define DEVBOARD_LED1_ON() BitWrPortI(PEDReg, 0, 7)
+#define DEVBOARD_LED1_OFF() BitWrPortI(PEDReg, 1, 7)
+#endif
+
+
+/*
+ * Struct to maintain TP-side XTC/TC comms state.  This is stuff
+ * which is global to all applications using XTC.  After initialization,
+ * all fields are constant thus there is no need for an XTC "global
+ * lock".
+ */
+typedef struct {
+	/*****************************************************************
+	 * Fields set up before calling devmate_init().  These are init
+	 * by calls to xtc_register() from individual subsystems' init
+	 * functions.
+	 *****************************************************************/
+	uint8		numapps;			// Number of registered applications
+	XTCApp * apps[TC_MAX_XTC_APPS];	// Pointers to registered apps.
+
+	/*****************************************************************
+	 * Fields initialized by devmate_init().
+	 *****************************************************************/
+	uint8		init;				// initialization flag
+} TCXTCState;
+
+extern TCXTCState _xts;
+/*** EndHeader */
+
+TCXTCState _xts;			// Static instance
+
+
+
+
+/*** BeginHeader devmate_xtc_ready */
+int devmate_xtc_ready(XTCApp * app);
+/*** EndHeader */
+
+xtc_nodebug
+int devmate_xtc_ready(XTCApp * app)
+{
+	TC_LOCK(app->lock);
+	if (!(app->aflags & (XTC_AF_READY|XTC_AF_BCASTNEG)))
+		// Not ready, but not yet trying to initialize.  Send reset.
+		xtc_reset(app);
+	TC_UNLOCK(app->lock);
+	return app->aflags & XTC_AF_READY;
+}
+
+
+/*** BeginHeader _devmate_xtc_init */
+void _devmate_xtc_init(void);
+#funcchain __devmate_init _devmate_xtc_init
+/*** EndHeader */
+
+xtc_nodebug
+void _devmate_xtc_init(void)
+{
+	auto int i, a;
+	auto XTCApp * app;
+
+	for (a = 0; a < _xts.numapps; a++) {
+		app = _xts.apps[a];
+		if (!_xts.init) {
+			app->txbuffer =
+				xalloc((sizeof(_TCHeader) + app->txbufsize) * (long)app->numtxbufs);
+			app->rxbuffer =
+				xalloc((sizeof(_TCHeader) + app->rxbufsize) * (long)app->numrxbufs);
+		}
+		_tc_create_queue(&app->txbuffQ, app->txbuffer,
+			sizeof(_TCHeader) + app->txbufsize, app->numtxbufs);
+		_tc_create_queue(&app->rxbuffQ, app->rxbuffer,
+			sizeof(_TCHeader) + app->rxbufsize, app->numrxbufs);
+		app->rxprocessing = FARADDR_NULL;
+		app->txrdy = app->numtxbufs;
+		app->towait = NULL;
+		app->txwait = NULL;
+		app->rtt = 1000<<3;		// 1000ms initial estimate
+		// Approx twice minimum possible RTT for max size TC packets...
+		app->minrto = (uint16)((sizeof(_TCHeader)*2 + 6 + app->txbufsize + app->rxbufsize) *
+							(10240000UL / DEVMATE_SERIAL_SPEED) >> 9);
+		app->sendfunc = devmate_send;
+		app->recvbuf = devmate_recvbuf;
+		app->aflags &= ~XTC_AF_SERVER;
+		app->pacing = 0;
+			
+		devmate_registercallback(app->appno, xtc_callback);
+		for (i = 0; i < app->numrxbufs; i++)
+			devmate_recvbuf(app->appno, sizeof(_TCHeader) + app->rxbufsize,
+				_tc_get_buffer(&app->rxbuffQ), (long)app);
+
+		// Initialize all channels
+		for (i = 0; i < app->numchans; i++)
+			xtc_init_chan(app, app->chans + i, XTC_NEGCODE_INIT);
+
+		if (_xts.init) {
+			TC_LOCK(app->lock);
+			xtc_reset(app);
+			TC_UNLOCK(app->lock);
+		}
+	}
+
+	_xts.init = 1;
+}
+
+
+/*** BeginHeader devmate_xtc_register */
+// This must be called before devmate_init(), once only for each application
+// which uses XTC.  The caller should initialize the necessary fields in the
+// XTCApp struct, including the channel array as follows:  either memset the
+// entire channel struct to zero (in which case the parameters will be used to
+// allocate suitable buffers etc.) or memset the channel to zero _except_ for
+// the rx and/or tx xbuf.  If either rx or tx xbuf has a non-zero blen field,
+// then it is assumed to be already initialized.
+// rxlen/txlen must be at least 2 greater than the MSS.
+// Returns 0 if OK, -1 if too many apps, -2/-3 if buffer size error.
+int devmate_xtc_register(XTCApp * app, uint16 rxlen, uint16 txlen);
+/*** EndHeader */
+
+xtc_nodebug
+int devmate_xtc_register(XTCApp * app, uint16 rxlen, uint16 txlen)
+{
+#ifdef __DC__
+	#GLOBAL_INIT {
+		_xts.numapps = 0;
+		_xts.init = 0;
+	#ifdef MS_PROTO
+		DEVBOARD_LED0_OFF();
+		DEVBOARD_LED1_OFF();
+		WrPortI(PEFReg, 0x00); // All normal I/O
+		WrPortI(PEDDReg, 0x82); // All inputs except bits 7,1
+	#endif
+	}
+#endif
+	
+	if (_xts.init)
+		// Already init, don't do it again
+		return 0;
+		
+	if (_xts.numapps >= TC_MAX_XTC_APPS)
+		return -1;
+
+	_xts.apps[_xts.numapps++] = app;
+#ifdef TC_LOCKING
+	/* Get a lock */
+	app->lock = TC_CREATELOCK();
+#endif
+	return xtc_init_app(app, rxlen, txlen);
+}
+
+
+/*** BeginHeader _devmate_xtc_tick */
+void _devmate_xtc_tick(void);
+#funcchain __devmate_tick _devmate_xtc_tick
+/*** EndHeader */
+
+xtc_nodebug
+void _devmate_xtc_tick(void)
+{
+	auto int a;
+#ifdef TC_LOCKING
+	auto XTCApp * app;
+#endif
+
+	for (a = 0; a < _xts.numapps; a++) {
+#ifdef TC_LOCKING
+		app = _xts.apps[a];
+		TC_LOCK(app->lock);
+		xtc_tick(app);
+		TC_UNLOCK(app->lock);
+#else
+		xtc_tick(_xts.apps[a]);
+#endif
+	}
+}
+
+
+
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

@@ -1,0 +1,671 @@
+/*************************************************************************
+R3000.lib
+ZWorld, 2002
+
+API functions for some of the R3000 peripherals
+Quadrature Decoding:
+	qd_init
+	qd_zero
+	qd_read
+	qd_error
+Pulse Width Modulation:
+	pwm_init
+	pwm_set
+
+	Rev 1.0	CK		Initial release.
+
+	Rev 1.1	EK		Added conditional 10 bit quadrature decoder capabiltiy
+   					for the R3000A microprocessor. To enable this feature
+                  add the following at the top of the application program.
+
+                  #define QD_10BIT_OPERATION
+
+   Rev 1.2  EK    Fixed possible incorrect overflow condition on channel 1
+                  of the quadrature decoder.
+
+*************************************************************************/
+
+/*** BeginHeader */
+#ifndef __R3000_LIB__
+#define __R3000_LIB__
+
+//divisor for sampling speed
+#define QD_DIVISOR 255
+
+#define QD_OVERFLOW 0x01
+#define QD_UNDERFLOW 0x02
+
+/*** EndHeader */
+
+/*** BeginHeader qd_init */
+nodebug void qd_init(int iplevel);
+xmem void qd_isrinit();
+root void qd_isr();
+
+extern long qd_count[];
+extern char qd_errorflags[];
+extern char qd_isrflag;
+extern int  qd_10bit_enable;
+
+/*** EndHeader */
+
+long qd_count[2];
+char qd_errorflags[2];
+char qd_isrflag;
+int  qd_10bit_enable;
+
+#ifdef QD_10BIT_OPERATION
+#define QD_10BIT_COUNTER 1
+#else
+#define QD_10BIT_COUNTER 0
+#endif
+
+// ********************** QD PORT/PIN SELECTION MACROS ************************
+#ifdef QD1_USEPORTFL
+#define QD1_USEPORT 0x08
+#endif
+#ifdef QD1_USEPORTFH
+#define QD1_USEPORT 0x0C
+#endif
+#ifdef QD1_DISABLE
+#define QD1_USEPORT 0x00
+#endif
+
+#ifndef QD1_USEPORT
+// if QD1_USEPORT is not defined, default to PF1 & PF0"
+#define QD1_USEPORT 0x08
+#endif
+
+#ifdef QD2_USEPORTFL
+#define QD2_USEPORT 0x80
+#endif
+#ifdef QD2_USEPORTFH
+#define QD2_USEPORT 0xC0
+#endif
+#ifdef QD2_DISABLE
+#define QD2_USEPORT 0x00
+#endif
+
+#ifndef QD2_USEPORT
+// if QD2_USEPORT is not defined, default to PF3 & PF2"
+#define QD2_USEPORT 0x80
+#endif
+
+#define QD_USEPORT (QD1_USEPORT | QD2_USEPORT)
+// ****************************************************************************
+
+#if (QD_10BIT_COUNTER && _CPU_ID_ < R3000_R1)
+#error "Quadrature 10 bit counter operation is only available on the Rabbit3000A microprocessor"
+#endif
+
+/* START FUNCTION DESCRIPTION ********************************************
+qd_init                   <R3000.LIB>
+
+SYNTAX:		   void qd_init(int iplevel);
+
+DESCRIPTION:   Initializes the quadrature decoders and sets up the ISR.
+					This must be called before any other QD functions are used.
+					Sets up the lower nibble of port F to be the QD input pins.
+
+               Note:
+               -----
+               If your board has a Rabbit 3000A microprocesser installed, the
+               quadrature decoder can be set for 10 bit counter operation. For
+               10 bit operation, add the following macro at the top of your
+               application program.
+
+               #define QD_10BIT_OPERATION
+
+               If above macro is not defined then the quadrature decoder
+               defaults to 8 bit counter operation.
+
+               If your board has a Rabbit 3000 microprocessor, the quadrature
+               decoder inputs can be selected with the following macros:
+
+               #define QD1_USEPORTFL    // QD1 uses PF1 & PF0 (default)
+               #define QD1_USEPORTFH    // QD1 uses PF5 & PF4
+               #define QD1_DISABLE
+               #define QD2_USEPORTFL    // QD2 uses PF3 & PF2 (default)
+               #define QD2_USEPORTFH    // QD2 uses PF7 & PF6
+               #define QD2_DISABLE
+
+PARAMETER1:		iplevel - the interrupt priority for the ISR that handles
+						       the count overflow. This should usually be 1
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void qd_init(int iplevel)
+{
+	SetVectIntern(0x19, &qd_isr);
+	qd_zero(1);
+	qd_zero(2);
+   qd_errorflags[0] = qd_errorflags[1] = 0;
+	WrPortI(TAT10R, &TAT10RShadow, QD_DIVISOR);
+
+   #if QD_10BIT_COUNTER
+	//set quad inputs to lower nibble of port F
+	WrPortI(QDCR, &QDCRShadow, (QD_USEPORT | 0x20) + iplevel);
+   qd_10bit_enable = TRUE;
+
+   #else
+   //set quad inputs to lower nibble of port F
+	WrPortI(QDCR, &QDCRShadow, QD_USEPORT + iplevel);
+   qd_10bit_enable = FALSE;
+	#endif
+}
+
+#asm root
+qd_isr::
+	 push	 af
+	 push	 bc
+	 push	 de
+	 push	 hl
+
+	 ld	 a, 0x01
+	 ld	 (qd_isrflag), a		;signal there was a rollover
+;ioi ld	 a, (QDCSR)
+	IOREAD_A(QDCSR)
+	 ld	 b, a
+	 and	 0x0c				;anything for channel 1?
+	 jr	 z, .check2
+	 bit	 3, b
+	 jr	 z, .check1_dec
+	 ld	 hl, (qd_count)
+#if QD_10BIT_COUNTER
+	 ld	 de, 0x0400
+#else
+ 	 ld	 de, 0x0100
+#endif
+	 add	 hl, de
+	 ld	 (qd_count), hl
+	 ld	 hl, (qd_count + 2)		;high word
+	 ld	 a, h							;hold high byte for overflow check
+	 ld	 de, 0x0000
+	 adc	 hl, de						;add in possible carry
+	 ld	 (qd_count + 2), hl
+	 xor	 0x80				;invert old high bit
+	 and	 h
+	 and	 0x80				;check if high bit went high (negative)
+	 jr	 z, .check1_dec
+	 ld	 a, (qd_errorflags)
+	 or	 QD_OVERFLOW
+	 ld	 (qd_errorflags), a	;set overflow flag
+.check1_dec:
+	 bit	 2, b
+	 jr	 z, .check2
+	 ld	 hl, (qd_count)
+#if QD_10BIT_COUNTER
+	 ld	 de, 0x0400
+#else
+ 	 ld	 de, 0x0100
+#endif
+	 or	 a					;clear carry
+	 sbc	 hl, de
+	 ld	 (qd_count), hl
+	 ld	 hl, (qd_count + 2)
+	 ld	 a, h				;hold high byte for underflow check
+	 ld	 de, 0x0000
+	 sbc	 hl, de			;subtract carry if it is there
+	 ld	 (qd_count + 2), hl
+	 xor	 0x80				;invert old high bit
+	 or	 h
+	 and	 0x80				;check if high bit went low (positive)
+	 jr	 nz, .check2
+	 ld	 a, (qd_errorflags)
+	 or	 QD_UNDERFLOW
+	 ld	 (qd_errorflags), a	;set overflow flag
+.check2:
+	 bit	 7, b
+	 jr	 z, .check2_dec
+	 ld	 hl, (qd_count + 4)				;second long in array
+#if QD_10BIT_COUNTER
+	 ld	 de, 0x0400
+#else
+ 	 ld	 de, 0x0100
+#endif
+	 add	 hl, de
+	 ld	 (qd_count + 4), hl
+	 ld	 hl, (qd_count + 6)				;get high word
+	 ld	 a, h									;hold high byte for overflow check
+	 ld	 de, 0x0000
+	 adc	 hl, de								;add carry bit
+	 ld	 (qd_count + 6), hl
+	 xor	 0x80				;invert old high bit
+	 and	 h
+	 and	 0x80				;check if high bit changed
+	 jr	 z, .check2_dec
+	 ld	 a, (qd_errorflags + 1)
+	 or	 QD_OVERFLOW
+	 ld	 (qd_errorflags + 1), a	;set overflow flag
+.check2_dec:
+	 bit	 6, b
+	 jr	 z, .cleanup
+	 ld	 hl, (qd_count + 4)
+#if QD_10BIT_COUNTER
+	 ld	 de, 0x0400
+#else
+ 	 ld	 de, 0x0100
+#endif
+	 or	 a							;clear carry
+	 sbc	 hl, de
+	 ld	 (qd_count + 4), hl
+	 ld	 hl, (qd_count + 6)
+	 ld	 de, 0x0000
+	 sbc	 hl, de					;subtract carry bit
+	 ld	 a, h						;hold high byte for underflow check
+	 ld	 (qd_count + 6), hl
+	 xor	 0x80				;invert old high bit
+	 or	 h
+	 and	 0x80				;check if high bit went low (positive)
+	 jr	 nz, .cleanup
+	 ld	 a, (qd_errorflags + 1)
+	 or	 QD_UNDERFLOW
+	 ld	 (qd_errorflags + 1), a	;set overflow flag
+.cleanup:
+	 ipres
+	 pop	 hl
+	 pop	 de
+	 pop	 bc
+	 pop	 af
+	 ret
+
+#endasm
+
+/*** BeginHeader qd_zero */
+nodebug void qd_zero(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+qd_zero                   <R3000.LIB>
+
+SYNTAX:		   void qd_zero(int channel);
+
+DESCRIPTION:   Sets the count for a channel to 0
+
+PARAMETER1:		channel - which channel to reset (currently 1 or 2)
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void qd_zero(int channel)
+{
+	auto char temp;
+	if(channel == 1)
+	{
+		WrPortI(QDCSR, &QDCSRShadow, 0x01); //reset low byte counter
+		qd_count[0] = 0;
+	}
+	else
+	{
+		WrPortI(QDCSR, &QDCSRShadow, 0x10); //reset low byte counter
+		qd_count[1] = 0;
+	}
+}
+
+/*** BeginHeader qd_read */
+nodebug long qd_read(int channel);
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+qd_read                   <R3000.LIB>
+
+SYNTAX:		   long qd_read(int channel);
+
+DESCRIPTION:   Reads the current quadrature decoder count.
+					Since this function waits for a clear reading, it
+					can potentially block if there is enough flutter in
+					the decoder count.
+
+PARAMETER1:		channel - which channel to read (currently 1 or 2)
+
+RETURN VALUE:	returns a signed long for the current count.
+END DESCRIPTION **********************************************************/
+
+nodebug
+long qd_read(int channel)
+{
+	auto long qd_reading;
+   auto int qd_counter;
+   auto long save_value;
+	if(channel == 1)
+	{
+		while(1)
+		{
+			qd_isrflag = 0;
+         if(qd_10bit_enable)
+         {
+         	qd_counter = RdPortI(QDC1R);
+         	qd_counter = qd_counter | (RdPortI(QDC1HR)<<8);
+				qd_reading = qd_count[0] + qd_counter;
+         }
+         else
+         {
+         	qd_reading = qd_count[0] + RdPortI(QDC1R);
+         }
+         if(qd_isrflag == 0)
+			{
+            return qd_reading;
+			}
+		}
+	}
+	else
+	{
+		while(1)
+		{
+			qd_isrflag = 0;
+         if(qd_10bit_enable)
+         {
+         	qd_counter = RdPortI(QDC2R);
+         	qd_counter = qd_counter | (RdPortI(QDC2HR)<<8);
+				qd_reading = qd_count[1] + qd_counter;
+         }
+         else
+         {
+         	qd_reading = qd_count[1] + RdPortI(QDC2R);
+         }
+			if(qd_isrflag == 0)
+			{
+				return qd_reading;
+			}
+		}
+	}
+}
+
+/*** BeginHeader qd_error */
+nodebug char qd_error(int channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+qd_error                   <R3000.LIB>
+
+SYNTAX:		   char qd_error(int channel);
+
+DESCRIPTION:   Gets the current error bits for that qd channel
+
+PARAMETER1:		channel - which channel to read errors from
+								(currently 1 or 2)
+RETURN VALUE:	set of error flags, which can be decoded with masks:
+					QD_OVERFLOW 0x01
+					QD_UNDERFLOW 0x02
+END DESCRIPTION **********************************************************/
+
+nodebug
+char qd_error(int channel)
+{
+	auto char error_value;
+
+	error_value = qd_errorflags[channel - 1];
+	qd_errorflags[channel - 1] = 0;
+	return error_value;
+}
+
+/*** BeginHeader pwm_init */
+nodebug unsigned long pwm_init(unsigned long frequency);
+
+/*
+pwm_init (below) uses the BIOS variable 'freq_divider' to determine how
+fast the processor is running. freq_divider is equal to the value that
+would be placed in a baud timer for a serial port for 19200 baud operation.
+Since the baud clock is 16 counts per bit and there are 1024 counts in a
+PWM cycle, a base frequency corresponding to a 0 value in the PWM prescale
+timer(TA9) can be calculated:
+19200*16/1024 = 300
+*/
+
+#ifndef PWM_FREQ_FACTOR
+#define PWM_FREQ_FACTOR 300
+#endif
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+pwm_init                   <R3000.LIB>
+
+SYNTAX:		   unsigned long pwm_init(unsigned long frequency);
+
+DESCRIPTION:   Sets the base frequency for the PWM pulses and enables the
+					PWM driver on all four channels. The base frequency is the
+					frequency without pulse spreading.
+					Pulse spreading(see pwm_set) will increase the frequency
+					by a factor of 4.
+
+PARAMETER1:		frequency(in Hz)
+
+RETURN VALUE:	actual frequency set. This will be the closest possible
+					match to the requested frequency.
+
+END DESCRIPTION **********************************************************/
+
+nodebug unsigned long pwm_init(unsigned long frequency)
+{
+	auto long divisor;
+	auto unsigned long base_frequency;
+
+	base_frequency = (long)freq_divider * (long)PWM_FREQ_FACTOR;
+	divisor = base_frequency/frequency - 1;
+	if(divisor < 0)
+	{
+		divisor = 0;
+	}
+	else if(divisor > 255)
+	{
+		divisor = 255;
+	}
+	WrPortI(TAT9R, &TAT9RShadow, (char)divisor);
+	if(divisor > 0)
+	{
+		return base_frequency/(divisor+1);
+	}
+	else
+	{
+		return base_frequency;
+	}
+}
+
+/*** BeginHeader pwm_set */
+nodebug int pwm_set(int channel, int duty_cycle, int options);
+
+#define PWM_SPREAD 0x01
+#define PWM_OPENDRAIN 0x02
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+pwm_set                   <R3000.LIB>
+
+SYNTAX:		   int pwm_set(int channel, int duty_cycle, int options);
+
+DESCRIPTION:   Sets a duty cycle for one of the PWM channels.
+					The duty cycle can be a value from 0 to 1024, where
+					0 is logic low the whole time, and 1024 is logic high
+					the whole time. Option flags are used to enable
+					features on an individual PWM channel.
+					Bit masks for these are:
+						PWM_SPREAD - sets pulse spreading. The duty cycle
+							is spread over four seperate pulses to increase
+							the pulse frequency.
+						PWM_OPENDRAIN - sets the PWM output pin to be
+							open-drain instead of a normal push-pull logic
+							output.
+
+PARAMETER1:		channel - PWM channel(0 to 3)
+PARAMETER2:		duty_cycle - value from 0 to 1024
+PARAMETER3:		options - combination of optional flags(see above)
+
+RETURN VALUE:	0 if ok
+					-1 if an invalid channel number is used
+					-2 an invalid duty_cycle was requested
+
+END DESCRIPTION **********************************************************/
+
+nodebug int pwm_set(int channel, int duty_cycle, int options)
+{
+	auto int channel_bit;
+	auto char lsb_reg, msb_reg;
+
+	if(channel < 0 || channel > 3)
+	{
+		return -1;
+	}
+	if(duty_cycle < 0 || duty_cycle > 1024)
+	{
+		return -2;
+	}
+	if(duty_cycle == 0)
+	{
+		BitWrPortI(PFDR, &PFDRShadow, 0, channel + 4); //always low
+		BitWrPortI(PFFR, &PFFRShadow, 0, channel + 4); //normal output
+	}
+	else
+	{
+		duty_cycle--;	//counts are n+1
+		lsb_reg = duty_cycle << 6; //shift for setting
+		msb_reg = duty_cycle >> 2;
+		if(options & PWM_SPREAD)
+		{
+			lsb_reg |= 0x01; //prep spread flag
+		}
+		WrPortI(PWM0R + 2*channel, NULL, msb_reg);
+		WrPortI(PWL0R + 2*channel, NULL, lsb_reg);
+		BitWrPortI(PFFR, &PFFRShadow, 1, channel + 4); //PWM output
+	}
+
+	if(options & PWM_OPENDRAIN)
+	{
+		BitWrPortI(PFDCR, &PFDCRShadow, 1, channel + 4);
+	}
+	else
+	{
+		BitWrPortI(PFDCR, &PFDCRShadow, 0, channel + 4); // push-pull output
+	}
+	BitWrPortI(PFDDR, &PFDDRShadow, 1, channel + 4); //enable output
+	return 0;
+}
+
+/*** BeginHeader enableIObus */
+root void enableIObus();
+
+extern char savePADRShadow;
+extern char savePBDRShadow;
+extern char saveSPCRShadow;
+
+/*** EndHeader */
+
+char savePADRShadow;
+char savePBDRShadow;
+char saveSPCRShadow;
+
+/* START FUNCTION DESCRIPTION ********************************************
+enableIObus						<R3000.LIB>
+
+SYNTAX:			void enableIObus();
+
+DESCRIPTION:	This function enables external I/O bus operation on the
+					Rabbit 3000 processor.
+
+					The external I/O bus must be enabled during any external
+					I/O bus operation and disabled during normal bus operations
+					with other other devices.
+
+					Parallel Port A becomes I/O data bus and Parallel Port B
+					bits 7-2 becomes I/O address bus.
+
+					This function is non-reentrant.
+
+					>> Revised 23-SEP-02
+					Port A and B data shadow register values are NOT saved or
+					restored in this function call.
+
+					If the macro PORTA_AUX_IO has been previously defined, this
+					function should not be called.
+
+PARAMETER:    	None
+
+RETURN VALUE:	None
+
+SEE ALSO: 		disableIObus
+
+END DESCRIPTION **********************************************************/
+
+#asm nodebug
+enableIObus::
+	ld		a,(SPCRShadow)				;get slave port control values
+	and	0ch							; check if already enabled
+	cp		0ch
+	jp		z,.done
+
+	push	ip
+	ipset	1								;disable normal interrupts to prevent race
+
+	ld		a,(SPCRShadow)				;get slave port control values
+	or		a,00ch						;enable external I/O bus
+;	ioi	ld (SPCR),a					;  Port A is data bus and Port B bits 7-2 is address bus
+	IOWRITE_A(SPCR)
+											;  while bits 0 and 1 stay inputs
+	ld		(SPCRShadow),a				;save slave port control values
+	pop	ip
+.done:
+	ret
+#endasm
+
+/*** BeginHeader disableIObus */
+root void disableIObus();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+disableIObus						<R3000.LIB>
+
+SYNTAX:			void disableIObus();
+
+DESCRIPTION:	This function disables external I/O bus and normal data
+					bus operations resume on the Rabbit 3000 processor.
+
+					The external I/O bus must be disabled during normal bus
+					operations with other other devices and must be enabled
+					during any external I/O bus operation.
+
+					This function is non-reentrant.
+
+					>> Revised 23-SEP-02
+					Port A and B data shadow register values are NOT saved or
+					restored in this function call.
+
+			 		Parallel Port A is set to a bytewide input and Parallel Port
+			 		B data direction register (PBDDR) is set to an unknown state,
+			 		which must be set by the user.
+
+PARAMETER:    	None
+
+RETURN VALUE:	None
+
+SEE ALSO: 		enableIObus
+
+END DESCRIPTION **********************************************************/
+
+#asm nodebug
+disableIObus::
+	ld		a,(SPCRShadow)				;get slave port control values
+	and	0ch							; check for already disabled
+	cp		0ch
+	jp		nz,.done
+
+	push	ip
+	ipset	1								;disable normal interrupts to prevent race
+
+	ld		a,(SPCRShadow)				;get slave port control values
+	and	0f3h							;disable external I/O bus
+;	ioi	ld (SPCR),a					;  Port A is input and Port B is unknown data direction
+	IOWRITE_A(SPCR)
+	ld		(SPCRShadow),a				;  save slave port control values
+
+	pop	ip
+.done:
+	ret
+#endasm
+
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

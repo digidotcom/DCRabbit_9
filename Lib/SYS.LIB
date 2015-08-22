@@ -1,0 +1,1728 @@
+/* START LIBRARY DESCRIPTION *********************************************
+SYS.LIB
+	Copyright (c) 1999, ZWorld.
+
+DESCRIPTION:
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader */
+#ifndef __SYS_LIB
+#define __SYS_LIB
+
+#if __RABBITSYS == 0
+	#define clockDoublerOn              _rs_clockDoublerOn
+   #define clockDoublerOff             _rs_clockDoublerOff
+#endif
+
+// generally useful typedef for individual I/O pin handling
+typedef struct sys_iopin_st {
+	unsigned port;
+	char *shadow;
+	char mask;
+} sys_iopin_t;
+/*** EndHeader */
+
+/*** BeginHeader exit */
+root void exit(int exitcode);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+exit                         <SYS.LIB>
+
+SYNTAX: void exit(int exitcode);
+
+DESCRIPTION: Stops the program and returns exitcode to Dynamic C.
+Dynamic C uses values above 128 for run-time errors. When not
+debugging, exit will run an infinite loop, causing a watchdog
+timeout if the watchdog is enabled.
+
+RETURN VALUE: Does not return.
+
+KEYWORDS: exit
+END DESCRIPTION **********************************************************/
+
+int _sys_exit_ret;
+int _sys_exit_err;
+
+#asm nodebug
+; EXIT   : C Callable Version of UNIX exit() for Dynamic C
+;
+; INPUT  :
+;          Stack : (Ret Addr) (Exit Code)
+; OUTPUT :
+;          None
+
+exit::
+	ld		(_sys_exit_err),hl
+   ex		(sp),hl	; return address in hl
+   ld		(_sys_exit_ret),hl
+   add	sp,4
+#if !(_USER)
+	call	_BiosStkSwitch
+#endif
+	add	sp,2		; return address left on bios stack
+	ld		hl,(_sys_exit_ret)
+	exx				; hl' has return address
+	ld		hl,(_sys_exit_err)
+   ld		a,xpc
+	push	hl
+	call	dkEnd
+#endasm
+
+/*** BeginHeader qsort */
+int qsort(void *base, unsigned n, unsigned s, int (*cmp) ());
+/*** EndHeader */
+
+/* START FUNCTION _DESCRIPTION ********************************************
+swap                         <SYS.LIB>
+
+SYNTAX: swap(char a[], char b[], int s)
+
+KEYWORDS:
+
+DESCRIPTION:
+
+RETURN VALUE:
+END DESCRIPTION **********************************************************/
+nodebug static swap(a, b, s)
+char a[], b[];
+int s;
+{
+	auto char tmp;
+	auto int i;
+
+	for (i = 0; i < s; ++i)
+	{
+		tmp = a[i];
+		a[i] = b[i];
+		b[i] = tmp;
+	}
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+qsort                       <SYS.LIB>
+
+SYNTAX: int qsort(void *base, unsigned nbytes, unsigned bsize, int (*cmp)());
+
+KEYWORDS: sort
+
+DESCRIPTION:
+			 Quicksort with center pivot, stack control,
+			 and easy-to-change comparison method.
+
+			 This version sorts fixed-length data items.
+			 It is ideal for integers, longs, floats and
+			 packed string data without delimiters.
+
+Notes:
+			 Qsort() can sort raw integers, longs, floats or
+			 strings. However, the string sort is not efficient.
+
+PARAMETER1: Base address of the raw string data
+PARAMETER2: Number of blocks to sort
+PARAMETER3: Number of bytes in each block
+PARAMETER4: Compare routine for two block pointers
+			p,q that returns an integer with the
+			same rules used by Unix strcmp(p,q):
+
+			= 0     Blocks p,q are equal
+			< 0     p < q
+			> 0     p > q
+
+Beware of using ordinary strcmp() - it
+requires a NULL at the end of each string.
+
+RETURN VALUE:  Zero if the operation is successful.
+END DESCRIPTION **********************************************************/
+nodebug int qsort(void *base, unsigned n, unsigned s, int (*cmp) ())
+{
+	auto int i, j, piv, lo, hi;
+	auto char *pivot;
+
+	lo = 0;
+	hi = n - 1;
+	if (lo < hi)
+	{
+		piv = (lo + hi) / 2; // center pivot
+		i = lo;
+		j = hi;
+		pivot = (char*)((unsigned)base+(s * piv));
+		while (i < j)
+		{
+			while (i < j && cmp((unsigned)base+(s * i), pivot) <= 0)
+				++i;
+			while (i < j && cmp((unsigned)base+(s * j), pivot) >= 0)
+				--j;
+			if (i < j)
+				swap((unsigned)base+(s * i), (unsigned)base+(s * j), s);
+		}
+		if (piv < i && cmp((unsigned)base+(s * i), pivot) > 0)
+			--i;
+		swap((unsigned)base+(s * i), (unsigned)base+(s * piv), s);
+		if (i - lo <= hi - i)
+		{                    // control stack
+			qsort((void*)((unsigned)base+(s * lo)), i - lo, s, cmp);
+			qsort((void*)((unsigned)base + (s * (i + 1))), hi - i, s, cmp);
+		}
+		else
+		{
+			qsort((void*)((unsigned)base + (s * (i + 1))), hi - i, s, cmp);
+			qsort((void*)((unsigned)base+(s * lo)), i - lo, s, cmp);
+		}
+	}
+	return 0;
+}
+
+
+/*** Beginheader F_not  */
+root void F_not();
+/*** Endheader  */
+
+#asm fast
+F_not::
+	ld hl,1
+	ld a,b
+	or c
+	or d
+	or e
+	ret   z
+	dec   l
+	ret
+#endasm
+
+/*** beginheader _prot_needs_init, _prot_init, _prot_recover */
+root int _prot_needs_init();
+root void _prot_init();
+root void _prot_recover();
+#define _FLAG_PVALID 0xDC42
+/*** endheader */
+extern int _flag_pvalid;
+extern char _flag_prot16; extern int  *_ptr_prot16; extern int  _prot16_save;
+extern char _flag_prot32; extern long *_ptr_prot32; extern long _prot32_save;
+
+/* START FUNCTION DESCRIPTION ********************************************
+_prot_init                   <SYS.LIB>
+
+SYNTAX:     void _prot_init();
+
+KEYWORDS:
+
+DESCRIPTION: Super initialization. Initializes internal data needed
+				for recovery of protected variables after a crash. This function
+				should be called once per program before protected variables are
+				set in order to ensure that the protection mechanism works.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+_prot_recover                <SYS.LIB>
+
+SYNTAX:     void _prot_recover();
+
+DESCRIPTION:   Recover variables whose operations are interrupted by
+power fail.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+#asm nodebug
+;
+; call _prot_needs_init to determine whether _prot_init has been called
+;
+_prot_needs_init::
+	ld		hl,(_flag_pvalid)
+   ld		de,_FLAG_PVALID
+   xor	a
+   sbc	hl,de
+   ret
+;
+; call _prot_init only for complete reset
+;
+_prot_init::
+	ld		a, 0
+	ld		(_flag_prot16),  a
+	ld		(_flag_prot32),  a
+   ld		hl,_FLAG_PVALID
+   ld		(_flag_pvalid),  hl
+	ret
+;
+; call _prot_recover on startup after power fail, reset, etc.
+;
+_prot_recover::
+	diasmseq(ddip)					;disable interrupts
+	ld		a, (_flag_prot16)
+	or		a
+	jr		z, ._pro_2
+	ld		hl, (_ptr_prot16)		;pointer to destination
+	ld		de, (_prot16_save)	;data
+	ld		(hl), e
+	inc	hl
+	ld		(hl), d
+	xor	a
+	ld		(_flag_prot16), a		;clear flag
+._pro_2:
+	ld		a, (_flag_prot32)
+	or		a
+	jr		z, ._pro_3
+	ld		de, (_ptr_prot32)		;pointer to destination
+	ld		hl, _prot32_save		;pointer to source
+	ld		bc, 4						;count to move
+	ldir								;recover the 32-bit protected variable
+	xor	a
+	ld		(_flag_prot32), a		;clear flag
+._pro_3:
+	riasmseq							;restore interrupts
+	ret
+#endasm
+
+/*** BeginHeader runwatch */
+root void runwatch();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+runwatch							<SYS.LIB>
+
+SYNTAX:             void runwatch();
+
+DESCRIPTION:  Runs and updates watch expressions if Dynamic C has requested
+it with a Ctrl-U. Should be called periodically in user program
+
+RETURN VALUE: none
+
+END DESCRIPTION **********************************************************/
+
+#asm nodebug
+runwatch::
+ret
+#endasm
+
+
+/*** BeginHeader getdivider19200 */
+
+root char getdivider19200();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+getdivider19200					<SYS.LIB>
+
+SYNTAX:	char getdivider19200();
+
+DESCRIPTION:   Returns the divider19200 value regardless of compile mode.
+In separate I&D space mode, the divider value is stored as a define byte in
+code space, so directly accessing the variable will result in an incorrect
+load (from constant data space). This function uses ldp instruction which
+circumvents the separate I&D default loading scheme, so the correct value
+is returned.
+
+RETURN VALUE:	The divider19200 value.
+
+SEE ALSO:		divider19200
+END DESCRIPTION ***************************************************************/
+
+
+#asm root nodebug
+getdivider19200::
+	xor a							; Zero out A (XPC for ldp instruction)
+	ldp hl, (divider19200)  ; register L now contains the divider
+	ld  h, 0						; We are only interested in the 8-bit quantity
+	ret
+#endasm
+
+
+/*** BeginHeader _rs_clockDoublerOn */
+
+_system root void _rs_clockDoublerOn();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+clockDoublerOn						<SYS.LIB>
+
+SYNTAX:	void clockDoublerOn();
+
+DESCRIPTION:	Enables the Rabbit clock doubler.  If the doubler is already
+enabled, there will be no effect.  Also attempts to adjust the baud rate on
+serial port A so communication between Dynamic C and the target is not lost.
+Other serial port rates need to be adjusted by the user.  This function is
+not task reentrant.
+
+RETURN VALUE:	none.
+
+SEE ALSO:		clockDoublerOff
+END DESCRIPTION ***************************************************************/
+nodebug
+_system root void _rs_clockDoublerOn (void)
+{
+	_SYS_CALL_VARS
+
+	#asm nodebug
+	lcall	_getDoublerSetting	; get setting to turn on clock doubler
+	ld		a, (GCDRShadow)		; get current setting
+	cp		l							; compare with new one
+	jr		z,.cdo_exit				; if same, don't change anything!
+.turnOn:
+	ld		a, l
+	ioi	ld (GCDR), a			; set new value
+	ld		(GCDRShadow), a
+
+	ld		a, (TAT4RShadow)
+	inc	a
+	sla	a
+	dec	a
+	ioi	ld (TAT4R), a			; set comm rate
+	ld		(TAT4RShadow), a
+
+	ld		a, (freq_divider)		; adjust value for other serial ports
+	sla	a
+	ld		(freq_divider), a
+.cdo_exit:
+#endasm
+	#if _SYSTEM
+	_rk_con_resetSerialPort();
+   #endif
+}//_rs_clockDoublerOn()
+
+/*** BeginHeader _rs_clockDoublerOff */
+
+_system root void _rs_clockDoublerOff();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+clockDoublerOff					<SYS.LIB>
+
+SYNTAX:	void clockDoublerOff();
+
+DESCRIPTION:	Disables the Rabbit clock doubler.  If the doubler is already
+disabled, there will be no effect.  Also attempts to adjust the baud rate on
+serial port A so communication between Dynamic C and the target is not lost.
+Other serial port rates need to be adjusted by the user.  This function is
+not task reentrant.
+
+RETURN VALUE:	none.
+
+SEE ALSO:		clockDoublerOn
+END DESCRIPTION ***************************************************************/
+nodebug
+_system root void _rs_clockDoublerOff (void)
+{
+	_SYS_CALL_VARS
+#asm nodebug
+	ld		c, 00h					; setting to turn off clock doubler
+	ld		a, (GCDRShadow)		; get current setting
+	cp		c							; compare with new one
+	jr		z,.cdoff_exit			; if same, don't change anything!
+.turnOff:
+	ld		a, c
+	ioi	ld (GCDR), a			; set new value
+	ld		(GCDRShadow), a
+
+	ld		a, (TAT4RShadow)
+	inc	a
+	srl	a
+	dec	a
+	ioi	ld (TAT4R), a			; set comm rate
+	ld		(TAT4RShadow), a
+
+	ld		a, (freq_divider)		; adjust value for other serial ports
+	srl	a
+	ld		(freq_divider), a
+.cdoff_exit:
+#endasm
+#if _SYSTEM
+	_rk_con_resetSerialPort();
+#endif
+} //_rs_clockDoublerOff()
+
+/*** BeginHeader useMainOsc */
+
+root void useMainOsc();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+useMainOsc							<SYS.LIB>
+
+SYNTAX:	void useMainOsc();
+
+DESCRIPTION:	Sets the Rabbit processor to use the main oscillator for both
+the CPU and peripheral clock.  If this is already set, there is no effect.
+This function also enables the periodic interrupt in case it was disabled by
+a call to use32kHzOsc(), and updates the TICK_TIMER, MS_TIMER, and
+SEC_TIMER variables from the real-time clock.  This function is not
+task reentrant.
+
+RETURN VALUE:	none.
+
+SEE ALSO:		useClockDivider, use32kHzOsc, useClockDivider3000, set32kHzDivider
+END DESCRIPTION ***************************************************************/
+
+#asm nodebug
+useMainOsc::
+	;; first, turn on main oscillator without switching CPU to use it
+	ld		a, 0x10			; setting to enable main oscillator w/o using it
+	ld		(GCSRShadow), a
+;	ioi	ld (GCSR), a	; set new oscillator settings
+	IOWRITE_A(GCSR)
+
+	call	updateTimers	; set periodic timers to correct values
+	;; this call also serves as a delay for main oscillator to get
+	;;		up to speed (roughly ~20msec with 32kHz oscillator)
+
+	;; next, switch CPU to use main oscillator
+	ld		a, 0x09			; setting to run CPU off main oscillator
+								;	AND enable periodic interrupt (level 1)
+	ld		(GCSRShadow), a
+;	ioi	ld (GCSR), a	; set new oscillator settings
+	IOWRITE_A(GCSR)
+
+	ret
+#endasm
+
+/*** BeginHeader useClockDivider */
+
+root void useClockDivider();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+useClockDivider					<SYS.LIB>
+
+SYNTAX:	void useClockDivider();
+
+DESCRIPTION:	Sets the Rabbit processor to use the main oscillator divided
+by 8 for the CPU (but not the peripheral clock).  If this is already set,
+there is no effect. Because the peripheral clock is not affected, serial
+communications should still work.  This function also enables the periodic
+interrupt in case it was disabled by a call to user32kHzOsc().
+This function is not task reentrant.
+
+RETURN VALUE:	none.
+
+SEE ALSO:		useMainOsc, use32kHzOsc, useClockDivider3000, set32kHzDivider
+END DESCRIPTION ***************************************************************/
+
+
+#asm nodebug
+useClockDivider::
+	;; enable CPU to use main oscillator with clock divider enabled
+	ld		a, 0x05			; enable periodic interrupt and divide CPU
+								; clock by 8 (but not peripheral clock)
+	ld		(GCSRShadow), a
+;	ioi	ld (GCSR), a	; set new oscillator settings
+	IOWRITE_A(GCSR)
+	ret
+#endasm
+
+/*** BeginHeader use32kHzOsc, updateTimers */
+
+root void use32kHzOsc();
+void updateTimers();
+
+extern unsigned long lastRTCVal;
+extern unsigned long lastTickVal;
+
+/*** EndHeader */
+
+unsigned long lastRTCVal;
+unsigned long lastTickVal;
+
+/* START FUNCTION DESCRIPTION **************************************************
+use32kHzOsc							<SYS.LIB>
+
+SYNTAX:	void use32kHzOsc();
+
+DESCRIPTION:	Sets the Rabbit processor to use the 32kHz real time clock
+oscillator for both the CPU and peripheral clock, and shuts off the main
+oscillator.  If this is already set, there is no effect.  This mode should
+provide greatly reduced power consumption.  Serial communications will be
+lost since typical baud rates cannot be made from a 32kHz clock.  Also note
+that this function disables the periodic interrupt, so waitfor and related
+statements will not work properly (although costatements in general will
+still work).  Due to this fact, the values in TICK_TIMER, MS_TIMER, and
+SEC_TIMER will not be updated unless you call the function updateTimers()
+frequently in your code.  In addition, you will need to call hitwd()
+periodically to hit the hardware watchdog timer since the periodic interrupt
+normally handles that, or disable the watchdog timer before calling this
+function. The watchdog can be disabled with Disable_HW_WDT().
+
+use32kHzOsc is not task reentrant.
+
+RETURN VALUE:	none.
+
+SEE ALSO:		useMainOsc, useClockDivider, updateTimers, useClockDivider3000,
+					set32kHzDivider
+END DESCRIPTION ***************************************************************/
+
+#asm nodebug
+use32kHzOsc::
+	;; save current periodic timer status so we can update later
+	;lastTickVal = TICK_TIMER;
+   ld		hl,(TICK_TIMER)
+   ld		(lastTickVal),hl
+   ld		hl,(TICK_TIMER+2)
+   ld		(lastTickVal+2),hl
+
+	ld		ix, lastRTCVal
+;	ioi	ld (RTC0R), a		; load two lowest bytes
+	IOWRITE_A(RTC0R)
+	ioi	ld hl, (RTC0R)		; update RTC registers
+	ld		(ix+0), hl			; load two lowest bytes of RTC into lastRTCVal
+	ioi	ld hl, (RTC2R)
+	ld		(ix+2), hl			; load two middle bytes of RTC into lastRTCVal
+
+	ld		a, 0x14			; setting to run CPU off 32kHz oscillator
+								;	AND disable periodic interrupt
+	ld		(GCSRShadow), a
+;	ioi	ld (GCSR), a	; set new oscillator settings
+   IOWRITE_A(GCSR)
+	ret
+#endasm
+
+
+/* START FUNCTION DESCRIPTION **************************************************
+updateTimers							<SYS.LIB>
+
+SYNTAX:	void updateTimers();
+
+DESCRIPTION:	Updates the values of TICK_TIMER, MS_TIMER, and SEC_TIMER
+while running off the 32kHz oscillator.  Since the periodic interrupt is
+disabled when running at 32kHz, these values will not update unless this
+function is called.
+
+RabbitSys Note: Your application must service the watchdogs manually if
+you are running off the 32kHz oscillator. RabbitSys timer equivalent
+variables for TICK_TIMER, MS_TIMER, and SEC_TIMER are not updated.
+
+RETURN VALUE:	none.
+
+SEE ALSO:		useMainOsc, use32kHzOsc
+END DESCRIPTION ***************************************************************/
+nodebug
+void updateTimers()
+{
+	static unsigned long	rtc_val, delta_ticks;
+
+#asm
+	ld		ix, rtc_val
+;	ioi	ld (RTC0R), a
+   IOWRITE_A(RTC0R)
+	ioi	ld hl, (RTC0R)
+	ld		(ix+0), hl
+	ioi	ld hl, (RTC2R)
+	ld		(ix+2), hl
+#endasm
+
+	delta_ticks = (rtc_val - lastRTCVal)>>5ul;
+	TICK_TIMER = lastTickVal + delta_ticks;
+	MS_TIMER = (unsigned long)(TICK_TIMER*125.0/128.0);
+	SEC_TIMER = read_rtc_32kHz();
+}
+
+
+/*** BeginHeader useClockDivider3000 */
+xmem void useClockDivider3000(int setting);
+
+#define	CLKDIV_2		0x0C
+#define	CLKDIV_4		0x18
+#define	CLKDIV_6		0x1C
+#define	CLKDIV_8		0x00
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+useClockDivider3000				<SYS.LIB>
+
+SYNTAX:	void useClockDivider3000(int setting);
+
+PARAMETER1:		Divider setting.  The following are valid:
+							CLKDIV_2		divide main processor clock by two
+							CLKDIV_4		divide main processor clock by four
+							CLKDIV_6		divide main processor clock by six
+							CLKDIV_8		divide main processor clock by eight
+
+DESCRIPTION:	Sets the expanded clock divider options for the Rabbit 3000
+processor.  This function will also affect the peripheral clock -- use
+useClockDivider() to divide the processor clock by eight but not affect the
+peripheral clock.  Target communications will be lost after changing this
+setting because of the baud rate change.  This function also enables the periodic
+interrupt in case it was disabled by a call to user32kHzOsc().
+This function is not task reentrant.
+
+RETURN VALUE:	none.
+
+SEE ALSO:		useClockDivider, useMainOsc, use32kHzOsc, set32kHzDivider
+END DESCRIPTION ***************************************************************/
+
+#asm xmem nodebug
+useClockDivider3000::
+	ld		a, l					; get setting
+	or		0x01					; enable periodic interrupt
+	ld		(GCSRShadow), a
+;	ioi	ld (GCSR), a		; set new oscillator settings
+	IOWRITE_A(GCSR)
+	lret
+#endasm
+
+
+/*** BeginHeader set32kHzDivider */
+xmem void set32kHzDivider(int setting);
+
+#define	OSC32DIV_1		0x00
+#define	OSC32DIV_2		0x04
+#define	OSC32DIV_4		0x05
+#define	OSC32DIV_8		0x06
+#define	OSC32DIV_16		0x07
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+set32kHzDivider				<SYS.LIB>
+
+SYNTAX:	void set32kHzDivider(int setting);
+
+PARAMETER1:		32kHz divider setting.  The following are valid:
+							OSC32DIV_1		don't divide 32kHz oscillator
+							OSC32DIV_2		divide 32kHz oscillator by two
+							OSC32DIV_4		divide 32kHz oscillator by four
+							OSC32DIV_8		divide 32kHz oscillator by eight
+							OSC32DIV_16		divide 32kHz oscillator by sixteen
+
+DESCRIPTION:	Sets the expanded 32kHz oscillator divider for the Rabbit 3000
+processor.  This function does not enable running the 32kHz oscillator instead
+of the main clock (call use32kHzOsc() to enable that), but will affect the
+actual rate used by the processor when that function is called.
+This function is not task reentrant.
+
+RETURN VALUE:	none.
+
+SEE ALSO:		useClockDivider, useClockDivider3000, useMainOsc, use32kHzOsc
+END DESCRIPTION ***************************************************************/
+
+#asm xmem nodebug
+set32kHzDivider::
+	ld		a, (GPSCRShadow)
+	and	0xF8					; don't change other settings in register
+	or		l
+	ld		(GPSCRShadow), a
+;	ioi	ld (GPSCR), a		; set new 32kHz divider settings
+	IOWRITE_A(GPSCR)
+	lret
+#endasm
+
+
+/*** BeginHeader SetVectExtern2000, _BaseExternISR */
+unsigned SetVectExtern2000(int priority, void *isr);
+root void _BaseExternISR();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+SetVectExtern2000						<SYS.LIB>
+
+SYNTAX:	unsigned SetVectExtern2000(int priority, void *isr);
+
+DESCRIPTION:	Sets up the external interrupt table vectors for
+external interrupts 0 and 1.  This function should be used for
+Rabbit 2000 processors due to a bug in the chip's interrupt
+handling (see technical note TN301 on the rabbit Semiconductor web
+page for more information).  Once this function is called, both
+external interrupts 0 and 1 should be enabled with priority levels set
+higher than any currently running interrupts. (All system interrupts
+in the BIOS run at interrupt priority 1.) The interrupt priority is
+set via the control register I0CR for external interrupt 0 and I1CR
+for external interrupt 1. The actual priority used by the ISR is
+passed to this function.
+
+PARAMETER1: Priority the ISR should run at.  1-3 are valid values.
+
+PARAMETER2: ISR handler address. Must be a root address.
+
+RETURN VALUE:	Address of vector table entry, or zero if the priority
+is not valid.
+
+SEE ALSO:		GetVectExtern2000, SetVectIntern, GetVectIntern
+END DESCRIPTION ***************************************************************/
+
+#if _CPU_ID_ > R2000_R0
+	#warns "The current CPU selected supports SetVectExtern3000 and GetVectExtern3000. You may want to use them instead."
+#endif
+
+nodebug useix unsigned SetVectExtern2000(int priority, void *isr)
+{
+	if ((priority < 1) || (priority > 3))	return(0);
+#asm
+	ld    hl, XINTVEC_BASE ; hl now contains start of vector table
+	ld		iy, hl			  ; save for later
+	ex		de, hl			  ; save destination in de
+
+	ld		hl, _BaseExternISR
+	ld		bc, 32
+	ldir						; copy function to interrupt vector region
+
+	ld		hl, priority
+	add	hl, sp
+	ld		hl, (hl)
+	ld		a, l				; a now contains priority
+
+	ld		hl, isr
+	add	hl, sp
+	ld		hl, (hl)			; hl now contains source for interrupt vector
+
+	cp		3					; check priority level
+	jr		z, .int3
+	cp		2
+	jr		z, .int2
+	jr		.done				; 'ipset 1' already written...
+.int2:
+	ld		(iy+2), 0xED
+	ld		(iy+3), 0x4E 	; change to 'ipset 2' in vector table
+.done:
+	ld		(iy+5), hl		; set up call to user's interrupt handler
+	jr		.reallydone
+.int3:
+	ld		(iy+0), _OP_JP	; if priority 3, just jump to handler
+	ld		(iy+1), hl
+.reallydone:
+#endasm
+}
+
+/* START _FUNCTION DESCRIPTION **************************************************
+_BaseExternISR						<SYS.LIB>
+
+SYNTAX:	(not called directly)
+
+DESCRIPTION:	Code that SetVectExtern2000() places into external
+interrupt vector table.  Contains code for both external interrupts
+0 and 1.  DO NOT CHANGE THIS CODE as SetVectExtern2000() relies on
+the locations of particular opcodes.
+
+SEE ALSO:		SetVectExtern2000
+END DESCRIPTION ***************************************************************/
+
+#asm
+_BaseExternISR::
+
+._int0:					; external interrupt vector 0 starts here
+	push	ip					; (2) don't change this line!
+	ipset	1					; (2) don't change this line!
+	call	0x0000			; (3) don't change this line!
+	pop	ip					; (2)
+	ipres						; (2)
+	ret						; (1)
+	nop
+	nop						; (4 total) leave these NOPs!
+	nop
+	nop						;---- = 16 total
+
+._int1:					; external interrupt 1 vector starts here
+	ipres						; don't do anything; just return
+	ret
+#endasm
+
+/*********************************************************************/
+
+/*** BeginHeader SetVectIntern */
+_stub unsigned SetVectIntern(int vectNum, void *isr);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+SetVectIntern							<SYS.LIB>
+
+SYNTAX:	unsigned SetVectIntern(int vectNum, void *isr);
+
+DESCRIPTION:	Function to set an internal interrupt jump table entry.
+All Rabbit interrupts use jump vectors. This function writes a jp
+instruction (0xC3) followed by the 16 bit ISR address to the appropriate
+location in the vector table.
+
+The location in RAM of the vector table is determined and set by the BIOS
+automatically at startup. The start of the table is always on a 0x100
+boundary.
+
+It is perfectly permissible to have ISRs in xmem and do long jumps to
+them from the vector table. It is even possible to place the entire body
+of the ISR in the vector table if it is 16 byte long or less, but this
+function only sets up jumps to 16 bit addresses.
+
+The following table shows the vectNum argument that should be used for each
+peripheral or RST. The offset into the vector table is also shown.
+
+	Peripheral or RST                        vectNum   Vector Table Offset
+	------------------------------------------------------------
+	System Management (periodic interrupt)      0x00   0x00
+   RST 10 instruction                          0x02   0x20
+   RST 38 instruction                          0x07   0x70
+   Slave Port                                  0x08   0x80
+   Timer A                                     0x0A   0xA0
+   Timer B                                     0x0B   0xB0
+   Serial Port A                               0x0C   0xC0
+   Serial Port B                               0x0D   0xD0
+   Serial Port C                               0x0E   0xE0
+   Serial Port D                               0x0F   0xF0
+
+	The following vectors are for the Rabbit 3000 processor only
+
+	Pulse Width Modulator                       0x17   0x0170
+	Quadrature encoder								  0x19   0x0190
+	Input capture										  0x1A   0x01A0
+	Serial port E										  0x1C   0x01C0
+	Serial port F										  0x1D   0x01D0
+
+	The following three RSTs are included for completeness,
+	but should not be set by the user normally as they are
+	used by Dynamic C
+
+   RST 18 instruction                          0x03   0x30
+   RST 20 instruction                          0x04   0x40
+   RST 28 instruction                          0x05   0x50
+
+
+PARAMETER1: Interrupt number. 0 - 15 are the only valid values. See the
+above table.
+PARAMETER2: ISR handler address. Must be a root address.
+
+RETURN VALUE:	Address of vector table entry, or zero if the vectnum
+is not valid.
+
+SEE ALSO:		GetVectExtern2000, SetVectExtern2000, GetVectIntern
+END DESCRIPTION **************************************************************/
+nodebug
+#if !__RABBITSYS
+useix
+#else
+_stub
+#endif
+unsigned SetVectIntern(int vectNum, void *isr)
+{
+#asm
+	; check for invalid vector number (> 0x1F)
+	ld    de,0xffe0
+	and   hl,de
+	jr    z,.vecNumOK
+	ld    hl,0
+	push  hl
+	jr    .done
+.vecNumOK:
+#if __RABBITSYS
+	ld		hl,_SYS_KERNEL_INTERFACE
+	ld		bc,_SYS_EVENT_REGISTERISR
+	syscall
+#else
+	; table entries are 16 bytes
+	ld 	de,16
+	ld 	hl,(ix+vectNum)
+	ld    b,h
+	ld    c,l
+	mul
+
+	; INTVEC_BASE contains the internal vectable offset
+	ld    hl, INTVEC_BASE
+
+	; hl now points to the table entry
+	add 	hl, bc
+
+.addrOk:
+	; put the jump instruction first
+	ld    (hl),_OP_JP
+	push  hl
+	inc   hl
+	push  hl
+	pop   iy
+
+	; put the isr address next
+	ld    hl,(ix+isr)
+  	ld    (iy),hl
+#endif
+
+.done:
+	; return the address of the vector table entry
+	pop   hl
+#endasm
+}
+
+/*** BeginHeader GetVectIntern */
+typedef void (*isr_ptr_type) ();
+_stub isr_ptr_type GetVectIntern(int vectNum);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+GetVectIntern							<SYS.LIB>
+
+SYNTAX:	unsigned (*)() GetVectIntern(int vectNum);
+
+DESCRIPTION:	Function to read the address of internal interrupt
+table entry. This function really just returns whatever value is at
+the address: (internal vector table base) + (vectNum*16) + 1.
+
+PARAMETER1: Interrupt number. Should be 0 - 15
+
+RETURN VALUE:	isr function address from jump in vector table
+
+SEE ALSO:		GetVectExtern2000, SetVectExtern2000, SetVectIntern
+END DESCRIPTION ***************************************************************/
+_stub
+nodebug isr_ptr_type GetVectIntern(int vectNum)
+{
+#if __RABBITSYS
+	#asm
+	ld		hl,_SYS_KERNEL_INTERFACE
+	ld		bc,_SYS_GETUSERINTVEC
+	syscall
+	#endasm
+#else
+#asm
+	; table entries are 16 bytes
+	ld 	de,16
+	ld 	hl,(sp+vectNum)
+	ld    b,h
+	ld    c,l
+	mul
+
+	; INTVEC_BASE contains the internal vectable offset
+	ld    hl, INTVEC_BASE
+
+	; hl now points to the table entry
+	add 	hl,bc
+
+	; put the jump instruction first
+	ld    hl,(hl+1)
+#endasm
+#endif
+}
+
+/*** BeginHeader GetVectExtern2000 */
+isr_ptr_type GetVectExtern2000();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+GetVectExtern2000						<SYS.LIB>
+
+SYNTAX:	void (*)() GetVectExtern2000();
+
+DESCRIPTION:	Function to read the address of external interrupt
+table entry. It actually simply returns what is present in the table;
+if the external interrupt has not been written to the return value
+is meaningless.
+
+RETURN VALUE:	isr function address from jump in vector table
+
+SEE ALSO:		GetVectIntern, SetVectExtern2000, SetVectIntern
+END DESCRIPTION ***************************************************************/
+
+
+#if _CPU_ID_ > R2000_R0
+	#warns "The current CPU selected supports SetVectExtern3000 and GetVectExtern3000. You may want to use them instead."
+#endif
+
+nodebug isr_ptr_type GetVectExtern2000()
+{
+#asm
+	ld		a, (XINTVEC_BASE)
+	cp		_OP_JP			; is first opcode a 'JP'?
+	jr		nz, .nextTry
+	ld		hl, (XINTVEC_BASE+1)	; return address (priority 3 => just a JP usercode)
+	jr		.done
+.nextTry:
+	ld		hl, (XINTVEC_BASE+5)	; return address (priority 1,2 => code + CALL usercode)
+.done:
+#endasm
+}
+
+/*** BeginHeader SetVectExtern3000 */
+_stub unsigned SetVectExtern3000(int interruptNum, void *isr);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+SetVectExtern3000					<SYS.LIB>
+
+SYNTAX:	unsigned SetVectExtern3000(int interruptNum, void *isr);
+
+DESCRIPTION:	Function to set one of the external interrupt jump table
+entries for the Rabbit 3000 CPU and some versions of the Rabbit 2000.  All Rabbit
+interrupts use jump vectors.
+See SetVectIntern for more information.
+
+PARAMETER1: External interrupt number. 0 and 1 are the only valid values.
+
+PARAMETER2: ISR handler address. Must be a root address.
+
+RETURN VALUE:	0					failed
+					!=0				NON-RABBITSYS: jump address in vector table
+										RABBITSYS:		isr
+
+SEE ALSO:		GetVectExtern3000, SetVectIntern, GetVectIntern
+END DESCRIPTION ***************************************************************/
+
+#if _CPU_ID_ == R2000_R0
+	#error "The current CPU selected does not support SetVectExtern3000. Use SetVectExtern2000 instead. Refer to TN 301 for details."
+#endif
+#if !__RABBITSYS
+useix
+#else
+_stub
+#endif
+nodebug unsigned SetVectExtern3000(int interruptNum, void *isr)
+{
+#asm
+	; check for invalid vector number
+	ld    de,0xfffe
+	and   hl,de
+	jr    z,.vecNumOK
+	ld    hl,0
+	push  hl
+	jr    .done
+.vecNumOK:
+#if __RABBITSYS
+	ld		de,0x1000
+	ld		hl,(sp+@sp+interruptNum)
+	add	hl,de                    	;this tells registerisr() that this
+	ld		(sp+@sp+interruptNum),hl	;vector is for external interrupts
+	ld		hl,_SYS_KERNEL_INTERFACE
+	ld		bc,_SYS_EVENT_REGISTERISR
+	syscall
+#else
+	; table entries are 16 bytes
+	ld 	de,16
+	ld 	hl,(ix+interruptNum)
+	ld    b,h
+	ld    c,l
+	mul
+
+	; XINTVEC_BASE contains the external vectable offset/100h
+	ld    hl, XINTVEC_BASE
+
+	add	hl, bc	; hl now points to the table entry
+
+	; put the jump instruction first
+	ld    (hl),_OP_JP
+	push  hl
+	inc   hl
+	ld		iy, hl
+
+	; put the isr address next
+	ld    hl,(ix+isr)
+  	ld    (iy),hl
+
+#endif ;rabbitsys conditional compilation
+.done:
+	; return the address of the vector table entry
+	pop   hl
+#endasm
+}
+
+/*** BeginHeader GetVectExtern3000 */
+_stub isr_ptr_type GetVectExtern3000(int interruptNum);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **************************************************
+GetVectExtern3000						<SYS.LIB>
+
+SYNTAX:	void (*)() GetVectExtern3000(int interruptNum);
+
+DESCRIPTION:	Function to read the address of an external interrupt
+table entry for the Rabbit 3000 CPU and some versions of the Rabbit 2000.
+This function really just returns whatever value is at the address:
+(external vector table base) + (interuptNum*8) + 1.
+
+PARAMETER1: Interrupt number. Should be 0 or 1.
+
+RETURN VALUE:	jump address in vector table
+
+SEE ALSO:		SetVectExtern3000, SetVectIntern, GetVectIntern
+END DESCRIPTION ***************************************************************/
+
+#if _CPU_ID_ == R2000_R0
+	#error "The current CPU selected does not support GetVectExtern3000. Use GetVectExtern2000 instead. Refer to TN 301 for details."
+#endif
+
+#if _USER
+_stub
+#endif
+nodebug isr_ptr_type GetVectExtern3000(int interruptNum)
+{
+#if __RABBITSYS
+	#asm
+	ld		hl,_SYS_KERNEL_INTERFACE
+	ld		bc,_SYS_GETUSERINTVEC
+	syscall
+	#endasm
+#else
+#asm
+	; table entries are 16 bytes
+	ld 	de,16
+	ld 	hl,(sp+interruptNum)
+	ld    b,h
+	ld    c,l
+	mul
+
+	; XINTVEC_BASE contains the external vectable offset/100
+	ld    hl, XINTVEC_BASE
+
+	; hl now points to the table entry
+	add 	hl, bc
+
+	; put the jump instruction first
+	ld    hl,(hl+1)
+#endasm
+#endif
+}
+
+
+/*** BeginHeader setjmp,longjmp */
+
+root int setjmp(jmp_buf env);
+root void longjmp(jmp_buf env, int val);
+
+/*** EndHeader   setjmp,longjmp */
+
+/* START FUNCTION DESCRIPTION ********************************************
+setjmp                       <SYS.LIB>
+
+SYNTAX: int setjmp(jmp_buf env);
+
+KEYWORDS:
+
+DESCRIPTION: Store the PC (program counter), SP (stack pointer) and other
+information about the current state into env.  The saved information can
+be restored by executing longjmp. NOTE: you cannot use set/longjmp to
+move out of slice statements, costatements, or cofunctions.
+
+Typical usage:
+
+switch (setjmp(e)) {
+	case 0:
+		// first time
+		f();     // try to execute f, which may eventually call longjmp
+		break;   // if we get here, f() was successful
+	case 1:
+		// if we get to here f() must have called longjmp
+		// do exception handling
+		break;
+	case 2:
+		// similar to above, just a different exception code.
+		...
+}
+
+f() {
+	g()
+	...
+}
+
+g(){
+	...
+	longjmp(e,2);     // exception code 2
+							// jump back to setjmp statement,
+							// but causes setjmp to return 2, and
+							// therefore execute case 2 in the switch
+							// statement
+}
+
+PARAMETER1: information about the current state
+
+RETURN VALUE: Returns zero if it is executed.  After longjmp is executed,
+the program counter, stack pointer and etc. are restored to the state
+when setjmp was executed the first time.  However, this time setjmp returns
+whatever value is specifed by the longjmp statement.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+longjmp                      <SYS.LIB>
+
+SYNTAX: void longjmp(jmp_buf env, int val);
+
+KEYWORDS:
+
+DESCRIPTION: Restores the stack environment saved in array env[].  See
+the description of setjmp for details of usage.
+
+PARAMETER1: environment previously saved with setjmp()
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+#asm  nodebug fast
+
+;  SETJMP.CC
+;
+;  Purpose:
+;
+;    SETJMP saves its stack environment in array env[] for possible
+;    later use by LONGJMP. It returns the value 0.
+;
+;    LONGJMP restores the stack environment saved in array env[].
+;    The only confusing issue is how the return is made, and the effect
+;    on the registers.
+;
+;          LONGJMP RETURN:  HL=VAL
+;                           AF,BC,DE clobbered
+;                           PC=address after the CALL SETJMP
+;                              that created the data in env[].
+;                           SP=env[0] - same as set by SETJMP
+;
+;    The use of SETJMP is not dangerous, since all it does is save
+;    values. LONGJMP may be a problem if SETJMP is called recursively.
+;
+;  Reference: S.R.Bourne, "The Unix System", Addison-Wesley, 1983
+;
+
+setjmp::
+		pop      bc
+		pop      de                   ; point to env[] structure
+		bool		hl							; Get Location of SP
+		ld			l,h
+		add      hl,sp
+		push     de
+		push     bc
+		ex       de,hl                ; HL = env
+		ld       (hl),e               ; save stack pointer
+		inc      hl
+		ld       (hl),d
+		inc      hl
+		push     ix                   ; Save IX
+		pop      de
+		ld       (hl),e
+		inc      hl
+		ld       (hl),d
+		inc      hl
+		ld       (hl),c               ; save return address
+		inc      hl
+		ld       (hl),b
+		inc		hl
+		ld			a,xpc
+		ld       (hl),a                  ; save xpc
+		inc		hl
+      ioi		ld a,(STACKSEG)
+		ld			(hl),a
+		bool		hl
+		ld			l,h
+		ret
+
+longjmp::
+		pop      bc                   ; Return Addr
+		pop      hl                   ; Jump Buffer
+		ld       e,(hl)               ; DE = Stack Pointer
+		inc      hl
+		ld       d,(hl)
+		inc      hl
+		ld       c,(hl)               ; Restore IX
+		inc      hl
+		ld       b,(hl)
+		inc      hl
+		push     bc
+		pop      ix
+		ld       a,(hl)               ; HL = Return Addr
+		inc      hl
+		ld			b,(hl)
+		ld			c,a
+		push		bc
+		inc		hl
+		ld			a,(hl)
+		ld			xpc,a
+      inc		hl
+      ld			a,(hl)					; a = STACKSEG value
+		pop		hl
+
+		ex       de,hl
+		pop      bc                   ; Value
+		ld       sp,hl                ; stack reset to old value
+      ioi		ld (STACKSEG),a
+		ld       h,b                  ; return VAL in HL
+		ld       l,c
+		push     de                   ; Dummy Parameter to be Popped by setjmp
+		push     de                   ; put on new return address
+		ret
+
+#endasm
+
+/*** BeginHeader	sysResetChain */
+
+void sysResetChain();
+#makechain	_sysResetChain
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysResetChain                       <SYS.LIB>
+
+SYNTAX:		sysResetChain();
+
+DESCRIPTION:	Function chain that can be used to perform startup
+actions such as initializing protected variables (called from
+_sysIsSoftReset, which itself should be called at the start of a
+program if you are using protected variables).
+END DESCRIPTION **********************************************************/
+
+nodebug void sysResetChain() {
+	_sysResetChain();
+}
+
+/*** BeginHeader	_sysIsSoftReset */
+
+void _sysIsSoftReset();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_sysIsSoftReset                       <SYS.LIB>
+
+SYNTAX:		int _sysIsSoftReset();
+
+DESCRIPTION:	This function should be called at the start of a program
+if you are using protected variables.  It determines whether this restart
+of the board is due to a software reset from Dynamic C or a call to
+forceSoftReset().  If it was a soft reset, this function then does
+the following:
+
+ (1)	calls _prot_init() to initialize the protected variable
+		mechanisms.  It is up to the user to initialize protected
+		variables.
+
+ (2)	Calls sysResetChain().  The user may attach functions to this
+ 		chain to perform additional startup actions (for example,
+ 		initializing protected variables).
+
+If a soft reset did not take place, this function calls _prot_recover()
+to recover any protected variables.
+END DESCRIPTION **********************************************************/
+
+#if (ZERO_OUT_STATIC_DATA==1)
+#error "protected variables not usable with ZERO_OUT_STATIC_DATA = 1"
+#endif
+
+nodebug
+void _sysIsSoftReset()
+{
+	// was this a software-driven reset?
+	if(chkSoftReset() || _prot_needs_init()) {
+
+		// initialize protected variable flags
+		_prot_init();
+
+		// call software reset chain
+		sysResetChain();
+
+	} else {
+	// reset was due to power fail or watchdog timeout
+
+		// restore any protected variable
+		_prot_recover();
+	}
+}
+
+
+/*** BeginHeader	chkSoftReset */
+root int chkSoftReset();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+chkSoftReset                       <SYS.LIB>
+
+SYNTAX:		int chkSoftReset();
+
+DESCRIPTION:	This function determines whether the last restart of the
+board was due to a software reset from Dynamic C or a call to
+forceSoftReset(), or from some other reason.
+
+SEE ALSO:		chkHardReset, chkWDTO, forceSoftReset
+
+RETURN VALUE:	1 if the board was restarted due to a soft reset,
+					0 if it was not.
+END DESCRIPTION **********************************************************/
+
+#asm
+chkSoftReset::
+	#if _USER
+		call	_sys_get_reset_status
+		ld		a,L
+	#else
+		ld		a, (reset_status)
+	#endif
+	and	0xC0
+	cp		0x00
+	jr		nz, .ret0
+.ret1:
+	ld		hl, 0x0001
+	ret
+.ret0:
+	bool	hl
+	ld		l, h
+	ret
+#endasm
+
+
+/*** BeginHeader chkHardReset */
+root int chkHardReset();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+chkHardReset                       <SYS.LIB>
+
+SYNTAX:		int chkHardReset();
+
+DESCRIPTION:	This function determines whether this restart of the
+board is due to a hardware reset. Asserting the RESET line or recycling
+power are both considered hardware resets. A watchdog timeout is not
+a hardware reset.
+
+SEE ALSO:		chkSoftReset, chkWDTO, forceSoftReset
+
+RETURN VALUE:	1 if the processor was restarted due to a hardware reset,
+					0 if it was not.
+END DESCRIPTION **********************************************************/
+
+#asm
+chkHardReset::
+	#if _USER
+		call	_sys_get_reset_status
+		ld		a,L
+	#else
+		ld		a, (reset_status)
+	#endif
+	and	0xC0
+	cp		0xC0
+	jr		nz, .ret0
+.ret1:
+	ld		hl, 0x0001
+	ret
+.ret0:
+	bool	hl
+	ld		l, h
+	ret
+#endasm
+
+
+/*** BeginHeader chkWDTO */
+root int chkWDTO();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+chkWDTO	                       <SYS.LIB>
+
+SYNTAX:		int chkWDTO();
+
+DESCRIPTION:	This function determines whether this restart of the
+board is due to a watchdog timeout.
+
+SEE ALSO:		chkSoftReset, chkHardReset, forceSoftReset
+
+RETURN VALUE:	1 if the board was restarted due to a watchdog timeout,
+					0 if it was not.
+END DESCRIPTION **********************************************************/
+
+#asm
+chkWDTO::
+	#if _USER
+		call	_sys_get_reset_status
+		ld		a,L
+	#else
+		ld		a, (reset_status)
+	#endif
+	and	0xC0
+	cp		0x40
+	jr		nz, .ret0
+.ret1:
+	ld		hl, 0x0001
+	ret
+.ret0:
+	bool	hl
+	ld		l, h
+	ret
+#endasm
+
+
+/*** BeginHeader	forceSoftReset */
+root void forceSoftReset();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+forceSoftReset                       <SYS.LIB>
+
+SYNTAX:		void forceSoftReset();
+
+DESCRIPTION:	For a program not compiled for RabbitSys, forces the board into a
+               software reset by jumping to the start of the BIOS.
+               For a RabbitSys user mode program, this function requests
+               RabbitSys to restart the user program.
+
+SEE ALSO:		chkSoftReset, chkHardReset, chkWDTO
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+
+#asm
+forceSoftReset::
+#if _USER
+	call	_sys_dk_startuserprog
+#else
+	;; perform a 'soft' reset by restarting the BIOS
+	jp		0x0000
+#endif
+#endasm
+
+/*** BeginHeader	Disable_HW_WDT */
+root void Disable_HW_WDT();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Disable_HW_WDT                       <SYS.LIB>
+
+SYNTAX:		void Disable_HW_WDT();
+
+DESCRIPTION: Disables the hardware watchdog timer on the Rabbit processor.
+The watchdog is hit by the periodic interrupt, which is on by default.
+This function is is useful for special situations such as low power
+"sleepy mode."
+
+The WD timer can be re-enabled by calling Enable_HW_WDT() or by simply
+writing  any value except 0x51,0x52,0x53, or 0x5e to WDTTR.
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+
+#asm root
+Disable_HW_WDT::
+#if __RABBITSYS
+	#error "Disabling the hardware watchdog is not allowed when using RabbitSys"
+#endif
+			ld a,0x51
+	ioi  	ld (WDTTR),a
+			ld a,0x54
+	ioi  	ld (WDTTR),a
+	ret
+#endasm
+
+/*** BeginHeader	Enable_HW_WDT */
+root void Enable_HW_WDT();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Enable_HW_WDT                       <SYS.LIB>
+
+SYNTAX:		void Enable_HW_WDT();
+
+DESCRIPTION: Enables the hardware watchdog timer on the Rabbit processor.
+The watchdog is hit by the periodic interrupt, which is on by default.
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+
+#asm root
+Enable_HW_WDT::
+#if __RABBITSYS==0
+			xor a
+	ioi  	ld (WDTTR),a
+#endif
+	ret
+#endasm
+
+
+/*** BeginHeader	setClockModulation */
+xmem void setClockModulation(int setting);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+setClockModulation                       <SYS.LIB>
+
+SYNTAX:			void setClockModulation(int setting);
+
+PARAMETER1:		Clock modulation setting.  Allowed values are:
+							0 = no modulation
+							1 = weak modulation
+							2 = strong modulation
+
+DESCRIPTION:	Changes the setting of the Rabbit 3000 CPU clock
+moduation.  Calling this function will force a 500 clock delay before
+the setting is changed to ensure that the previous moduation setting
+has cleared before the next one is set.  See the "Rabbit 3000
+Microprocessor User's Manual" for more details about clock modulation
+for EMI reduction.
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+void _delay500clocks();
+xmem void setClockModulation(int setting)
+{
+	if (setting == 0) {
+		WrPortI(GCM1R, &GCM1RShadow, 0x00);	// disable modulation
+	}
+	else if (setting == 1) {
+		WrPortI(GCM1R, &GCM1RShadow, 0x00);	// disable modulation
+		_delay500clocks();
+		WrPortI(GCM0R, &GCM0RShadow, 0x00);	// enable weak spreading
+		WrPortI(GCM1R, &GCM1RShadow, 0x80);	// reenable modulation
+	}
+	else if (setting == 2) {
+		WrPortI(GCM1R, &GCM1RShadow, 0x00);	// disable modulation
+		_delay500clocks();
+		WrPortI(GCM0R, &GCM0RShadow, 0x80);	// enable strong spreading
+		WrPortI(GCM1R, &GCM1RShadow, 0x80);	// reenable modulation
+	}
+}
+
+#asm
+_delay500clocks::
+	ld		b, 100
+.delayloop:
+	djnz	.delayloop	// 5 clocks * 100 = 500 clocks (plus call/return time)
+	ret
+#endasm
+
+/*** BeginHeader BitRevTable */
+
+//256 byte table of bytes with reversed order bits i.e.
+// BitRevTable[B'00000010] == B'01000000
+extern const char BitRevTable[];
+
+/*** EndHeader */
+
+const char BitRevTable[] = {
+0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0,
+0x08, 0x88, 0x48, 0xC8, 0x28, 0xA8, 0x68, 0xE8, 0x18, 0x98, 0x58, 0xD8, 0x38, 0xB8, 0x78, 0xF8,
+0x04, 0x84, 0x44, 0xC4, 0x24, 0xA4, 0x64, 0xE4, 0x14, 0x94, 0x54, 0xD4, 0x34, 0xB4, 0x74, 0xF4,
+0x0C, 0x8C, 0x4C, 0xCC, 0x2C, 0xAC, 0x6C, 0xEC, 0x1C, 0x9C, 0x5C, 0xDC, 0x3C, 0xBC, 0x7C, 0xFC,
+0x02, 0x82, 0x42, 0xC2, 0x22, 0xA2, 0x62, 0xE2, 0x12, 0x92, 0x52, 0xD2, 0x32, 0xB2, 0x72, 0xF2,
+0x0A, 0x8A, 0x4A, 0xCA, 0x2A, 0xAA, 0x6A, 0xEA, 0x1A, 0x9A, 0x5A, 0xDA, 0x3A, 0xBA, 0x7A, 0xFA,
+0x06, 0x86, 0x46, 0xC6, 0x26, 0xA6, 0x66, 0xE6, 0x16, 0x96, 0x56, 0xD6, 0x36, 0xB6, 0x76, 0xF6,
+0x0E, 0x8E, 0x4E, 0xCE, 0x2E, 0xAE, 0x6E, 0xEE, 0x1E, 0x9E, 0x5E, 0xDE, 0x3E, 0xBE, 0x7E, 0xFE,
+0x01, 0x81, 0x41, 0xC1, 0x21, 0xA1, 0x61, 0xE1, 0x11, 0x91, 0x51, 0xD1, 0x31, 0xB1, 0x71, 0xF1,
+0x09, 0x89, 0x49, 0xC9, 0x29, 0xA9, 0x69, 0xE9, 0x19, 0x99, 0x59, 0xD9, 0x39, 0xB9, 0x79, 0xF9,
+0x05, 0x85, 0x45, 0xC5, 0x25, 0xA5, 0x65, 0xE5, 0x15, 0x95, 0x55, 0xD5, 0x35, 0xB5, 0x75, 0xF5,
+0x0D, 0x8D, 0x4D, 0xCD, 0x2D, 0xAD, 0x6D, 0xED, 0x1D, 0x9D, 0x5D, 0xDD, 0x3D, 0xBD, 0x7D, 0xFD,
+0x03, 0x83, 0x43, 0xC3, 0x23, 0xA3, 0x63, 0xE3, 0x13, 0x93, 0x53, 0xD3, 0x33, 0xB3, 0x73, 0xF3,
+0x0B, 0x8B, 0x4B, 0xCB, 0x2B, 0xAB, 0x6B, 0xEB, 0x1B, 0x9B, 0x5B, 0xDB, 0x3B, 0xBB, 0x7B, 0xFB,
+0x07, 0x87, 0x47, 0xC7, 0x27, 0xA7, 0x67, 0xE7, 0x17, 0x97, 0x57, 0xD7, 0x37, 0xB7, 0x77, 0xF7,
+0x0F, 0x8F, 0x4F, 0xCF, 0x2F, 0xAF, 0x6F, 0xEF, 0x1F, 0x9F, 0x5F, 0xDF, 0x3F, 0xBF, 0x7F, 0xFF
+};
+
+/*** BeginHeader _rs_get_reset_status */
+_system int _rs_get_reset_status (void);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+_rs_get_reset_status                                          <SYS.LIB>
+
+SYNTAX:			int _rs_get_reset_status (void);
+
+DESCRIPTION:	return the value of "reset_status".
+
+PARAMETER:		none.
+
+RETURN VALUE:	reason for reset:
+					0xCn		hard reset
+					0x4n		hardware watchdog timeout
+					0x0n		soft reset
+
+END DESCRIPTION **********************************************************/
+_system int _rs_get_reset_status (void)
+{
+	_SYS_CALL_VARS
+
+	return reset_status;
+}
+
+/*** BeginHeader  ********************************************/
+#endif
+/*** EndHeader ***********************************************/

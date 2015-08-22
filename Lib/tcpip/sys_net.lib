@@ -1,0 +1,689 @@
+/*
+ *    sys_net.lib
+ *    Copyright (C) Z-World, Inc. All rights reserved.
+ *
+ * This library defines the core networking API for RabbitSys
+ */
+
+/*** BeginHeader */
+#ifndef __SYS_NET_LIB
+#define __SYS_NET_LIB
+
+#ifndef __RABBITSYS
+	#define __RABBITSYS	0
+#endif
+
+#if __RABBITSYS == 0
+
+   #define tcp_Socket                  _rs_tcp_Socket
+   #define udp_Socket                  _rs_udp_Socket
+   #define sock_type                   _rs_sock_type
+
+//ARP.LIB
+   #define _arp_resolve                _rs_arp_resolve
+   #define arpcache_create             _rs_arpcache_create
+   #define arpcache_flush              _rs_arpcache_flush
+   #define arpcache_hwa                _rs_arpcache_hwa
+   #define arpcache_iface              _rs_arpcache_iface
+   #define arpcache_ipaddr             _rs_arpcache_ipaddr
+   #define arpcache_load               _rs_arpcache_load
+   #define arpcache_search             _rs_arpcache_search
+   #define arpresolve_check            _rs_arpresolve_check
+   #define arpresolve_ipaddr           _rs_arpresolve_ipaddr
+   #define arpresolve_start            _rs_arpresolve_start
+   #define arpresolve_start_iface      _rs_arpresolve_start_iface
+   #define router_add                  _rs_router_add
+   #define router_del_all              _rs_router_del_all
+   #define router_delete               _rs_router_delete
+   #define router_for_iface            _rs_router_for_iface
+
+//BOOTP.LIB
+   #define dhcp_acquire                _rs_dhcp_acquire
+   #define dhcp_release                _rs_dhcp_release
+   #define dhcp_get_timezone           _rs_dhcp_get_timezone
+
+//BSDNAME.LIB
+   #define getpeername                 _rs_getpeername
+   #define getsockname                 _rs_getsockname
+   #define getdomainname               _rs_getdomainname
+   #define setdomainname               _rs_setdomainname
+   #define gethostname                 _rs_gethostname
+   #define sethostname                 _rs_sethostname
+//DNS.LIB
+   #define resolve_name_start          _rs_resolve_name_start
+   #define resolve_name_check          _rs_resolve_name_check
+   #define resolve_cancel              _rs_resolve_cancel
+   #define resolve                     _rs_resolve
+
+//IP.LIB
+   //#define aton2                       _rs_aton2
+   //#define isaddr                      _rs_isaddr
+   //#define inet_addr                   _rs_inet_addr
+   //#define inet_ethtoa                 _rs_inet_ethtoa
+   //#define inet_ntoa                   _rs_inet_ntoa
+   #define gethostid                   _rs_gethostid
+   #define sethostid                   _rs_sethostid
+   #define ip_iface                    _rs_ip_iface
+   //#define psocket                     _rs_psocket
+
+//NET.LIB
+	#define findfreeport                _rs_findfreeport
+   #define _abort_socks                _rs_abort_socks
+   #define ifconfig                    _rs_ifconfig
+   #define ifdown                      _rs_ifdown
+   #define ifpending                   _rs_ifpending
+   #define ifstatus                    _rs_ifstatus
+   #define ifup                        _rs_ifup
+   #define ip_timer_expired            _rs_ip_timer_expired
+   #define ip_timer_init               _rs_ip_timer_init
+   //#define is_valid_iface              _rs_is_valid_iface
+   #define rip                         _rs_rip
+   #define sock_abort                  _rs_sock_abort
+   #define sock_alive                  _rs_sock_alive
+   #define sock_bytesready             _rs_sock_bytesready
+   #define sock_close                  _rs_sock_close
+   #define sock_dataready              _rs_sock_dataready
+   #define sock_iface                  _rs_sock_iface
+   #define sock_init                   _rs_sock_init
+   #define sock_mode                   _rs_sock_mode
+   #define sock_rbleft                 _rs_sock_rbleft
+   #define sock_rbsize                 _rs_sock_rbsize
+   #define sock_rbused                 _rs_sock_rbused
+   #define sock_readable               _rs_sock_readable
+   #define sock_resolved               _rs_sock_resolved
+   #define sock_set_tos                _rs_sock_set_tos
+   #define sock_set_ttl                _rs_sock_set_ttl
+   #define sock_tbleft                 _rs_sock_tbleft
+   #define sock_tbsize                 _rs_sock_tbsize
+   #define sock_waiting                _rs_sock_waiting
+   #define sock_writable               _rs_sock_writable
+   #define sock_yield                  _rs_sock_yield
+   #define tcp_config                  _rs_tcp_config
+   #define virtual_eth                 _rs_virtual_eth
+   #define sock_established            _rs_sock_established
+   #define sock_tbused						_rs_sock_tbused
+
+//ICMP.LIB
+   #define _ip_delay0                  _rs_ip_delay0
+   #define _ip_delay1                  _rs_ip_delay1
+   #define _ip_delay2                  _rs_ip_delay2
+   #define _send_ping_iface            _rs_send_ping_iface
+   #define _chk_ping                   _rs_chk_ping
+   #define set_icmp_handler            _rs_set_icmp_handler
+   #define smtp_data_handler           _rs_smtp_data_handler
+
+//SMTP.LIB
+   #define smtp_mailtick               _rs_smtp_mailtick
+   #define smtp_sendmailxmem           _rs_smtp_sendmailxmem
+   #define smtp_setserver              _rs_smtp_setserver
+   #define smtp_setserver_ip           _rs_smtp_setserver_ip
+   #define smtp_status                 _rs_smtp_status
+   #define smtp_setauth						_rs_smtp_setauth
+
+//TCP.LIB
+   #define sock_axread                 _rs_sock_axread
+   #define sock_axwrite                _rs_sock_axwrite
+   #define sock_chr                    _rs_sock_chr
+   #define sock_cmp                    _rs_sock_cmp
+   #define sock_fastwrite              _rs_sock_fastwrite
+   #define sock_flush                  _rs_sock_flush
+   #define sock_flushnext              _rs_sock_flushnext
+   #define sock_gets                   _rs_sock_gets
+   #define sock_noflush                _rs_sock_noflush
+   #define sock_preread                _rs_sock_preread
+   #define sock_puts                   _rs_sock_puts
+   #define sock_read                   _rs_sock_read
+   #define sock_write                  _rs_sock_write
+   #define sock_xfastwrite             _rs_sock_xfastwrite
+   //#define sockstate                   _rs_sockstate
+   #define tcp_clearreserve            _rs_tcp_clearreserve
+   #define tcp_extlisten               _rs_tcp_extlisten
+   #define tcp_extopen                 _rs_tcp_extopen
+   #define tcp_close							_rs_tcp_close
+   #define tcp_abort							_rs_tcp_abort
+   #define tcp_keepalive               _rs_tcp_keepalive
+   #define tcp_tick                    _rs_tcp_tick
+	#define sock_fastread					_rs_sock_fastread
+	#define tcp_reserveport             _rs_tcp_reserveport
+	#define tcp_established					_rs_tcp_established
+   #define sock_xfastread					_rs_sock_xfastread
+
+//UDP.LIB
+   #define udp_bypass_arp              _rs_udp_bypass_arp
+   #define udp_extopen                 _rs_udp_extopen
+   #define udp_peek                    _rs_udp_peek
+   #define udp_recvfrom                _rs_udp_recvfrom
+   #define udp_xsendto                 _rs_udp_xsendto
+	#define udp_close							_rs_udp_close
+
+//IGMP.LIB
+   #define multicast_joingroup         _rs_multicast_joingroup
+   #define multicast_leavegroup        _rs_multicast_leavegroup
+
+//NETERROR.LIB
+   #define sock_error                  _rs_sock_error
+   #define sock_msg                    _rs_sock_msg
+
+//RDP.LIB
+   #define start_rdp                   _rs_start_rdp
+
+//MD5.LIB
+	#ifndef __md5def
+		#define __md5def
+	   #define md5_init                    _rs_md5_init
+	   #define md5_append                  _rs_md5_append
+	   #define md5_finish                  _rs_md5_finish
+	#endif
+
+//PKTDRV.lib
+
+	#define pd_getaddress               _rk_pd_getaddress
+   #define pd_getaddresslen            _rk_pd_getaddresslen
+   #define pd_sethwaddr						_rk_pd_sethwaddr
+   #define pd_powerdown						_rk_pd_powerdown
+   #define pd_powerup                  _rk_pd_powerup
+   #define pd_havelink						_rk_pd_havelink
+   #define pd_addmulticast 				_rk_pd_addmulticast
+   #define pd_removemulticast				_rk_pd_removemulticast
+
+#endif
+
+#ifdef MCOS
+	#define MCOS_LOCKS
+
+   #define NET_COARSELOCK
+   #define NET_COMMON_DNS_LOCK
+#endif
+
+#use net_defs.lib
+/*** EndHeader */
+
+
+// *
+// *************  RABBITSYS functions and variables ***************
+// *
+
+/*** BeginHeader _rk_Close_NonSystem_Sockets*/
+void _rk_Close_NonSystem_Sockets(void);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+_rk_Close_NonSystem_Sockets                                  <SYS_NET.LIB>
+
+SYNTAX:			void _rk_Close_NonSystem_Sockets(void)
+
+DESCRIPTION:	close all user udp and tcp sockets by calling upd_close()
+and tcp_abort().
+
+PARAMETER:		none.
+
+RETURN VALUE:	none.
+
+END DESCRIPTION **********************************************************/
+_net_nodebug
+void _rk_Close_NonSystem_Sockets (void)
+{
+   auto _rs_tcp_Socket *p;
+   auto tcp_Pending *pp;
+   auto _rs_udp_Socket *q;
+
+   for( p = tcp_allsocs ; p ; )
+   {
+   	if (p->userSocket)
+   	{
+   		_rs_tcp_abort( p );
+         p = tcp_allsocs;
+      }
+      else
+      	p = p->next;
+   }
+
+   //we abort all pending connections regardless
+   //of who it belongs to because we can't tell,
+   //and don't really care.
+	for( pp = tcp_allpending; pp; pp = pp->next)
+		tcp_abortpending(pp);
+
+	for (q = udp_allsocs; q; )
+	{
+		if ( q->userSocket )
+		{
+			_rs_udp_close(q);
+			q = udp_allsocs;
+		}
+		else
+			q = q->next;
+	}
+} //_rk_Close_NonSystem_Sockets()
+
+
+/*** BeginHeader _rs_net_socket_alloc, _rk_net_tcpSocketPool,
+ _rk_net_udpSocketPool, _rk_max_tcp_handles, _rk_max_udp_handles,
+ _rk_max_tcp_buffers, _rk_max_udp_buffers, _rk_tcp_buffer_size,
+ _rk_udp_buffer_size */
+
+#if _SYSTEM
+//if this structure changes you must change _sys_net_handle as well.
+typedef struct
+{
+   void *sock;
+	int *userHandle;
+}_rk_net_handle;
+
+xmem _system int _rs_net_socket_alloc (sock_init_config_t *sic);
+
+extern Pool_t _rk_net_tcpSocketPool;      //pool control structures
+extern Pool_t _rk_net_udpSocketPool;
+extern Pool_t _rk_net_bufPool;
+extern void * _rk_net_tcpSocketPoolMem;	//tcp socket memory
+extern void * _rk_net_udpSocketPoolMem;   //udp socket memory
+extern long _rk_net_bufPoolMem;				//network buffer pool
+
+extern _rk_net_handle *_rk_tcp_udp_handles;
+extern char _rk_max_tcp_handles;
+extern char _rk_max_udp_handles;
+extern char _rk_max_tcp_buffers;
+extern char _rk_max_udp_buffers;
+extern int  _rk_tcp_buffer_size;
+extern int  _rk_udp_buffer_size;
+#endif
+/*** EndHeader */
+
+_rk_net_handle *_rk_tcp_udp_handles; 	//points to array of socket handle
+													//structures.
+
+char _rk_max_tcp_handles;
+char _rk_max_udp_handles;
+char _rk_max_tcp_buffers;
+char _rk_max_udp_buffers;
+int  _rk_tcp_buffer_size;
+int  _rk_udp_buffer_size;
+
+Pool_t _rk_net_tcpSocketPool;			//Pool structures for tcp and udp sockets,
+Pool_t _rk_net_udpSocketPool;			//and for socket xmit/recv buffer.
+
+void * _rk_net_tcpSocketPoolMem;		//addresses of pool memories
+void * _rk_net_udpSocketPoolMem;
+
+
+/*** START FUNCTION DESCRIPTION ****************************
+_rs_net_socket_alloc									  <netinit.LIB>
+
+Syntax:        int _rs_net_socket_alloc (sock_init_config_t *sic)
+
+Description:	allocate memory for user network sockets.
+ Indicate how many of each type of socket will be
+ required. Indicate how many buffers for each type of socket
+ are needed. If there is not enough memory to allocate all the
+ desired sockets an error is returned and no network
+ sockets will be available.  If the sum of the sockets requested
+ exceed 255 an error will be returned, but you may try again
+ with a smaller amount.  System network sockets are allocated
+ separately from user network sockets and are not affected by
+ this function.
+
+
+Return Value:	0			success
+					-ENOMEM	not enough memory to allocate sockets
+					-E2BIG	too many sockets requested
+
+Side Effects:	sets _rk_max_tcp_handles, _rk_max_udp_handles,
+ 					and _rk_tcp_udphandles, _rk_max_tcp_buffers,
+					_rk_tcp_buffer_size,	_rk_max_udp_buffers,
+					udp_buffers	_rk_udp_buffer_size
+
+END DESCRIPTION ********************************************/
+_net_nodebug
+xmem _system int _rs_net_socket_alloc (sock_init_config_t *sic)
+{
+	_SYS_CALL_VARS
+	auto int i;
+	auto void **t;
+
+	#GLOBAL_INIT
+	{
+		_rk_tcp_udp_handles = NULL;
+	}
+
+	if ( (sic->tcp_socks+sic->udp_socks) > 255 )
+	{
+		return -E2BIG;
+	}
+	if (_rk_tcp_udp_handles)		//already allocated, exit.
+	{
+		return 0;
+   }
+	_rk_max_tcp_handles = 0;
+	_rk_max_udp_handles = 0;
+
+	if ( _tcp_buffers = (void**)_rs_ralloc(sic->tcp_numbufs * sizeof(void*)) )
+	{
+		memset(_tcp_buffers, 0, sic->tcp_numbufs * sizeof(void*) );
+		_tcp_buf_area = sic->tcp_BufferMemory;
+	}
+   else
+   {
+   	return -ENOMEM;
+   }
+	if ( _udp_buffers = (void**)_rs_ralloc(sic->udp_numbufs * sizeof(void*)) )
+	{
+		memset(_udp_buffers, 0, sic->udp_numbufs * sizeof(void*) );
+		_udp_buf_area = sic->udp_BufferMemory;
+	}
+   else
+   {
+   	return -ENOMEM;
+   }
+
+	//calculate how big a table we need and allocate it.
+	i = (sic->tcp_socks+sic->udp_socks) * sizeof(_rk_net_handle);
+	t = (void**)_rs_ralloc(i);
+
+	//if we allocated the table ok, allocate each tcp and udp
+	//socket and put the address in the table.
+	if ( !t )
+	{
+		return -ENOMEM;
+	}
+	memset(t, 0, i);
+	if (sic->tcp_socks)
+	{
+	   _rk_net_tcpSocketPoolMem =
+			(void*)_rs_ralloc( sic->tcp_socks * (sizeof(_rs_tcp_Socket)+4) );
+		if (_rk_net_tcpSocketPoolMem)
+	   {
+	   	pool_init(&_rk_net_tcpSocketPool, _rk_net_tcpSocketPoolMem,
+	   	   sic->tcp_socks, sizeof(_rs_tcp_Socket)+4);
+	   }
+	   else
+	   	return -ENOMEM;
+	}
+	if (sic->udp_socks)
+	{
+	   _rk_net_udpSocketPoolMem =
+			(void*)_rs_ralloc( sic->udp_socks * (sizeof(_rs_udp_Socket)+4) );
+		if (_rk_net_udpSocketPoolMem)
+		{
+	   	pool_init(&_rk_net_udpSocketPool, _rk_net_udpSocketPoolMem,
+	   	   sic->udp_socks, sizeof(_rs_udp_Socket)+4);
+	  	}
+	  	else
+	  		return -ENOMEM;
+   }
+   _rk_tcp_udp_handles = (_rk_net_handle *)t;
+	_rk_max_tcp_handles = sic->tcp_socks;
+	_rk_max_udp_handles = sic->udp_socks;
+	_rk_max_tcp_buffers = sic->tcp_numbufs;
+	_rk_tcp_buffer_size = sic->tcp_bsize;
+	_rk_max_udp_buffers = sic->udp_numbufs;
+	_rk_udp_buffer_size = sic->udp_bsize;
+	_tcp_buf_area  	  = sic->tcp_BufferMemory;
+	_udp_buf_area  	  = sic->udp_BufferMemory;
+	return 0;
+} //_rs_net_socket_alloc()
+
+/*** BeginHeader _rs_net_getSocketBase, _rs_net_getTcpSocket,
+ _rs_net_getUdpSocket */
+xmem _system void **_rs_net_getSocketBase(void);
+xmem _system _rs_tcp_Socket *_rs_net_getTcpSocket(int *tcpHandle);
+xmem _system _rs_udp_Socket *_rs_net_getUdpSocket(int *udpHandle);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ******************************
+_rs_net_getSocketBase								  <netinit.LIB>
+
+Syntax:			int **_rs_net_getSocketBase(void)
+
+Description:	return the address of the socket handle
+ array.
+
+Parameter:		none.
+
+Return Value:	address of array.
+
+END DESCRIPTION ********************************************/
+_net_nodebug
+xmem _system void **_rs_net_getSocketBase (void)
+{
+	_SYS_CALL_VARS
+
+	return _rk_tcp_udp_handles;
+} //_rs_net_getSocketBase()
+
+
+
+/* START FUNCTION DESCRIPTION ******************************
+_rs_net_getTcpSocket											<net.LIB>
+
+Syntax:			tcp_Socket *_rs_net_getTcpSocket(int *tcpHandle);
+
+Description:	allocate and return a TCP socket structure.
+
+Parameter:		none.
+
+Return Value:	!0		address of the allocated structure.
+					NULL	no more available
+
+END DESCRIPTION ********************************************/
+_net_nodebug
+xmem _system _rs_tcp_Socket *_rs_net_getTcpSocket (int *tcpHandle)
+{
+	_SYS_CALL_VARS
+	int x;
+	_rk_net_handle *pv;		//pointer to handles
+
+   _RK_CHK_POINTER(tcpHandle)
+
+	//find an empty slot in _sys_net_SocketBase[], then
+	//go to the pool and get a socket structure.
+	pv = _rk_tcp_udp_handles;
+	for ( x=0; x<_rk_max_tcp_handles; ++x,++pv )
+	{
+		if ( !pv->sock )
+		{  //allocate socket
+			pv->sock = palloc(&_rk_net_tcpSocketPool);
+			if ( pv->sock )
+			{
+				*tcpHandle = x | _SYS_TCPSOCK;
+				pv->userHandle = tcpHandle;
+				((_rs_tcp_Socket *)(pv->sock))->userSocket = 1;
+				return (_rs_tcp_Socket *)pv->sock;
+			}
+		}//if element free
+	}//SocketBase search
+
+	return NULL;
+}//_rs_net_getTcpSocket()
+
+/* START FUNCTION DESCRIPTION ******************************
+_rs_net_getUdpSocket											<net.LIB>
+
+Syntax:		udp_Socket *_rs_net_getUdpSocket(int *updHandle);
+
+Description:	allocate and return a UDP socket structure.
+
+Parameter:		none.
+
+Return Value:	!0		address of the allocated structure.
+					NULL	no more available
+
+END DESCRIPTION ********************************************/
+_net_nodebug
+xmem _system _rs_udp_Socket *_rs_net_getUdpSocket (int *udpHandle)
+{
+	_SYS_CALL_VARS
+	int x;
+	_rk_net_handle *pv;
+	long pb;
+
+   _RK_CHK_POINTER(udpHandle)
+	//find an empty slot in _sys_net_SocketBase[], then
+	//go to the pool and get a socket structure.
+	pv = _rk_tcp_udp_handles+_rk_max_tcp_handles;
+	for ( x=0; x<_rk_max_udp_handles; ++x,++pv )
+	{
+		if ( !pv->sock )
+		{	//allocate socket
+			pv->sock = palloc(&_rk_net_udpSocketPool);
+			if ( pv->sock )
+			{
+				*udpHandle = x | _SYS_UDPSOCK;
+				pv->userHandle = udpHandle;
+				((_rs_udp_Socket *)(pv->sock))->userSocket = 1;
+				return (_rs_udp_Socket *)pv->sock;
+			}
+		}//if element free
+	}//SocketBase search
+
+	return NULL;
+}//_rs_net_getUdpSocket()
+
+/*** BeginHeader _rk_net_clearHandle */
+void _rk_net_clearHandle(_rs_sock_type *sock);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ******************************
+_rk_net_clearHandle							<tcp.LIB>
+
+Syntax:			void _rk_net_clearHandle(sock_type *sock)
+
+Description:	match the socket address to an array entry
+ and clear the value pointed to by the handle address.
+ Also free the associated buffer and clear its handle.
+
+Parameter:		socket (any kind) address
+
+Return Value:	none
+
+END DESCRIPTION ********************************************/
+_net_nodebug
+void _rk_net_clearHandle (_rs_sock_type *sock)
+{
+	auto int i;
+	auto _rk_net_handle *hndl;
+
+	for ( i=0, hndl=_rk_tcp_udp_handles;
+			i<(_rk_max_tcp_handles+_rk_max_udp_handles);
+			++i,++hndl)
+	{
+		if ( (_rs_sock_type *)(hndl->sock) == sock)
+		{
+			*hndl->userHandle = 0;
+			hndl->userHandle = NULL;
+			hndl->sock = NULL;
+			break;
+		}
+	}
+} //_rk_net_clearHandle()
+
+/*** BeginHeader _rk_net_freeSocket */
+void _rk_net_freeSocket(_rs_sock_type *sock);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ******************************
+_rk_net_freeSocket							<tcp.LIB>
+
+Syntax:			void _rk_net_freeSocket(sock_type *sock)
+
+Description:	free the socket memory and clear the user
+ handle.
+
+Parameter:		pointer to a tcp or udp socket structure that
+ 					was allocated from the user pool.
+
+Return Value:	none.
+END DESCRIPTION ********************************************/
+_net_nodebug
+void _rk_net_freeSocket (_rs_sock_type *sock)
+{
+	if ( sock->tcp.ip_type == TCP_PROTO )
+	{
+		pfree(&_rk_net_tcpSocketPool, sock);
+	}
+	else if ( sock->udp.ip_type == UDP_PROTO )
+	{
+		pfree(&_rk_net_udpSocketPool, sock);
+	}
+	_rk_net_clearHandle(sock);
+}//_rk_net_freeSocket()
+
+
+
+/*** BeginHeader _rs_get_if_tab_addr */
+_system IFTEntry *_rs_get_if_tab_addr (void);
+/*** EndHeader */
+_net_nodebug
+
+_system IFTEntry *_rs_get_if_tab_addr (void)
+{
+	_SYS_CALL_VARS
+	return _if_tab;
+}//_rs_get_if_tab_addr()
+
+
+/*** BeginHeader _rs_pktdrv_ioctl */
+_system int _rs_pktdrv_ioctl(int iface, int command, ...);
+/*** EndHeader */
+_net_nodebug
+_system int _rs_pktdrv_ioctl(int iface, int command, ...)
+{
+	_SYS_CALL_VARS
+
+	auto IFTEntry * i;
+   auto char* param;
+   auto char* hwa;
+
+   param = (char*)(&command + 1);
+
+	// check that iface is valid
+   if(iface >= IF_MAX)
+   	return -EINVAL;
+
+   i = _if_tab + iface;
+
+
+   switch(command)
+   {
+   case PD_GETHWA:
+   	// Make sure buffer address passed in is valid before copying to it.
+	   _RK_CHK_POINTER_RANGE(param, i->ncd->sizeof_hwa)
+   	i->ncd->ioctl(i->state, PD_GETHWA, &hwa);
+      memcpy((void*)*param, hwa, i->ncd->sizeof_hwa);
+      return 0;
+
+   case PD_GETHWALEN:
+      return i->ncd->sizeof_hwa;
+
+   case PD_HAVELINK:
+   	return i->ncd->ioctl(i->state, PD_HAVELINK);
+
+   default:
+      // RabbitSys user mode programs do not have access to the full range of
+      // packet driver level ioctl commands.
+      return -EINVAL;
+   }
+}
+
+/*** BeginHeader _rk_tcplock */
+#if _SYSTEM
+	#ifndef SYS_LOCK_TCP
+	#define SYS_LOCK_TCP()    asm ld    a,(_rk_tcplock) $\
+	                              or    a $\
+	                              jp    nz,._rs_tcplock_done $\
+	                              inc   a $\
+	                              ld    (_rk_tcplock),a
+	#endif
+	#ifndef SYS_UNLOCK_TCP
+	#define SYS_UNLOCK_TCP()  asm ld    a,(_rk_tcplock)   $\
+	                              dec   a                 $\
+	                              ld    (_rk_tcplock),a   $\
+	                              ._rs_tcplock_done:
+	#endif
+	extern char _rk_tcplock;
+#endif
+/*** EndHeader */
+#if _SYSTEM
+	char _rk_tcplock;
+#endif
+/*** BeginHeader */
+#endif
+/*** EndHeader */

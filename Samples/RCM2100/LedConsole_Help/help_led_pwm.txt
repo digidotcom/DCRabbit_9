@@ -1,0 +1,6 @@
+
+LED2 PWM:
+LED3 PWM:
+   Usage: "LEDn PWM  <on-millis> <off-millis>"
+Pulses the LED using Pulse Width Modulation technique.
+The millisecond times can range from 0 to 510.

@@ -1,0 +1,105 @@
+/*** BeginHeader **************************************************************/
+#ifndef CLOCK_DOUBLED            // Set to 1 to double clock if
+	#ifdef _DC_CLK_DBL_
+   	#define CLOCK_DOUBLED _DC_CLK_DBL_
+   #else
+		#define CLOCK_DOUBLED 1    //   Rabbit 2000:  crystal <= 12.9024 MHz,
+   #endif                        //   Rabbit 3000:  crystal <= 26.4192 MHz,
+#else                            //   or to 0 to always disable clock doubler
+   #ifdef _DC_CLK_DBL_
+		#if _DC_CLK_DBL_ != CLOCK_DOUBLED
+			#warnt "Your current CLOCK_DOUBLED setting is not recommended for this board."
+		#endif
+	#endif
+#endif
+
+#ifndef CS1_ALWAYS_ON            // Keeping CS1 active is useful if your
+#define CS1_ALWAYS_ON 0          // system is pushing the limits of RAM
+#endif                           // access time. It will increase power
+                                 // consumption a little. Set to 0 to
+                                 // disable, 1 to enable
+
+//***** Clock Modulator Information ***************************************
+#ifndef ENABLE_SPREADER          // Set to 0 to disable spectrum spreader,
+#define ENABLE_SPREADER 1        // 1 to enable normal spreading, or
+#endif                           // 2 to to enable strong spreading.
+
+//******* Macro definitions for compile mode ********************************
+// These are determined by the BIOS memory setting compiler option
+// The xxxx_COMPILE macros should be used instead of the _xxxxx_ compiler
+// macros, since they can be combined in #if statements, such as
+// #if FLASH_COMPILE || FAST_RAM_COMPILE
+// ...
+// #endif
+#ifdef _FLASH_
+   #define FLASH_COMPILE 1
+#else
+   #define FLASH_COMPILE 0
+#endif
+
+#ifdef _RAM_
+   #define RAM_COMPILE 1
+#else
+   #define RAM_COMPILE 0
+#endif
+
+#ifdef _FAST_RAM_
+   #define FAST_RAM_COMPILE 1
+#else
+   #define FAST_RAM_COMPILE 0
+#endif
+
+#if __SEPARATE_INST_DATA__ && RAM_COMPILE && _RAM_SIZE_ <= 0x20
+	#fatal "Separate instructions and data mode is not possible in RAM mode on this core."
+#endif
+
+// Sanity check!  One of these macros should be 1, the other two should be 0.
+#if 1 != (FLASH_COMPILE + RAM_COMPILE + FAST_RAM_COMPILE)
+#error "Invalid combination of FLASH_COMPILE, RAM_COMPILE and FAST_RAM_COMPILE."
+#error FLASH_COMPILE RAM_COMPILE FAST_RAM_COMPILE
+#endif
+
+// Memory bank inversion macros
+#define BANK_INVERT_A18	(1 << 4)
+#define BANK_INVERT_A19	(1 << 5)
+
+#define	_RK_FIXED_VECTORS	(__SEPARATE_INST_DATA__  && _CPU_ID_ < R3000_R1)
+
+//***** Timer A prescale information (Rabbit 3000 only) ****************
+
+//#define USE_TIMERA_PRESCALE    // The Rabbit 3000 has the ability to
+                                 // run the peripheral clock at the
+                                 // same frequency as the CPU clock
+                                 // instead of the standard CPU/2.
+                                 // Uncomment this macro to enable
+                                 // this feature.
+
+//***** Memory mapping information ************************************
+//#define USE_2NDFLASH_CODE      // Uncomment this only if you have a
+                                 //  a board with 2 256K flashes, and you
+                                 //  want to use the second flash for extra
+                                 //  code space. The file system is not
+                                 //  compatible with using the second flash
+                                 //  for code.
+
+////////// END OF USER-MODIFIABLE MACROS /////////////////////////////////
+
+// ***** System Org Definitions ***************************************
+#define _RK_STACKORG        0xD000   // Beginning logical address for stack segment
+#define _RK_ROOTCODEORG     0x0000   // Beginning logical address for root code
+#define _RK_XMEMORYORG      0xE000   // Beginning logical address for Xmem
+
+/* size of the block reserved for the TC system buffers */
+#define TC_SYSBUF_BLOCK   ((1L*TC_SYSBUF_SIZE*TC_SYSBUF_COUNT)+TC_WRITEBLOCK_SIZE)
+#define TC_SYSBUF_BLOCK4K   1
+
+// macro defs for non-RabbitSys
+#if __RABBITSYS==0
+#define _RK_SEG_XCHK_POINTER(ptr) 			;
+#define _RK_XCHK_POINTER(ptr)             ;
+#define _RK_XCHK_POINTER_RANGE(ptr, len)  ;
+#define _RK_CHK_POINTER(ptr)              ;
+#define _RK_CHK_POINTER_RANGE(ptr, len)   ;
+#endif
+
+/*** EndHeader ****************************************************************/

@@ -1,0 +1,143 @@
+/*** Beginheader */
+#ifndef __JR485_LIB
+#define __JR485_LIB
+#undef USE485
+
+#if (_BOARD_TYPE_ > 0x01FF)
+#error	"JR485.LIB only supports BL18xx boards."
+#endif
+/*** endheader */
+
+
+/* START LIBRARY DESCRIPTION *********************************************
+JR485.LIB
+
+DESCRIPTION:
+	This library contains 3 RS485 serial interface functions for the JackRabbit
+	board. These functions are to be used with the serial port D library functions
+	in rs232.lib because serDopen utilizes PC0 (TXD) and PC1 (RXD), which are
+	connected to pin 4 and pin 1 of the RS485 chip. This chip is half duplex
+	requiring pin 3 (Data Enable) to be high for pins 6 and 7 to act  as output and
+	low for those pins to act as input.
+
+                               -------------------------
+                               |                       |    
+                               |                   DI 4|------- (PC0 on JackRabbit)
+   (485+ on JackRabbit) -------|6 DO/RI            RO 1|------- (PC1 on JackRabbit)
+                               |                       |    
+                               |  __ __                |
+   (485- on JackRabbit) -------|7 DO/RI                |    
+                               |                   DE 3|------- (PD5 on JackRabbit)
+                               |                   RE 2|O-----------|
+                               -------------------------            |
+         	                             SP483EN                     |
+         	                                                        \/
+
+   void Jr485Init(); Setup parallel port D pins for 485 use         	                                                        
+	                   
+	void Jr485Tx();   Sets  (high) pin 3 (DE) of the RS485 chip to disable Rx, enable Tx
+
+	void Jr485Rx();   Resets (low) pin 3 (DE) of the RS485 chip to disable Tx, enable Rx
+	  
+END DESCRIPTION **********************************************************/
+
+/*** Beginheader Jr485Init */
+root int  Jr485Init();
+
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Jr485Init                   <JR485.LIB>
+
+SYNTAX:	      void Jr485Init();
+
+DESCRIPTION:   Minimal setup to needed to write to parallel port D pin 5
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+			
+END DESCRIPTION **********************************************************/
+#define USE485
+
+#asm root
+Jr485Init::
+      ld    a,(PDDDRShadow)
+      and   0dfh
+      ld    (PDDDRShadow),a
+ioi   ld    (PDDDR),a         ; initialize bit 5 for input, for an unpowered state
+
+      ld    a,0ffh            ; PD5 always high, DE on RS485 chip changes with 
+ioi   ld    (PDB5R),a         ;  data direction changes in Jr485Tx, Jr485Rx
+      ld    a,(PDDRShadow)
+      or    20h
+      ld    (PDDRShadow),a
+
+      ld    a,(PDDCRShadow)
+      and   0dfh              ; clear bit 5, PD5 not to be used as an open drain
+      ld    (PDDCRShadow),a
+ioi   ld    (PDDCR),a
+      ret
+#endasm
+
+
+/*** Beginheader Jr485Tx */
+root int  Jr485Tx();
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Jr485Tx                     <JR485.LIB>
+
+SYNTAX:	      void Jr485Tx();
+
+DESCRIPTION:   Sets (high) pin 3 (DE) of the RS485 chip to disable Rx 
+               and enable Tx
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+			
+END DESCRIPTION **********************************************************/
+
+#asm root
+Jr485Tx::
+      ld    a,(PDDDRShadow)
+      or    20h
+      ld    (PDDDRShadow),a
+ioi   ld    (PDDDR),a         ; bit 5 (always high) an output, RS485 DE high
+      ret
+#endasm
+
+
+/*** Beginheader Jr485Rx */
+root int  Jr485Rx();
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Jr485Rx                     <JR485.LIB>
+
+SYNTAX:	      void Jr485Rx();
+
+DESCRIPTION:   Resets (low) pin 3 (DE) of the RS485 chip to enable Rx 
+               and disable Tx
+
+PARAMETER1:    None
+
+RETURN VALUE:	None
+			
+END DESCRIPTION **********************************************************/
+
+#asm root
+Jr485Rx::
+      ld    a,(PDDDRShadow)
+      and   0dfh
+      ld    (PDDDRShadow),a
+ioi   ld    (PDDDR),a         ; bit 5 (always high) an input, RS485 DE low
+      ret
+#endasm
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

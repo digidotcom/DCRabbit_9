@@ -1,0 +1,164 @@
+/* START LIBRARY DESCRIPTION *********************************************
+TARGETPROC_LOG.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains DeviceMate-side routines for communication with a
+   target processor.  This API allows logging functionality, acting as
+   an interface between the target processor (over XTC) and the actual
+   logging back-end (LOG.LIB).
+
+CONFIGURATION MACROS:
+	The following macros may be defined before inclusion of this library.
+	Note that the macro defaults are located in TC_CONF.LIB, and not this
+	library.  Instead of defining the macros in your program, you can
+	change them in TC_CONF.LIB.
+
+	TARGETPROC_LOG_TCBUFSIZE
+	   Defaults to 261, which allows for 256-byte data packets plus the
+	   5-byte XTC header.
+
+	TARGETPROC_LOG_XTCBUFSIZE
+	   Defaults to 512.  Must be greater than or egual to TCT_TCBUFSIZE-5.
+
+	TARGETPROC_LOG_NUMRXBUF
+	   Defaults to 3.  Specifies the number of target communications
+	   receive buffers.  A higher number allows greater performance, at
+	   the expense of additional memory usage.
+
+	TARGETPROC_LOG_NUMTXBUF
+	   Defaults to 1.  Specifies the number of target communications
+	   transmit buffers.  Set to 1 or 2; there is no real benefit to
+	   be obtained by specifying more than 2 transmit buffers.
+  		
+GLOBAL VARIABLES:
+
+   TCTLogState _tctlog;
+      One instance of this structure contains all necessary state
+      information for logging.  This library is thereby
+      made non-reentrant, however application code may serialize access
+      to these API functions so that the library may be used in a multi-
+      tasking environment.
+
+API FUNCTIONS:
+   This library is intended to operate entirely in the "background".  Its
+   functionality is provided merely by adding #use "targetproc_log.lib"
+   in the main program, ensuring that all of the DeviceMate state
+   machines are driven by periodically calling targetproc_tick().
+
+   Using this library automatically adds the necessary initialization
+   and state machine drivers to the existing DeviceMate function
+   chains.  For this reason, the functions herein are not formally
+   documented.
+
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader _tctlog */
+#ifndef TARGETPROC_LOG_H
+#define TARGETPROC_LOG_H
+
+#ifndef TARGETPROC_XTC_H
+	#use "targetproc_xtc.lib"
+#endif
+
+#ifndef __LIB_LOG_H
+	#use "log.lib"
+#endif
+
+#ifndef TC_LOG_H
+	#use "tc_log.lib"
+#endif
+
+
+/*
+ * Struct to maintain overall logging comms state
+ */
+typedef struct {
+	XTCApp		app;			// XTC application stuff
+	XTCChan		chans[1];	// XTC channel for target comms
+	TCLogMsg		lm;			// Next inbound log message header
+	int			length;		// Current message length
+	char			msg[115];	// Current message
+	char dummy;
+} TCTLogState;
+
+extern TCTLogState _tctlog;			// Static instance
+
+
+/*** EndHeader */
+
+TCTLogState _tctlog;
+
+
+/*** BeginHeader _targetproc_log_init */
+void _targetproc_log_init();
+#funcchain __targetproc_xtc_init _targetproc_log_init
+/*** EndHeader */
+
+xtc_nodebug
+void _targetproc_log_init()
+{
+	auto int rc;
+
+	_tctlog.app.appno = TC_TYPE_LOG;
+	_tctlog.app.numchans = 1;
+	_tctlog.app.chans = _tctlog.chans;
+	_tctlog.app.txbufsize = 64;
+	_tctlog.app.rxbufsize = TARGETPROC_LOG_TCBUFSIZE;
+
+	rc = targetproc_xtc_register(&_tctlog.app, TARGETPROC_LOG_XTCBUFSIZE, 64);
+	if (rc) {
+#ifdef TARGETPROC_LOG_VERBOSE
+		printf("targetproc_log_init: targetproc_xtc_register failed %d\n", rc);
+#endif
+		exit(TC_TYPE_LOG);
+	}
+	_tctlog.app.numrxbufs = TARGETPROC_LOG_NUMRXBUF;
+	_tctlog.app.numtxbufs = TARGETPROC_LOG_NUMTXBUF;
+	_tctlog.app.aflags = XTC_AF_CONTROL;	// Auto listen control channel
+	_tctlog.app.tc_handler = NULL;
+	_tctlog.app.reqpacing = 10;	// 10ms peer transmission pacing
+	memset((char *)&_tctlog.lm, 0, &_tctlog.dummy - (char *)&_tctlog.lm);
+	log_open(LOG_DEST_ALL, 0);
+}
+
+
+/*** BeginHeader _targetproc_log_tick */
+void _targetproc_log_tick();
+#funcchain __targetproc_tick _targetproc_log_tick
+/*** EndHeader */
+
+
+xtc_nodebug
+void _targetproc_log_tick()
+{
+	auto int rc;
+	
+	if (xtc_error(&_tctlog.app, 0)) {
+		// Control channel dropped.  Need to reset everything, since the only reason
+		// the control channel can fail is if the peer reinitializes.
+		xtc_listen(&_tctlog.app, 0, NULL);	// Cannot fail.
+	}
+	
+	rc = xtc_readable(&_tctlog.app, 0);	// Anything on control channel?
+	if (rc && _tctlog.length) {
+		if (rc > _tctlog.length) {
+			xtc_read(&_tctlog.app, 0, _tctlog.msg, _tctlog.length);
+			log_put(_tctlog.lm.facpri, _tctlog.lm.fmt, _tctlog.msg, _tctlog.length);
+			_tctlog.length = 0;
+		}
+	}
+	else if (rc > 4) {
+		xtc_read(&_tctlog.app, 0, (char *)&_tctlog.lm, 4);
+		_tctlog.length = (int)_tctlog.lm.length - 3;
+	}
+
+}
+
+
+
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

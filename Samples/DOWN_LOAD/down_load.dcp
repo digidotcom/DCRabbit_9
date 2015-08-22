@@ -1,0 +1,75 @@
+[Targetless Compile]
+Board ID=0x0700
+CPU ID=2000
+CPU Revision=0
+Crystal Speed MHz=11.0592
+RAM Size KBytes=512
+Flash Size KBytes=256
+Description=22MHz RCM2100, 512K SRAM, 512K Flash
+[COMM]
+port=1
+coldload baud=2400
+pilot baud=57600
+bios baud=115200
+stop bits=2
+use TCP=0
+TCP Port=4244
+Serial Response Timeout=200
+Ethernet Response Timeout=8000
+Serial Retry Count=10
+Ethernet Retry Count=0
+TCP Name=
+Net Address=
+Serial Poll Interval=3000
+Ethernet Poll Interval=30000
+Disable Baud Negotiation=0
+Verify DSR=1
+Use USB to Serial Converter=0
+USB to Serial Delay=2000
+Pilot Bios Physical Address=0x4000
+Debug Tag RAM Offset=0x1002
+Max Negotiated Baud=460800
+[Compiler Options]
+All Serious None=A
+RTC Indices=1
+RTC Pointers=1
+Optimize For Size=0
+Prototypes=1
+Demotion=1
+Pointers=1
+Separate Instruction and Data=0
+Max Errors Shown=10
+Max Warnings Shown=10
+In RAM=0
+Restrict Watch Expressions=0
+[Dynamic C Files]
+Use Lib File=0
+Use BIOS File=0
+LIB File=
+BIOS File=
+RTI File=
+Cold Loader File=bios\coldload.bin
+Pilot BIOS File=bios\pilot.bin
+[Debug Options]
+Enable Breakpoints=1
+Enable Instruction Level Single Step=1
+Enable Watch Expressions=1
+Max Breakpoints=32
+Max Watch Expressions=8
+[Include BIOS]
+Include BIOS=1
+[Output File]
+Auto open STDIO=1
+Log STDIO=0
+Append=0
+Output File Name=DC.OUT
+[Poll Target]
+Poll target while running=1
+[MRU File List]
+FileList=
+[Open Files]
+Number Open=0
+[Include RST 28]
+Include RST=1
+[DEFINES]
+Defines=xCOMPILE_PRIMARY_PROG ;  xCOMPILE_SECONDARY_PROG ; xROUTE_A18_TO_FLASH_A17 ; xINVERT_A18_ON_PRIMARY_FLASH ; xDONT_SPLIT_RAMÿ

@@ -1,0 +1,95 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD W3 HTML//EN">
+<HTML>
+<HEAD>
+	<TITLE>SSI2 Smart Star Web Page Sample Program</TITLE>
+</HEAD>
+
+<BODY topmargin="0" leftmargin="20" marginwidth="0" marginheight="0"
+	bgcolor="#FFFFFF" link="#009966" vlink="#FFCC00" alink="#006666">
+	
+<!--img SRC="rabbit1.gif"-->
+
+<BR>
+<TABLE BORDER="0" CELLSPACING="20" CELLPADDING="0">
+	<TR>
+		<TH ALIGN="CENTER" VALIGN="BOTTOM">DAC CHAN 0</TH>
+		<TH ALIGN="CENTER" VALIGN="BOTTOM">DAC CHAN 1</TH>
+		<TH ALIGN="CENTER" VALIGN="BOTTOM">DAC CHAN 2</TH>
+	</TR>
+	<TR>
+		<TD ALIGN="CENTER"> <A HREF="/dac0up.cgi"> <img border="0" SRC="uparrow.gif"> </A> </TD>
+		<TD ALIGN="CENTER"> <A HREF="/dac1up.cgi"> <img border="0" SRC="uparrow.gif"> </A> </TD>
+		<TD ALIGN="CENTER"> <A HREF="/dac2up.cgi"> <img border="0" SRC="uparrow.gif"> </A> </TD>
+		<TD> <img SRC="<!--#echo var="led_LED0"-->"> </TD>
+		<TD> <img SRC="<!--#echo var="led_LED1"-->"> </TD>
+		<TD> <img SRC="<!--#echo var="led_LED2"-->"> </TD>
+	</TR>
+	<TR>
+		<TD ALIGN="CENTER" BGCOLOR="LIGHTSTEELBLUE"> <P><b><!--#echo var="dac0value"--></b></P></TD>
+		<TD ALIGN="CENTER" BGCOLOR="LIGHTSTEELBLUE"> <P><b><!--#echo var="dac1value"--></b></P></TD>
+		<TD ALIGN="CENTER" BGCOLOR="LIGHTSTEELBLUE"> <P><b><!--#echo var="dac2value"--></b></P></TD>
+		<TD> <A HREF="/led_LED0.cgi"> <img border="0" SRC="button.gif"> </A> </TD>
+		<TD> <A HREF="/led_LED1.cgi"> <img border="0" SRC="button.gif"> </A> </TD>
+		<TD> <A HREF="/led_LED2.cgi"> <img border="0" SRC="button.gif"> </A> </TD>
+	</TR>
+	<TR>
+		<TD ALIGN="CENTER"> <A HREF="/dac0dn.cgi"> <img border="0" SRC="dnarrow.gif"> </A> </TD>
+		<TD ALIGN="CENTER"> <A HREF="/dac1dn.cgi"> <img border="0" SRC="dnarrow.gif"> </A> </TD>
+		<TD ALIGN="CENTER"> <A HREF="/dac2dn.cgi"> <img border="0" SRC="dnarrow.gif"> </A> </TD>
+		<TH ALIGN="CENTER" VALIGN="TOP">RELAY 0</TH>
+		<TH ALIGN="CENTER" VALIGN="TOP">RELAY 1</TH>
+		<TH ALIGN="CENTER" VALIGN="TOP">RELAY 2</TH>
+	</TR>
+</TABLE>
+
+<TABLE BORDER="5" BGCOLOR="GOLD" CELLSPACING="5" CELLPADDING="2">
+	<TR>
+		<TH ALIGN="CENTER">ADC CHAN 0</TH>
+		<TH ALIGN="CENTER">ADC CHAN 1</TH>
+		<TH ALIGN="CENTER">ADC CHAN 2</TH>
+	</TR>
+	<TR>
+		<TD ALIGN="CENTER"> <P> <b><!--#echo var="adc0value"--></b></P></TD>
+		<TD ALIGN="CENTER"> <P> <b><!--#echo var="adc1value"--></b></P></TD>
+		<TD ALIGN="CENTER"> <P> <b><!--#echo var="adc2value"--></b></P></TD>
+	</TR>
+</TABLE>
+
+<BR>
+<FORM ACTION="setslot.cgi" METHOD="POST">
+<TABLE BORDER="0" CELLSPACING="10" CELLPADDING="2">
+	<TR>
+		<TD><b>Relay Card </b></TD>
+		<TD>
+				<SELECT NAME="relaycard">
+					<OPTION value="<!--#echo var="rcslotvalue"-->" SELECTED><!--#echo var="rcselected"-->
+					<OPTION value="0" >Slot 0
+					<OPTION value="1" >Slot 1
+					<OPTION value="2" >Slot 2
+				</SELECT>
+		</TD>
+		<TD><b> DAC Card </b></TD>
+		<TD>
+				<SELECT NAME="daccard">
+					<OPTION value="<!--#echo var="dcslotvalue"-->" SELECTED><!--#echo var="dcselected"-->
+					<OPTION value="0">Slot 0
+					<OPTION value="1">Slot 1
+					<OPTION value="2">Slot 2
+				</SELECT>
+		</TD>
+		<TD><b> ADC Card </b></TD>
+		<TD>
+				<SELECT NAME="adccard">
+					<OPTION value="<!--#echo var="acslotvalue"-->" SELECTED><!--#echo var="acselected"-->
+					<OPTION value="0">Slot 0
+					<OPTION value="1">Slot 1
+					<OPTION value="2">Slot 2
+				</SELECT>
+		</TD>
+	<TD><INPUT TYPE="SUBMIT" VALUE="Submit Slot Selections"></TD>
+	</TR>
+</TABLE>
+</FORM>
+
+</BODY>
+</HTML>

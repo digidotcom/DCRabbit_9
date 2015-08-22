@@ -1,0 +1,234 @@
+/*** Beginheader */
+#ifndef __RCM3200_LIB
+#define __RCM3200_LIB
+
+#if (_BOARD_TYPE_ & 0xFF00) != (RCM3200 & 0xFF00) && \
+    _BOARD_TYPE_ != RCM3209 && _BOARD_TYPE_ != RCM3229
+#error "RCM3200.LIB only supports RCM3200 series boards."
+#endif
+
+/*** endheader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+RCM3200.LIB
+
+DESCRIPTION:	This is a sample library only.
+
+					Use with RCM3200 series controllers and prototyping boards.
+					Add or modify functions to suit your applications.
+
+REVISION HISTORY:
+
+08-AUG-02	pel	Initial creation.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+///////
+// The following macros are used with LCD/Keypad Modules and values
+// default here according to the prototyping board. They must be defined
+// before using graphic libraries.
+// Make modifications as necessary to match your application.
+///////
+
+///////
+// change strobe register here to match your application
+// LCD wait state calculation:
+// #ws = tcyc/tclk - 0.5 =
+//     = (160nsec)/(1/51.6Mhz) - .5 = 7.756, therefore 15 wait states
+///////
+#define LCDCSREGISTER	IB6CR				// Use Port E bit 6 for LCD strobe
+#define LCDCSSHADOW		IB6CRShadow		// define shadow register
+#define LCDCSCONFIG		0x38				// set for 7 waits, I/O (rd and wr) data strobe, allow writes
+#define LCDSTROBE			0x40				// bit mask
+
+#define KEYCSREGISTER	IB6CR				// Use Port E bit 6 for keypad strobe
+#define KEYCSSHADOW		IB6CRShadow		// define shadow register
+#define KEYCSCONFIG		0x38				// set for 7 waits, I/O (rd and wr) data strobe, allow writes
+#define KEYSTROBE			0x40				// bit mask
+
+///////
+// change base address here to match above strobe address
+///////
+#define LCDBASEADDR		0xC000			// A15, A14, A13 = 6 for IB6CR I/O address
+#define KEYBASEADDR		0xC000			// A15, A14, A13 = 6 for IB6CR I/O address
+
+/*** EndHeader */
+
+
+/*** BeginHeader brdInit */
+void brdInit();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+brdInit						<RCM3200.LIB>
+
+SYNTAX:			void brdInit (void);
+
+DESCRIPTION:	This function initializes parallel ports A through G for	use
+					with the RCM3200 series controllers and prototyping board.
+
+					This function is intended for demonstration purposes only
+					and can be modified for your applications.
+
+					Call this function at the beginning of your application
+					code.  This function is non-reentrant.
+
+					This function will:
+
+					1. Initialize system I/O ports A through G.  See table below.
+					2. Set any unused configurable port pins as outputs and output high.
+					3. Assume that there is only one controller installed in the Master
+						position on the prototyping board.
+
+PARAMETER:    	None
+
+RETURN VALUE:	None
+
+
+Port	Function 								I/O		I/O State
+====	=============================		======	===========================================
+PA0	Configurable external I/O bus		Output	High when not driven by I/O bus
+PA1	Configurable external I/O bus		Output	High when not driven by I/O bus
+PA2	Configurable external I/O bus		Output	High when not driven by I/O bus
+PA3	Configurable external I/O bus		Output	High when not driven by I/O bus
+PA4	Configurable external I/O bus		Output	High when not driven by I/O bus
+PA5	Configurable external I/O bus		Output	High when not driven by I/O bus
+PA6	Configurable external I/O bus		Output	High when not driven by I/O bus
+PA7	Configurable external I/O bus		Output	High when not driven by I/O bus
+PB0	Not used									Input		Pulled-up on core
+PB1	Not used									Input		Pulled-up on core
+PB2	Configurable external I/O bus		Input		Pulled-up on core when not driven by I/O bus
+PB3	Configurable external I/O bus		Input		Pulled-up on core when not driven by I/O bus
+PB4	Configurable external I/O bus		Input		Pulled-up on core when not driven by I/O bus
+PB5	Configurable external I/O bus		Input		Pulled-up on core when not driven by I/O bus
+PB6	Not used 								Output	High when not driven by I/O bus
+PB7	Not used 								Output	High when not driven by I/O bus
+PC0	Not used									Output	High
+PC1	Not used									Input		Pulled-up on core
+PC2	TXC										Output	High when not driven by RS232
+PC3	RXC										Input		Pulled-up on core when not driven by RS232
+PC4	TXB										Output	High when not driven by RS232
+PC5	RXB										Input		Pulled-up on core when not driven by RS232
+PC6	TXA										Output	High when not driven
+PC7	RXA										Input		Pulled-up on core when not driven
+PD0	Ethernet reset							Output	High when not driven by ethernet
+PD1	Not used									Input		Pulled-up on core
+PD2	Not used (jumper not installed)	Output	High
+PD3	Not used (jumper not installed)	Output	High
+PD4	Not used									Output	High
+PD5	Not used									Input		Pulled-up on protoboard
+PD6	Not used (jumper not installed)	Output	High
+PD7	Not used (jumper not installed)	Output	High
+PE0	Not used (jumper not installed)	Output	High
+PE1	Not used									Output	High
+PE2	Ethernet chip select					Output	High when not driven by ethernet
+PE3	LCD device select						Output	Low
+PE4	Infrared device speed select		Output	Low
+PE5	Not used									Output	High
+PE6	External I/O Strobe					Output	High when not driven by LCD/Keypad
+PE7	Not used									Output	High
+PF1	Not used - future Motor/Encoder	Input		Pulled-up on protoboard
+PF2	Not used - future Motor/Encoder	Input		Pulled-up on protoboard
+PF3	Not used - future Motor/Encoder	Input		Pulled-up on protoboard
+PF4	Not used - future Motor/Encoder	Input		Pulled-up on protoboard
+PF5	Not used - future Motor/Encoder	Input		Pulled-up on protoboard
+PF6	Not used - future Motor/Encoder	Input		Pulled-up on protoboard
+PF7	Not used - future Motor/Encoder	Input		Pulled-up on protoboard
+PG0	Switch S3 (normally open)			Input		Pulled-up on protoboard
+PG1	Switch S2 (normally open			Input		Pulled-up on protoboard
+PG2	TXF										Output	Pulled-down when not driven by infrared
+PG3	RXF										Input		Driven by infrared driver
+PG4	Infrared device MD1					Input		Pulled-up on protoboard
+PG5	Infrared device MD0					Input		Pulled-down on protoboard
+PG6	LED DS1									Output	High
+PG7	LED DS2									Output	High
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void brdInit()
+{
+	///////
+	// configure Port C
+	// serial port A communicates with Dynamic C
+	// using serXopen in application code will configure serial ports B and C automatically
+	// so configuration not needed here
+	///////
+	WrPortI(PCDR, &PCDRShadow, PCDRShadow|0x15);		//set bits 4,2,0 high
+	WrPortI(PCFR, &PCFRShadow, PCFRShadow&0xEA);		//clear bit 4,2,0 to normal function
+																	//bits 5,3,1 normally inputs
+
+	///////
+	// configure Port D
+	// using ethernet applications will automatically configure bit 0 for strobe
+	// so not configured here
+	///////
+	WrPortI(PDCR, &PDCRShadow, PDCRShadow&0x00);			//clear all bits to pclk/2
+	WrPortI(PDFR, &PDFRShadow, PDCRShadow&0x00);			//clear all bits to normal function
+	WrPortI(PDDCR, &PDDCRShadow, PDDCRShadow&0x2D);		//clear bits 7,6,4,3,2,0 drive high and low
+	WrPortI(PDDR, &PDDRShadow, PDDRShadow|0xDD);			//set bits 7,6,4,3,2,0 output high
+	WrPortI(PDDDR, &PDDDRShadow, PDDDRShadow|0xDD);		//set bits 7,6,4,3,2,0 to output
+	WrPortI(PDDDR, &PDDDRShadow, PDDDRShadow&0xDD);		//clear bits 5,1 to input
+
+	///////
+	// configure Port E
+	// using LCD/Keypad applications will automatically configure bit 6 for external I/O strobe
+	// so not configured here
+	// using ethernet applications will automatically configure port bit 2 for strobe
+	// so not configured here
+	///////
+	WrPortI(PECR, &PECRShadow, PECRShadow&0x00);			//clear all bits to pclk/2
+	WrPortI(PEFR, &PEFRShadow, PECRShadow&0x00);			//clear all bits to normal function
+	WrPortI(PEDR, &PEDRShadow, 0xE7);						//set bits 7,6,5,2,1,0 output high and
+																		//set bits 4,3 output low
+	WrPortI(PEDDR, &PEDDRShadow, PEDDRShadow|0xFB);		//set bits 7,6,5,4,3,2,1,0 to output
+
+	///////
+	// configure Port F
+	// originally for motor/encoders but for anything here
+	///////
+	WrPortI(PFCR, &PFCRShadow, 0x00);						//clear all bits for pclk/2
+	WrPortI(PFFR, &PFFRShadow, 0x00);						//clear all bits for normal function
+	//WrPortI(PFDCR, &PFDCRShadow, ???);					//future bit drive output
+	//WrPortI(PFDR, &PFDRShadow, ???);						//future bit output
+	WrPortI(PFDDR, &PFDDRShadow, 0x00);						//clear all bits to input
+
+	///////
+	// configure Port G
+	// infrared device sample program will configure serial port F
+	///////
+	WrPortI(PGCR, &PGCRShadow, 0x00);						//clear all bits for pclk/2
+	WrPortI(PGFR, &PGFRShadow, 0x00);						//clear all bits for normal function
+	WrPortI(PGDCR, &PGDCRShadow, PGDCRShadow|0xC0);		//set bits 7,6 drive open drain
+	WrPortI(PGDR, &PGDRShadow, PGDCRShadow|0xC0);		//set bit 7,6 output high
+	BitWrPortI(PGDCR, &PGDCRShadow, 0, 2);					//clear bit 2 drive output
+	BitWrPortI(PGDR, &PGDRShadow, 0, 2);					//clear bit 2 output low
+	WrPortI(PGDDR, &PGDDRShadow, 0xC4);						//set bits 7,6,2 to output and
+																		//clear bits 5,4,3,1,0 to input
+	///////
+	// if PORTA_AUX_IO has been defined at the top of application code
+	//   for external I/O bus, do not reconfigure.
+	///////
+#ifndef PORTA_AUX_IO
+	///////
+	// configure Port A
+	// use SPCR to enable and disable external I/O data bus
+	///////
+	WrPortI(PADR, &PADRShadow, 0xFF);		//set to output all high
+	WrPortI(SPCR, &SPCRShadow, 0x84);		//ignore SMODE pins, set to output
+
+	///////
+	// configure Port B
+	// use SPCR to enable and disable external I/O address bus
+	///////
+	WrPortI(PBDR, &PBDRShadow, 0xC0);		//set bits 7,6 to output high
+														//bits 5-0 are normally inputs
+#endif
+
+}
+
+/*** Beginheader */
+#endif
+/*** endheader */

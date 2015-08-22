@@ -1,0 +1,457 @@
+/*** BeginHeader */
+#ifndef __ECC_LIB
+#define __ECC_LIB
+/*** EndHeader */
+
+/* START LIBRARY DESCRIPTION ***************************************************
+ECC.LIB
+   Copyright (c) 2004, Z-World.
+
+DESCRIPTION:
+   Error Correction Code (ECC) functions.  Currently, this ECC implementation is
+   limited to one bit correction and two bits detection over 256 bytes (2048
+   bits) of data.  Based on information and examples presented in Toshiba
+   Corp.'s "SmartMedia(TM) ECC Reference Manual Ver 2.1 (Software & Hardware)"
+   guide for NAND flash applications.
+
+
+   The API functions are:
+      xCalculateECC256
+      CalculateECC256
+      xChkCorrectECC256
+      ChkCorrectECC256
+
+SUPPORT LIB’S:
+   None.
+END DESCRIPTION ***************************************************************/
+
+/*** BeginHeader */
+
+#ifdef ECC_DEBUG
+#define _ecc_nodebug debug
+#else
+#define _ecc_nodebug nodebug
+#endif
+
+#ifndef _LCALL_RETBYTES
+// Not already defined in another library with pure xmem asm functions that use
+//  stack parameters.
+#define _LCALL_RETBYTES 3		// number of bytes stacked for lcall return
+#endif
+
+/*
+eccgen.c
+Generating ECC code
+March 1996
+TOSHIBA Corp.
+*/
+
+//#define CORRECTABLE 0x00555554L
+#define CORRECTABLE_1ST 0x54
+#define CORRECTABLE_2ND 0x55
+#define CORRECTABLE_3RD 0x55
+/*** EndHeader */
+
+/*** BeginHeader ecc_table */
+extern const char ecc_table[256];
+/*** EndHeader */
+
+const char ecc_table[256] = {
+0x00,0x55,0x56,0x03,0x59,0x0C,0x0F,0x5A,0x5A,0x0F,0x0C,0x59,0x03,0x56,0x55,0x00,
+0x65,0x30,0x33,0x66,0x3C,0x69,0x6A,0x3F,0x3F,0x6A,0x69,0x3C,0x66,0x33,0x30,0x65,
+0x66,0x33,0x30,0x65,0x3F,0x6A,0x69,0x3C,0x3C,0x69,0x6A,0x3F,0x65,0x30,0x33,0x66,
+0x03,0x56,0x55,0x00,0x5A,0x0F,0x0C,0x59,0x59,0x0C,0x0F,0x5A,0x00,0x55,0x56,0x03,
+0x69,0x3C,0x3F,0x6A,0x30,0x65,0x66,0x33,0x33,0x66,0x65,0x30,0x6A,0x3F,0x3C,0x69,
+0x0C,0x59,0x5A,0x0F,0x55,0x00,0x03,0x56,0x56,0x03,0x00,0x55,0x0F,0x5A,0x59,0x0C,
+0x0F,0x5A,0x59,0x0C,0x56,0x03,0x00,0x55,0x55,0x00,0x03,0x56,0x0C,0x59,0x5A,0x0F,
+0x6A,0x3F,0x3C,0x69,0x33,0x66,0x65,0x30,0x30,0x65,0x66,0x33,0x69,0x3C,0x3F,0x6A,
+0x6A,0x3F,0x3C,0x69,0x33,0x66,0x65,0x30,0x30,0x65,0x66,0x33,0x69,0x3C,0x3F,0x6A,
+0x0F,0x5A,0x59,0x0C,0x56,0x03,0x00,0x55,0x55,0x00,0x03,0x56,0x0C,0x59,0x5A,0x0F,
+0x0C,0x59,0x5A,0x0F,0x55,0x00,0x03,0x56,0x56,0x03,0x00,0x55,0x0F,0x5A,0x59,0x0C,
+0x69,0x3C,0x3F,0x6A,0x30,0x65,0x66,0x33,0x33,0x66,0x65,0x30,0x6A,0x3F,0x3C,0x69,
+0x03,0x56,0x55,0x00,0x5A,0x0F,0x0C,0x59,0x59,0x0C,0x0F,0x5A,0x00,0x55,0x56,0x03,
+0x66,0x33,0x30,0x65,0x3F,0x6A,0x69,0x3C,0x3C,0x69,0x6A,0x3F,0x65,0x30,0x33,0x66,
+0x65,0x30,0x33,0x66,0x3C,0x69,0x6A,0x3F,0x3F,0x6A,0x69,0x3C,0x66,0x33,0x30,0x65,
+0x00,0x55,0x56,0x03,0x59,0x0C,0x0F,0x5A,0x5A,0x0F,0x0C,0x59,0x03,0x56,0x55,0x00
+};
+
+/*** BeginHeader xCalculateECC256 */
+xmem long xCalculateECC256(unsigned long data);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+xCalculateECC256              <ECC.LIB>
+
+SYNTAX:  long xCalculateECC256(unsigned long data);
+
+DESCRIPTION:  Calculates a 3 byte Error Correcting Checksum (ECC, 1 bit
+              correction and 2 bit detection capability) value for a 256
+              byte (2048 bit) data buffer located in extended memory.
+
+PARAMETER1:  data is the physical address of the 256 byte data buffer.
+
+RETURN VALUE:  The calculated ECC in the 3 LSBs of the long (ie:  BCDE)
+               result.  Note that the MSB (ie:  B) of the long result is
+               always zero.
+END DESCRIPTION *********************************************************/
+/*
+** Calculating ECC
+**  data[0-255] -> ecc0,ecc1,ecc2 using CP0-CP5 code .xce256_table[0-255]
+*/
+#asm xmem _ecc_nodebug
+xCalculateECC256::
+		push	af						; preserve all the non-result registers we'll use
+		push	hl
+		push	ix
+		ld		hl, (SP+_LCALL_RETBYTES+6+2)	; get data buffer address bits 19:16
+		ld		a, L									; copy data buffer addr 19:16 into A
+		exx							; now using BC', DE', HL'
+		push	bc
+		push	de
+		push	hl
+		ld		c, a					; copy data buffer addr 19:16 into C'
+		ld		de, ecc_table		; get ECC table base address into DE'
+		exx											; using regular BC, DE, HL again
+		ld		ix, (SP+_LCALL_RETBYTES+12+0)	; get data buffer address bits 15:00
+		bool	hl										; initialize odd LP bits (in H) to 0
+		ld		L, h					; initialize even LP bits to 0 in L
+		ld		c, h					; initialize CP5,CP4,...,CP0 bits to 0 in C
+		ld		b, h					; ECC loop counts from 0 to 255 in B
+.xce256_eccLoop:
+		exx							; now using BC', DE', HL'
+		ld		a, c					; get data buffer addr bits 19:16 into A
+		ldp	hl, (ix)				; get two data bytes into HL
+		inc	ix						; update pointer to the next data byte
+		ld		a, L					; copy data LSB (offset into ECC lookup table)
+		ld		hl, ix				; copy incremented data buffer addr bits 15:00
+		bool	hl						; zero (clear) MSB of offset into ECC lookup table
+		jr		nz,.xce256_same1916	;  and test if must increment addr bits 19:16
+
+		inc	c						; FFFF -> 0000, so inc data buffer addr bits 19:16
+.xce256_same1916:
+		ld		L, a					; make 16-bit offset into ECC lookup table
+		add	hl, de				; add ECC lookup table base address
+		ld		a, (hl)				; get ECC lookup value (0,Dall,CP5,CP4,...,CP0)
+		exx							; using regular BC, DE, HL again
+		bit	6, a						; is Dall bit set in ECC lookup value?
+		jr		z, .xce256_notDall	; if no (Z is set), skip LP XORs with counter
+
+		ld		e, a					; save ECC lookup value
+		ld		a, b					; get current ECC loop count value
+		cpl							; invert ECC loop count value's bits for even CPs
+		xor	L						; XOR with even LP bits calculated thus far
+		ld		L, a					; put updated even LP bits back
+		ld		a, b					; get current ECC loop count value again
+		xor	h						; XOR with odd LP bits calculated thus far
+		ld		h, a					; put updated odd LP bits back
+		ld		a, e					; get ECC lookup value
+.xce256_notDall:
+		and	0x3F					; mask out unused (bit 7) and Dall (bit 6) bits
+		xor	c						; XOR with CP bits calculated thus far
+		ld		c, a					; put updated CP bits back
+		inc	b							; increment ECC loop count, done yet?
+		jr		nz, .xce256_eccLoop	; if no (Z is reset), go loop over next byte
+
+		ld		b, 8					; half the number of shuffled bits to transfer
+.xce256_xferLoop:
+		rr		L						; put least remaining even LP bit into Carry
+		rr		de						; get unshuffled least remaining even LP bit
+		rr		h						; put least remaining odd LP bit into Carry
+		rr		de						; get unshuffled least remaining odd LP bit
+		djnz	.xce256_xferLoop	; if not done, go transfer another two bits
+
+		;*** at this point, B (MSB of result) already contains zero
+		ld		a, c					; get CP5,CP4,...,CP0 bits
+		rla							; rotate into bit . . .
+		rla							;  positions 7 through 2
+		cpl							; invert shifted CP bits
+		or		0x03					; ensure bits 1 and 0 are set
+		ld		c, a					; save ecc2 (CP5,CP4,...,CP0,1,1) to result place
+		ld		a, d					; get LP15,LP14,...,LP08 bits
+		cpl							; invert these LP bits
+		ld		d, a					; save ecc1 (LP15,LP14,...,LP08) to result place
+		ld		a, e					; get LP07,LP06,...,LP00 bits
+		cpl							; invert these LP bits
+		ld		e, a					; save ecc0 (LP07,LP06,...,LP00) to result place
+		exx							; now using BC', DE', HL'
+		pop	hl						; restore all the non-result registers we've used
+		pop	de
+		pop	bc
+		exx							; using regular BC, DE, HL again
+		pop	ix
+		pop	hl
+		pop	af
+		lret
+#endasm
+
+/*** BeginHeader CalculateECC256 */
+long CalculateECC256(void *data);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+CalculateECC256               <ECC.LIB>
+
+SYNTAX:  long CalculateECC256(void *data);
+
+DESCRIPTION:  Calculates a 3 byte Error Correcting Checksum (ECC, 1 bit
+              correction and 2 bit detection capability) value for a 256
+              byte (2048 bit) data buffer located in root memory.
+
+PARAMETER1:  data points to the 256 byte data buffer.
+
+RETURN VALUE:  The calculated ECC in the 3 LSBs of the long (ie:  BCDE)
+               result.  Note that the MSB (ie:  B) of the long result is
+               always zero.
+END DESCRIPTION *********************************************************/
+_ecc_nodebug
+long CalculateECC256(void *data)
+{
+	return xCalculateECC256(paddr(data));
+}
+
+/*** BeginHeader xChkCorrectECC256 */
+xmem int xChkCorrectECC256(unsigned long data, void *old_ecc, void *new_ecc);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+xChkCorrectECC256             <ECC.LIB>
+
+SYNTAX:  int xChkCorrectECC256(unsigned long data, void *old_ecc,
+                               void *new_ecc);
+
+DESCRIPTION:  Checks the old vs. new ECC values for a 256 byte (2048 bit)
+              data buffer, and if necessary and possible (1 bit
+              correction, 2 bit detection), corrects the data in the
+              specified extended memory buffer.
+
+PARAMETER1:  data is the physical address of the 256 byte data buffer.
+
+PARAMETER2:  old_ecc points to the old (original) 3 byte ECC's buffer.
+
+PARAMETER3:  new_ecc points to the new (current) 3 byte ECC's buffer.
+
+RETURN VALUE:  0 if data and ECC are good (no correction is necessary),
+               1 if data is corrected and ECC is good,
+               2 if data is good and ECC is corrected, or
+               3 if data and/or ECC are bad and uncorrectable.
+END DESCRIPTION *********************************************************/
+#asm xmem _ecc_nodebug
+xChkCorrectECC256::
+		push	af						; preserve all the non-result registers we'll use
+		push	bc
+		push	de
+		ex		af, af'
+		push	af
+		ld		hl, (SP+_LCALL_RETBYTES+8+2)	; get data buffer address bits 19:16
+		ld		a, L									; copy data buffer addr 19:16 into A'
+		ex		af, af'
+		push	ix
+		push	iy
+		ld		ix, (SP+_LCALL_RETBYTES+12+4)	; get pointer to old (original) ECC
+		ld		iy, (SP+_LCALL_RETBYTES+12+6)	; get pointer to new ECC
+		ld		a, (ix+2)							; get old column parity (CP) bits
+		xor	(iy+2)				; XOR with new CP (CP5,CP4,...,CP0,1,1) bits
+		ld		c, a					; save old ^ new CP5,CP4,...,CP0,1,1 bits
+		ld		a, (ix+1)			; get old line parity (LP15,LP14,...,LP08) bits
+		xor	(iy+1)				; XOR with new LP (LP15,LP14,...,LP08) bits
+		ld		d, a					; save old ^ new LP15,LP14,...,LP08 bits
+		ld		a, (ix+0)			; get old line parity (LP07,LP06,...,LP00) bits
+		xor	(iy+0)				; XOR with new LP (LP07,LP06,...,LP00) bits
+		ld		e, a					; save old ^ new LP07,LP06,...,LP00 bits
+		or		d						; accumulate XOR bits (middle of test for zero)
+		or		c						; accumulate XOR bits (end of test for zero)
+		jp		z, .xcce256_exitA	; done, go return zero XORs result to caller
+
+		ld		h, d					; get XOR of LP15,LP14,...,LP08 bits
+		srl	h						; make CORRECTABLE check value 3rd byte (MSB)
+		ld		L, e					; get XOR of LP07,LP06,...,LP00 bits
+		rr		L						; make CORRECTABLE check value 2nd byte (middle)
+		ld		a, c					; get XOR of CP5,CP4,...,CP0,1,1 bits
+		rr		a						; make CORRECTABLE check value 1st byte (LSB)
+		xor	c						; make CP5,CP4,...,CP0,1,1 CORRECTABLE test value
+		and	0+CORRECTABLE_1ST	; mask with CP5,CP4,...,CP0,1,1 CORRECTABLE value
+		cp		0+CORRECTABLE_1ST		; is CP5,CP4,...,CP0,1,1 CORRECTABLE?
+		jp		nz, .xcce256_chkECC	; if no (nonzero), go check ECC error
+
+		ld		a, L					; get CORRECTABLE check value 2nd byte (middle)
+		xor	e						; make LP07,LP06,...,LP00 CORRECTABLE test value
+		and	0+CORRECTABLE_2ND	; mask with LP07,LP06,...,LP00 CORRECTABLE value
+		cp		0+CORRECTABLE_2ND	; is LP07,LP06,...,LP00 CORRECTABLE?
+		jp		nz, .xcce256_chkECC	; if no (nonzero), go check ECC error
+
+		ld		a, h					; get CORRECTABLE check value 3rd byte (MSB)
+		xor	d						; make LP15,LP14,...,LP08 CORRECTABLE test value
+		and	0+CORRECTABLE_3RD	; mask with LP15,LP14,...,LP08 CORRECTABLE value
+		cp		0+CORRECTABLE_3RD	; is LP15,LP14,...,LP08 CORRECTABLE?
+		jp		nz, .xcce256_chkECC	; if no (nonzero), go check ECC error
+
+      xor	a						; initialize error byte buffer offset to zero
+		ld		b, 0x80				; start with bit 7 buffer offset mask value
+		bit	7, d						; is bit 7 set in error byte buffer offset?
+		jr		z, .xcce256_notBit7	; if no (zero), go check next lower bit
+
+		or		b						; set bit 7 in error byte buffer offset
+.xcce256_notBit7:
+		srl	b						; make bit 6 buffer offset mask value
+		bit	5, d						; is bit 6 set in error byte buffer offset?
+		jr		z, .xcce256_notBit6	; if no (zero), go check next lower bit
+
+		or		b						; set bit 6 in error byte buffer offset
+.xcce256_notBit6:
+		srl	b						; make bit 5 buffer offset mask value
+		bit	3, d						; is bit 5 set in error byte buffer offset?
+		jr		z, .xcce256_notBit5	; if no (zero), go check next lower bit
+
+		or		b						; set bit 5 in error byte buffer offset
+.xcce256_notBit5:
+		srl	b						; make bit 4 buffer offset mask value
+		bit	1, d						; is bit 4 set in error byte buffer offset?
+		jr		z, .xcce256_notBit4	; if no (zero), go check next lower bit
+
+		or		b						; set bit 4 in error byte buffer offset
+.xcce256_notBit4:
+		srl	b						; make bit 3 buffer offset mask value
+		bit	7, e						; is bit 3 set in error byte buffer offset?
+		jr		z, .xcce256_notBit3	; if no (zero), go check next lower bit
+
+		or		b						; set bit 3 in error byte buffer offset
+.xcce256_notBit3:
+		srl	b						; make bit 2 buffer offset mask value
+		bit	5, e						; is bit 2 set in error byte buffer offset?
+		jr		z, .xcce256_notBit2	; if no (zero), go check next lower bit
+
+		or		b						; set bit 2 in error byte buffer offset
+.xcce256_notBit2:
+		srl	b						; make bit 1 buffer offset mask value
+		bit	3, e						; is bit 1 set in error byte buffer offset?
+		jr		z, .xcce256_notBit1	; if no (zero), go check next lower bit
+
+		or		b						; set bit 1 in error byte buffer offset
+.xcce256_notBit1:
+		srl	b						; make bit 0 buffer offset mask value
+		bit	1, e						; is bit 0 set in error byte buffer offset?
+		jr		z, .xcce256_notBit0	; if no (zero), go check next lower bit
+
+		or		b						; set bit 0 in error byte buffer offset
+.xcce256_notBit0:
+		ld		d, 0
+		ld		e, a									; make offset to bad byte in buffer
+		ld		ix, (SP+_LCALL_RETBYTES+12+0)	; get data buffer address bits 15:00
+		add	ix, de								; make pointer to incorrect byte
+		jr		nc, .xcce256_same1916	;  and test if must inc address bits 19:16
+
+		ex		af, af'				; swap data buffer addr bits 19:16 into A
+		inc	a						; wrapped past FFFF, so inc buffer addr bits 19:16
+		ex		af, af'				; swap data buffer addr bits 19:16 back into A'
+.xcce256_same1916:
+		ld		a, 0x01				; initialize error bit mask for bit 0
+		bit	7, c						; is error bit << 4 flag set?
+		jr		z, .xcce256_notSLA4	; if no (zero), go check next lower shift flag
+
+		sla	a						; make error bit 4 mask
+		sla	a
+		sla	a
+		sla	a
+.xcce256_notSLA4:
+		bit	5, c						; is error bit << 2 flag set?
+		jr		z, .xcce256_notSLA2	; if no (zero), go check next lower shift flag
+
+		sla	a						; make error bit 2 or 6 mask, depending on
+		sla	a						;  whether previous shift was done
+.xcce256_notSLA2:
+		bit	3, c						; is error bit << 1 flag set?
+		jr		z, .xcce256_notSLA1	; if no (zero), go correct byte in buffer
+
+		sla	a						; make error bit 1 or 3 or 5 or 7 mask, depending
+										;  on which (if any) previous shifts were done
+.xcce256_notSLA1:
+		ex		af, af'				; swap data buffer addr bits 19:16 into A
+		ldp	hl, (ix)				; read 2 bytes (although we'll only update one)
+		ex		af, af'				; swap error bit mask back into A
+		xor	L						; invert just the error bit in the buffer byte
+		ld		L, a					; copy the corrected byte back into L
+		ex		af, af'				; swap data buffer addr bits 19:16 into A again
+		ldp	(ix), hl				; write the corrected byte and the pre-read MSB
+		ex		af, af'				; swap data buffer addr bits 19:16 into A' again
+		ld		a, 0x01				; get corrected data result LSB
+		jr		.xcce256_exitA		; go return the corrected data result
+
+.xcce256_chkECC:					; check for correctable ECC (1 bit set in new^old)
+		xor	a						; initialize nonzero bit count to zero
+		ld		b, 8					; 8 bits to check in each of C, D, and E
+.xcce256_chkECCloop:
+		rr		c						; rotate current LSbit into Carry flag
+		jr		nc, .xcce256_notC	; if zero bit (no Carry), go check next
+
+		inc	a						; increment the nonzero bit count
+.xcce256_notC:
+		rr		d						; rotate current LSbit into Carry flag
+		jr		nc, .xcce256_notD	; if zero bit (no Carry), go check next
+
+		inc	a						; increment the nonzero bit count
+.xcce256_notD:
+		rr		e						; rotate current LSbit into Carry flag
+		jr		nc, .xcce256_notE	; if zero bit (no Carry), go check next
+
+		inc	a						; increment the nonzero bit count
+.xcce256_notE:
+		djnz	.xcce256_chkECCloop	; loop back if not checked 8 bits in C, D, E
+
+		cp		0x01					; correctable ECC? (exactly 1 bit set in new^old)
+		jr		nz, .xcce256_uncorrectable	; if no (nonzero), go return error
+
+		ld		a, (iy+0)			; replace the incorrect old ECC with the new ECC
+		ld		(ix+0), a
+		ld		a, (iy+1)
+		ld		(ix+1), a
+		ld		a, (iy+2)
+		ld		(ix+2), a
+		ld		a, 2
+		jr		.xcce256_exitA		; go return corrected ECC result code
+
+.xcce256_uncorrectable:
+		ld		a, 3					; uncorrectable error result LSB
+.xcce256_exitA:
+		bool	hl						; zero MSB of result code
+		ld		L, a					; return A's error result code in HL
+		pop	iy						; restore all the non-result registers we've used
+		pop	ix
+		ex		af, af'
+		pop	af
+		ex		af, af'
+		pop	de
+		pop	bc
+		pop	af
+		lret
+#endasm
+
+/*** BeginHeader ChkCorrectECC256 */
+int ChkCorrectECC256(void *data, void *old_ecc, void *new_ecc);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+ChkCorrectECC256              <ECC.LIB>
+
+SYNTAX:  void ChkCorrectECC256(void *data, void *old_ecc, void *new_ecc);
+
+DESCRIPTION:  Checks the old vs. new ECC values for a 256 byte (2048 bit)
+              data buffer, and if necessary and possible (1 bit
+              correction, 2 bit detection), corrects the data in the
+              specified root memory buffer.
+
+PARAMETER1:  data points to the 256 byte data buffer.
+
+PARAMETER2:  old_ecc points to the old (original) 3 byte ECC's buffer.
+
+PARAMETER3:  new_ecc points to the new (current) 3 byte ECC's buffer.
+
+RETURN VALUE:  0 if data and ECC are good (no correction is necessary),
+               1 if data is corrected and ECC is good,
+               2 if data is good and ECC is corrected, or
+               3 if data and/or ECC are bad and uncorrectable.
+END DESCRIPTION *********************************************************/
+_ecc_nodebug
+int ChkCorrectECC256(void *data, void *old_ecc, void *new_ecc)
+{
+	return xChkCorrectECC256(paddr(data), old_ecc, new_ecc);
+}
+
+/*** BeginHeader */
+#endif	// __ECC_LIB
+/*** EndHeader */

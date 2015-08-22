@@ -1,0 +1,172 @@
+****************************************************************
+
+	PPP Release Notes
+
+****************************************************************
+
+****************************************************************
+VERSION 2.02
+
+NEW FEATURES
+
+BUG FIXES
+--Defect 80926 fixed. PPP stack will wait for IPCP ACK before
+  establishing connection. This defect is actually fixed in 1.01.
+--Defect 80925 fixed. Buffers with bad packets will always
+  be reallocated. This defect is actually fixed in 1.01.
+--Defect 81407 fixed.
+  Buffers with crc errors will not cause the rx buffer byte
+  counter to be incorrectly decremented.  PPP was refusing to
+  connect, reseting or stopping for a couple seconds.
+
+OTHER FUNCTIONAL CHANGES
+--Added _PPP_VERS version tracking macro.
+
+****************************************************************
+
+****************************************************************
+VERSION 2.01
+
+**************************IMPORTANT!!!**************************
+  This module release is only compatible with Dynamic C
+  versions 9.01 and greater.  Versions of Dynamic C earlier
+  than 9.01 will not be able to be used with this module.
+  If you have questions about module comparability, please
+  contact technical support for assistance:
+  (530) 757.3737
+  Fax: 530.753.5141
+  E-mail: zworld@zworld.com
+****************************************************************
+
+NEW FEATURES
+
+--This version works with the Dynamic C 9.0 release of the
+  tcp/ip libraries.
+--Initial PPP link negotiation is now more flexible, which
+  will allow a connection to be established with a wider
+  variety of peers.  In particular, peers which do not want/need
+  their own IP address are handled correctly -- in this case,
+  a dummy IP address (0.0.1.<iface>) is used internally so that
+  the router tables work.
+--There is a new ifconfig() command word, IFS_PPP_PASSIVE.
+  This is a boolean option.  If set TRUE, then the PPP interface
+  will wait indefinitely for a peer to start negotiating the
+  link parameters.  While waiting, the interface will be in
+  a pending up condition.  When the PPP interface is first
+  brought up, the library tries to negotiate with a peer.  If
+  there is no peer, then the negotiation times out and the
+  library drops back to passively waiting.  In this condition,
+  it is necessary for the peer to transmit the first link
+  negotiation packet, which would normally bring the interface
+  up.
+--You can #define PPP_NO_MODEM to eliminate modem handling code
+  from the PPPLINK (PPP over async serial) library.  This would
+  be used if the connection is a direct RS232 connection via
+  a null modem, or a leased line.  In this case, the ifconfig
+  command IFS_PPP_USEMODEM will have no effect.
+--If using a modem, the send/expect strings set via the
+  IFS_PPP_SENDEXPECT and IFS_PPP_HANGUP ifconfig() commands may
+  contain the following substitution variables:
+    %0 - occurrences of this string get replaced with the string
+         set via IFS_PPP_REMOTEAUTH, i.e. the user name which
+         is presented to the peer.
+    %1 - is the corresponding password set via IFS_PPP_REMOTEAUTH.
+  These substitution are useful in the case that the peer (ISP)
+  requires a human-readable login screen to be navigated, and
+  this uses the same userid/password that is used by the PAP
+  (Password Authentication Protocol) layer in PPP.
+
+BUG FIXES
+
+OTHER FUNCTIONAL CHANGES
+--The implementation has been reworked in order to support
+  the xmem buffering introduced in the main tcp/ip libs.
+  This saves about 6kB of root data space, however there
+  is a slight (<1kB) increase in the amount of root code space
+  that is used by the PPP library.  If an existing PPP
+  application that works with Dynamic C 8.5 or earlier is
+  recompiled for this version, then it may be necessary to
+  increase the definition of DATAORG by one page (4kB).
+--If IFS_PPP_REMOTEAUTH, IFS_PPP_LOCALAUTH, IFS_PPP_SENDEXPECT,
+  IFS_PPP_HANGUP or any other parameter which takes a string
+  parameter are used, the specified string(s) must be located in
+  static storage.  This is because only the pointers are stored;
+  the string is NOT copied.  You may need to review your
+  application if porting from a previous release of PPP in order
+  to check that these ifconfig() commands are used properly.
+  You should also check that your application does not change
+  the string contents while an interface is coming up or down.
+  Is is, however, perfectly OK to change the string when the
+  interface is fully up or down.  Such a change will take effect
+  the next time the interface is brought up or down.
+
+****************************************************************
+
+****************************************************************
+VERSION 1.05
+
+NEW FEATURES
+
+BUG FIXES
+--Defect #81210 Fixed. Fixed Modem Escape code timing bug
+  which was causing modem hangup failure in PPP.
+--Defect #81204 fixed. LCP magic number generator working properly
+--Defect #81173 fixed. PPP fixed to work with Win2K PPP client
+
+OTHER FUNCTIONAL CHANGES
+
+****************************************************************
+
+****************************************************************
+VERSION 1.04
+
+NEW FEATURES
+
+BUG FIXES
+--Defect #81106 fixed. Fixed problem with IP packets sometimes
+  not being sent when used in fast RAM mode.
+
+OTHER FUNCTIONAL CHANGES
+
+****************************************************************
+
+****************************************************************
+VERSION 1.03
+
+NEW FEATURES
+
+BUG FIXES
+--Defect #81015 fixed. PPP now waits until link negotiation is
+  complete before switching to new escape map setting
+--Defect #81039 fixed. PPP will now work properly in fast RAM
+  mode without separate I&D space.
+--Defect #81093 fixed. PPPSerialRawSend now copies bytes into a
+  reserved static buffer.
+
+OTHER FUNCTIONAL CHANGES
+
+****************************************************************
+VERSION 1.02
+
+NEW FEATURES
+
+BUG FIXES
+--Defect #80976 fixed. PPP now checks for full connect status
+  before processing IP packets.
+--Defect #80993 fixed. In PPP.LIB, PAP ACK and PAP NACK packets
+  now include message length byte with a value of zero.
+--Defect #81013 fixed. Added expect sequence after sending 'ATM0'
+  Some modems require delay between sending control string and
+  dial string.
+
+OTHER FUNCTIONAL CHANGES
+
+****************************************************************
+VERSION 1.01
+
+NEW FEATURES
+
+
+OTHER FUNCTIONAL CHANGES
+
+****************************************************************

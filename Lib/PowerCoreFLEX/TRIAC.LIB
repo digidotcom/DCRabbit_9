@@ -1,0 +1,2870 @@
+/*** Beginheader */
+#ifndef __TRIAC_LIB
+#define __TRIAC_LIB
+
+// For debugging this LIB enable the following macro
+//#define TRIAC_DEBUG
+#ifdef TRIAC_DEBUG
+#define _triac_nodebug debug
+#else
+#define _triac_nodebug nodebug
+#endif
+
+
+// Must be set level 3 for phase control!!!
+#define TRIAC_PHASE_INT_LEVEL 3
+
+// Set to level 1 for time-proportional control.
+#define TRIAC_RATIO_INT_LEVEL 1
+
+#define TRIAC_TRUE  0xFF
+#define TRIAC_FALSE 0
+
+/*** endheader */
+
+/* START LIBRARY DESCRIPTION *********************************************
+TRIAC.LIB
+
+DESCRIPTION:	This is a library for triac control which is	intended to
+					be used with PowerCore FLEX series core modules or other
+               designs that have the zero-crossing circuit installed.
+
+REVISION HISTORY:
+	06/25/04	EK 	Initial Creation
+
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader  _zerocross_reg,
+						_zerocross_addr,
+                  _zerocross_data */
+
+// Variables common to both triac drivers
+extern int _zerocross_reg;
+extern char *_zerocross_addr;
+extern int _zerocross_data;
+/*** EndHeader */
+
+int _zerocross_reg;
+char *_zerocross_addr;
+int _zerocross_data;
+
+/*** BeginHeader _initialize_Triac_Port */
+int _initialize_Triac_Port(int port, int bit, int mode, char state);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_initialize_Triac_Port	<TRIAC.LIB>
+
+SYNTAX:	  		_initialize_Triac_Port(int port, int bit, int mode,
+										        int polarity);
+
+DESCRIPTION:  	Internal function to automactically configure a CPU
+               I/O pin based on function parameters. This function
+               is non-reentrant.
+
+PARAMETER1:		Rabbit 2000 or 3000 CPU I/O port predefined macro, which
+					is one of the following:
+					PADR, PBDR, PCDR, PDDR, PEDR, PFDR, or PGDR.
+
+PARAMETER2:    Bit number of the specified CPU I/O pin to be configured.
+
+PARAMETER3:    Value to indicate if the I/O pin is to be setup as an
+					input or output pin.
+
+PARAMETER4:    Value used to set the I/O pin to it's initial state.
+					(applies to output pins only)
+
+RETURN VALUE: 	 0 = CPU I/O pin initialized OK
+					 1 = CPU input configuration error
+                2 = CPU output configuration error
+
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+int _initialize_Triac_Port(int port, int bit, int mode, char state)
+{
+ 	auto char mask;
+
+	mask = 0x01<<bit;
+	if(mode == 0)	// Section to configure CPU input pins
+   {
+		switch(port)
+		{
+			case PADR:
+				WrPortI(SPCR, &SPCRShadow, 0x80);
+            break;
+
+			#if (CPU_ID_MASK(_CPU_ID_) >= R3000)
+			case PBDR:
+				WrPortI(PBDDR, &PBDDRShadow, (PBDDRShadow & ~mask));
+				break;
+			#endif
+
+			case PCDR:
+				if(bit & 0x01)
+				{
+					WrPortI(PCFR, &PCFRShadow, (PCFRShadow & ~mask));
+				}
+            break;
+
+			case PDDR:
+				WrPortI(PDFR, &PDFRShadow, (PDFRShadow & ~mask));
+				WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow & ~mask));
+
+				if(mask & 0xF0)
+					WrPortI(PDCR, &PDCRShadow, (PDCRShadow & ~0xF0));
+				else
+					WrPortI(PDCR, &PDCRShadow, (PDCRShadow & ~0x0F));
+				break;
+
+			case PEDR:
+				WrPortI(PEFR, &PEFRShadow, (PEFRShadow & ~mask));
+				WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow & ~mask));
+
+				if(mask & 0xF0)
+					WrPortI(PECR, &PECRShadow, (PECRShadow & ~0xF0));
+				else
+					WrPortI(PECR, &PECRShadow, (PECRShadow & ~0x0F));
+				break;
+
+			#if (CPU_ID_MASK(_CPU_ID_) >= R3000)
+			case PFDR:
+				WrPortI(PFFR, &PFFRShadow, (PFFRShadow & ~mask));
+				WrPortI(PFDDR, &PFDDRShadow, (PFDDRShadow & ~mask));
+
+				if(mask & 0xF0)
+					WrPortI(PFCR, &PFCRShadow, (PFCRShadow & ~0xF0));
+				else
+					WrPortI(PFCR, &PFCRShadow, (PFCRShadow & ~0x0F));
+				break;
+
+			case PGDR:
+				WrPortI(PGFR, &PGFRShadow, (PGFRShadow & ~mask));
+				WrPortI(PGDDR, &PGDDRShadow, (PGDDRShadow & ~mask));
+
+				if(mask & 0xF0)
+					WrPortI(PGCR, &PGCRShadow, (PGCRShadow & ~0xF0));
+				else
+					WrPortI(PGCR, &PGCRShadow, (PGCRShadow & ~0x0F));
+				break;
+			#endif
+
+         default:
+         	return 1;
+
+		}
+	}
+ 	else	// Section to configure CPU output pins
+	{
+		switch(port)
+		{
+			case PADR:
+				if(state)
+					WrPortI(PADR, &PADRShadow, (PADRShadow | mask));
+				else
+					WrPortI(PADR, &PADRShadow, (PADRShadow & ~mask));
+				WrPortI(SPCR, &SPCRShadow, 0x84);
+            break;
+
+
+			case PBDR:
+         	#if (CPU_ID_MASK(_CPU_ID_) >= R3000)
+				WrPortI(PBDDR, &PBDDRShadow, (PBDDRShadow | mask));
+				if(state)
+					WrPortI(PBDR, &PBDRShadow, (PBDRShadow | mask));
+				else
+					WrPortI(PBDR, &PBDRShadow, (PBDRShadow & ~mask));
+
+            #else
+				if(state)
+					WrPortI(PBDR, &PBDRShadow, (PBDRShadow | mask));
+				else
+					WrPortI(PBDR, &PBDRShadow, (PBDRShadow & ~mask));
+				#endif
+            break;
+
+			case PCDR:
+         	if(bit & 0x01)
+            {
+ 					WrPortI(PCFR, &PCFRShadow, (PCFRShadow & ~mask));
+					if(state)
+						WrPortI(PCDR, &PCDRShadow, (PCDRShadow | mask));
+					else
+						WrPortI(PCDR, &PCDRShadow, (PCDRShadow & ~mask));
+            }
+            break;
+
+			case PDDR:
+				WrPortI(PDFR, &PDFRShadow,   (PDFRShadow  & ~mask));
+				WrPortI(PDDDR, &PDDDRShadow, (PDDDRShadow |  mask));
+				WrPortI(PDDCR, &PDDCRShadow, (PDDCRShadow & ~mask));
+
+				if(state)
+					WrPortI(PDDR, &PDDRShadow, (PDDRShadow | mask));
+				else
+					WrPortI(PDDR, &PDDRShadow, (PDDRShadow & ~mask));
+
+				if(mask & 0xF0)
+					WrPortI(PDCR, &PDCRShadow, (PDCRShadow & ~0xF0));
+				else
+					WrPortI(PDCR, &PDCRShadow, (PDCRShadow & ~0x0F));
+				break;
+
+			case PEDR:
+				WrPortI(PEFR, &PEFRShadow, (PEFRShadow & ~mask));
+				WrPortI(PEDDR, &PEDDRShadow, (PEDDRShadow |  mask));
+
+				if(state)
+					WrPortI(PEDR, &PEDRShadow, (PEDRShadow | mask));
+				else
+					WrPortI(PEDR, &PEDRShadow, (PEDRShadow & ~mask));
+
+				if(mask & 0xF0)
+					WrPortI(PECR, &PECRShadow, (PECRShadow & ~0xF0));
+				else
+					WrPortI(PECR, &PECRShadow, (PECRShadow & ~0x0F));
+				break;
+
+			#if (CPU_ID_MASK(_CPU_ID_) >= R3000)
+			case PFDR:
+				WrPortI(PFFR, &PFFRShadow, (PFFRShadow & ~mask));
+				WrPortI(PFDDR, &PFDDRShadow, (PFDDRShadow |  mask));
+				WrPortI(PFDCR, &PFDCRShadow, (PFDCRShadow & ~mask));
+
+				if(state)
+					WrPortI(PFDR, &PFDRShadow, (PFDRShadow | mask));
+				else
+					WrPortI(PFDR, &PFDRShadow, (PFDRShadow & ~mask));
+
+				if(mask & 0xF0)
+					WrPortI(PFCR, &PFCRShadow, (PFCRShadow & ~0xF0));
+				else
+					WrPortI(PFCR, &PFCRShadow, (PFCRShadow & ~0x0F));
+				break;
+
+			case PGDR:
+				WrPortI(PGFR, &PGFRShadow,   (PGFRShadow & ~mask));
+				WrPortI(PGDDR, &PGDDRShadow, (PGDDRShadow |  mask));
+				WrPortI(PGDCR, &PGDCRShadow, (PGDCRShadow & ~mask));
+
+				if(state)
+					WrPortI(PGDR, &PGDRShadow, (PGDRShadow | mask));
+				else
+					WrPortI(PGDR, &PGDRShadow, (PGDRShadow & ~mask));
+
+				if(mask & 0xF0)
+					WrPortI(PGCR, &PGCRShadow, (PGCRShadow & ~0xF0));
+				else
+					WrPortI(PGCR, &PGCRShadow, (PGCRShadow & ~0x0F));
+				break;
+			#endif
+
+         default:
+         	return 2;
+		}
+	}
+   return 0;
+}
+
+
+//-------------------------------------------------------------------------
+//	TRIAC time-proportional design implementation section
+//-------------------------------------------------------------------------
+
+/*** BeginHeader	triac_TimePropInit  */
+void triac_TimePropInit(int ext_interrupt, int interrupt_pin);
+
+#ifndef _TRIAC
+#define _TRIAC 0x30
+#endif
+
+extern unsigned int _triac_on_period[MAX_TRIACS];
+extern unsigned int _triac_off_period[MAX_TRIACS];
+extern unsigned int _triac_cntrl_period[MAX_TRIACS];
+extern int _triac_counter[MAX_TRIACS];
+extern char _triac_toggle[MAX_TRIACS];
+extern char _triac_cntrl_flag[MAX_TRIACS];
+extern char _triac_isr_state[MAX_TRIACS];
+extern int _propTRIinit;
+extern char _propTRIcntrlpin;
+extern int _triac_index;
+/*** EndHeader */
+
+unsigned int _triac_on_period[MAX_TRIACS];
+unsigned int _triac_off_period[MAX_TRIACS];
+unsigned int _triac_cntrl_period[MAX_TRIACS];
+int _triac_counter[MAX_TRIACS];
+char _triac_toggle[MAX_TRIACS];
+char _triac_cntrl_flag[MAX_TRIACS];
+char _triac_isr_state[MAX_TRIACS];
+int _propTRIinit;
+char _propTRIcntrlpin;
+int _triac_index;
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+triac_TimePropInit		<TRIAC.LIB>
+
+SYNTAX:        void triac_TimePropInit(int ext_interrupt,
+										         int interrupt_pin);
+
+DESCRIPTION:   Initializes the triac time-proportional control interrupt.
+					For complete initialization of the triac driver you must
+               also run the triac_TimePropCntrlPin function for each
+               triac to be used in your application. This function is
+               non-reentrant.
+
+               Time-proportional triac control provides control of a
+               triac for a fixed period of time with the application
+               setting the ON and OFF times within this fixed time
+               period to provide the desired ratio of ON/OFF times
+               for triac control.
+
+               Application Design Info:
+               ------------------------
+               - You will need to initialize the port pin(s) you
+                 select for triac control before calling any of
+                 the triac API functions with using the function
+                 triac_TimePropCntrlPin.
+
+					- For multiple triacs, the control pins can be on
+                 any combination of ports. You will also need to
+                 write a custom I/O driver for the control. (See
+                 the triac_gate_on and triac_gate_off routines in
+                 triac_ratio.c sample program for an example)
+
+               - You need to add the following in your application
+                 to set up the driver properly:
+
+               // Define time-proportional triac control method for
+               // proper library compilation.
+					#define TIMEPROPORTIONAL
+
+					// Set the max number of triacs for control
+					#define MAX_TRIACS <number of triacs>
+
+					// Define the triac custom function ON/OFF function
+               // names for proper library compilation. (see sample
+               program triac_ratio.c for an example)
+					#define TRIAC_GATE_ON 	triac_gate_on
+					#define TRIAC_GATE_OFF  triac_gate_off
+
+					// Use the common ISR library for the triac and the
+               // ADC ramp circuit.
+					#use "adctriac_isr.lib"
+
+					// Use the triac library
+					#use "triac.lib"
+
+               Note: Interrupt priority level is preset to level 1
+
+PARAMETER1: 	External interrupt vector selection:
+					0 = External interrupt 0
+               1 = External interrupt 1
+
+PARAMETER2:		External interrupt I/O pin selection:
+					0 = I/O pin PE0, only valid for external int 0
+               1 = I/O pin PE4, only valid for external int 0
+               2 = I/O pin PE1, only valid for external int 1
+               3 = I/O pin PE5, only valid for external int 1
+
+RETURN VALUE:	None.
+
+SEE ALSO:		triac_TimePropCntrl, triac_TimePropCntrlPin,
+					triac_TimePropDisable, triac_TimePropEnable
+
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+void triac_TimePropInit(int ext_interrupt, int interrupt_pin)
+{
+	auto unsigned long macro;
+
+	#GLOBAL_INIT
+   {
+   	_propTRIinit = FALSE;
+      memset(_triac_toggle, 0x00, sizeof(_triac_toggle));
+      memset(_triac_isr_state, 0x00, sizeof(_triac_isr_state));
+      memset(_triac_cntrl_flag, 0x00, sizeof(_triac_cntrl_flag));
+      memset(_triac_off_period, 0x00, sizeof(_triac_off_period));
+      memset(_triac_off_period, 0x00, sizeof(_triac_off_period));
+      memset(_triac_counter, 0x00, sizeof(_triac_counter));
+   }
+
+   //     _DC_3800OPT0_
+   //     bits    0-2     Power supply options (0 None, 1 or 2 A)
+   //     bits    3-4     Input circuit options (0 Center tapped, 1, Full Wave, 2 half wave 3 +5 only)
+   //     bit     5       Zero Crossing (0 not installed, 1 installed)
+   //     bit     6       Ramp Generator (0 not installed, 1 installed)
+   //     bit     7       Battery (0 not installed, 1 installed)
+   //     bit     8       Clock double okay (0 don't double, 1 okay to double)
+   //     bits    9-31    Reserved for future use (set to 0 for now)
+
+   _GetSysMacroValue("_DC_3800OPT0_", &macro);
+   if(!(macro & 0x00000020))
+	{
+		// The initialization functions has not been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   // Initialize ISR control flags
+   _initialize_isr_variables();
+
+   if(ext_interrupt == 0)
+   {
+   	if(interrupt_pin < 0 || interrupt_pin > 1)
+      {
+ 			exception(-ERR_BADPARAMETER);
+			exit(-ERR_BADPARAMETER);
+   	}
+   }
+   else if(ext_interrupt == 1)
+   {
+      if(interrupt_pin <  2 || interrupt_pin > 3)
+      {
+ 			exception(-ERR_BADPARAMETER);
+			exit(-ERR_BADPARAMETER);
+   	}
+   }
+   else
+   {
+ 		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+   }
+
+#if __SEPARATE_INST_DATA__ && (_RK_FIXED_VECTORS)
+  	if(ext_interrupt)
+   {
+     	interrupt_vector ext1_intvec _triac_isr;
+   }
+   else
+   {
+     	interrupt_vector ext0_intvec _triac_isr;
+ 	}
+#else
+  	if(ext_interrupt)
+   {
+		SetVectExtern3000(1, _triac_isr);
+   }
+   else
+   {
+      SetVectExtern3000(0, _triac_isr);
+ 	}
+#endif
+
+   switch(interrupt_pin)
+   {
+   	case 0:	// Pin PE0 interrupt 0
+      	_triac_isr_bitmask = 0x01;
+         I0CRShadow = I0CRShadow | TRIAC_RATIO_INT_LEVEL | 0x0C;
+         WrPortI(I0CR, &I0CRShadow, I0CRShadow);
+         _zerocross_reg = I0CR;
+         _zerocross_addr = &I0CRShadow;
+         _zerocross_data = I0CRShadow;
+         break;
+      case 1:	// Pin PE4 interrupt 0
+      	_triac_isr_bitmask = 0x10;
+         I0CRShadow = I0CRShadow | TRIAC_RATIO_INT_LEVEL | 0x30;
+         WrPortI(I0CR, &I0CRShadow, I0CRShadow);
+         _zerocross_reg = I0CR;
+         _zerocross_addr = &I0CRShadow;
+         _zerocross_data = I0CRShadow;
+         break;
+      case 2:	// Pin PE1 interrupt 1
+      	_triac_isr_bitmask = 0x02;
+         I1CRShadow = I1CRShadow | TRIAC_RATIO_INT_LEVEL | 0x0C;
+         WrPortI(I1CR, &I1CRShadow, I1CRShadow);
+         _zerocross_reg = I1CR;
+         _zerocross_addr = &I1CRShadow;
+         _zerocross_data = I1CRShadow;
+
+         break;
+      case 3:	// Pin PE5 interrupt 1
+      	_triac_isr_bitmask = 0x20;
+         I1CRShadow = I1CRShadow | TRIAC_RATIO_INT_LEVEL | 0x30;
+         WrPortI(I1CR, &I1CRShadow, I1CRShadow);
+         _zerocross_reg = I1CR;
+         _zerocross_addr = &I1CRShadow;
+         _zerocross_data = I1CRShadow;
+         break;
+   }
+   _propTRIinit = TRUE;
+}
+
+
+/*** BeginHeader	triac_TimePropCntrlPin  */
+void triac_TimePropCntrlPin(int triac, int port,
+                            int bit, int bit_state);
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+triac_TimePropCntrlPin	<TRIAC.LIB>
+
+SYNTAX:        void triac_TimePropCntrlPin(int triac, int port,
+                                           int io_pin, int pin_state);
+
+DESCRIPTION:   Initializes the port and the I/O pin to be used by the
+					specified triac. This function is non-reentrant.
+
+               Notes:
+					-----
+               - For multiple triacs, the control pins can be on any
+                 combination of ports. You will also need to write a
+                 custom I/O driver for the control. (See the routines
+                 triac_gate_on and triac_gate_off in the sample program
+                 triac_ratio.c for an example)
+
+            	- A runtime error will occur if the triac_TimePropCntrl
+                 function hasn't executed or if the maximum triac
+                 limit is exceeded.
+
+PARAMETER1: 	Triac selection, 0 to MAX_TRIACS-1.
+
+PARAMETER2:    I/O Port to used to control the triac. Specify one of
+					the predefined I/O macro's:
+					PADR, PBDR, PCDR, PDDR, PEDR, PFDR, or PGDR.
+
+PARAMETER3:    Bit number of the I/O pin to be used for triac control.
+
+PARAMETER4:    Value used to set the I/O pin to it's initial state.
+
+RETURN VALUE:	None.
+
+SEE ALSO:		triac_TimePropCntrl, triac_TimePropInit
+
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+void triac_TimePropCntrlPin(int triac, int port, int bit, int bit_state)
+{
+	#GLOBAL_INIT
+   {
+   	_propTRIinit = FALSE;
+   	_propTRIcntrlpin = 0x00;
+   }
+
+	if(!_propTRIinit)
+	{
+		// the brdInit function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   if(triac >= MAX_TRIACS)
+   {
+ 		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+   }
+
+   _propTRIcntrlpin |= (0x01 << triac);
+   _initialize_Triac_Port(port, bit, 1, bit_state);
+}
+
+
+
+/*** BeginHeader	triac_TimePropDisable */
+int triac_TimePropDisable(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+triac_TimePropDisable			<TRIAC.LIB>
+
+SYNTAX:        int triac_TimePropDisable(void);
+
+DESCRIPTION:   Disables the triac control interrupt to allow your
+					application to do flash write operations. Function
+               triac_TimePropInit must have been previously called
+               before calling this function. This function is non-
+               reentrant.
+
+               Application Requirement:
+               ------------------------
+               1. This function must be called before doing any flash
+               write operation, and then you must call the function
+               triac_TimePropEnable after the flash write operation
+               to restart the triac driver.
+
+               2. This requirement also applies if you have any other
+               operation that disables all interrupts.
+
+PARAMETER1:    None.
+
+RETURN VALUE: 	0 = Triac driver disable is in progress.
+					1 = Triac driver disabled.
+
+SEE ALSO:		triac_TimePropInit, triac_TimePropCntrl,
+					triac_TimePropCntrlPin, triac_TimePropEnable
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+int triac_TimePropDisable(void)
+{
+	// Disable zero-crossing interrupt
+
+   static int state;
+   static int status;
+	static unsigned long shutdown_period;
+
+	auto int i;
+
+   #GLOBAL_INIT
+   {
+   	status = 0;
+   	state = 0;
+   }
+
+   switch(state)
+   {
+   	case 0:
+         for(i = 0; i<MAX_TRIACS; i++)
+         {
+         	triac_TimePropCntrl(i, 0, 0);
+            TRIAC_GATE_OFF(i);
+         }
+         status = 0;
+         state++;
+         break;
+
+     	case 1:
+      	shutdown_period = MS_TIMER + 25;
+         state++;
+         break;
+
+      case 2:
+      	if((long) (MS_TIMER-shutdown_period) >= 0 )
+			{
+         	_zeroXing_interrupt = FALSE;
+   			WrPortI(_zerocross_reg, _zerocross_addr, (*_zerocross_addr & ~0xF0));
+				state = 0;
+            status = 1;
+         }
+			break;
+      default:
+      	state = 0;
+         status = 0;
+         break;
+
+	}
+   return(status);
+}
+
+/*** BeginHeader	triac_TimePropEnable */
+int triac_TimePropEnable(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+triac_TimePropEnable		<TRIAC.LIB>
+
+SYNTAX:        int triac_TimePropEnable(void);
+
+DESCRIPTION:   Re-enables the triac control interrupt after a flash write
+					operation has been completed. Functions triac_TimePropInit
+               and triac_TimePropDisable must have been previously called
+               before calling this function. This function is non-
+               reentrant.
+
+PARAMETER1:    None.
+
+RETURN VALUE: 	0 = Triac driver not ready.
+					1 = Triac driver ready.
+
+SEE ALSO:		triac_TimePropInit, triac_TimePropCntrl,
+					triac_TimePropCntrlPin, triac_TimePropDisable
+
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+int triac_TimePropEnable(void)
+{
+	static int state;
+   static int status;
+	static unsigned long shutdown_period;
+
+	auto int i;
+
+   #GLOBAL_INIT
+   {
+   	status = 0;
+   	state = 0;
+   }
+
+   switch(state)
+   {
+   	case 0:
+      	// Re-enable zero-crossing interrupt
+			WrPortI(_zerocross_reg, _zerocross_addr, _zerocross_data);
+  			_zeroXing_interrupt = TRUE;
+         status = 0;
+         state++;
+         break;
+
+     	case 1:
+      	shutdown_period = MS_TIMER + 25;
+         state++;
+         break;
+
+      case 2:
+      	if((long) (MS_TIMER-shutdown_period) >= 0 )
+			{
+				state = 0;
+            status = 1;
+         }
+			break;
+      default:
+      	state = 0;
+         status = 0;
+         break;
+
+	}
+   return(status);
+}
+
+/*** BeginHeader	triac_TimePropCntrl */
+void triac_TimePropCntrl(int triac, int onCycles,
+								 int totalCycles);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+triac_TimePropCntrl		<TRIAC.LIB>
+
+SYNTAX:        void triac_TimePropCntrl(int triac, int onCycles,
+                                        int totalCycles);
+
+DESCRIPTION:   Sets the on time of the specified triac intialized for
+					time-proportional control. This function is non-reentrant.
+
+               The given triac will be turned on at the zero-crossing
+               point of the 50/60 Hz A/C power cycles, and will remain
+               on for the number of cycles you have specified.
+
+               The off-time is calculated by finding the difference
+               between the total cycles and the on-time provided in
+               this function.
+
+               Note:
+               -----
+               A runtime error will occur if the triac_TimePropInit
+               function hasn't executed.
+
+PARAMETER1: 	Triac selection, 0 to MAX_TRIACS-1.
+PARAMETER2:		Number of 50/60 Hz cycles of on-time for the selected triac.
+					Valid range = 0 - 32767.
+PARAMETER3:		Sets the total number of 50/60 Hz cycles needed for
+					control. Valid range = 0 - 32767.
+
+RETURN VALUE: 	None.
+
+SEE ALSO:		triac_TimePropInit, triac_TimePropCntrlPin,
+ 					triac_TimePropEnable, triac_TimePropDisable
+
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+void triac_TimePropCntrl(int triac, int onCycles, int totalCycles)
+{
+	static int num_cycles;
+   static int index;
+
+   #GLOBAL_INIT
+   {
+   	_propTRIinit = FALSE;
+      _propTRIcntrlpin = 0x00;
+   	memset(_triac_cntrl_period, 0x00, sizeof(_triac_cntrl_period));
+      memset(_triac_on_period, 0x00, sizeof(_triac_on_period));
+   }
+
+   if((triac >= MAX_TRIACS) || !_propTRIinit)
+   {
+ 		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+   }
+
+   if(!(_propTRIcntrlpin & (0x01 << triac)))
+	{
+		// the brdInit function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   _triac_cntrl_period[triac] = totalCycles;
+   index = triac;
+   num_cycles = onCycles;
+
+   if(num_cycles < 0)
+   	num_cycles = 0;
+   if(_triac_on_period[index] == num_cycles)
+   	return;
+   if(num_cycles > _triac_cntrl_period[index])
+   	num_cycles = _triac_cntrl_period[index];
+
+   #asm
+   push 	ip
+	ipset	TRIAC_RATIO_INT_LEVEL
+   #endasm
+   _triac_on_period[index]  = num_cycles;
+   _triac_off_period[index] = _triac_cntrl_period[index] - num_cycles;
+   #asm
+   pop	ip
+	#endasm
+
+   if(num_cycles)
+   	_triac_cntrl_flag[index] = TRUE;
+   else
+   	TRIAC_GATE_OFF(index);
+
+   for(index=0; index < MAX_TRIACS; index++)
+   {
+   	if(_triac_on_period[index])
+      {
+      	_zeroXing_interrupt = TRUE;
+         break;
+      }
+      else
+      {
+      	_zeroXing_interrupt = FALSE;
+      }
+   }
+}
+
+
+//-------------------------------------------------------------------------
+//	Following section is for TRIAC phase control design implementations
+//-------------------------------------------------------------------------
+
+/*** BeginHeader	triac_PhaseInit */
+void triac_PhaseInit(int ext_interrupt, int interrupt_pin);
+
+#ifndef _TRIAC
+#define _TRIAC 0x30
+#endif
+
+#ifndef TRIACINTLEVEL
+#define TRIACINTLEVEL 0x02
+#endif
+
+// Triac auto low freq calibration count value, default
+// setting is for the driver to calibrate once every 1000
+// 50/60 Hz cycles.
+#ifndef TRIAC_LOW_FREQ_CAL
+#define TRIAC_LOW_FREQ_CAL 1000
+#endif
+
+#ifndef TRIAC_CAL_FREQ
+#define TRIAC_CAL_FREQ  75
+#endif
+
+#ifndef TRIAC_START_DELAY
+#define TRIAC_START_DELAY 150
+#endif
+
+
+#ifndef TRIAC_PWM_CNTRL_FREQ
+#define TRIAC_PWM_CNTRL_FREQ	0
+#endif
+
+
+#ifndef TRIAC_PWM_CHANNEL
+#define TRIAC_PWM_CHANNEL     0
+#endif
+
+#ifndef TRIAC_PWM_DUTYCYCLE
+#define TRIAC_PWM_DUTYCYCLE   0
+#endif
+
+#ifndef TRIAC_PWM_OPTION
+#define TRIAC_PWM_OPTION      0
+#endif
+
+
+#ifndef PWM_FREQ_VAR
+#define PWM_FREQ_VAR			.1
+#endif
+
+// The following is for TRIAC phase control implementation
+typedef struct triac_infor
+{
+	int onOff;
+	int timer;
+   int phase;
+   char iobit;
+   int port;
+   char *shadow;
+} triac_infor;
+
+extern triac_infor _Triac_Array0_CNTRL[MAX_TRIACS+2];
+extern triac_infor _Triac_Array1_CNTRL[MAX_TRIACS+2];
+extern triac_infor _Triac_API_CNTRL[MAX_TRIACS+2];
+extern triac_infor _Triac_API_ORIG[MAX_TRIACS+2];
+extern triac_infor _Triac_CNTRL[MAX_TRIACS+2];
+
+extern char _last_timerB_INT;
+extern char _triac_array;
+extern char _phaseTriErrorLow;
+extern char _phaseTriAutoLow;
+extern char _triac_timerB_msb;
+extern char _triac_timerB_lsb;
+extern char _Triac_Initial_ON;
+extern char _Triac_Initial0_ON;
+extern char _Triac_Initial1_ON;
+extern char _Triac_Cntrl_Bits;
+extern char _phaseTriSync;
+extern char _phaseTriAutoCal;
+extern char _triac_timerB_low;
+
+extern int _triac_recal_cycle;
+extern int _triac_index1;
+extern int _triac_index2;
+extern int _phaseTriSize;
+extern int _triac_timerB;
+extern int _phaseTRIcntrlpin;
+extern int _phaseTRIinit;
+extern int _triacCalCounter;
+extern int _triac_index;
+extern int _triac_lock;
+extern int _triac_driver_enable;
+extern int _triac_pwm_dutycycle;
+extern int _triac_pwm_options;
+extern int _triac_pwm_channel;
+extern int _triac_pwm_initialized;
+extern int _triac_pwm_level;
+/*** EndHeader */
+
+// The following is for TRIAC phase control implemetation
+
+triac_infor _Triac_Array0_CNTRL[MAX_TRIACS+2];
+triac_infor _Triac_Array1_CNTRL[MAX_TRIACS+2];
+triac_infor _Triac_API_CNTRL[MAX_TRIACS+2];
+triac_infor _Triac_API_ORIG[MAX_TRIACS+2];
+triac_infor _Triac_CNTRL[MAX_TRIACS+2];
+
+char _last_timerB_INT;
+char _triac_array;
+char _phaseTriErrorLow;
+char _phaseTriAutoLow;
+char _triac_timerB_msb;
+char _triac_timerB_lsb;
+char _Triac_Initial_ON;
+char _Triac_Initial0_ON;
+char _Triac_Initial1_ON;
+char _Triac_Cntrl_Bits;
+char _phaseTriSync;
+char _phaseTriAutoCal;
+char _triac_timerB_low;
+
+int _triac_recal_cycle;
+int _triacCalCounter;
+int _triac_index1;
+int _triac_index2;
+int _phaseTriSize;
+int _triac_timerB;
+int _phaseTRIcntrlpin;
+int _phaseTRIinit;
+int _triac_index;
+int _triac_lock;
+int _triac_driver_enable;
+int _triac_pwm_dutycycle;
+int _triac_pwm_options;
+int _triac_pwm_channel;
+int _triac_pwm_initialized;
+int _triac_pwm_level;
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+triac_PhaseInit			<TRIAC.LIB>
+
+SYNTAX:        void triac_PhaseInit(int ext_interrupt, int interrupt_pin);
+
+DESCRIPTION:   Initializes the triac phase-angle control interrupt. For
+					complete initialization of the triac driver you must also
+               run the triac_PhaseCntrlPin function for each triac to be
+               used in your application. This function is non-reentrant.
+
+					Triac phase-angle	control provides you with the ability
+               to fire a triac at a given phase-angle of a positive and
+               negative 50/60 Hz A/C sine wave, thus providing you with
+               the desired control required by your application.
+
+               Note:
+					-----
+               A runtime error will occur if the triac_PhaseInit
+               function hasn't executed.
+
+               Application Design Info:
+               ------------------------
+               - You will need to initialize the port pin(s) you
+                 select for triac control before calling any of
+                 the triac API functions.
+
+					- For multiple triacs, the control pins must be on
+                 the same port, you will also need to write a custom
+                 I/O driver for the control.
+                 (See the triac_gate_on and triac_gate_off routines in
+                  triac_phase.c sample program for an example)
+
+               - The triac driver will automatically calibrate to the
+                 incomming 50/60 Hz A/C waveform being used.
+
+                 Note: High frequency calibration occurs 100% of the
+                 time whereas low frequency calibration occurs every
+                 Nth time specifed by the macro TRIAC_LOW_FREQ_CAL.
+
+               - You need to add the following in your application
+                 program to setup the triac driver properly:
+
+               // Define phase-angle triac control method for proper
+					// library compilation.
+					#define PHASECONTROL
+
+					// Set the max number of triacs for control
+					#define MAX_TRIACS <number of triacs>
+
+               Note: Can have a maximum of 8 triacs and they
+               must all be on the same I/O port.
+
+					// Define the triac control function names
+					#define TRIAC_GATE_ON 	triac_gate_on
+					#define TRIAC_GATE_OFF  triac_gate_off
+
+               // #use the triac lib
+               #use "triac.lib"
+
+               Note: Interrupt priority level is preset to level 3
+
+PARAMETER1: 	External interrupt vector selection:
+					0 = External interrupt 0
+               1 = External interrupt 1
+
+PARAMETER2:		External interrupt I/O pin selection:
+					0 = I/O pin PE0, only valid for external int 0
+               1 = I/O pin PE4, only valid for external int 0
+               2 = I/O pin PE1, only valid for external int 1
+               3 = I/O pin PE5, only valid for external int 1
+
+RETURN VALUE:	None.
+
+SEE ALSO:      triac_PhaseCntrlPin, triac_PhaseCntrl, triac_PhaseLock,
+					triac_PhaseUnlock, triac_PhaseEnable, triac_PhaseDisable.
+
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+void triac_PhaseInit(int ext_interrupt, int interrupt_pin)
+{
+	auto float perclk;
+   auto int timerA1;
+   auto int i;
+   auto unsigned long macro;
+
+   #GLOBAL_INIT
+   {
+   	_phaseTRIinit = FALSE;
+   }
+
+   //     _DC_3800OPT0_
+   //     bits    0-2     Power supply options (0 None, 1 or 2 A)
+   //     bits    3-4     Input circuit options (0 Center tapped, 1, Full Wave, 2 half wave 3 +5 only)
+   //     bit     5       Zero Crossing (0 not installed, 1 installed)
+   //     bit     6       Ramp Generator (0 not installed, 1 installed)
+   //     bit     7       Battery (0 not installed, 1 installed)
+   //     bit     8       Clock double okay (0 don't double, 1 okay to double)
+   //     bits    9-31    Reserved for future use (set to 0 for now)
+
+   _GetSysMacroValue("_DC_3800OPT0_", &macro);
+   if(!(macro & 0x00000020))
+	{
+		// The initialization functions has not been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+
+   // Initialize ISR control flags
+   _initialize_isr_variables();
+
+   if(ext_interrupt == 0)
+   {
+   	if(interrupt_pin < 0 || interrupt_pin > 1)
+      {
+ 			exception(-ERR_BADPARAMETER);
+			exit(-ERR_BADPARAMETER);
+   	}
+   }
+   else if(ext_interrupt == 1)
+   {
+      if(interrupt_pin <  2 || interrupt_pin > 3)
+      {
+ 			exception(-ERR_BADPARAMETER);
+			exit(-ERR_BADPARAMETER);
+   	}
+   }
+   else
+   {
+ 		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+   }
+
+  	memset(_Triac_API_ORIG, 0xFF, sizeof(_Triac_API_ORIG));
+   memset(_Triac_API_CNTRL, 0xFF, sizeof(_Triac_API_CNTRL));
+   memset(_Triac_Array0_CNTRL, 0xFF, sizeof(_Triac_Array0_CNTRL));
+	memset(_Triac_Array1_CNTRL, 0xFF, sizeof(_Triac_Array1_CNTRL));
+	memset(_Triac_CNTRL, 0xFF, sizeof(_Triac_CNTRL));
+
+   _phaseTriErrorLow  = FALSE;
+   _phaseTriAutoLow   = FALSE;
+   _phaseTriSync = TRIAC_FALSE;
+   _phaseTriSize = sizeof(triac_infor);
+   _Triac_Cntrl_Bits = 0;
+   _Triac_Initial_ON = 0;
+   _Triac_Initial0_ON = 0;
+   _Triac_Initial1_ON = 0;
+
+   for(i=0; i<MAX_TRIACS; i++)
+   	_Triac_API_ORIG[i].onOff = 0;
+
+  	if(ext_interrupt)
+   {
+		SetVectExtern3000(1, _triac_isr);
+   }
+   else
+   {
+      SetVectExtern3000(0, _triac_isr);
+ 	}
+#if __SEPARATE_INST_DATA__ && (_RK_FIXED_VECTORS)
+	interrupt_vector timerb_intvec _triac_timerb_isr;
+#else
+	SetVectIntern(0x0B, _triac_timerb_isr);
+#endif
+
+   switch(interrupt_pin)
+   {
+   	case 0:	// Pin PE0 interrupt 0
+      	_triac_isr_bitmask = 0x01;
+         I0CRShadow = I0CRShadow | TRIAC_PHASE_INT_LEVEL | 0x0C;
+         WrPortI(I0CR, &I0CRShadow, I0CRShadow);
+         _zerocross_reg = I0CR;
+         _zerocross_addr = &I0CRShadow;
+         _zerocross_data = I0CRShadow;
+         break;
+      case 1:	// Pin PE4 interrupt 0
+      	_triac_isr_bitmask = 0x10;
+         I0CRShadow = I0CRShadow | TRIAC_PHASE_INT_LEVEL | 0x30;
+         WrPortI(I0CR, &I0CRShadow, I0CRShadow);
+         _zerocross_reg = I0CR;
+         _zerocross_addr = &I0CRShadow;
+         _zerocross_data = I0CRShadow;
+         break;
+      case 2:	// Pin PE1 interrupt 1
+      	_triac_isr_bitmask = 0x02;
+         I1CRShadow = I1CRShadow | TRIAC_PHASE_INT_LEVEL | 0x0C;
+         WrPortI(I1CR, &I1CRShadow, I1CRShadow);
+         _zerocross_reg = I1CR;
+         _zerocross_addr = &I1CRShadow;
+         _zerocross_data = I1CRShadow;
+
+         break;
+      case 3:	// Pin PE5 interrupt 1
+      	_triac_isr_bitmask = 0x20;
+         I1CRShadow = I1CRShadow | TRIAC_PHASE_INT_LEVEL | 0x30;
+         WrPortI(I1CR, &I1CRShadow, I1CRShadow);
+         _zerocross_reg = I1CR;
+         _zerocross_addr = &I1CRShadow;
+         _zerocross_data = I1CRShadow;
+         break;
+   }
+
+   // Calculate timer A1 divisor to set timerB for a half
+   // cycle of the given freq.
+   perclk = 19200.0*32.0*freq_divider/2.0;
+
+   // Using 70 Hz for the calculation as the calibration
+   // sequence will set the actual operating range, and
+   // this will assure timerB timing span will be within
+   // one half cycle of the A/C waveform.
+   timerA1 = (int) (((1.0/(TRIAC_CAL_FREQ*2))/1024.0) * perclk);
+   if(timerA1 > 255)
+      timerA1 = 255;
+   _triac_timerB_low  = timerA1;
+   WrPortI(TAT1R, &TAT1RShadow, timerA1);
+   WrPortI(TBCR, &TBCRShadow, (0x04|TRIAC_PHASE_INT_LEVEL));
+
+   _triac_recal_cycle = TRIAC_LOW_FREQ_CAL;
+   _triacCalCounter = _triac_recal_cycle;
+
+   _phaseTriAutoCal = TRIAC_TRUE;
+  	_zeroXing_interrupt = TRUE;
+   for(i=0; i<5; i++)
+   {
+   	_phaseTriAutoLow  = TRIAC_TRUE;
+		msDelay(TRIAC_START_DELAY);
+   }
+   _phaseTRIinit = TRUE;
+}
+
+
+/*** BeginHeader	triac_PhaseInitPWM */
+int triac_PhaseInitPWM(int channel, int pwm_level,
+	                     int duty_cycle, int options,
+                        unsigned long frequency);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+triac_PhaseInitPWM	<TRIAC.LIB>
+
+SYNTAX:        int triac_PhaseInitPWM(int channel, int pwm_level,
+												   int duty_cycle, int options,
+                                       unsigned long frequency);
+
+DESCRIPTION:   Initializes a PWM channel for triac gate signal power
+					reduction.
+
+PARAMETER1:		PWM channel to use for triac gate power reduction.
+					PWM channels = 0 - 3
+PARAMETER2:		PWM static output state for the triac gate signal. For
+					when triac gate power reduction is disabled.
+					0 = Sets PWM output low.
+               1 = Sets PWM output high.
+PARAMETER3:		Select duty cycle to be used for triac gate power
+					reduction, value from 0 to 1024.
+PARAMETER4:    PWM control options, use the following macro bit masks
+					to enable the desired option:
+					- PWM_SPREAD - sets pulse spreading. The duty cycle
+					  is spread over four seperte pulses will increase the
+                 frequency by a factor of 4
+					- PWM_OPENDRAIN - sets the PWM output pin to be
+					  open-drain instead of a normal push-pull logic
+					  output.
+               - Set parameter to zero, for normal push-pull logic
+					  output and no pulse spreading.
+PARAMETER5:		PWM base frequency (in Hz). The base frequency is the
+					frequency without pulse spreading. Pulse spreading (see
+               parameter 4) will increase the base frequency by a factor
+               of 4.
+
+RETURN VALUE:	 0 = OK.
+					-1 = If an invalid channel number is used.
+					-2 = An invalid duty_cycle was requested.
+               -3 = Frequency requested is out of range or invalid.
+
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+int triac_PhaseInitPWM(int channel, int pwm_level,
+	                     int duty_cycle, int options,
+                        unsigned long frequency)
+{
+	auto int status;
+   auto long actual_freq;
+   auto long lower_limit, upper_limit;
+
+	actual_freq = pwm_init(frequency);
+   if(actual_freq < (lower_limit = frequency - (long)(frequency * PWM_FREQ_VAR)) ||
+   	actual_freq > (upper_limit = frequency + (long)(frequency * PWM_FREQ_VAR)) )
+   	return(-3);
+
+   if(pwm_level)
+  		_triac_pwm_level = 1024;
+   else
+      _triac_pwm_level = 0;
+   if(status = pwm_set(channel, _triac_pwm_level, options))
+   	return(status);
+
+ 	_triac_pwm_dutycycle = duty_cycle;
+ 	_triac_pwm_options = options;
+ 	_triac_pwm_channel = channel;
+ 	_triac_pwm_initialized = TRUE;
+   return(0);
+}
+
+/*** BeginHeader	triac_PhaseCntrlPin */
+void triac_PhaseCntrlPin(int triac, int port, int bit,
+	                      int bit_state);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+triac_PhaseCntrlPin		<TRIAC.LIB>
+
+SYNTAX:        void triac_PhaseCntrlPin(int triac, int port, int bit,
+						                      int pin_state);
+
+DESCRIPTION:	Initializes the port and the I/O pin that is going to be
+					used by the specifed triac. This function is non-reentrant.
+
+               Notes:
+					-----
+               - For multiple triacs the control pins must be on the
+                 same port (maximum of 8) and you will also need to
+                 write a custom I/O driver for the control. (See
+                 triac_gate_on and triac_gate_off routines the
+                 in triac_phase.c sample program for an example)
+
+            	- A runtime error will occur if the triac_PhaseInit
+                 function hasn't executed or if the maximum triac
+                 limit is exceeded.
+
+PARAMETER1: 	Triac selection, 0 to MAX_TRIACS-1.
+PARAMETER2:    I/O Port to used to control the triac. Specify one of the
+					predefined I/O macro's:
+					PADR, PBDR, PCDR, PDDR, PEDR, PFDR, or PGDR.
+
+PARAMETER3:    Bit number of the I/O pin to be used for triac control.
+
+PARAMETER4:    Value used to set the I/O pin to it's initial state.
+
+RETURN VALUE:	None.
+
+SEE ALSO:      triac_PhaseInit, triac_PhaseCntrl, triac_PhaseLock,
+					triac_PhaseUnlock, triac_PhaseEnable, triac_PhaseDisable.
+
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+void triac_PhaseCntrlPin(int triac, int port, int bit,
+	                      int bit_state)
+{
+	static int _phase_firsttime, _phase_cntrlport;
+
+	#GLOBAL_INIT
+   {
+   	_phaseTRIinit = FALSE;
+   	_phaseTRIcntrlpin = 0x00;
+      _phase_firsttime = TRUE;
+   }
+
+   if(triac >= MAX_TRIACS)
+   {
+ 		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+   }
+   if(_phaseTRIinit == FALSE)
+	{
+		// the brdInit function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+	if(_phase_firsttime)
+   {
+    	_phase_cntrlport = port;
+      _phase_firsttime = FALSE;
+   }
+   else
+   {
+   	if(_phase_cntrlport != port)
+      {
+      	// the brdInit function hasn't been executed
+			exception(-ERR_BADPARAMETER);
+			exit(-ERR_BADPARAMETER);
+      }
+   }
+
+   _triac_driver_enable = TRUE;
+   _Triac_Cntrl_Bits |= (0x01 << bit);
+   _Triac_API_ORIG[triac].iobit  = (0x01 << bit);
+   _Triac_API_ORIG[triac].port   = port;
+   _phaseTRIcntrlpin |= (0x01 << triac);
+   _initialize_Triac_Port(port, bit, 1, bit_state);
+}
+
+
+/*** BeginHeader	_combineTimerValues */
+void _combineTimerValues(triac_infor *v);
+#ifndef CLOSEVALUE_RANGE
+#define CLOSEVALUE_RANGE 8
+#endif
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_combineTimerValues		<TRIAC.LIB>
+
+SYNTAX:        void _combineTimerValues(triac_infor *v);
+
+DESCRIPTION:   Combines timer B values which are the same and values that
+					are too close together for ISR execution time. Must call
+               the _SortTriacStruct API function before executing this
+               function. This function is non-reentrant.
+
+               This function is intended for internal API use only.
+
+PARAMETER1:    Pointer to structure which contains the timer B values.
+RETURN VALUE: 	None.
+
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+void _combineTimerValues(triac_infor *v)
+{
+   auto int i,j,y;
+
+ 	for(y=0,i=0, j=1; y < MAX_TRIACS && v[y].timer != -1; y++)
+   {
+ 		if(( v[i].timer >= v[j].timer - CLOSEVALUE_RANGE) &&
+          (v[i].timer <= v[j].timer + CLOSEVALUE_RANGE))
+      {
+         v[j].iobit |= v[i].iobit;
+      	v[j].timer  = (int)((((float)v[i].timer +
+                       (float)v[j].timer)/ 2.0) + .5);
+      	memcpy((char*) &v[i].onOff, (char*) &v[j].onOff,
+                 sizeof(triac_infor)* (MAX_TRIACS-(i+1)));
+      }
+      else if(v[j].timer != -1)
+      {
+        		i++;
+            j++;
+      }
+   }
+   while(++i <= MAX_TRIACS)
+   	v[i].timer = -1;
+}
+
+
+/*** BeginHeader	_sortTriacStruct */
+void _sortTriacStruct(triac_infor *v);
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_sortTriacStruct			<TRIAC.LIB>
+
+SYNTAX:        void _sortTriacStruct(triac_infor *v);
+
+DESCRIPTION:   Sorts timer B values in an ascending order. This function is
+					non-reentrant.
+
+               This function is intended for internal API use only.
+
+PARAMETER1:    Pointer to structure which contains the timer B values.
+RETURN VALUE: 	None.
+
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+void _sortTriacStruct(triac_infor *v)
+{
+ 	auto int gap, i, j;
+   auto triac_infor temp;
+
+   for(gap=MAX_TRIACS/2; gap > 0; gap /=2)
+   {
+    	for(i = gap; i<MAX_TRIACS; i++)
+    	{
+      	for(j=i-gap; j>=0 && v[j].timer > v[j+gap].timer &&
+             v[j+gap].timer != -1 ; j-=gap)
+      	{
+            memcpy((char*) &temp, (char*) &v[j].onOff,
+                    sizeof(triac_infor));
+            memcpy((char*) &v[j].onOff, (char*) &v[j+gap].onOff,
+                    sizeof(triac_infor));
+            memcpy((char*) &v[j+gap].onOff, (char*) &temp,
+                    sizeof(triac_infor));
+      	}
+		}
+   }
+}
+
+
+/*** BeginHeader	triac_PhaseLock */
+void triac_PhaseLock(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+triac_PhaseLock			<TRIAC.LIB>
+
+SYNTAX:        void triac_PhaseLock(void);
+
+DESCRIPTION:   Locks the triac update buffer for synchronous operation
+					of multiple triacs. The sequence is as follows:
+
+               1. Lock buffer via triac_PhaseLock (Low-level driver will
+               	use the last triac state until buffer is unlocked via
+                  the triac_PhaseUnlock function).
+               2. Update triacs via the triac_PhaseCntrl function.
+               3. Unlock buffer via triac_PhaseUnlock, at this time the
+                  new triac setting will take effect.
+
+               This function is non-reentrant.
+
+PARAMETER1:    None.
+
+RETURN VALUE: 	None.
+
+SEE ALSO:      triac_PhaseInit, triac_PhaseCntrlPin, 	triac_PhaseCntrl,
+					triac_PhaseUnlock, triac_PhaseEnable, triac_PhaseDisable.
+
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+void triac_PhaseLock(void)
+{
+ 	_triac_lock = TRUE;
+}
+
+
+/*** BeginHeader	triac_PhaseUnlock */
+void triac_PhaseUnlock(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+triac_PhaseUnlock			<TRIAC.LIB>
+
+SYNTAX:        void triac_PhaseUnlock(void);
+
+DESCRIPTION:   Unlocks the triac update buffer for synchronous operation
+					of multiple triacs. The sequence is as follows:
+
+               1. Lock buffer via triac_PhaseLock (Low-level driver will
+               	use the last triac state until buffer is unlocked via
+                  the triac_PhaseUnlock function).
+               2. Update triacs via the triac_PhaseCntrl function.
+               3. Unlock buffer via triac_PhaseUnlock, at this time the
+                  new triac setting will take effect.
+
+               This function is non-reentrant.
+
+PARAMETER1:    None.
+
+RETURN VALUE: 	None.
+
+SEE ALSO:      triac_PhaseInit, triac_PhaseCntrlPin, 	triac_PhaseCntrl,
+					triac_PhaseLock, triac_PhaseEnable, triac_PhaseDisable.
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+void triac_PhaseUnlock(void)
+{
+   auto int i;
+   auto int onOff;
+
+   onOff = 0x00;
+   for(i=0; i < MAX_TRIACS; i++)
+   {
+   	if(_Triac_API_ORIG[i].onOff)
+      {
+       	onOff = 0xFF;
+         break;
+      }
+   }
+ 	if(_triac_array)
+   {
+      memcpy(_Triac_Array0_CNTRL, _Triac_API_CNTRL, sizeof(_Triac_API_CNTRL));
+     	if(_Triac_Array0_CNTRL[0].timer != -1)
+      {
+      	#asm
+   		push 	ip
+			ipset	TRIAC_PHASE_INT_LEVEL
+         #endasm
+         _triac_array = 0;
+         _phaseTriAutoCal = TRIAC_FALSE;
+         _Triac_Initial0_ON = _Triac_Initial_ON;
+         #asm
+         pop	ip
+			#endasm
+
+      }
+      else
+      {
+         #asm
+   		push 	ip
+			ipset	TRIAC_PHASE_INT_LEVEL
+         #endasm
+         _triac_array = 0;
+         _Triac_Initial0_ON = _Triac_Initial_ON;
+         _phaseTriAutoCal = TRIAC_TRUE;
+         #asm
+         pop	ip
+			#endasm
+     	}
+   }
+   else
+   {
+      memcpy(_Triac_Array1_CNTRL, _Triac_API_CNTRL, sizeof(_Triac_API_CNTRL));
+      if(_Triac_Array1_CNTRL[0].timer != -1)
+      {
+      	#asm
+   		push 	ip
+			ipset	TRIAC_PHASE_INT_LEVEL
+         #endasm
+         _triac_array = 1;
+         _phaseTriAutoCal = TRIAC_FALSE;
+         _Triac_Initial1_ON = _Triac_Initial_ON;
+         #asm
+         pop	ip
+			#endasm
+      }
+      else
+      {
+      	#asm
+   		push 	ip
+			ipset	TRIAC_PHASE_INT_LEVEL
+         #endasm
+         _triac_array = 1;
+      	_Triac_Initial1_ON = _Triac_Initial_ON;
+      	_phaseTriAutoCal = TRIAC_TRUE;
+         #asm
+         pop	ip
+			#endasm
+   	}
+   }
+   _triac_lock = FALSE;
+}
+
+
+/*** BeginHeader	triac_PhaseDisable */
+int triac_PhaseDisable(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+triac_PhaseDisable			<TRIAC.LIB>
+
+SYNTAX:        int triac_PhaseDisable(void);
+
+DESCRIPTION:   Disables the triac control interrupt to allow your
+					application to do flash writes operations. Function
+               triac_PhaseInit must have been previously called
+               before calling this function. This function is non-
+               reentrant.
+
+               Application Requirement:
+               ------------------------
+               1. This function must be called before doing any flash
+               write operation, and then you must call the function
+               triac_PhaseEnable after the flash write operation to
+               restart the triac driver.
+
+               2. This requirement also applies if you have any other
+               operation that disables all interrupts.
+
+PARAMETER1:    None.
+
+RETURN VALUE: 	0 = Triac driver disable is in progress.
+					1 = Triac driver disabled.
+
+SEE ALSO:      triac_PhaseInit, triac_PhaseCntrlPin, 	triac_PhaseCntrl,
+					triac_PhaseLock, triac_PhaseUnLock, triac_PhaseEnable.
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+int triac_PhaseDisable(void)
+{
+	static int state;
+   static int status;
+	static unsigned long shutdown_period;
+
+	auto int i;
+
+   #GLOBAL_INIT
+   {
+   	status = 0;
+   	state = 0;
+   }
+
+   switch(state)
+   {
+   	case 0:
+   		for(i=0; i<MAX_TRIACS; i++)
+   		{
+   			triac_PhaseCntrl(i, 0, 0, 0);
+   		}
+         _triac_driver_enable = FALSE;
+      	state++;
+         status = 0;
+      	break;
+      case 1:
+			state++;
+			shutdown_period = MS_TIMER + 25;
+			break;
+      case 2:
+      	if((long) (MS_TIMER-shutdown_period) >= 0 )
+			{
+         	_zeroXing_interrupt = FALSE;
+				shutdown_period = MS_TIMER + 25;
+           	state++;
+         }
+			break;
+		case 3:
+      	if((long) (MS_TIMER-shutdown_period) >= 0 )
+			{
+         	WrPortI(_zerocross_reg, _zerocross_addr, (*_zerocross_addr & ~0xF0));
+            TRIAC_GATE_OFF(_Triac_Cntrl_Bits);
+            state  = 0;
+            status = 1;
+         }
+			break;
+      default:
+      	state = 0;
+         status = 0;
+         break;
+
+   }
+	return(status);
+}
+
+/*** BeginHeader	triac_PhaseEnable */
+int triac_PhaseEnable(void);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+triac_PhaseEnable			<TRIAC.LIB>
+
+SYNTAX:        int triac_PhaseEnable(void);
+
+DESCRIPTION:   Re-enables the triac control interrupt after a flash write
+					operation has been completed. Functions triac_PhaseInit and
+               triac_PhaseDisable must have been previously called before
+               calling this function. This function is non-reentrant.
+
+PARAMETER1:    None.
+
+RETURN VALUE: 	0 = Triac driver not ready.
+					1 = Triac driver ready.
+
+SEE ALSO:      triac_PhaseInit, triac_PhaseCntrlPin, 	triac_PhaseCntrl,
+					triac_PhaseLock, triac_PhaseUnLock, triac_PhaseDisable.
+
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+int triac_PhaseEnable(void)
+{
+	static int state;
+   static int status;
+	static unsigned long autocal_period;
+   static int numcycles;
+
+   auto float perclk;
+   auto int timerA1;
+
+   #GLOBAL_INIT
+   {
+   	status = 0;
+   	state = 0;
+   }
+
+   switch(state)
+   {
+   	case 0:
+      	// Calculate timer A1 divisor to set timerB for a half
+   		// cycle of the given freq.
+   		perclk = 19200.0*32.0*freq_divider/2.0;
+
+   		// Using 70 Hz for the calculation as the calibration
+   		// sequence will set the actual operating range, and
+   		// this will assure timerB timing span will be within
+   		// one half cycle of the A/C waveform.
+   		timerA1 = (int) (((1.0/(TRIAC_CAL_FREQ*2))/1024.0) * perclk);
+   		if(timerA1 > 255)
+     			timerA1 = 255;
+   		_triac_timerB_low  = timerA1;
+   		WrPortI(TAT1R, &TAT1RShadow, timerA1);
+   		WrPortI(TBCR, &TBCRShadow, (0x04|TRIACINTLEVEL));
+
+         // Re-enabling zero-crossing interrupt
+         _zeroXing_interrupt = TRUE;
+			WrPortI(_zerocross_reg, _zerocross_addr, _zerocross_data);
+      	_triac_recal_cycle = TRIAC_LOW_FREQ_CAL;
+   		_triacCalCounter = _triac_recal_cycle;
+   		_phaseTriAutoCal = TRIAC_TRUE;
+  			_zeroXing_interrupt = TRUE;
+         status = 0;
+         state++;
+   		break;
+		case 1:
+			state++;
+			autocal_period = MS_TIMER + TRIAC_START_DELAY;
+         numcycles = 5;
+			break;
+		case 2:
+			if((long) (MS_TIMER-autocal_period) >= 0 )
+			{
+         	if(--numcycles <= 0)
+            {
+            	_triac_driver_enable = TRUE;
+            	state  = 0;
+               status = 1;
+            }
+            else
+            {
+            	autocal_period = MS_TIMER + TRIAC_START_DELAY;
+            }
+			}
+			break;
+
+      default:
+      	state = 0;
+         status = 0;
+         break;
+
+   }
+	return(status);
+}
+
+
+/*** BeginHeader	triac_PhaseCntrl */
+void triac_PhaseCntrl(int triac, int onOff, int phaseAngle,
+							 int pwm_cntrl);
+
+// Macro to define half of a sinewave cycle. Not to be changed
+// by the application program.
+#ifndef HALF_CYCLE_CNT
+#define HALF_CYCLE_CNT  512.0
+#endif
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+triac_PhaseCntrl			<TRIAC.LIB>
+
+SYNTAX:        void triac_PhaseCntrl(int triac, int onOff, int phaseAngle
+												 int pwm_cntrl);
+
+DESCRIPTION:   Sets the sine wave phase-angle of when to	fire the triac.
+					This function is non-reentrant.
+
+					Triac phase-angle control provides you with the ability
+               to fire a triac at a given phase angle of a positive and
+               negative 50/60 Hz A/C sine wave, thus providing you with
+               the desired triac control required by your application.
+
+               Note:
+               -----
+               A runtime error will occur if the triac_PhaseInit or
+               triac_PhaseCntrlPin functions have not executed.
+
+PARAMETER1: 	Triac selection, 0 to MAX_TRIACS-1.
+
+PARAMETER2:    Triac enable/disable.
+					0 = Disabled Triac.
+					1 = Enable Triac.
+
+PARAMETER3:    Sine wave phase-angle of when to fire the triac.
+					Valid range = 0 - 179 degrees
+
+PARAMETER4:    Triac gate signal pwm power reduction option.
+					0 = Disable PWM for gate signal.
+               1 = Enable PWM for gate signal.
+
+RETURN VALUE:  None.
+
+SEE ALSO:      triac_PhaseInit, triac_PhaseCntrlPin, 	triac_PhaseLock,
+					triac_PhaseUnLock, triac_PhaseEnable, triac_PhaseDisable.
+END DESCRIPTION **********************************************************/
+
+_triac_nodebug
+void triac_PhaseCntrl(int triac, int onOff, int phaseAngle, int pwm_cntrl)
+{
+   auto float match_b1;
+   auto int i, j;
+
+   #GLOBAL_INIT
+   {
+   	_triac_lock = 0;
+   	_phaseTRIinit = FALSE;
+   	_phaseTRIcntrlpin = 0x00;
+   	_Triac_Initial_ON = 0;
+      _triac_array = 0;
+      _triac_driver_enable = FALSE;
+      _triac_pwm_initialized = FALSE;
+   }
+   if((triac >= MAX_TRIACS) || !_phaseTRIinit)
+   {
+ 		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+   }
+
+   if(!(_phaseTRIcntrlpin & (0x01 << triac)))
+	{
+		// the brdInit function hasn't been executed
+		exception(-ERR_BADPARAMETER);
+		exit(-ERR_BADPARAMETER);
+	}
+
+   if(!_triac_driver_enable)
+   	return;
+
+   if(phaseAngle > 90)
+	{
+      if(phaseAngle > 176)
+         phaseAngle = 176;
+   	match_b1 = HALF_CYCLE_CNT + (HALF_CYCLE_CNT *
+                 (1.00 - sin((float)phaseAngle * 3.14159/180.0)));
+   }
+   else
+   {
+       if(phaseAngle < 0)
+		{
+   		phaseAngle = 0;
+		}
+   	// Provide time for the zero-crossing interrupt to execute
+   	// by creating a deadband from phase angles 1 - 2.
+   	switch(phaseAngle)
+   	{
+   		case 1:
+      		phaseAngle = 0;
+         	break;
+      	case 2:
+      		phaseAngle = 3;
+            break;
+   	}
+   	match_b1 = HALF_CYCLE_CNT * sin((float)phaseAngle *
+                 3.14159/180.0);
+   }
+
+   if(onOff && phaseAngle == _Triac_API_ORIG[triac].phase)
+   	return;
+
+   if(onOff == 0)
+   {
+   	phaseAngle = -1;
+   }
+
+   // Set PWM to pwm_cntrl setting
+   if(_triac_pwm_initialized)
+  	{
+    	if(pwm_cntrl)
+      	pwm_set(_triac_pwm_channel, _triac_pwm_dutycycle, _triac_pwm_options);
+    	else
+    		pwm_set(_triac_pwm_channel, _triac_pwm_level, _triac_pwm_options);
+   }
+
+   // Calculate Timer Value
+   _Triac_API_ORIG[triac].timer = (int)match_b1;
+   _Triac_API_ORIG[triac].phase = phaseAngle;
+   _Triac_API_ORIG[triac].onOff = onOff;
+
+   for(i=0, j=0; i<MAX_TRIACS; i++)
+   {
+   	if(_Triac_API_ORIG[i].onOff && (_Triac_API_ORIG[i].phase != 0))
+      {
+      	memcpy((char*)&_Triac_API_CNTRL[j++], &_Triac_API_ORIG[i],
+         	     sizeof(triac_infor));
+   	}
+   }
+   memset((char*)&_Triac_API_CNTRL[j], 0xFF, sizeof(triac_infor));
+   if(MAX_TRIACS>1)
+   {
+   	_sortTriacStruct(_Triac_API_CNTRL);
+      _combineTimerValues(_Triac_API_CNTRL);
+      for(i = 0; i < MAX_TRIACS; i++)
+      {
+         if((_Triac_API_ORIG[i].phase == 0) && _Triac_API_ORIG[i].onOff)
+         {
+      		_Triac_Initial_ON |= _Triac_API_ORIG[i].iobit;
+         }
+         else if(onOff)
+         {
+         	_Triac_Initial_ON &= ~_Triac_API_ORIG[i].iobit;
+      	}
+         else
+         {
+         	_Triac_Initial_ON &= ~_Triac_API_ORIG[i].iobit;
+         }
+      }
+   }
+   else
+   {
+   	if((phaseAngle == 0) && onOff)
+      {
+        	_Triac_API_CNTRL[0].timer = -1;
+   		_Triac_Initial_ON |= _Triac_API_ORIG[0].iobit;
+      }
+      else if(onOff)
+      {
+      	_Triac_API_CNTRL[0].timer = (int)match_b1;
+         _Triac_Initial_ON &= ~_Triac_API_ORIG[0].iobit;
+   	}
+      else
+      {
+      	_Triac_API_CNTRL[0].timer = -1;
+   		_Triac_Initial_ON = 0x00;
+      }
+   }
+
+   if(_triac_array && !_triac_lock)
+   {
+      memcpy(_Triac_Array0_CNTRL, _Triac_API_CNTRL, sizeof(_Triac_API_CNTRL));
+     	if(_Triac_Array0_CNTRL[0].timer != -1)
+      {
+      	#asm
+   		push 	ip
+			ipset	TRIAC_PHASE_INT_LEVEL
+         #endasm
+         _triac_array = 0;
+         _phaseTriAutoCal = TRIAC_FALSE;
+         _Triac_Initial0_ON = _Triac_Initial_ON;
+         #asm
+         pop	ip
+			#endasm
+      }
+    	else
+      {
+         #asm
+   		push 	ip
+			ipset	TRIAC_PHASE_INT_LEVEL
+         #endasm
+         _triac_array = 0;
+         _Triac_Initial0_ON = _Triac_Initial_ON;
+         _phaseTriAutoCal = TRIAC_TRUE;
+         #asm
+         pop	ip
+			#endasm
+
+
+   	}
+   }
+   else if(!_triac_lock)
+   {
+      memcpy(_Triac_Array1_CNTRL, _Triac_API_CNTRL, sizeof(_Triac_API_CNTRL));
+      if(_Triac_Array1_CNTRL[0].timer != -1)
+      {
+      	#asm
+   		push 	ip
+			ipset	TRIAC_PHASE_INT_LEVEL
+         #endasm
+         _triac_array = 1;
+         _phaseTriAutoCal = TRIAC_FALSE;
+         _Triac_Initial1_ON = _Triac_Initial_ON;
+         #asm
+         pop	ip
+			#endasm
+      }
+      else
+      {
+      	#asm
+   		push 	ip
+			ipset	TRIAC_PHASE_INT_LEVEL
+         #endasm
+         _triac_array = 1;
+      	_Triac_Initial1_ON = _Triac_Initial_ON;
+      	_phaseTriAutoCal = TRIAC_TRUE;
+         #asm
+         pop	ip
+			#endasm
+      }
+   }
+}
+
+
+//-------------------------------------------------------------------------
+//	This section contains the ISR routines for triac phase and time-
+// proportional control. Only one of the ISR routines can be enabled
+// at any given time.
+//
+// Information:
+// ------------
+// - Triac phase control has two ISR routines, one for zero-crossing
+//   and one for handling Timer B.
+// - Time-Proportional control only requires  an ISR routine for zero-
+//   crossing.
+//-------------------------------------------------------------------------
+
+/*** BeginHeader	_triac_timerb_isr */
+root interrupt void _triac_timerb_isr();
+/*** EndHeader */
+
+
+#asm root nodebug
+_triac_timerb_isr::
+	;---------------------------------------------------------
+   ; Save registers used by ISR
+   ;---------------------------------------------------------
+	push	af
+   push	bc
+   push	de
+   push	hl
+   push	ix
+
+   ;---------------------------------------------------------
+   ; Clear Timer B interrupt
+   ;---------------------------------------------------------
+;	ioi	ld	a,(TBCSR)		; clear the interrupt
+	IOREAD_A(TBCSR)
+   and	a,0x06
+   cp		a,0x04
+   jp		z,.timerB_triac_off
+
+   ;---------------------------------------------------------
+   ; Check if zero-crossing auto calibration sequence is
+   ; enable, if so calibrate with triacs off. If enabled
+   ; the interrupt should be occurring at the end of the
+   ; current A/C half cycle to determine the cycle edge.
+   ;---------------------------------------------------------
+   ld		a,(_last_timerB_INT)
+   cp		a,0x00
+   jr		z,.timerB_if_0
+
+   ld		a,0x00
+   ld		(_phaseTriSync),a
+   jr		.timerB_if2_end
+
+   ;---------------------------------------------------------
+   ; Check for valid triac ON control..due to timer B always
+   ; lagging behind one cycle.
+   ;---------------------------------------------------------
+.timerB_if_0:
+  	ld		ix,_Triac_CNTRL
+  	ld		de,(_triac_index1)
+ 	ld		bc,(_phaseTriSize)
+   mul
+   add   ix,bc
+   inc	de
+   ld    (_triac_index1),de
+   ld		hl,(ix+triac_infor+iobit)
+   call 	TRIAC_GATE_ON
+
+   ;---------------------------------------------------------
+   ; Check if there's another value to be loaded for triac
+   ; control, if so get and load next timer B match value.
+   ;---------------------------------------------------------
+.timerB_if2:
+   ld		ix,_Triac_CNTRL
+   ld		de,(_triac_index2)
+   ld		bc,(_phaseTriSize)
+   mul
+   add   ix,bc
+
+   inc	de
+   ld    (_triac_index2),de
+
+   ld		hl,(ix+triac_infor+timer)
+   ld    de,0xFFFF
+   or    a
+   sbc   hl,de
+   jr    z,.timerB_if2_else
+   ld		hl,(ix+triac_infor+timer)
+   ld		c,l
+   rr		hl
+   rr		hl
+   ld		a,l
+;	ioi	ld	(TBM1R), a
+	IOWRITE_A(TBM1R)
+   ld		a,c
+;	ioi	ld	(TBL1R), a
+	IOWRITE_A(TBL1R)
+   jr    .timerB_if2_end
+
+   ;---------------------------------------------------------
+   ; Load timer B one more time to keep it synchronized, this
+   ; will cause one more interrupt to occur at the end of the
+   ; current A/C half-cycle period, which will clear a control
+   ; flag to indicate timerB timing span is correct.
+   ;---------------------------------------------------------
+.timerB_if2_else:
+	ld		hl,(_triac_timerB)
+   ld		de,1023
+   add	hl,de
+   ld		a,h
+   rrca
+   rrca
+;   ioi	ld (TBM1R),a
+	IOWRITE_A(TBM1R)
+   ld		a,l
+;   ioi	ld (TBL1R),a
+	IOWRITE_A(TBL1R)
+  	ld		a,TRIAC_TRUE
+ 	ld		(_last_timerB_INT),a
+	jr    .timerB_if2_end
+
+.timerB_triac_off:
+   ld		hl,(_Triac_Cntrl_Bits)
+   call	TRIAC_GATE_OFF
+   ;---------------------------------------------------------
+   ; Restore registers used by ISR.
+	;---------------------------------------------------------
+.timerB_if2_end:
+	pop	ix
+   pop	hl
+   pop	de
+   pop	bc
+   pop	af
+
+	ipres							; restore interrupts
+   ret
+#endasm
+
+
+/*** BeginHeader	_triac_phasecontrol */
+root void _triac_phasecontrol(void);
+
+#ifndef TRIAC_OFF_TIMER_VALUE
+#define TRIAC_OFF_TIMER_VALUE 1000
+#endif
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_triac_phasecontrol	<TRIAC.LIB>
+
+SYNTAX:        void _triac_phasecontrol(void);
+
+DESCRIPTION:   Triac phase-angle control ISR function, which provides
+					the control to fire a triac at a given phase angle of
+               a positive and negative 50/60 Hz A/C sine wave.
+
+               This function is intended for internal use only!
+
+END DESCRIPTION **********************************************************/
+
+#asm root nodebug
+_triac_phasecontrol::
+   ;---------------------------------------------------------
+   ; Clear any pending timer B interrupt. By design if
+   ; there's a pending interrupt it should be within
+   ; 2-3 clock cycles of the current state of timer B,
+   ; so changing the CLK from Timer A1 to PCLK/2 the
+   ; pending interrupt will be cleared.
+   ;
+   ; Note:
+   ; -----
+   ; This workaround is required because timer B cannot
+   ; be directly cleared any previous value loaded.
+	;---------------------------------------------------------
+   ld		hl,(_Triac_Cntrl_Bits)
+   call	TRIAC_GATE_OFF
+
+   ld		a,(_phaseTriSync)
+   cp		a,0x00
+   jr		z,.read_timerB
+
+   ld		a,0x00
+;   ioi	ld (TBCR),a
+	IOWRITE_A(TBCR)
+   ld		a,(TBCRShadow)
+
+   ld		b,12
+.clear_timer_delay:
+   djnz	.clear_timer_delay
+;   ioi	ld	(TBCR),a
+	IOWRITE_A(TBCR)
+;   ioi	ld a,(TBCSR)
+	IOREAD_A(TBCSR)
+
+   ;---------------------------------------------------------
+   ; Read timer B current 10 bit value
+	;---------------------------------------------------------
+.read_timerB:
+;   ioi	ld	a,(TBCLR)
+	IOREAD_A(TBCLR)
+   ld		(_triac_timerB_lsb),a
+;   ioi	ld	a,(TBCMR)
+	IOREAD_A(TBCMR)
+   ld		(_triac_timerB_msb),a
+   ;---------------------------------------------------------
+   ; Required sequence for checking if a carry occurred
+   ; between reading the LSB and MSB registers. Sequence
+   ; is as follows:
+   ; - Read LSB
+   ; - Read MSB
+   ; - Read LSB
+   ;
+   ; Compare the new LSB to previous LSB, and if D7 changed
+   ; from an one to a zero, then read both registers again
+   ; to handle the carry condition.
+   ;---------------------------------------------------------
+   ld		a,(_triac_timerB_lsb)
+   and	a,0x80
+	jr		z,.load_TimerB_value
+;   ioi	ld	a,(TBCLR)
+	IOREAD_A(TBCLR)
+   and	a,0x80
+   jr		nz,.load_TimerB_value
+
+;   ioi	ld	a,(TBCLR)
+	IOREAD_A(TBCLR)
+   ld		(_triac_timerB_lsb),a
+;   ioi	ld	a,(TBCMR)
+	IOREAD_A(TBCMR)
+   ld		(_triac_timerB_msb),a
+
+   ;---------------------------------------------------------
+   ; Combine timer B LSB and MSB values to create an
+   ; integer value for timer B math calculations.
+   ;---------------------------------------------------------
+.load_TimerB_value:
+   ld		a,(_triac_timerB_lsb)
+   ld		l,a
+   ld    a,(_triac_timerB_msb)
+   rlca
+   rlca
+   ld		h,a
+   ld		(_triac_timerB),hl
+
+
+   ld		hl,(_triac_timerB)
+   ld		de,TRIAC_OFF_TIMER_VALUE
+   add	hl,de
+   ld		a,h
+   rrca
+   rrca
+;   ioi	ld (TBM2R),a
+	IOWRITE_A(TBM2R)
+   ld		a,l
+;   ioi	ld (TBL2R),a
+	IOWRITE_A(TBL2R)
+
+
+  ;---------------------------------------------------------
+   ; Check if the calibration SW counter has expired,
+   ; if so enable the calibration procedure.
+   ;---------------------------------------------------------
+  	ld		de,(_triacCalCounter)
+	dec	de
+   ld		(_triacCalCounter),de
+   ld    hl,0x0000
+   or    a
+   sbc   hl,de
+   jp    nz,.autocal
+   ld		hl,(_triac_recal_cycle)
+   ld		(_triacCalCounter),hl
+   ld		a,TRIAC_TRUE
+   ld		(_phaseTriAutoLow),a
+
+   ;---------------------------------------------------------
+   ; Do calibration of the low period of the signal
+	;---------------------------------------------------------
+.autocal:
+   ld		a,(_phaseTriSync)
+   cp		a,0x00
+   jr		z,.autocal_low_elseif
+
+   ld		hl,_triac_timerB_low
+   dec  	(hl)
+   ld		a,TRIAC_TRUE
+   ld		(_phaseTriErrorLow),a
+   jr    .autocal_low_end
+
+.autocal_low_elseif:
+   ld		a,(_phaseTriErrorLow)
+   cp		a,0x00
+   jr		z,.autocal_low_else
+
+   ld		hl,_triac_timerB_low
+   dec  	(hl)
+   dec	(hl)
+   ld		a,0x00
+   ld		(_phaseTriErrorLow),a
+   ld		(_phaseTriAutoLow),a
+   jr    .autocal_low_end
+
+.autocal_low_else:
+   ld		a,(_phaseTriAutoLow)
+   cp		a,0x00
+   jr		z,.autocal_low_end
+
+   ; Check for timer A devisor limit
+   ld		hl,_triac_timerB_low
+   ld		a,(hl)
+   cp    a,TRIAC_TRUE
+   jr    z,.autocal_low_end
+   inc 	(hl)
+
+.autocal_low_end:
+   ld		a,(_triac_timerB_low)
+;   ioi	ld (TAT1R),a
+	IOWRITE_A(TAT1R)
+
+.check_autocal_load:
+   ld		a,(_phaseTriAutoCal)
+   cp		a,0x00
+   jr		nz,.phaseautocal
+
+   ;---------------------------------------------------------
+   ; Determine which API buffer to use for loading the ISR
+   ; control buffer _Triac_CNTRL.
+	;---------------------------------------------------------
+   ld		a,(_triac_array)
+   cp		a,0x00
+   jp		z,.array0_start
+   jp		.array1_start
+
+.phaseautocal:
+   ld		a,(_triac_array)
+   cp		a,0x00
+   jr		nz,.phaseautoArray1
+
+.phaseautoArray0:
+   ld		hl,(_Triac_Initial0_ON)
+   call	TRIAC_GATE_ON
+   jr		.phaseautocal_continue
+
+.phaseautoArray1:
+   ld		hl,(_Triac_Initial1_ON)
+   call	TRIAC_GATE_ON
+
+.phaseautocal_continue:
+	ld		hl,(_triac_timerB)
+   ld		de,1023
+   add	hl,de
+   ld		a,h
+   rrca
+   rrca
+;   ioi	ld (TBM1R),a
+	IOWRITE_A(TBM1R)
+   ld		a,l
+;   ioi	ld (TBL1R),a
+	IOWRITE_A(TBL1R)
+  	ld		a,TRIAC_TRUE
+ 	ld		(_last_timerB_INT),a
+	jp	.phase_enable_timerB
+
+   ;---------------------------------------------------------
+   ; Load timer array values from the API _Triac_Array0_CNTRL
+   ; buffer to a buffer under ISR control.
+   ;
+   ; Note:
+   ; -----
+   ; _Triac_Array control flag is used to synchronize accesses
+   ; to the _Triac_Array0_CNTRL and _Triac_Array1_CNTRL buffers,
+   ; basically ISR routine will use the buffer not currently
+   ; being used by the API triac_PhaseCntrl function.
+	;---------------------------------------------------------
+.array0_start:
+   ld		hl,(_Triac_Initial0_ON)
+   call	TRIAC_GATE_ON
+
+   ld		hl,0x0000
+   ld		(_triac_index),hl
+.array0_loop:
+
+   ld		ix,_Triac_Array0_CNTRL
+ 	ld		de,(_triac_index)
+ 	ld		bc,(_phaseTriSize)
+  	mul
+  	add   ix,bc
+  	ld		hl,(ix+triac_infor+timer)
+  	ld    de,0xFFFF
+  	or    a
+  	sbc   hl,de
+  	jp    z,.phase_load_timerB
+
+   ld    hl,(ix+triac_infor+timer)
+   ld		de,(_triac_timerB)
+   add	hl,de
+
+   ld		iy,_Triac_CNTRL
+  	add   iy,bc
+ 	ld		(iy+triac_infor+timer),hl
+
+   ld		hl,(ix+triac_infor+iobit)
+   ld		(iy+triac_infor+iobit),hl
+   ld		hl,(_triac_index)
+   inc	hl
+   ld    (_triac_index),hl
+   jr		.array0_loop
+
+   ;---------------------------------------------------------
+   ; Load timer array values from the API _Triac_Array1_CNTRL
+   ; buffer to a buffer under ISR control.
+   ;
+   ; Note:
+   ; -----
+   ; _Triac_Array control flag is used to synchronize accesses
+   ; to the _Triac_Array0_CNTRL and _Triac_Array1_CNTRL buffers,
+   ; basically ISR routine will use the buffer not currently
+   ; being used by the API function triac_PhaseCntrl.
+	;---------------------------------------------------------
+.array1_start:
+   ld		hl,(_Triac_Initial1_ON)
+   call	TRIAC_GATE_ON
+
+   ld		hl,0x0000
+	ld		(_triac_index),hl
+.array1_loop:
+
+  	ld		ix,_Triac_Array1_CNTRL
+ 	ld		de,(_triac_index)
+   ld		bc,(_phaseTriSize)
+   mul
+   add   ix,bc
+   ld		hl,(ix+triac_infor+timer)
+   ld    de,0xFFFF
+   or    a
+   sbc   hl,de
+   jr    z,.phase_load_timerB
+
+   ld    hl,(ix+triac_infor+timer)
+   ld		de,(_triac_timerB)
+   add	hl,de
+
+   ld		iy,_Triac_CNTRL
+   add   iy,bc
+   ld		(iy+triac_infor+timer),hl
+
+   ld		hl,(ix+triac_infor+iobit)
+   ld		(iy+triac_infor+iobit),hl
+   ld		hl,(_triac_index)
+   inc	hl
+   ld    (_triac_index),hl
+   jr		.array1_loop
+
+   ;---------------------------------------------------------
+   ; Load 1st value into timer B to be used to fire a triac.
+	;---------------------------------------------------------
+.phase_load_timerB:
+   ld		ix,_Triac_CNTRL
+   ld		de,(_triac_index)
+   ld		bc,(_phaseTriSize)
+   mul
+   add   ix,bc
+   ld		hl,0xFFFF
+   ld		(ix+triac_infor+timer),hl
+
+   ld		hl,(_triac_index)
+   bool  hl
+   jr    z,.phase_enable_timerB
+
+   ld		ix,_Triac_CNTRL
+  	ld		hl,(ix+triac_infor+timer)
+   ld		a,h
+   rrca
+   rrca
+;   ioi	ld (TBM1R),a
+	IOWRITE_A(TBM1R)
+   ld		a,l
+;   ioi	ld (TBL1R),a
+	IOWRITE_A(TBL1R)
+
+  	ld		hl,0
+   ld		(_triac_index1),hl
+   ld		hl,1
+   ld		(_triac_index2),hl
+   ld		a,0x00
+   ld		(_last_timerB_INT),a
+   ;---------------------------------------------------------
+   ; Clear and enable timer B interrupts
+	;---------------------------------------------------------
+.phase_enable_timerB:
+   ld		a,0xFF
+   ld		(_phaseTriSync),a
+
+	ld		de,TBCSR
+;   ioi	ld a,(de)
+	IOREAD_A(de)
+
+   ld		a,0x07
+	ld 	hl,TBCSRShadow
+   or		a,(hl)
+   ld    (hl),a
+	ioi 	ldd
+;	IO_LDD
+	ret
+#endasm
+
+/*** BeginHeader	_triac_timeproportional */
+root void _triac_timeproportional(void);
+/*** EndHeader */
+
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_triac_timeproportional			<TRIAC.LIB>
+
+SYNTAX:        void _triac_timeproportional(void);
+
+DESCRIPTION:   Time-proportional triac ISR function, provides control of
+					a triac over a fixed period of time with the application
+               setting the ON and OFF times to provide the desired ratio
+               of ON/OFF times for the triac circuit.
+
+               This function is intended for internal use only!
+
+END DESCRIPTION **********************************************************/
+
+#asm root nodebug
+_triac_timeproportional::
+   ;---------------------------------------------------------
+   ; Check for beginning of a negative going A/C cycle, if
+   ; not exit the ISR routine.
+   ;---------------------------------------------------------
+   ld		a,(_current_zeroX_level)
+   cp		a,0x00
+   jp		z,.triac_isr_done
+
+   ;---------------------------------------------------------
+   ; Setup loop for the number of triacs under control.
+   ;---------------------------------------------------------
+   ld		b,MAX_TRIACS
+   ld   	de,0
+   ld		(_triac_index),de
+
+   ;---------------------------------------------------------
+   ; Main state machine loop for triac control, check and
+   ; jump to what state the given triac is set to.
+   ;---------------------------------------------------------
+.triac_loop:
+  	ld		ix,_triac_isr_state
+	ld		de,(_triac_index)
+   add	ix,de
+   ld		a,(ix)
+   cp		a,0x00
+   jp		z,.state0_if
+   cp		a,0x01
+   jp		z,.state1_if
+   cp		a,0x02
+   jp		z,.state2_if
+
+ 	;---------------------------------------------------------
+ 	;	State 0, will determine if the given triac is enabled
+   ;  and if so will start the control sequence.
+   ;---------------------------------------------------------
+	; Check if the triac has an off-period, if so start the
+   ; control sequence.
+.state0_if:
+   ld		ix,_triac_cntrl_flag
+   ld		de,(_triac_index)
+   add	ix,de
+   ld		a,(ix)
+   cp		a,0x00
+   jr		z,.state0_elseif
+   ld		ix,_triac_off_period
+   ld		de,(_triac_index)
+   rl		de
+   add	ix,de
+   ld		hl,(ix)
+   bool	hl
+   jr    z,.state0_elseif
+
+   ; Turn-off Triac.
+   ld		hl,(_triac_index)
+   call  TRIAC_GATE_OFF
+
+   ; Load counter with the saved triac off-period.
+   ld		ix,_triac_counter
+   ld		de,(_triac_index)
+   rl		de
+   add	ix,de
+   ld		iy,_triac_off_period
+   ld		de,(_triac_index)
+   rl		de
+   add	iy,de
+   ld		hl,(iy)
+   ld		(ix),hl
+
+   ; Set state machine to 1 to process triac on-period.
+   ld		ix,_triac_isr_state
+   ld		de,(_triac_index)
+   add	ix,de
+   ld		a,1
+   ld		(ix),a
+   jp		.state_done
+
+   ; If no off-period check if triac has a on-period if so
+   ; start control sequence.
+.state0_elseif:
+   ld		ix,_triac_cntrl_flag
+   ld		de,(_triac_index)
+   add	ix,de
+   ld		a,(ix)
+   cp		a,0x00
+   jr		z,.state0_else
+   ld		ix,_triac_on_period
+   ld		de,(_triac_index)
+   rl		de
+   add	ix,de
+   ld		hl,(ix)
+   bool	hl
+   jr    z,.state0_else
+
+   ; Turned-on Triac
+   ld		hl,(_triac_index)
+   call  TRIAC_GATE_ON
+
+   ; Load counter with the triac saved on-period value.
+   ld		ix,_triac_counter
+   ld		de,(_triac_index)
+   rl		de
+   add	ix,de
+   ld		iy,_triac_on_period
+   ld		de,(_triac_index)
+   rl		de
+   add	iy,de
+   ld		hl,(iy)
+   ld		(ix),hl
+
+   ; Set state machine to 2 to process triac off-period
+   ld		ix,_triac_isr_state
+   ld		de,(_triac_index)
+   add	ix,de
+   ld		a,2
+   ld		(ix),a
+   jp		.state_done
+
+.state0_else:
+   ld		ix,_triac_counter
+   ld		de,(_triac_index)
+   rl		de
+   add	ix,de
+   ld		hl,0
+   ld		(ix+0),hl
+
+   ld		hl,(_triac_index)
+   call	TRIAC_GATE_OFF
+   jp		.state_done
+
+ 	;------------------------------------------------
+   ;	State 1, process triac on-period.
+   ;------------------------------------------------
+.state1_if:
+   ld		ix,_triac_counter
+   ld		de,(_triac_index)
+   rl		de
+   add	ix,de
+   ld		hl,(ix)
+   dec	hl
+   ld    (ix),hl
+   ex    de,hl
+   ld    hl,0x0000
+   or    a
+   sbc   hl,de
+   bool  hl
+   dec   hl
+   bool  hl
+   jr    z,.state1_if2
+
+   ld		ix,_triac_on_period
+   ld		de,(_triac_index)
+   rl		de
+   add	ix,de
+   ld		hl,(ix)
+   bool	hl
+   jr    z,.state1_if2
+
+   ld		ix,_triac_counter
+   ld		de,(_triac_index)
+   rl		de
+   add	ix,de
+
+   ld		iy,_triac_on_period
+   ld		de,(_triac_index)
+   rl		de
+   add	iy,de
+
+   ld		hl,(iy)
+   ld		(ix),hl
+
+	; Turn-on triac
+   ld		hl,(_triac_index)
+   call	TRIAC_GATE_ON
+
+   ; Set state machine to 2 to process triac off-period
+   ld		ix,_triac_isr_state
+   ld		de,(_triac_index)
+   add	ix,de
+   ld		a,2
+   ld		(ix),a
+
+   ; Check if triac has been turned-off
+.state1_if2:
+   ld		ix,_triac_counter
+   ld		de,(_triac_index)
+   rl		de
+   add	ix,de
+   ld		hl,(ix)
+   ld    de,0x8001
+   add   hl,hl
+   ccf
+   rr    hl
+   sbc   hl,de
+   jp    nc,.state_done
+
+   ; Reset state machine, set to state 0 for control
+   ; start sequence.
+   ld		ix,_triac_isr_state
+   ld		de,(_triac_index)
+   add	ix,de
+   ld		a,0
+   ld		(ix),a
+   jp		.state_done
+
+   ;------------------------------------------------
+   ;	State 2, process triac off-period.
+   ;------------------------------------------------
+.state2_if:
+   ld		ix,_triac_counter
+   ld		de,(_triac_index)
+   rl		de
+   add	ix,de
+   ld		hl,(ix)
+   dec	hl
+   ld    (ix),hl
+   ex    de,hl
+   ld    hl,0x0000
+   or    a
+   sbc   hl,de
+   bool  hl
+   dec   hl
+   bool  hl
+   jr    z,.state2_if2
+
+   ld		ix,_triac_off_period
+   ld		de,(_triac_index)
+   rl		de
+   add	ix,de
+   ld		hl,(ix)
+   bool	hl
+   jr    z,.state2_if2
+
+   ; Load counter with triac saved off-period value
+   ld		ix,_triac_counter
+   ld		de,(_triac_index)
+   rl		de
+   add	ix,de
+   ld		iy,_triac_off_period
+   ld		de,(_triac_index)
+   rl		de
+   add	iy,de
+   ld		hl,(iy)
+   ld		(ix),hl
+
+   ; Turn-off triac
+   ld		hl,(_triac_index)
+   call 	TRIAC_GATE_OFF
+
+   ; Set state machine to 1 to process triac off-period.
+   ld		ix,_triac_isr_state	;_triac_isr_state[triac] = 1;
+   ld		de,(_triac_index)
+   add	ix,de
+   ld		a,1
+   ld		(ix),a
+
+   ; Check if triac has been turned-off
+.state2_if2:
+   ld		ix,_triac_counter
+   ld		de,(_triac_index)
+   rl		de
+   add	ix,de
+   ld		hl,(ix)
+   ld    de,0x8001
+   add   hl,hl
+   ccf
+   rr    hl
+   sbc   hl,de
+   jr    nc,.state_done
+
+  	; Reset state machine, set to state 0 for control
+   ; start sequence.
+   ld		ix,_triac_isr_state	;_triac_isr_state[triac] = 0;
+   ld		de,(_triac_index)
+   add	ix,de
+   ld		a,0
+   ld		(ix),a
+
+   ;---------------------------------------------------------
+   ; Check if anymore triacs are to be processed.
+ 	;---------------------------------------------------------
+.state_done:
+   ld		de,(_triac_index)
+   inc	de
+   ld		(_triac_index),de
+   dec	b
+   ld		a,b
+   cp		a,0x00
+   jp		nz,.triac_loop
+
+.triac_isr_done:
+	ret
+#endasm
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */
+

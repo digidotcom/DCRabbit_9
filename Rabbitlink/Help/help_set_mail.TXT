@@ -1,0 +1,7 @@
+
+SET MAIL
+   Usage:  "set mail [FROM|SERVER] <value>"
+   Configure options to the mail client.  The following 
+   options are avaliable:
+   from    - Set the from address.
+   server  - Set the SMTP server to use.

@@ -1,0 +1,331 @@
+/* START LIBRARY DESCRIPTION *********************************************
+RN_CFG_BL26.LIB
+Copyright (c) 2003 Z-World Inc
+
+DESCRIPTION:
+	This library contains user configurable definitions for RabbitNet
+   Devices and BL2600 series controllers.
+
+SUPPORT LIBS:
+	This configuration library may be used as a basis for other controllers
+   using RabbitNet Devices.  Libraries should be #used in the following
+   order:
+
+		#use "bl26xx.lib"     		1. Controller library
+		#use "rn_cfg_bl26.lib"     2. Configuration library
+		#use "rnet.lib"            3. RabbitNet library
+		#use "rnet_dio.lib"        4. Example RabbitNet device lib's
+
+REVISION HISTORY:
+	10/27/03	EK 	Initial Creation
+
+END DESCRIPTION **********************************************************/
+
+/*** Beginheader */
+#ifndef __RN_CFG_BL26_LIB
+#define __RN_CFG_BL26_LIB
+/*** Endheader */
+
+/********************************************************************
+ ********************************************************************
+ Do not make any changes to the following section. Scroll down to
+ the Configuration Section to match your settings
+********************************************************************
+********************************************************************/
+
+/*** Beginheader */
+#define REC_OP 			0x40		//starts a receive operation
+#define TRANS_OP 			0x80		//starts a transmit operation
+#define REC_TRANS_OP 	0xC0		//starts a transmit and receive operation
+#define USE_ALT			0x10		//use alternate port for input, serial ports A or B only
+#define DISABLE_REC		0x20		//disable receiver input
+#define INTERNAL_CLOCK 	0x0C		//use internal clock, usually master side
+#define EXTERNAL_CLOCK 	0x08		//use external clock, usually slave side
+
+/*** Endheader */
+
+/********************************************************************
+ ********************************************************************
+	Configuration Section
+	Make changes to the following to match your settings.
+********************************************************************
+********************************************************************/
+
+/*** Beginheader  */
+/// Status byte abort mask
+/// Setting the following bits will only abort transmitting data
+///	after the status byte is returned.  This does not affect
+///   the status byte and still can be interpreted.
+// set any bit combination to abort:
+// bit 7 device busy (hard-coded into driver)
+// bit 4 communication error
+// bit 1 command rejected
+// bit 0	watchdog timeout
+///
+#ifndef RNSTATUSABORT
+#define RNSTATUSABORT 0x80     //hard-coded driver default to abort if device busy
+#endif
+
+#ifndef RN_MAX_DEV
+#define RN_MAX_DEV 10	//max number of devices, not to exceed 72
+#endif
+
+#ifndef RN_MAX_DATA
+#define RN_MAX_DATA 16	//max number of data bytes in any transaction, not to exceed 255
+#endif
+
+#ifndef RN_MAX_PORT
+#define RN_MAX_PORT 2	//max number of serial ports, not to exceed 4
+#define RN_PORTS 0x03	//bit mask for all ports
+#endif
+
+#ifndef RN_SPI_BAUD
+#define RN_SPI_BAUD 115200L //SPI baudrate (115200L gives 1 megabit data tranfer)
+#endif
+
+/*** EndHeader */
+
+/*** Beginheader rn_sp_info */
+void rn_sp_info();
+
+typedef struct
+{
+	char controltx;
+	char controlrx;
+	char controlreg;
+	char statusreg;
+	char datareg;
+	long clockrate;
+} _RNPORTINFO;
+
+extern _RNPORTINFO rnportinfo[RN_MAX_PORT];
+/*** EndHeader */
+
+_RNPORTINFO rnportinfo[RN_MAX_PORT];
+
+/* START FUNCTION DESCRIPTION ********************************************
+rn_sp_info						<RN_CFG_BL26.LIB>
+
+SYNTAX:			void rn_sp_info();
+
+DESCRIPTION:	Provides rn_init() with necessary serial port control
+					information for BL2600 series controllers.
+
+RETURN VALUE:	None
+
+END DESCRIPTION **********************************************************/
+nodebug
+void rn_sp_info()
+{
+	rnportinfo[0].controltx = REC_TRANS_OP|INTERNAL_CLOCK;
+	rnportinfo[0].controlrx = REC_TRANS_OP|INTERNAL_CLOCK;
+	rnportinfo[0].controlreg = SDCR;
+	rnportinfo[0].statusreg = SDSR;
+	rnportinfo[0].datareg = SDDR;
+	rnportinfo[0].clockrate = RN_SPI_BAUD;
+
+	rnportinfo[1].controltx = REC_TRANS_OP|INTERNAL_CLOCK;
+	rnportinfo[1].controlrx = REC_TRANS_OP|INTERNAL_CLOCK;
+	rnportinfo[1].controlreg = SDCR;
+	rnportinfo[1].statusreg = SDSR;
+	rnportinfo[1].datareg = SDDR;
+	rnportinfo[1].clockrate = RN_SPI_BAUD;
+}
+
+/*** Beginheader _rn_sp_fastenable */
+root void _rn_sp_fastenable(int portvalue);
+/*** Endheader  */
+
+/* _START FUNCTION DESCRIPTION ********************************************
+_rn_sp_fastenable				<RN_CFG_BL26.LIB>
+
+SYNTAX: 			root void _rn_sp_fastenable(int portvalue);
+
+PARAMETER1:    Value to send send to the I/O port pin.
+
+
+RETURN VALUE:  None
+END DESCRIPTION **********************************************************/
+#asm root nodebug
+_rn_sp_fastenable::
+	ld 	hl,(sp+2) ; address of reg
+   ld		a,l
+   cp		0
+   jr		nz,.spiport1
+.spiport0:
+	ld		de,SPI_PORT_ADDR
+	ld 	hl,__SPIShadow
+ 	ipset	1
+	res 	SPI_RN_PORT1,(hl)
+   ioe 	ldd
+	ipres
+	ret
+
+.spiport1:
+	ld		de,SPI_PORT_ADDR
+	ld 	hl,__SPIShadow
+ 	ipset	1
+	res	SPI_RN_PORT2,(hl)
+	ioe 	ldd
+	ipres
+   ret
+#endasm
+
+/*** Beginheader _rn_sp_fastdisable */
+root void _rn_sp_fastdisable(int portvalue);
+/*** Endheader  */
+
+/* _START FUNCTION DESCRIPTION ********************************************
+_rn_sp_fastdisable				<RN_CFG_BL26.LIB>
+
+SYNTAX: 			root void _rn_sp_fastdisable(int portvalue);
+
+PARAMETER1:    Value to send send to the I/O port pin.
+
+
+RETURN VALUE:  None
+END DESCRIPTION **********************************************************/
+#asm root nodebug
+_rn_sp_fastdisable::
+	ld 	hl,(sp+2) ; address of reg
+   ld		a,l
+   cp		0
+   jr		nz,.spiport1
+.spiport0:
+	ld		de,SPI_PORT_ADDR
+	ld 	hl,__SPIShadow
+	ipset	1
+	set 	SPI_RN_PORT1,(hl)
+   ioe 	ldd
+	ipres
+	ret
+
+.spiport1:
+	ld		de,SPI_PORT_ADDR
+	ld 	hl,__SPIShadow
+ 	ipset	1
+	set 	SPI_RN_PORT2,(hl)
+	ioe 	ldd
+	ipres
+   ret
+#endasm
+
+
+
+/*** Beginheader rn_sp_enable */
+void rn_sp_enable(int portnum);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+rn_sp_enable						<RN_CFG_BL26.LIB>
+
+SYNTAX:			void rn_sp_enable(int portnum);
+
+DESCRIPTION:	Macro that enables or asserts BL2600 series controller
+					RabbitNet port	chip select prior to	data transfer.
+
+PARAMETER1:		portnum = 0
+
+RETURN VALUE:	None
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void rn_sp_enable(int portnum)
+{
+	if(portnum == 0)
+		BitWrPortE(SPI_PORT_ADDR, &__SPIShadow, 0, SPI_RN_PORT1);
+	else
+   	BitWrPortE(SPI_PORT_ADDR, &__SPIShadow, 0, SPI_RN_PORT2);
+}
+
+
+/*** Beginheader rn_sp_disable */
+void rn_sp_disable(int portnum);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+rn_sp_disable						<RN_CFG_BL26.LIB>
+
+SYNTAX:			void rn_sp_disable(int portnum);
+
+DESCRIPTION:	Macro that disables or deasserts BL2600 series controller
+					RabbitNet port	chip select invalidating data transfer.
+
+PARAMETER1:		portnum = 0
+
+RETURN VALUE:	None
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+void rn_sp_disable(int portnum)
+{
+	if(portnum == 0)
+		BitWrPortE(SPI_PORT_ADDR, &__SPIShadow, 1, SPI_RN_PORT1);
+	else
+   	BitWrPortE(SPI_PORT_ADDR, &__SPIShadow, 1, SPI_RN_PORT2);
+}
+
+
+/*** Beginheader rn_sp_init */
+void rn_sp_init(int port, long clkrate);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+rn_sp_init						<RN_CFG_BL26.LIB>
+
+SYNTAX:			void rn_sp_init(int portnum, long clkrate);
+
+DESCRIPTION:	Configures and initializes an BL2600 series controller
+					RabbitNet port	as a clocked serial port.
+					This call is used rn_init().
+
+PARAMETER1:		portnum = 0
+PARAMETER2:		baudrate, user defines macro RN_SPI_BAUD. If not defined,
+					will default to 115200L which gives 1 megabit data transfer.
+
+RETURN VALUE:	None
+
+SEE ALSO:		rn_sp_close
+
+END DESCRIPTION **********************************************************/
+
+nodebug
+root void rn_sp_init(int port, long clkrate)
+{
+	// The SPI port is initialized by the BL2600 brdInit function.
+	return;
+}
+
+/*** Beginheader rn_sp_close */
+void rn_sp_close(int port);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+rn_sp_close						<RN_CFG_BL26.LIB>
+
+SYNTAX:			void rn_sp_close(int port);
+
+DESCRIPTION:	Deactivates BL2600 series controller RabbitNet port as
+					a clocked serial port.
+					This call is used rn_init().
+
+PARAMETER1:		portnum = 0
+
+RETURN VALUE:	None
+
+SEE ALSO:		rn_sp_init
+
+END DESCRIPTION **********************************************************/
+nodebug
+void rn_sp_close(int port)
+{
+	// Closing the port not allowed for BL2600 due to the port being
+   // shared by ADC, DAC, and SF1000.
+	return;
+}
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

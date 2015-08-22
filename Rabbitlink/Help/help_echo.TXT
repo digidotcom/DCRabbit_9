@@ -1,0 +1,5 @@
+
+ECHO
+   Usage:  "echo on" or "echo off"
+   Enables/disables local echo of characters typed.
+   

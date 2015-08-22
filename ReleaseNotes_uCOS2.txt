@@ -1,0 +1,83 @@
+******************************************************
+
+	uC/OS2 Release Notes
+
+******************************************************
+******************************************************
+VERSION 1.06
+
+NEW FEATURES
+- Context switching now accounts for the new rabbit 
+  4000 registers.
+
+BUG FIXES
+
+OTHER FUNCTIONAL CHANGES
+
+******************************************************
+******************************************************
+VERSION 1.05
+
+NEW FEATURES
+- Added _UCOS2_VERS #define to UCOS2.lib.
+
+BUG FIXES
+
+OTHER FUNCTIONAL CHANGES
+
+******************************************************
+******************************************************
+VERSION 1.04
+
+NEW FEATURES
+
+BUG FIXES
+
+OTHER FUNCTIONAL CHANGES
+- Added changes for RabbitSys compatibility.
+
+******************************************************
+******************************************************
+VERSION 1.03
+
+NEW FEATURES
+
+BUG FIXES
+
+- Defect 81010 fixed.  In UCOS2.LIB, corrected typo in
+  unused redundant function prototype for OSSchedLock().
+- Defect 81011 fixed.  In UCOS2.LIB, corrected #error
+  message if missing OS_FLAG_QUERY_EN macro definition.
+- Defect 81012 fixed.  In OS_Q.C, corrected mismatched
+  (void **) type's assignment to (void *) type in
+  OSQQuery() function.
+- Defect #80929 fixed. Single stepping over an lcall to 
+  a debuggable pure assembly function with the assembly
+  window open no longer causes stack corruption.
+
+OTHER FUNCTIONAL CHANGES
+
+******************************************************
+******************************************************
+VERSION 1.02
+
+NEW FEATURES
+
+BUG FIXES
+
+-Defect 80969 fixed. Dkucosentry.lib has now been
+ updated with full functionality.
+
+OTHER FUNCTIONAL CHANGES
+
+******************************************************
+******************************************************
+VERSION 1.01
+
+NEW FEATURES
+
+BUG FIXES
+
+OTHER FUNCTIONAL CHANGES
+
+******************************************************

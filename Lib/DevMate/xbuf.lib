@@ -1,0 +1,560 @@
+/* START LIBRARY DESCRIPTION *********************************************
+XBUF.LIB
+	Copyright (c) 2001, ZWorld.
+
+DESCRIPTION:
+   This library contains the buffer management routines for XTC.
+   Circular buffers with 16-bit sequence numbering are used, since
+   this provides a perfect match for the XTC protocol.  XTC is
+   derived from TCP, and the buffer management is similar, except
+   that receiver "gaps" are not supported.
+
+PORTING NOTE:
+   For non-Rabbit target processors with an ANSI C compiler, there are
+   equivalent .c and .h files in the LIB\Target subdirectory.
+
+CONFIGURATION MACROS:
+	The following macro may be defined before inclusion of this library.
+
+	XBUF_DEBUG
+	   Enables Dynamic-C debugging, and enables more runtime testing.
+
+GLOBAL VARIABLES:
+   None defined.  All required data is passed via pointers, hence this
+   library is fully re-entrant.
+
+API FUNCTIONS:
+   The functions in this library are called internally by other libraries
+   and should not be called by end-user application code.  For this
+   reason they are not formally documented.
+
+END DESCRIPTION **********************************************************/
+ 
+/*** BeginHeader */
+#ifndef XBUF_H
+#define XBUF_H
+
+
+#ifdef XBUF_DEBUG
+	#define xbuf_nodebug
+#else
+	#ifndef __DC__
+		#define xbuf_nodebug
+	#else
+		#define xbuf_nodebug nodebug
+	#endif
+#endif
+
+
+/*
+ * Circular buffer.  Both read and write are handled using the circular buffer manager.
+ */
+
+typedef struct _xbuf {
+	faraddr_t	bufp;			// Physical (far) address of buffer
+	uint16	blen;				// Length of buffer
+	uint16	seqbase;			// Sequence number of 1st byte in physical buffer (offset 0)
+	// Note that valid segment offsets range from 0 to (2*blen-1), but max diff between
+	// offsets is blen.  Arithmetic on offsets does not need to modulo by blen, only
+	// actual character storage offsets must be modulo'd to fit in buffer.  Numerical sequence
+	// numbers are always obtained by seqbase+offset.
+	uint16	p0;				// Start of data
+	uint16	p1;				// End of data (+1)
+	uint8		flags;			// Flag bits: (same bits as XTC SYN/FIN flags)
+#define XBUF_F_S		0x80				// Start points to dummy "start" character.
+#define XBUF_F_E		0x20				// End points just past dummy "end" character.
+#define XBUF_F_VAL	0x01				// p0/p1 are valid (else buffer is empty)
+#define XBUF_F_EMPTY	0x00			// Flags must be set to zero if buffer completely empty
+} xbuf;
+
+// Pointer to this struct passed to xbuf_extract_ref().
+typedef struct _xbuf_ref {
+	uint16	len1;				// Length of data in buf1
+	uint16	len2;				// Length of data in buf2
+	faraddr_t	buf1;			// paddr of first chunk of extracted data if len1 > 0
+	faraddr_t	buf2;			// paddr of 2nd chunk if len2 > 0
+} xbuf_ref;
+	
+
+#define XBUF_OFFS2SEQ(xb, offs) ((xb)->seqbase + (uint16)(offs))
+#define XBUF_SEQ2OFFS(xb, seq) ((uint16)(seq) - (xb)->seqbase)
+#define XBUF_IS_EMPTY(xb) (!(xb)->flags)
+
+/*** EndHeader */
+
+
+/*
+ * Insert data into xbuf, starting at sequence seq, for length len.  *flags contains start and/or
+ * end flag indicators.  The given data length does not include dummy bytes for these flags.
+ * Returns the following codes:
+ *  0..+n: OK, inserted n new characters.  n may be less than len.  n may be zero if no new data was added.
+ *  -1: OK, but would leave "gap" so no data was added.
+ * *flags is updated: flags are turned off if retransmission of the corresponding start/end byte.
+ */
+/*** BeginHeader xbuf_insert */
+int xbuf_insert(xbuf * cb, uint8 * flags, uint16 seq, faraddr_t data, uint16 dlen);
+/*** EndHeader */
+xbuf_nodebug
+int xbuf_insert(xbuf * cb, uint8 * flags, uint16 seq, faraddr_t data, uint16 len)
+{
+	auto uint16 maxlen, offs, win, diff;
+	auto uint8 sf, ef;
+
+	offs = XBUF_SEQ2OFFS(cb, seq);
+	sf = *flags & XBUF_F_S;
+	if (sf) {
+		len++;
+		data--;
+	}
+	ef = *flags & XBUF_F_E;
+	if (ef)
+		len++;
+	
+	if (XBUF_IS_EMPTY(cb)) {
+		if ((int16)offs > 0)
+			goto __XTC_ret_m1;
+		diff = -offs;	// diff is retransmitted portion
+		if (diff) {
+			len -= diff;
+			if ((int16)len <= 0)
+				goto __XTC_ret_zero;
+			data += diff;
+			offs = 0;
+			sf = 0;
+			*flags &= ~XBUF_F_S;
+		}
+		cb->flags = XBUF_F_VAL | sf | ef;
+		cb->p0 = 0;
+		cb->p1 = len;
+		goto __XTC_movedata;
+	}
+
+	win = xbuf_window(cb);
+	if ((int16)(offs - cb->p1) > 0)
+		goto __XTC_ret_m1;			// Ignore (would make gap)
+
+	diff = cb->p1 - offs;	// diff will be non-negative
+	if (diff) {
+		len -= diff;
+		if ((int16)len <= 0)
+			goto __XTC_ret_zero;
+		data += diff;
+		offs = cb->p1;
+		*flags &= ~XBUF_F_S;
+		sf = 0;
+	}
+
+	if (len > win) {
+		*flags &= ~XBUF_F_E;
+		ef = 0;
+		len = win;
+		if (!len)
+			goto __XTC_ret_zero;
+	}
+	cb->flags |= ef | sf;
+	cb->p1 = offs + len;
+			
+	// Do the copy (maybe in 2 parts if overlaps end of physical buffer).
+__XTC_movedata:
+	if (sf) {
+		len--;
+		data++;
+		offs++;
+	}
+	if (ef)
+		len--;
+	if (offs > cb->blen)
+		offs -= cb->blen;	// Modulo
+	maxlen = cb->blen - offs;	// Avail at end of buffer
+	diff = len - maxlen;
+	if ((int16)diff < 0)
+		maxlen = len;
+	xmem2xmem(cb->bufp + offs, data, maxlen);
+	if ((int16)diff > 0)
+		xmem2xmem(cb->bufp, data + maxlen, diff);
+
+	return len;
+
+__XTC_ret_zero:
+	// No new data
+	*flags &= ~(XBUF_F_S|XBUF_F_E);
+	return 0;
+__XTC_ret_m1:
+	// New data, but missed previous segment
+	*flags &= ~(XBUF_F_S|XBUF_F_E);
+	return -1;
+}
+
+/*
+ * Insert start marker into xbuf.  Buffer must be empty!
+ */
+/*** BeginHeader xbuf_start */
+void xbuf_start(xbuf * cb);
+/*** EndHeader */
+xbuf_nodebug
+void xbuf_start(xbuf * cb)
+{
+	cb->flags = XBUF_F_S|XBUF_F_VAL;
+	cb->p0 = 0;
+	cb->p1 = 1;
+}
+
+
+/*
+ * Insert end marker into xbuf.  Buffer may or may not be empty.
+ */
+/*** BeginHeader xbuf_end */
+void xbuf_end(xbuf * cb);
+/*** EndHeader */
+xbuf_nodebug
+void xbuf_end(xbuf * cb)
+{
+	if (XBUF_IS_EMPTY(cb)) {
+		cb->p0 = 0;
+		cb->p1 = 1;
+	}
+	else
+		cb->p1++;
+	cb->flags |= XBUF_F_E|XBUF_F_VAL;
+}
+
+/*
+ * Append data to xbuf.  Wrapper for xbuf_insert.
+ */
+/*** BeginHeader xbuf_append */
+int xbuf_append(xbuf * cb, faraddr_t data, uint16 dlen);
+/*** EndHeader */
+xbuf_nodebug
+int xbuf_append(xbuf * cb, faraddr_t data, uint16 dlen)
+{
+	auto uint8	flags;
+
+	flags = 0;	// No start or end markers
+	if (XBUF_IS_EMPTY(cb))
+		cb->p1 = 0;
+	return xbuf_insert(cb, &flags, cb->seqbase + cb->p1, data, dlen);
+}
+
+/*
+ * Return remaining window size.  Does not count the start flag (if any).
+ */
+/*** BeginHeader xbuf_window */
+uint16 xbuf_window(xbuf * cb);
+/*** EndHeader */
+xbuf_nodebug
+uint16 xbuf_window(xbuf * cb)
+{
+	auto uint16 sf;
+	
+	if (XBUF_IS_EMPTY(cb))
+		return cb->blen;
+	if (cb->flags & XBUF_F_S)
+		sf = 1;
+	else
+		sf = 0;
+	return cb->blen + sf - (cb->p1 - cb->p0);
+}
+
+/*
+ * Return amount of data (incl start/end flags).
+ */
+/*** BeginHeader xbuf_used */
+uint16 xbuf_used(xbuf * cb);
+/*** EndHeader */
+xbuf_nodebug
+uint16 xbuf_used(xbuf * cb)
+{
+	auto uint16 sf;
+	
+	if (XBUF_IS_EMPTY(cb))
+		return 0;
+	return cb->p1 - cb->p0;
+}
+
+/*
+ * Return used bytes in xbuf, not counting start/end flags.
+ * *flags is set with indication of start and/or end flags.
+ */
+/*** BeginHeader xbuf_ready */
+uint16 xbuf_ready(xbuf * cb, uint8 * flags);
+/*** EndHeader */
+xbuf_nodebug
+uint16 xbuf_ready(xbuf * cb, uint8 * flags)
+{
+	auto uint16 rc;
+	
+	if (XBUF_IS_EMPTY(cb)) {
+		*flags = 0;
+		return 0;
+	}
+	rc = cb->p1 - cb->p0;
+	if (cb->flags & XBUF_F_S) {
+		*flags = XBUF_F_S;
+		rc--;
+	}
+	else
+		*flags = 0;
+	if (cb->flags & XBUF_F_E) {
+		*flags |= XBUF_F_E;
+		rc--;
+	}
+	return rc;
+}
+
+
+/*
+ * Return sequence number of next expected segment.  This would typically be used to
+ * obtain the ACK number for XTC.  seqbase is returned for empty.
+ */
+/*** BeginHeader xbuf_next_expected, xbuf_last_seq */
+uint16 xbuf_last_seq(xbuf * cb);
+#define xbuf_next_expected xbuf_last_seq
+/*** EndHeader */
+xbuf_nodebug
+uint16 xbuf_last_seq(xbuf * cb)
+{
+	return XBUF_IS_EMPTY(cb) ? cb->seqbase : XBUF_OFFS2SEQ(cb, cb->p1);
+}
+
+
+
+/*
+ * Return sequence number of first byte (or start flag) in buffer, or seqbase if empty.
+ */
+/*** BeginHeader xbuf_first_seq */
+uint16 xbuf_first_seq(xbuf * cb);
+/*** EndHeader */
+xbuf_nodebug
+uint16 xbuf_first_seq(xbuf * cb)
+{
+	return XBUF_IS_EMPTY(cb) ? cb->seqbase : XBUF_OFFS2SEQ(cb, cb->p0);
+}
+
+/*
+ * Set the buffer to empty (reset seqbase to next expected seqnum)
+ */
+/*** BeginHeader xbuf_discard */
+void xbuf_discard(xbuf * cb);
+/*** EndHeader */
+xbuf_nodebug
+void xbuf_discard(xbuf * cb)
+{
+	if (!XBUF_IS_EMPTY(cb)) {
+		cb->seqbase += cb->p1;
+		cb->flags = XBUF_F_EMPTY;
+	}
+}
+
+/*
+ * Remove data from buffer (other side has acked receiving it, or application has been
+ * given it).  Returns flags (if any) that were deleted (XBUF_F_S/E).  Length does not
+ * include S/E flags, but these are deleted automatically.
+ */
+/*** BeginHeader xbuf_delete */
+uint8 xbuf_delete(xbuf * cb, uint16 len);
+/*** EndHeader */
+xbuf_nodebug
+uint8 xbuf_delete(xbuf * cb, uint16 len)
+{
+	auto uint16 seg;
+	auto uint8 flags;
+
+	if (XBUF_IS_EMPTY(cb))
+		return 0;
+
+	if (cb->flags & XBUF_F_S)
+		len++;
+	seg = cb->p1 - cb->p0;
+	if (cb->flags & XBUF_F_E && len >= seg-1) {
+		len = seg;
+		flags = XBUF_F_E;
+	}
+	else {
+		if (len > seg)
+			len = seg;
+		flags = 0;
+	}
+	if (!len)
+		return 0;
+	if (cb->flags & XBUF_F_S) {
+		cb->flags &= ~XBUF_F_S;
+		flags |= XBUF_F_S;
+	}
+	
+	if (len < seg)
+		cb->p0 += len;
+	else {
+		cb->seqbase += cb->p1;
+		cb->flags = XBUF_F_EMPTY;
+		return flags;
+	}
+		
+	
+	// Adjust offsets by modulo amount
+	if (cb->p0 >= cb->blen) {
+		cb->seqbase += cb->blen;
+		cb->p0 -= cb->blen;
+		cb->p1 -= cb->blen;
+	}
+	return flags;
+}
+
+/*
+ * Similar to xbuf_delete, except sequence number (instead of length) is specified.
+ * Returns flags indicating whether start and/or end marker deleted.  Returns zero
+ * only if no advance.
+ */
+/*** BeginHeader xbuf_acked */
+uint8 xbuf_acked(xbuf * cb, uint16 ack);
+/*** EndHeader */
+xbuf_nodebug
+uint8 xbuf_acked(xbuf * cb, uint16 ack)
+{
+	auto uint16 seg, len;
+	auto uint8 flags;
+
+	ack = XBUF_SEQ2OFFS(cb, ack);
+	len = ack - cb->p0;
+	if (XBUF_IS_EMPTY(cb) || (int16)len <= 0)
+		return 0;
+
+	seg = cb->p1 - cb->p0;
+	if (len > seg)
+		len = seg;
+	if (!len)
+		return 0;
+	flags = XBUF_F_VAL | (uint8)((len != seg) - 1) & cb->flags & XBUF_F_E;
+	if (cb->flags & XBUF_F_S) {
+		cb->flags &= ~XBUF_F_S;
+		flags |= XBUF_F_S;
+	}
+	
+	if (len < seg)
+		cb->p0 += len;
+	else {
+		cb->seqbase += cb->p1;
+		cb->flags = XBUF_F_EMPTY;
+		return flags;
+	}
+		
+	
+	// Adjust offsets by modulo amount
+	if (cb->p0 >= cb->blen) {
+		cb->seqbase += cb->blen;
+		cb->p0 -= cb->blen;
+		cb->p1 -= cb->blen;
+	}
+	return flags;
+}
+
+/*
+ * Read data from xbuf.  Returns number of bytes moved to data; the minimum of the available
+ * amount in the segment, or the specified len parameter.  This does _not_ delete the
+ * read data from the buffer.  Sets flag indicating start and/or end flags.
+ */
+/*** BeginHeader xbuf_read */
+uint16 xbuf_read(xbuf * cb, uint8 * flags, faraddr_t data, uint16 len);
+/*** EndHeader */
+xbuf_nodebug
+uint16 xbuf_read(xbuf * cb, uint8 * flags, faraddr_t data, uint16 len)
+{
+	auto uint16 maxlen, offs;
+	
+	if (XBUF_IS_EMPTY(cb)) {
+		*flags = 0;
+		return 0;
+	}
+	offs = cb->p0;
+	if (cb->flags & XBUF_F_S) {
+		offs += 1;
+		*flags = XBUF_F_S;
+	}
+	else
+		*flags = 0;
+	if (len >= cb->p1 - offs) {
+		len = cb->p1 - offs;
+		if (cb->flags & XBUF_F_E) {
+			len--;
+			*flags |= XBUF_F_E;
+		}
+	}
+	
+	maxlen = cb->blen - offs;
+	if (len > maxlen) {
+		xmem2xmem(data, cb->bufp + offs, maxlen);
+		xmem2xmem(data + maxlen, cb->bufp, len - maxlen);
+	}
+	else
+		xmem2xmem(data, cb->bufp + offs, len);
+	
+	return len;
+}
+
+
+
+/*
+ * Extract data from xbuf.  Similar to xbuf_read, except that a ref struct is passed,
+ * as well as a starting sequence number.
+ * On return, the ref struct is filled in with buffer location(s) of data, instead of
+ * copying the data.
+ */
+/*** BeginHeader xbuf_extract */
+uint16 xbuf_extract(xbuf * cb, uint8 * flags, uint16 seq, xbuf_ref * ref, uint16 len);
+/*** EndHeader */
+xbuf_nodebug
+uint16 xbuf_extract(xbuf * cb, uint8 * flags, uint16 seq, xbuf_ref * ref, uint16 len)
+{
+	auto uint16 maxlen, offs;
+
+	ref->len1 = 0;
+	ref->len2 = 0;
+	if (XBUF_IS_EMPTY(cb)) {
+		*flags = 0;
+		return 0;
+	}
+	offs = XBUF_SEQ2OFFS(cb, seq);
+	// Find start of segment that includes offs
+	if (offs == cb->p0 && cb->flags & XBUF_F_S) {
+		offs += 1;
+		*flags = XBUF_F_S;
+	}
+	else
+		*flags = 0;
+	if (offs >= cb->p1)
+		return 0;
+	maxlen = cb->p1 - offs;
+	if (len >= maxlen)
+		len = maxlen;
+	
+	if (cb->flags & XBUF_F_E) {
+		maxlen--;
+		if (len >= maxlen) {
+			*flags |= XBUF_F_E;
+			if (len > maxlen)
+				len = maxlen;
+		}
+	}
+
+	if (offs > cb->blen)
+		offs -= cb->blen;
+
+	maxlen = cb->blen - offs;
+	if (len > maxlen) {
+		ref->len1 = maxlen;
+		ref->buf1 = cb->bufp + offs;
+		ref->len2 = len - maxlen;
+		ref->buf2 = cb->bufp;
+	}
+	else {
+		ref->len1 = len;
+		ref->buf1 = cb->bufp + offs;
+		ref->len2 = 0;
+	}
+	
+	return len;
+}
+
+
+/*** BeginHeader */
+#endif
+/*** EndHeader */

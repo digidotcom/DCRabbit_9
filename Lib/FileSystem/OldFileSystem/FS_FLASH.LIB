@@ -1,0 +1,282 @@
+/*
+ * FLASH low-level FS driver
+ */
+
+/*** BeginHeader fs_block_init */
+
+/* size of the block */
+#ifndef FS_BLOCK_SIZE
+	#define FS_BLOCK_SIZE 4096L
+#endif
+
+#ifndef FS_PHYSICAL_OFFSET
+	#define FS_PHYSICAL_OFFSET	0x40000
+#endif
+
+#define FS_SECTOR_SIZE FD->sector_size
+#define FS_SECTORS_PER_BLOCK (((int)FS_BLOCK_SIZE)/FS_SECTOR_SIZE)
+
+#define FS_TEMPBUF_SIZE	1024
+#define FS_BUFS_PER_BLOCK	(((int)FS_BLOCK_SIZE)/FS_TEMPBUF_SIZE)
+
+int fs_block_init(long baseaddress, int num_blocks);
+int fs_block_read(int block_num, int offset, char *buf, int len);
+int fs_block_write(int block_num, char *buf, int len);
+int fs_block_move(long to, int block, int offset, int len);
+char *fs_block_pushxpc(int block_num);
+
+#use "flash.lib"
+
+extern FlashDescriptor *FD;
+
+/*** EndHeader */
+
+#if(_BOARD_TYPE_ == 0x1300)
+	#error "OLD FILESYSTEM will not work with RCM 3200 Boards."
+#endif
+
+FlashDescriptor FlashDescrip;
+FlashDescriptor *FD;
+
+long fs_block_baseaddress;
+int fs_block_num_blocks;
+int fs_sector_offset;
+
+/*
+ * Initilize the low-level driver, starting at baseaddress (relative to start of flash),
+ * with num_blocks blocks of size FS_BLOCK_SIZE
+ */
+nodebug
+int fs_block_init(long baseaddress, int num_blocks)
+{
+	/* sanity check these values? */
+
+	FD = &FlashDescrip;
+
+#ifdef FS_DEBUG_FLASH
+	printf("Initilizing FLASH fs driver\n");
+#endif
+	fs_block_baseaddress = baseaddress;
+	fs_block_num_blocks = num_blocks;
+
+	if(flash_init(FD,0xC2,NULL)) {
+#ifdef FS_DEBUG_FLASH
+		printf("Error initilizing 2nd flash!\n");
+#endif
+		return 1;
+	}
+
+	/* verify the 256 byte sector boundary */
+	fs_sector_offset = (int)(baseaddress / FS_SECTOR_SIZE); /* offset into flash, in sectors */
+	if(((long)fs_sector_offset)*FS_SECTOR_SIZE != baseaddress) {
+#ifdef FS_DEBUG_FLASH
+		printf("Not on sector boundary!\n");
+#endif
+		return 1; /* not on FS_SECTOR_SIZE boundary */
+	}
+
+	if((FD->number_sectors - fs_sector_offset) < (num_blocks * FS_SECTORS_PER_BLOCK)) {
+#ifdef FS_DEBUG_FLASH
+		printf("Not enough sectors in flash!\n");
+#endif
+		return 1;
+	}
+
+#ifdef FS_DEBUG_FLASH
+	printf("Flash sector size == %d\n",FS_SECTOR_SIZE);
+#endif
+
+	return 0;
+}
+
+/*
+ * read from block_num/offset into buf/len
+ * offset == number of bytes from beginning of the block
+ */
+nodebug
+int fs_block_read(int block_num, int offset, char *buf, int len)
+{
+	auto int sector, temp;
+
+	/*
+	 * check the checksum here
+	 *
+	 * crc == block[16] & block[17]
+	 * first byte == block[2] & block[3]
+	 * last byte == block[4] & block[5]
+	 */
+
+	sector = FS_SECTORS_PER_BLOCK * block_num;
+
+#ifdef FS_DEBUG_FLASH
+	if(offset != 0)
+		printf("FLASH> Reading from block %d, offset %d, len %d\n",block_num,offset,len);
+#endif
+
+	/* find the beginning of where to read. */
+	while(offset > FS_SECTOR_SIZE) {
+		offset -= FS_SECTOR_SIZE;
+		sector++;
+	}
+
+	/* first partial sector */
+	temp = FS_SECTOR_SIZE - offset;
+	if(temp > len)
+		temp = len;
+#ifdef FS_DEBUG_FLASH
+	if(offset != 0)
+		printf("FLASH> !!!! Reading sector %d, offset %d, len %d\n",sector,offset,temp);
+#endif
+	if(flash_read(FD,sector,offset,paddr(buf),temp)) {
+#ifdef FS_DEBUG_FLASH
+		printf("FLASH> Error in read (1)!\n");
+#endif
+		return 1;
+	}
+	sector++;
+	offset = temp;
+
+	/* remaining sectors */
+	while(offset < len) {
+		if((len - offset) >= FS_SECTOR_SIZE) {
+			temp = FS_SECTOR_SIZE;
+		} else {
+			temp = len - offset;
+		}
+#ifdef FS_DEBUG_FLASH
+		printf("FLASH> Reading sector %d, len %d\n",sector,temp);
+#endif
+		if(flash_read(FD,sector,0,paddr(buf + offset),temp)) {
+#ifdef FS_DEBUG_FLASH
+			printf("FLASH> Error in read (2)!\n");
+#endif
+			return 1;
+		}
+		sector++;
+		offset += temp;
+	}
+
+	return 0;
+}
+
+/*
+ * Replacement for xmem2xmem() - move a block of data from flash to xmem
+ */
+nodebug
+int fs_block_move(long to, int block, int offset, int len)
+{
+	auto int sector, temp;
+	sector = FS_SECTORS_PER_BLOCK * block;
+
+#ifdef FS_DEBUG_FLASH
+	printf("FLASH> Moving from block %d, offset %d\n",block,offset);
+#endif
+
+	/* find the beginning of where to read. */
+	while(offset > FS_SECTOR_SIZE) {
+		offset -= FS_SECTOR_SIZE;
+		sector++;
+	}
+
+	/* first partial sector */
+	temp = FS_SECTOR_SIZE - offset;
+	if(temp > len)
+		temp = len;
+	if(flash_read(FD,sector,offset,to,temp)) {
+#ifdef FS_DEBUG_FLASH
+		printf("FLASH> Error in move (1)!\n");
+#endif
+		return 1;
+	}
+	sector++;
+	offset = temp;
+
+	/* remaining sectors */
+	while(offset < len) {
+		if((offset - len) >= FS_SECTOR_SIZE) {
+			temp = FS_SECTOR_SIZE;
+		} else {
+			temp = len;
+		}
+		if(flash_read(FD,sector,0,to+offset,temp)) {
+#ifdef FS_DEBUG_FLASH
+			printf("FLASH> Error in move (2)!\n");
+#endif
+			return 1;
+		}
+		sector++;
+		offset += temp;
+	}
+
+	return 0;
+}
+
+/*
+ * Write the given block (described in buf/len),
+ * to block number block_num (always start at offset=0 in the block)
+ */
+nodebug
+int fs_block_write(int block_num, char *buf, int len)
+{
+	auto int sector, offset, temp;
+	sector = FS_SECTORS_PER_BLOCK * block_num;
+
+#ifdef FS_DEBUG_FLASH
+	printf("FLASH> Writing to block %d, len %d (first sector = %d)\n",block_num,len,sector);
+#endif
+
+	offset = 0;
+	while(offset < len) {
+		if((len - offset) > FS_SECTOR_SIZE) {
+			temp = FS_SECTOR_SIZE;
+		} else {
+			temp = len - offset;
+		}
+#ifdef FS_DEBUG_FLASH
+		printf("FLASH> Writing sector %d\n",sector);
+#endif
+		if(flash_writesector(FD, sector, paddr(buf + offset))) {
+#ifdef FS_DEBUG_FLASH
+			printf("FLASH> Error writing sector!\n");
+#endif
+			return 1;
+		}
+		sector++;
+		offset += temp;
+	}
+
+	return 0;
+}
+
+/*
+ *	write a sector out. (buf is a physical address, probably in xmem)
+ */
+/*** BeginHeader fs_writesector *********/
+int fs_writesector(int sector, long buf, int len);
+/*** EndHeader ********************/
+nodebug
+int fs_writesector(int sector, long buf, int len)
+{
+#ifdef FS_DEBUG_FLASH
+	printf("FLASH> Writing sector %d\n",sector);
+#endif
+
+	if(flash_writesector(FD, sector, buf)) {
+#ifdef FS_DEBUG_FLASH
+		printf("Error writing sector!\n");
+#endif
+		return 1;
+   }
+   return 0;
+}
+
+/*
+ * set the XPC such that the given block is in the window, and
+ * return a pointer to the beginning of the block, as accessable
+ * through the xpc window.
+ */
+nodebug
+root char *fs_block_pushxpc(int block_num)
+{
+	return flash_sector2xwindow(FD, block_num * FS_SECTORS_PER_BLOCK);
+}

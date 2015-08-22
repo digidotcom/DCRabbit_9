@@ -1,0 +1,86 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD W3 HTML//EN">
+<HTML>
+<HEAD>
+	<TITLE>Blinky</TITLE>
+</HEAD>
+
+<BODY topmargin="0" leftmargin="0" marginwidth="0" marginheight="0"
+	bgcolor="#FFFFFF" link="#009966" vlink="#FFCC00" alink="#006666">
+
+<CENTER>
+	<img SRC="rabbit1.gif">
+	<BR>
+	<BR>
+	<BR>
+</CENTER>
+
+
+<P>
+<?z if (error()) { ?>
+	There is an error in your data!  The errors are both listed below and marked
+   in <FONT COLOR="#ff0000">red</FONT>.
+	<UL>
+
+	<?z for ($A = 0; $A < 4; $A++) { ?>
+	   <?z if (error($ledControl.ledBlinkRate[$A])) { ?>
+	      <LI>LED <?z echo($A) ?>  blink rate is in error (may be up to 35 Blinks/Second)
+	          (committed value is <?z echo(@ledControl.ledBlinkRate[$A]) ?>)
+	   <?z } ?>
+	<?z } ?>
+   </UL>
+<?z } ?>
+
+
+<FORM ACTION="/index.zhtml" METHOD="POST">
+
+<?z if (error($ledControl.ledBlinkRate[0])) { ?>
+ <FONT COLOR="#ff0000">
+<?z } ?>
+
+<H2>LED 0 Blink Rate</H2>
+<INPUT TYPE="text" NAME="<?z varname($ledControl.ledBlinkRate[0]) ?>" SIZE=5 VALUE="<?z echo($ledControl.ledBlinkRate[0]) ?>">
+Hz
+<?z if (error($ledControl.ledBlinkRate[0])) { ?>
+ </FONT>
+<?z } ?>
+
+<?z if (error($ledControl.ledBlinkRate[1])) { ?>
+ <FONT COLOR="#ff0000">
+<?z } ?>
+
+<H2>LED 1 Blink Rate</H2>
+<INPUT TYPE="text" NAME="<?z varname($ledControl.ledBlinkRate[1]) ?>" SIZE=5 VALUE="<?z echo($ledControl.ledBlinkRate[1]) ?>">
+Hz
+<?z if (error($ledControl.ledBlinkRate[1])) { ?>
+ </FONT>
+<?z } ?>
+
+<?z if (error($ledControl.ledBlinkRate[2])) { ?>
+ <FONT COLOR="#ff0000">
+<?z } ?>
+
+<H2>LED 2 Blink Rate</H2>
+<INPUT TYPE="text" NAME="<?z varname($ledControl.ledBlinkRate[2]) ?>" SIZE=5 VALUE="<?z echo($ledControl.ledBlinkRate[2]) ?>">
+Hz
+<?z if (error($ledControl.ledBlinkRate[2])) { ?>
+ </FONT>
+<?z } ?>
+
+<?z if (error($ledControl.ledBlinkRate[3])) { ?>
+ <FONT COLOR="#ff0000">
+<?z } ?>
+
+<H2>LED 3 Blink Rate</H2>
+<INPUT TYPE="text" NAME="<?z varname($ledControl.ledBlinkRate[3]) ?>" SIZE=5 VALUE="<?z echo($ledControl.ledBlinkRate[3]) ?>">
+Hz
+<?z if (error($ledControl.ledBlinkRate[3])) { ?>
+ </FONT>
+<?z } ?>
+<BR>
+<P>
+<INPUT TYPE="submit" VALUE="Submit">
+</FORM>
+<BR>
+</BODY>
+</HTML>
+

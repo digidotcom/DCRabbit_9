@@ -315,3 +315,11 @@ the "-n" command-line option for a "Null compile/syntax check without running".
 If the compiler does not emit any errors, re-compile with one of the binary
 output options (-b, -br).
 
+16) On the BL2600 SBCs, there is some overlap of calibration constants stored
+in the UserBlock.  If you need to access both:
+    single-ended unipolar channels 2 to 7 with gaincode 7 and
+    single-ended  bipolar channels 0 to 5 with gaincode 0
+you will need to define macro BL26XX_CAL_ADC_OVERLAP_FIX in your programs and
+re-calibrate the affected unipolar channels with gaincode 7 and ALL of the
+bipolar channels with all gaincodes.
+

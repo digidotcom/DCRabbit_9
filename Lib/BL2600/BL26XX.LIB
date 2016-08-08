@@ -138,14 +138,27 @@ extern calib DAC_iCal_Table[8];
 #define EEPROM_READ  1
 
 #define	CAL_ADC_SE0		0
-#define  CAL_ADC_SE1   	CAL_ADC_SE0 + 348
-#define  CAL_ADC_DIFF  	CAL_ADC_SE1 + 348
-#define  CAL_ADC_MA   	CAL_ADC_DIFF + 192
+#ifdef BL26XX_CAL_ADC_OVERLAP_FIX
+	// Calibration for single-ended unipolar: 6 bytes * 8 channels * 8 gaincodes
+	#define  CAL_ADC_SE1   	(CAL_ADC_SE0 + 8 * 8 * 6)  // 384 bytes, not 348
+	// Calibration for single-ended bipolar: 6 bytes * 8 channels * 6 gaincodes
+	// but keep differential offsets at same location as pre-fix.
+	#define  CAL_ADC_DIFF  	(CAL_ADC_SE0 + 348 + 348)
+#else
+	// This definition of the SE1 offset overlaps last 36 bytes of SE0, but
+	// remains compatible with calibration constants stored during manufacturing.
+	// If using both SE0 CH2-7 GAIN7 with SE1 CH0-5 GAIN0, you must define
+	// BL26XX_CAL_ADC_OVERLAP_FIX in your program and recalibrate the affected
+	// SE0 channels with gaincode 7 and ALL of SE1. 
+	#define  CAL_ADC_SE1   	(CAL_ADC_SE0 + 348)
+	#define  CAL_ADC_DIFF  	(CAL_ADC_SE1 + 348)
+#endif
+#define  CAL_ADC_MA   	(CAL_ADC_DIFF + 192)
 
-#define	CAL_DACV_UNIPOLAR		CAL_ADC_MA + 48
-#define  CAL_DACV_BIPOLAR  	CAL_DACV_UNIPOLAR + 48
-#define  CAL_DACI_UNIPOLAR   	CAL_DACV_BIPOLAR  + 48
-#define  CAL_DACI_BIPOLAR   	CAL_DACI_UNIPOLAR + 48
+#define	CAL_DACV_UNIPOLAR		(CAL_ADC_MA + 48)
+#define  CAL_DACV_BIPOLAR  	(CAL_DACV_UNIPOLAR + 48)
+#define  CAL_DACI_UNIPOLAR   	(CAL_DACV_BIPOLAR  + 48)
+#define  CAL_DACI_BIPOLAR   	(CAL_DACI_UNIPOLAR + 48)
 
 // ADC Mode
 #define DIRECTMODE   0x80

@@ -171,7 +171,7 @@ main() {
 The IFS_RESTORE and IFS_SAVE functionality have been removed 
 from ifconfig. They are now available by using the ifs_restore() 
 and ifs_save() functions in 
-lib\RCM3300\RemoveApplicationUpdate\removeuploaddefs.lib. 
+lib\RCM3300\RemoteApplicationUpdate\remoteuploaddefs.lib. 
 
 -- RabbitSys 
 

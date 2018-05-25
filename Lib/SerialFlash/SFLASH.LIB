@@ -57,6 +57,15 @@ Revision History:	Rev 1.0 Initial Release
                   determining device parameters by reading just the status
                   register is not sufficient.  Need to read manufacturer
                   and device ID as well.
+	2015 Feb 05  SJH - Added support for 45DB642D with the page size OTP'd
+                  to 1024 bytes.  This is not normally done, but flash
+                  part datecodes 1210 had this option burned in.  Note that
+                  the check for 1024 page size is performed using bit 0
+                  of the device status register, however this test is
+                  only done specifically for device IDs which are known
+                  to be affected.  The test can easily be expanded to
+                  other parts if required (just by adding a table flag).
+                  See sf_devtable for details.
 
 *************************************************************************/
 
@@ -854,6 +863,13 @@ typedef struct {
    unsigned int pagesize;
    int addressbytes;
    int pagebitshift;
+   int flags;			// Special flags as follows:
+   #define SDE_POW2	0x0001	// If set, check LSB of status byte to see if
+   									// this device has been OTP to power-of-2
+                              // page size.  This is not normally done, but
+                              // allows devices which have been inadvertently
+                              // programmed this way to be used (albeit with
+                              // reduced capacity).
 } sf_devtable_entry;
 
 // NOTE: put devices with non-zero manufacturer info (2nd field) before the
@@ -868,7 +884,7 @@ const sf_devtable_entry sf_devtable[SFLASH_DEVTABLE_SIZE] =
 	{0x0024, 0L,          4096L,  264,  3, 9},	  // AT45DB081B
 	{0x0034, 0L,          8192L,  528,  3, 10},	  // AT45DB321
 	{0x003C, 0x0100281FL, 32768L, 264,  3, 9},     // AT45DB641E
-	{0x003C, 0L,          8192L,  1056, 3, 11},    // AT45DB642
+	{0x003C, 0L,          8192L,  1056, 3, 11, SDE_POW2},    // AT45DB642
 	{0x0010, 0L,          16384L, 1056, 4, 11},    // AT45DB1282
 };
 
@@ -914,6 +930,12 @@ _sflash_nodebug sf_initDevice(sf_device *dev,
          dev->pagesize = sf_devtable[i].pagesize;
          dev->addressbytes = sf_devtable[i].addressbytes;
          dev->pagebitshift = sf_devtable[i].pagebitshift;
+         if (sf_devtable[i].flags & SDE_POW2 && status & 0x01) {
+			#ifdef SFLASH_VERBOSE
+         	printf("sflash device 2**n page size\n");
+         #endif
+         	dev->pagesize &= 0xFF00;	// Squash the extra LSBs
+         }
 		#ifdef SFLASH_VERBOSE
 			printf("sflash device initialized:\n");
    		sf_print_dev(dev);

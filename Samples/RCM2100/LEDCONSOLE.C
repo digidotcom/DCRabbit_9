@@ -128,7 +128,7 @@ typedef struct {
 
 #use "fs2.lib"
 #use "dcrtcp.lib"
-#use REMOTEUPLOADDEFS.LIB
+#use "ZNETSUPPORT.LIB"
 #use "zconsole.lib"
 
 /* ----------------------------------------------------------------- */

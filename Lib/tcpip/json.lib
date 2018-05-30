@@ -29,8 +29,8 @@ typedef struct jsonvar_t {
 #define JT_PSTR   5
 #define JT_STR    6
 
-#define JSD_START const JSONVAR json_dict[] ={
-#define JSD_END { (char*)0,   (void*)0,           0,        0} }
+#define JSD_STARTDIC const JSONVAR json_dict[] ={
+#define JSD_ENDDIC { (char*)0,   (void*)0,           0,        0} }
 
 /* START FUNCTION DESCRIPTION ********************************************
 JSD                                                      <json.lib>
@@ -58,7 +58,7 @@ PARAMETERS:
     size      string size for JT_STR and JT_PSTR variables
 
 END DESCRIPTION **********************************************************/
-#define JSD(V,T, C, S) {#V, &##V, T, S, C}
+#define JSD(V, T, C, S) {#V, &##V, T, S, C}
 
 
 /* START FUNCTION DESCRIPTION ********************************************
@@ -87,7 +87,7 @@ PARAMETERS:
     size      string size for JT_STR and JT_PSTR variables
 
 END DESCRIPTION **********************************************************/
-#define JSDN(V,N,T,C,S) {#N, &##V, T, S, C}
+#define JSDN(V, N, T, C, S) {N, &##V, T, S, C}
 
 
 #undef DPRINTF
@@ -99,19 +99,65 @@ END DESCRIPTION **********************************************************/
 
 /*** EndHeader */
 
-/*** BeginHeader json_begin, json_end, jsonify*/
+/*** BeginHeader json_begin, json_end, jsonify, json_var*/
 void json_begin (HttpState *state);
 int jsonify (HttpState *state, void *addr);
 void json_end (HttpState *state);
-
+int json_var (HttpState *state, void *addr, int count);
 /*** EndHeader */
 
-char* const reply_hdr = "HTTP/1.1 200 OK\r\n"     \
+char const reply_hdr[] = "HTTP/1.1 200 OK\r\n"     \
                         "Cache-Control: no-cache\r\n"  \
                         "Content-Type: text/plain\r\n" \
                         "Access-Control-Allow-Origin: *\r\n" \
                         "Connection: Keep-Alive\r\n";
 
+// Sizes of data elements (same order as JT_.. values)
+// No need for an entry for JT_STR
+const int jsz[] = {sizeof(int), sizeof(unsigned int), sizeof(long),
+  sizeof(unsigned long), sizeof(float), sizeof(char*)};
+
+//Stringify a data dictionary variable
+int json_fmt (JSONVAR *entry, void *addr, char *p)
+{
+  switch (entry->type)
+  {
+    case JT_PSTR:
+      sprintf (p, "\"%s\"", *(char**)addr);
+      break;
+    case JT_STR:
+      sprintf (p, "\"%s\"", (char*)addr);
+      break;
+    case JT_INT:
+      sprintf (p, "%d", *(int*)addr);
+      break;
+    case JT_UINT:
+      sprintf (p, "%u", *(int*)addr);
+      break;
+    case JT_LONG:
+      sprintf (p, "%ld", *(long*)addr);
+      break;
+    case JT_ULONG:
+      sprintf (p, "%lu", *(long*)addr);
+      break;
+    case JT_FLT:
+      sprintf (p, "%g", *(float*)addr);
+      break;
+  }
+  return strlen(p);
+}
+
+//send buffer content preceeded by "Content-Length" header
+void json_send (HttpState *state)
+{
+  static char clenhdr[80];
+  unsigned len;
+
+  len = state->p - state->buffer;
+  sprintf (clenhdr, "Content-Length: %u\r\n\r\n", len);
+  http_sock_fastwrite (state, clenhdr, strlen(clenhdr));
+  http_sock_fastwrite (state, state->buffer, len);
+}
 
 /* START FUNCTION DESCRIPTION ************************************************
 json_begin                                        <json.lib>
@@ -130,15 +176,14 @@ END DESCRIPTION *************************************************************/
 void json_begin (HttpState *state)
 {
   http_sock_fastwrite (state, reply_hdr, strlen(reply_hdr));
-
-  *state->buffer = '{';
-  state->p = state->buffer+1;
+  state->p = state->buffer;
+  *state->p++ = '{';
 }
 
 /* START FUNCTION DESCRIPTION ************************************************
 jsonify                                           <json.lib>
 
-  Description:  Serializes a variable to JSON format
+  Description:  Serializes an element of a composite object to JSON format
 
   Syntax:       int jsonify (HttpState *state, void *var)
 
@@ -179,31 +224,7 @@ int jsonify (HttpState *state, void *addr)
   i=0;
   while (i<entry->cnt)
   {
-    switch (entry->type)
-    {
-      case JT_PSTR:
-        sprintf (p, "\"%s\"", *(char**)addr);
-        break;
-      case JT_STR:
-        sprintf (p, "\"%s\"", (char*)addr);
-        break;
-      case JT_INT:
-        sprintf (p, "%d", *(int*)addr);
-        break;
-      case JT_UINT:
-        sprintf (p, "%u", *(int*)addr);
-        break;
-      case JT_LONG:
-        sprintf (p, "%ld", *(long*)addr);
-        break;
-      case JT_ULONG:
-        sprintf (p, "%lu", *(long*)addr);
-        break;
-      case JT_FLT:
-        sprintf (p, "%g", *(float*)addr);
-        break;
-    }
-    p += strlen(p);
+    p += json_fmt (entry, addr, p);
     i++;
     if (i < entry->cnt)
       *p++ = ',';
@@ -221,9 +242,72 @@ int jsonify (HttpState *state, void *addr)
 }
 
 /* START FUNCTION DESCRIPTION ************************************************
+json_var                                           <json.lib>
+
+  Description:  Serializes a single variable to JSON format
+
+  Syntax:       int jsonify (HttpState *state, void *var, int count)
+
+  Parameters:
+      state     HTTP state pointer, as provided in the parameter to the CGI
+                function.
+      var       variable to serialize
+      count     number of elements if variable is an array. If set to 0, the
+                number of elements is taken from the JSON data dictionary.
+
+  Return:       0 if successful
+                -1  = variable not found in JSON data dictionary
+
+END DESCRIPTION *************************************************************/
+int json_var (HttpState *state, void *addr, int count)
+{
+  const JSONVAR *entry;
+  char *p;
+  int i;
+
+  for (entry=json_dict; entry->name && entry->addr != addr; entry++)
+    ;
+
+  if (!entry->name)
+  {
+    DPRINTF (("Missing dictionary entry!!"));
+    return -1;   //oops! entry not found
+  }
+
+  if (!count || count > entry->cnt)
+    count = entry->cnt;
+
+  http_sock_fastwrite (state, reply_hdr, strlen(reply_hdr));
+  p = state->buffer;
+
+  i=0;
+  if (count > 1)
+    *p++ = '[';
+  while (i<count)
+  {
+    p += json_fmt (entry, addr, p);
+    i++;
+    if (i < count)
+      *p++ = ',';
+    if (entry->type == JT_STR)
+      (char*)addr += entry->sz;
+    else
+      (char*)addr += jsz[entry->type];
+  }
+  if (count > 1)
+    *p++ = ']';
+
+  *p++ = '\r'; *p++ = '\n';
+  state->p = p;
+
+  json_send (state);
+  return 0;
+}
+
+/* START FUNCTION DESCRIPTION ************************************************
 json_end                                          <json.lib>
 
-  Description:  Send out the JSON formatted buffer
+  Description:  Send out the JSON formatted buffer for a composite object
 
   Syntax:       void json_end (HttpState *state)
 
@@ -234,18 +318,14 @@ json_end                                          <json.lib>
 END DESCRIPTION *************************************************************/
 void json_end (HttpState *state)
 {
-  static char lenbuf[80];
   unsigned int len;
+  char *plen;
 
   //replace last comma with closing brace and add <CR><LF>
   strcpy (state->p-1, "}\r\n");
-
-  //figure out content length
   state->p += 2;
-  len = (unsigned int)(state->p-state->buffer);
-  sprintf (lenbuf, "Content-Length: %u\r\n\r\n", len);
-  http_sock_fastwrite (state, lenbuf, strlen(lenbuf));
-  http_sock_fastwrite (state, state->buffer, len);
+
+  json_send (state); //send buffer
 }
 
 /*** BeginHeader readpost*/
@@ -300,20 +380,20 @@ int readpost (HttpState *state)
   return len;
 }
 
-/*** BeginHeader url_post, url_parse*/
-int url_post (HttpState *state);
-int url_parse (HttpState *state);
+/*** BeginHeader process_url_post, parse_urlencoded*/
+int process_url_post (HttpState *state);
+int parse_urlencoded (HttpState *state);
 unsigned long atoul (char *str);
 
 /*** EndHeader */
 
 /* START FUNCTION DESCRIPTION ************************************************
-url_post                                       <json.lib>
+process_url_post                                       <json.lib>
 
   Description:  Read and parse an URL-encoded POST response. Keywords in the POST
                 response are parsed in variables based on JSON data dictionary.
 
-  Syntax:       int url_post (HttpState *state)
+  Syntax:       int process_url_post (HttpState *state)
 
   Parameters:
       state     HTTP state
@@ -335,13 +415,13 @@ url_post                                       <json.lib>
       >0: number of fields parsed
 
 END DESCRIPTION *************************************************************/
-int url_post (HttpState *state)
+int process_url_post (HttpState *state)
 {
   int len;
 
   if ((len = readpost (state)) <= 0)
     return len;   //wait for more data or die
-  return url_parse (state);
+  return parse_urlencoded (state);
 }
 
 const JSONVAR* json_find (char *name, int *idx)
@@ -372,23 +452,18 @@ const JSONVAR* json_find (char *name, int *idx)
 }
 
 /* START FUNCTION DESCRIPTION ************************************************
-url_parse                                         <json.lib>
+parse_urlencoded                                         <json.lib>
   Description:  Parse an URL-encoded POST response. Keywords in the POST
                 response are parsed corresponding variables from JSON dictionary.
 
-  Syntax:       int url_parse (HttpState *state)
+  Syntax:       int parse_urlencoded (HttpState *state)
 
   Parameters:
       state     HTTP state
 
   Return:       number of fields parsed.
 END DESCRIPTION *************************************************************/
-// Sizes of data elements (same order as JT_.. values)
-// No need for an entry for JT_STR
-const int jsz[] = {sizeof(int), sizeof(unsigned int), sizeof(long),
-  sizeof(unsigned long), sizeof(float), sizeof(char*)};
-
-int url_parse (HttpState *state)
+int parse_urlencoded (HttpState *state)
 {
   char *ptr;
   char *pd;
@@ -436,7 +511,7 @@ int url_parse (HttpState *state)
           pv = (char*)(k->addr) + k->sz*idx;
         else
           pv = (char*)(k->addr) + jsz[k->type]*idx;
-        
+
         DPRINTF (("Setting %s[%d] = %s\n", key, idx, val));
         switch (k->type)
         {

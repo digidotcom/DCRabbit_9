@@ -97,6 +97,11 @@ END DESCRIPTION **********************************************************/
 #define DPRINTF(A)
 #endif
 
+// Sizes of data elements (same order as JT_.. values)
+// No need for an entry for JT_STR
+const int jsz[] = {sizeof(int), sizeof(unsigned int), sizeof(long),
+  sizeof(unsigned long), sizeof(float), sizeof(char*)};
+
 /*** EndHeader */
 
 /*** BeginHeader json_begin, json_end, jsonify, json_var*/
@@ -106,16 +111,11 @@ void json_end (HttpState *state);
 int json_var (HttpState *state, void *addr, int count);
 /*** EndHeader */
 
-char const reply_hdr[] = "HTTP/1.1 200 OK\r\n"     \
-                        "Cache-Control: no-cache\r\n"  \
-                        "Content-Type: text/plain\r\n" \
-                        "Access-Control-Allow-Origin: *\r\n" \
-                        "Connection: Keep-Alive\r\n";
-
-// Sizes of data elements (same order as JT_.. values)
-// No need for an entry for JT_STR
-const int jsz[] = {sizeof(int), sizeof(unsigned int), sizeof(long),
-  sizeof(unsigned long), sizeof(float), sizeof(char*)};
+xstring reply_hdr { "HTTP/1.1 200 OK\r\n"     \
+                    "Cache-Control: no-cache\r\n"  \
+                    "Content-Type: text/plain\r\n" \
+                    "Access-Control-Allow-Origin: *\r\n" \
+                    "Connection: Keep-Alive\r\n"};
 
 //Stringify a data dictionary variable
 int json_fmt (JSONVAR *entry, void *addr, char *p)
@@ -175,7 +175,7 @@ json_begin                                        <json.lib>
 END DESCRIPTION *************************************************************/
 void json_begin (HttpState *state)
 {
-  http_sock_fastwrite (state, reply_hdr, strlen(reply_hdr));
+  http_sock_xfastwrite (state, reply_hdr, xstrlen(reply_hdr));
   state->p = state->buffer;
   *state->p++ = '{';
 }
@@ -277,7 +277,7 @@ int json_var (HttpState *state, void *addr, int count)
   if (!count || count > entry->cnt)
     count = entry->cnt;
 
-  http_sock_fastwrite (state, reply_hdr, strlen(reply_hdr));
+  http_sock_xfastwrite (state, reply_hdr, xstrlen(reply_hdr));
   p = state->buffer;
 
   i=0;

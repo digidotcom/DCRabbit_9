@@ -89,12 +89,16 @@ PARAMETERS:
 END DESCRIPTION **********************************************************/
 #define JSDN(V, N, T, C, S) {N, &##V, T, S, C}
 
-
-#undef DPRINTF
 #ifdef JSON_DEBUG
-#define DPRINTF(A) printf A
+#define json_debug debug
 #else
-#define DPRINTF(A)
+#define json_debug nodebug
+#endif
+
+#ifdef JSON_VERBOSE
+#define JSON_DPRINTF(A) printf A
+#else
+#define JSON_DPRINTF(A)
 #endif
 
 // Sizes of data elements (same order as JT_.. values)
@@ -111,13 +115,14 @@ void json_end (HttpState *state);
 int json_var (HttpState *state, void *addr, int count);
 /*** EndHeader */
 
-xstring reply_hdr { "HTTP/1.1 200 OK\r\n"     \
-                    "Cache-Control: no-cache\r\n"  \
-                    "Content-Type: text/plain\r\n" \
-                    "Access-Control-Allow-Origin: *\r\n" \
-                    "Connection: Keep-Alive\r\n"};
+xdata reply_hdr  { "HTTP/1.1 200 OK\r\n"     \
+                   "Cache-Control: no-cache\r\n"  \
+                   "Content-Type: text/plain\r\n" \
+                   "Access-Control-Allow-Origin: *\r\n" \
+                   "Connection: Keep-Alive\r\n"};
 
 //Stringify a data dictionary variable
+json_debug
 int json_fmt (JSONVAR *entry, void *addr, char *p)
 {
   switch (entry->type)
@@ -148,6 +153,7 @@ int json_fmt (JSONVAR *entry, void *addr, char *p)
 }
 
 //send buffer content preceeded by "Content-Length" header
+json_debug
 void json_send (HttpState *state)
 {
   static char clenhdr[80];
@@ -173,6 +179,7 @@ json_begin                                        <json.lib>
 
 
 END DESCRIPTION *************************************************************/
+json_debug
 void json_begin (HttpState *state)
 {
   http_sock_xfastwrite (state, reply_hdr, xstrlen(reply_hdr));
@@ -196,6 +203,7 @@ jsonify                                           <json.lib>
                 -1  = variable not found in JSON data dictionary
 
 END DESCRIPTION *************************************************************/
+json_debug
 int jsonify (HttpState *state, void *addr)
 {
   const JSONVAR *entry;
@@ -207,7 +215,7 @@ int jsonify (HttpState *state, void *addr)
 
   if (!entry->name)
   {
-    DPRINTF (("Missing dictionary entry!!"));
+    JSON_DPRINTF (("Missing dictionary entry!!"));
     return -1;   //oops! entry not found
   }
   p = state->p;
@@ -259,6 +267,7 @@ json_var                                           <json.lib>
                 -1  = variable not found in JSON data dictionary
 
 END DESCRIPTION *************************************************************/
+json_debug
 int json_var (HttpState *state, void *addr, int count)
 {
   const JSONVAR *entry;
@@ -270,7 +279,7 @@ int json_var (HttpState *state, void *addr, int count)
 
   if (!entry->name)
   {
-    DPRINTF (("Missing dictionary entry!!"));
+    JSON_DPRINTF (("Missing dictionary entry!!"));
     return -1;   //oops! entry not found
   }
 
@@ -316,6 +325,7 @@ json_end                                          <json.lib>
                 function.
 
 END DESCRIPTION *************************************************************/
+json_debug
 void json_end (HttpState *state)
 {
   unsigned int len;
@@ -361,6 +371,7 @@ readpost                                          <json.lib>
     >0:   content-length
 
 END DESCRIPTION *************************************************************/
+json_debug
 int readpost (HttpState *state)
 {
   int len;
@@ -415,6 +426,7 @@ process_url_post                                       <json.lib>
       >0: number of fields parsed
 
 END DESCRIPTION *************************************************************/
+json_debug
 int process_url_post (HttpState *state)
 {
   int len;
@@ -424,6 +436,7 @@ int process_url_post (HttpState *state)
   return parse_urlencoded (state);
 }
 
+json_debug
 const JSONVAR* json_find (char *name, int *idx)
 {
   static const JSONVAR *entry;
@@ -463,6 +476,7 @@ parse_urlencoded                                         <json.lib>
 
   Return:       number of fields parsed.
 END DESCRIPTION *************************************************************/
+json_debug
 int parse_urlencoded (HttpState *state)
 {
   char *ptr;
@@ -512,7 +526,7 @@ int parse_urlencoded (HttpState *state)
         else
           pv = (char*)(k->addr) + jsz[k->type]*idx;
 
-        DPRINTF (("Setting %s[%d] = %s\n", key, idx, val));
+        JSON_DPRINTF (("Setting %s[%d] = %s\n", key, idx, val));
         switch (k->type)
         {
         case JT_PSTR:
@@ -557,11 +571,10 @@ int parse_urlencoded (HttpState *state)
   return nv;
 }
 
-
-
 /*
   Convert from string to unsigned long
 */
+json_debug
 unsigned long atoul (char *str)
 {
   unsigned long val;

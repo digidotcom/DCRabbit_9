@@ -5974,13 +5974,13 @@ nodebug int pktEopen(long baud, int mode, char options, int (*test_packet)())
 	{
 		divisor /= (1L + ta1div);
    	WrPortI(TAT1R, &TAT1RShadow, (char)ta1div);
-   	BitWrPortI(TACR, &TACRShadow, 1, 3);
+   	BitWrPortI(TACR, &TACRShadow, 1, 2);
 	}
 	else
 	{
-		BitWrPortI(TACR, &TACRShadow, 0, 3);
+		BitWrPortI(TACR, &TACRShadow, 0, 2);
 	}
-	WrPortI(TAT2R, &TAT3RShadow, (char)divisor);
+	WrPortI(TAT2R, &TAT2RShadow, (char)divisor);
 
 	//set up mode and options
 	if (mode == PKT_GAPMODE)

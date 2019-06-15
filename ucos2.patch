@@ -1,0 +1,54 @@
+This patch fixes a bug present when passing the OS_TASK_OPT_STK_CLR
+option to OSTaskCreateExt().  The original code would overwrite an
+additional byte past the end of the stack, wrapping to address 0 of
+the current 64KB page if the stack ended on a 64KB boundary (e.g.,
+erasing 0x60000 if the stack ends at 0x6FFFF).
+
+The uC/OS-II source isn't included in the Open Source GitHub code
+repository, so you will need to manually apply this using `patch`:
+
+    patch -p1 --forward < ucos2.patch
+
+Include the command-line option "--dry-run" to test the patch.  The
+"--forward" option ignores the patch if already applied.
+
+--- a/Lib/UCOS2/OS_TASK.C	2017-06-28 17:43:41 -0700
++++ b/Lib/UCOS2/OS_TASK.C	2019-06-14 12:37:46 -0700
+@@ -439,8 +439,6 @@
+     auto INT8U    err;
+     auto INT16U   i;
+     auto INT16U   pbos;
+-    auto INT8U    upper_nibble;
+-    auto INT16U   lower_16;
+     auto INT16U   stk_size;
+     auto INT32U   PhysAddr;
+ 
+@@ -460,25 +458,9 @@
+         if (opt & OS_TASK_OPT_STK_CHK) {          // See if stack checking has been enabled
+             if (opt & OS_TASK_OPT_STK_CLR) {      // See if stack needs to be cleared
+                                                   // Yes, fill the stack with zeros
+-                lower_16 = (INT16U)PhysAddr;
+-                upper_nibble = (INT8U)(PhysAddr >> 16);
+-                for (i = stk_size; i > 0; i--) {
+-                    #asm
+-  							 ld	hl,@sp+upper_nibble
+-							 add	hl,sp
+-	                   ld   a,(hl)	         ;a gets high nibble
+-							 ld	hl,@sp+lower_16
+-							 add	hl,sp
+-                      ld   hl,(hl)	         ;hl has lower 16 bits
+-                      push ix
+-                      ld   ix,hl             ;a:ix 20-bit phys addr for stack
+-                      bool hl
+-                      ld   l,h               ;zero hl
+-                      ldp  (ix),hl           ;write zero into stack
+-                      pop  ix
+-                    #endasm
+-                    lower_16--;
+-                }
++                // PhysAddr is the last address of the stack (e.g., ...FF), so it's
++                // necessary to add 1 to get to the starting address of the stack.
++                xmemset(PhysAddr - stk_size + 1, 0, stk_size);
+             }
+         }
+ 

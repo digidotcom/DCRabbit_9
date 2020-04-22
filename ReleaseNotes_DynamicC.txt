@@ -4,6 +4,36 @@
 
 *****************************************************************
 *****************************************************************
+VERSION 9.62A - Unreleased
+
+The bugfix for DC-391 below will be in any future (currently
+unscheduled) Dynamic C installers, but is included as a patch in
+the GitHub repository due to licensing issues with the uC/OS-II
+code.  View ucos2.patch for instructions on how to apply it.
+
+
+NEW FEATURES
+
+BUG FIXES
+
+Compiler Bugs
+
+GUI Bugs
+
+Library Bugs
+
+- DC-391: Usage of OS_TASK_OPT_STK_CLR with OSTaskCreateExt() would
+  erase an extra byte after the stack.  For stacks ending at a 64KB
+  boundary (e.g., 0x6FFFF), it would wrap to 0 (e.g., 0x60000).
+
+Sample Program Bugs
+
+RFU Bugs
+
+OTHER FUNCTIONAL CHANGES
+
+
+*****************************************************************
 VERSION 9.62
 
 NEW FEATURES

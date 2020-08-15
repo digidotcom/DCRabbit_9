@@ -147,9 +147,10 @@ extern calib DAC_iCal_Table[8];
 #else
 	// This definition of the SE1 offset overlaps last 36 bytes of SE0, but
 	// remains compatible with calibration constants stored during manufacturing.
-	// If using both SE0 CH2-7 GAIN7 with SE1 CH0-5 GAIN0, you must define
+	// SE0 Single-Ended unipolar 0 - 20V   SE1 Single-Ended bipolar +/- 10V
+	// If using both SE0 CH2-7 gain 7 with SE1 CH0-5 gain 0, you must define
 	// BL26XX_CAL_ADC_OVERLAP_FIX in your program and recalibrate the affected
-	// SE0 channels with gaincode 7 and ALL of SE1. 
+	// SE0 channels with gaincode 7 and ALL of SE1 channels.
 	#define  CAL_ADC_SE1   	(CAL_ADC_SE0 + 348)
 	#define  CAL_ADC_DIFF  	(CAL_ADC_SE1 + 348)
 #endif

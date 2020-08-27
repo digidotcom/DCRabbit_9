@@ -5,18 +5,18 @@ Hopkins, MN 55343, USA
 +1 (952) 912-3444 | +1 (877) 912-3444  
 [www.digi.com](https://www.digi.com)
 
-Dynamic C 9 Release Notes
+Dynamic C 9 Release Notes
 =========================
-### Dynamic C 9
+### Dynamic C 9
 ### Version 9.62A (August 2020)
 
 ---
 
 INTRODUCTION
 ------------
-These are the release notes for Dynamic C 9.
+These are the release notes for Dynamic C 9.
 
-[Dynamic C 9](https://www.digi.com/support/productdetail?pid=5053) is the
+[Dynamic C 9](https://www.digi.com/support/productdetail?pid=5053) is the
 IDE (Integrated Development Environment) for Digi International's core
 modules and single-board computers based on Rabbit 2000 and 3000 processors.
 
@@ -101,7 +101,7 @@ KNOWN ISSUES
        ld    hl, (hl)
        ld    iy, hl
 
-8. Memory leaks lose about 4Kbytes per compile. Close and re-open Dynamic C
+8. Memory leaks lose about 4Kbytes per compile. Close and re-open Dynamic C
    periodically to avoid problems.
 
 9. A function returning a struct does not work correctly from within a
@@ -109,7 +109,7 @@ KNOWN ISSUES
 
 10. A C statement with only a semicolon within a `#asm` block does not compile
    if the block is within a global `#asm` defined function. The "c ;" in
-   section 13.1.3 of the Dynamic C manual does compile and is within a `#asm`
+   section 13.1.3 of the Dynamic C manual does compile and is within a `#asm`
    defined function but that function is within a C defined function. Using
    `"rst 0x28"` is a suitable substitute for "c ;" within any `#asm` block.
 
@@ -136,7 +136,7 @@ KNOWN ISSUES
     low level, undocumented `_fat_config_init()` function.
 
 13. In debug run mode (as opposed to stand-alone run mode) following a program
-    termination caused by a run time exception, the Dynamic C debug kernel
+    termination caused by a run time exception, the Dynamic C debug kernel
     does not always correctly restart an application subsequent to a normal
     program termination. Symptoms can include an apparent application hang,
     non-clearing of STDIO window content before adding new content, unhandled
@@ -174,10 +174,10 @@ KNOWN ISSUES
 
 UPDATE CONSIDERATIONS
 ---------------------
-If updating an existing installation of 9.62 or earlier via the Dynamic C 9
+If updating an existing installation of 9.62 or earlier via the Dynamic C 9
 [GitHub repository](https://github.com/digidotcom/DCRabbit_9), you should
-manually apply the changes in `ucos2.patch`, found in the Dynamic C
-installation directory.  The Dynamic C 9.62A (and later) installers include
+manually apply the changes in `ucos2.patch`, found in the Dynamic C
+installation directory.  The Dynamic C 9.62A (and later) installers include
 the patched file.
 
 UPDATE BEST PRACTICES
@@ -202,7 +202,7 @@ CHANGE LOG
 ## 9.62A (August 2020)
 This is a recommended release.
 
-The big change for this release is that Dynamic C is now an [Open
+The big change for this release is that Dynamic C is now an [Open
 Source project on GitHub](https://github.com/digidotcom/DCRabbit_9).
 It includes source code to the previously-encrypted SSL libraries,
 and the license was changed to MPL 2.0 (Libraries) and ISC (Samples).
@@ -213,7 +213,7 @@ documentation.  It uses shortcuts (`.lnk` files) to launch the compiler
 with a command-line parameter of `-c A`, forcing the compiler to
 identify itself as 9.62A and use registry entries for version 9.62A.
 
-Note that the bugfix for DC-391 below is included in the Dynamic C
+Note that the bugfix for DC-391 below is included in the Dynamic C
 9.62A installer, but included as a patch in the GitHub repository
 due to licensing issues with the uC/OS-II code.  View `ucos2.patch`
 for instructions on how to apply it.
@@ -245,13 +245,13 @@ for instructions on how to apply it.
   startup.
 - Fix `ASIX.LIB` error in patch2 that broke link recovery code.
 - Fix `%g` formatting error for floats smaller than 0.1 (backported from
-  Dynamic C 10).
+  Dynamic C 10).
 - Fix "compile to RAM" on RCM3750 by updating `_Get_Stack_Size()` which
   failed for physical addresses larger than 1MB.
 - Fix Timer A registers used in `pktEopen()` of `PACKET.LIB`.
 - Don't allow expiration of existing ARP entry in `router_add()` (backported
-  from Dynamic C 10).
-- Backport changes from Dynamic C 10 to fix duplicate ACK and keepalive
+  from Dynamic C 10).
+- Backport changes from Dynamic C 10 to fix duplicate ACK and keepalive
   issues in `TCP.LIB`.
 
 ### OTHER FUNCTIONAL CHANGES
@@ -275,11 +275,11 @@ for instructions on how to apply it.
 
   Custom applications which use nand flash, whether based on e.g. RCM3365,
   RCM3900 boards or a custom nand flash board design, should be recompiled
-  using Dynamic C 9.62 with this PATCH UPDATE 2 installed in order to support
+  using Dynamic C 9.62 with this PATCH UPDATE 2 installed in order to support
   the new, increased selection of small-block nand flash devices.
 
 - Includes the content of an earlier patch which adds support to
-  Dynamic C 9.62 for a new BL2600Q board type, product ID 0x170F, comprised
+  Dynamic C 9.62 for a new BL2600Q board type, product ID 0x170F, comprised
   of an RCM3900 installed into a BL2600 base board. Please refer to the
   `README_BL2600Q_PATCH.TXT` file for details.
 
@@ -328,8 +328,8 @@ for instructions on how to apply it.
 
 ### NEW FEATURES
 - This patch includes a previous patch to add BL2600Q (an RCM3900 installed
-  into a BL2600 base board) support to Dynamic C 9.62. See
-  `README_BL2600Q_PATCH.TXT` in the main Dynamic C 9.62 installation folder
+  into a BL2600 base board) support to Dynamic C 9.62. See
+  `README_BL2600Q_PATCH.TXT` in the main Dynamic C 9.62 installation folder
   for details.
 
 - Two different new behaviors are available after a BIN file is loaded to the
@@ -343,9 +343,9 @@ for instructions on how to apply it.
        application will not run until the programming cable is disconnected.
 
   An easy place to define the desired new macro to control BIN file behavior
-  is in Dynamic C's Project Options' Defines box. Note that when neither
+  is in Dynamic C's Project Options' Defines box. Note that when neither
   `RFU_BIN_WAIT_FOR_RESET` nor `RFU_BIN_WAIT_FOR_RUN_MODE` are defined,
-  Dynamic C 9.62 behavior is per its usual. Also note that compiling in debug
+  Dynamic C 9.62 behavior is per its usual. Also note that compiling in debug
   mode when either of these macros is defined will result in a "helpful"
   error message.
 
@@ -397,7 +397,7 @@ for instructions on how to apply it.
   function no longer attempts to return a value.
 - Defect 27167 patched. The `BOOTP.LIB` library's `dhcp_init()` function now
   preserves DHCP options requests.
-- Defect 27247 patched. Dynamic C's `LIB.DIR` file has been updated to remove
+- Defect 27247 patched. Dynamic C's `LIB.DIR` file has been updated to remove
   the reference to a non-existent `RN_CFG_RCM39.LIB`.
 - Defect 27384 patched. The Remote Application Update (RAU) now correctly
   supports customizing the number of DLP images that may be stored.
@@ -415,11 +415,11 @@ for instructions on how to apply it.
   possible errant task switching if
   `OSLockNesting && --bios_intnesting == OSLockNesting`.
 - Defect 30070 patched. `Mem.lib`'s `_rs_xalloc_init()` function is patched
-  to work around a Dynamic C compiler ORG table problem with non-flagged
+  to work around a Dynamic C compiler ORG table problem with non-flagged
   battery backable RAM in "Compile to Flash, Run in RAM" compile mode.
 - Defect 30489 patched. The `BL26xx.LIB`'s `brdInit()` function now handles
   PD2 correctly for the BL2600Q's SD card detect. (A previous patch to
-  Dynamic C 9.62 was provided to support the BL2600Q - an RCM3900 core on a
+  Dynamic C 9.62 was provided to support the BL2600Q - an RCM3900 core on a
   BL2600 base board.)
 - Defect 31863 patched. The `GRAPHIC.LIB`'s `TextBorderInit()` function help
   is updated to reflect a `GRAPHIC.LIB` code patch to correctly handle either
@@ -446,7 +446,7 @@ for instructions on how to apply it.
   RTC may see an incorrect result at start up from the BIOS's bios_divider19200
   and freq_divider calculations. To prevent this baud rate miscalculation,
   non-battery-backed RTC Rabbit applications should now be compiled with
-  `ROBUST_NON_BB_BAUD_RATE_CALC` added into Dynamic C's Project Options'
+  `ROBUST_NON_BB_BAUD_RATE_CALC` added into Dynamic C's Project Options'
   Defines box.
 - Defect 38754 patched. `RS232.LIB`'s ISRs now perform ipres as the very last
   op-code before returning to pre-interrupt code. This prevents any
@@ -576,7 +576,7 @@ for instructions on how to apply it.
 - Defect #81613 fixed. Error log exception values changed.
 - Defect #81636 fixed. Nested structure and union member access
   and assignment fixed for multiple levels of structure nesting.
-- Defect #81255 fixed. Dynamic C will now exit if the project file
+- Defect #81255 fixed. Dynamic C will now exit if the project file
   is read-only.
 - Defect #81448 fixed. Dissassemble at cursor function was not
   working in libraries.
@@ -587,7 +587,7 @@ for instructions on how to apply it.
   strange behavior.
 - Defect #81455 fixed. Watches for some constant constructs not
   working.
-- Defect #81476 fixed. Dynamic C no longer can consume all
+- Defect #81476 fixed. Dynamic C no longer can consume all
   available virtual memory and effectively lock up the PC.
 - Defect #81483 fixed. Project open/close did not cancel if
   modified file close query was cancelled.
@@ -618,7 +618,7 @@ for instructions on how to apply it.
   correctly in `spa_init()` in `RS232.LIB`.
 - Defect #81570 fixed. Corrected `removeram` origin directive
   definition.
-- Defect #81574 fixed. Dynamic C crash and exit due to incorrect
+- Defect #81574 fixed. Dynamic C crash and exit due to incorrect
   origin directive definition fixed.
 - Defect #81577 fixed. `removeram` origin now defined for flash
   compile mode.
@@ -671,7 +671,7 @@ for instructions on how to apply it.
 - Defect #81578 fixed. The RFU will no longer issue an error if
   the file dropdown list exceeds 9 entries.
 - Error logging is updated to version 2. Run time exceptions are
-  now reported / recorded as negative int values and Dynamic C's
+  now reported / recorded as negative int values and Dynamic C's
   traditional run time error codes have changed. See details in
   `Lib\errno.lib` and in `Lib\BiosLib\errors.lib`.
 
@@ -683,14 +683,14 @@ for instructions on how to apply it.
 
 - Samples, libraries and documentation added to support the new
   customizable RabbitFLEX boards.
-- Dynamic C's `LIB.DIR` library files list mechanism now searches
+- Dynamic C's `LIB.DIR` library files list mechanism now searches
   for library files within a specified directory tree. The option
   to specify a complete or relative pathlist to each individual
   library file remains. Note that each library file name must
   be unique, regardless of whether the library is explicitly
   specified or is found via searching a specified directory tree.
   Also note that this feature was actually implemented in
-  Dynamic C 9.30.
+  Dynamic C 9.30.
 
 ---
 
@@ -714,7 +714,7 @@ for instructions on how to apply it.
 - Defect #81198 fixed. New compiler fixes the "RCM3700 #rcodorg
   error - out of memory" problem.
 - Defect #81199 fixed. New compiler fixes the "out of memory
-  conditions can put Dynamic C in an unusable state" problem.
+  conditions can put Dynamic C in an unusable state" problem.
 - Defect #81335 fixed. Assembler no longer generates incorrect
   binary for `rr a'` and related instructions. Note that this bug
   was actually fixed in version 9.30.
@@ -727,7 +727,7 @@ for instructions on how to apply it.
   corrupts memory.
 - Defect #81535 fixed. Lexer now properly recognizes '0h' and
   '0b'.
-- Defect #81536 fixed. RabbitLink did not work in DC 9.30.
+- Defect #81536 fixed. RabbitLink did not work in DC 9.30.
 - Defect #81539 fixed. IO bug instructions in 2000 processors at
   end of asm blocks now properly emit nops following the
   instruction.
@@ -740,9 +740,9 @@ for instructions on how to apply it.
   dialog can now be modified.
 - Defect #81491 fixed. The board description had been missing
   from the compile dialogs if the Project Options dialog had
-  never been opened since installing Dynamic C.
+  never been opened since installing Dynamic C.
 - Defect #81502 fixed. Rabbit 3000A and 4000 keywords added to
-  syntax highlighting. This was fixed for Dynamic C 9.30.
+  syntax highlighting. This was fixed for Dynamic C 9.30.
 - Defect #81462 fixed. Cursor placement is now correct when
   stepping over or into a nodebug function containing `_TRACE`.
 - Defect #81500 fixed. Leaving the execution tracing window open
@@ -751,7 +751,7 @@ for instructions on how to apply it.
   is now no longer possible for an ADC ISR to occur in the middle
   of reading the raw analog data.
 - Defect #81514 fixed. SMTP library now works correctly in
-  non-RabbitSys mode (DC 9.30-only defect).
+  non-RabbitSys mode (DC 9.30-only defect).
 - Defect #81525 fixed. `BBRAM_RESERVE_SIZE` now correctly
   calculated.
 - Defect #81526 fixed. `BBRAM_RESERVEORG` now correctly calculated

@@ -172,6 +172,12 @@ KNOWN ISSUES
     programs and re-calibrate the affected unipolar channels with gaincode
     7 and ALL of the bipolar channels with all gaincodes.
 
+17. Dynamic C 9 supports SSL 3.0 and TLS 1.0, but major web browsers are due
+    to require TLS 1.2 or later by the end of 2020.  Users who require secure
+    connections will need to use older web browser versions that still support
+    TLS 1.0, or switch to Rabbit 4000 or 6000-based hardware and make use of
+    Dynamic C 10's TLS 1.2 support.
+
 UPDATE CONSIDERATIONS
 ---------------------
 If updating an existing installation of 9.62 or earlier via the Dynamic C 9
@@ -217,6 +223,11 @@ Note that the bugfix for DC-391 below is included in the Dynamic C
 9.62A installer, but included as a patch in the GitHub repository
 due to licensing issues with the uC/OS-II code.  View `ucos2.patch`
 for instructions on how to apply it.
+
+Users of the SSL/TLS code in Dynamic C 9.62A should be aware that it only
+implements TLS 1.0 and there aren't plans to update it to TLS 1.2.  End
+users may not be able to access https webpages hosted on Rabbit 3000
+products as web browsers deprecate support of TLS 1.0.
 
 ### NEW FEATURES
 - Incorporates Serial Flash update (40002882_A) for revision E of

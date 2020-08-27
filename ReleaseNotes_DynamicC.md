@@ -251,7 +251,7 @@ products as web browsers deprecate support of TLS 1.0.
   erase an extra byte after the stack.  For stacks ending at a 64KB
   boundary (e.g., 0x6FFFF), it would wrap to 0 (e.g., 0x60000).
 - RCM-94: support 45DB642D serial flash devices with 1024-byte page size.
-- RCM-126: add RCM3900/disable_ethernet.c to disable ASIX Ethernet when
+- RCM-126: add `RCM3900/disable_ethernet.c` to disable ASIX Ethernet when
   not using TCP/IP.  Chip generates excess heat if not initialized at
   startup.
 - Fix `ASIX.LIB` error in patch2 that broke link recovery code.

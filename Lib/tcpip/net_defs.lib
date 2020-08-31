@@ -670,6 +670,10 @@ typedef struct _tcp_socket {
 #define TCP_KF_SEGCHAIN		0x2000	/* Currently transmitting a segment chain */
 #define TCP_KF_NOARP			0x4000	/* Suspended due to out-of-date ARP cache
 													entry */
+#define TCP_KF_DUPACK_SS	0x8000	/* "dupack sendsoon".  This set on every
+                                       rx duplicate ack, and indicates we
+                                       should retransmit the missing pkt
+                                       after a timeout. */
 	short				ackdupct;		/* Count of duplicate acks received.
 												Incremented when an ack arrives that equals
 												the start of unacked data.  Reset to 0 when

@@ -367,6 +367,45 @@ long _rk_xsbreak;
 #endif
 long _rk_xubreak;
 
+/* START FUNCTION DESCRIPTION ********************************************
+_xalloc                                                          <MEM.LIB>
+SYNTAX:
+   long _xalloc(long * sz, word align, word type);
+
+DESCRIPTION:
+   Allocates memory in extended memory.  If _xalloc() fails, a runtime
+   error will occur.
+
+PARAMETER1:
+   sz - On entry, pointer to the number of bytes to allocate.  On return,
+        the pointed-to value will be updated with the actual number of
+        bytes allocated.  This may be larger than requested if an odd
+        number of bytes was requested, or if some space was wasted at the
+        end because of alignment restrictions.
+
+PARAMETER2:
+   align - Storage alignment as the log (base 2) of the desired returned
+           memory starting address.  For example, if this parameter is
+           "8," then the returned address will align on a 256-byte
+           boundary.  Values between 0 and 16 inclusive are allowed.  Any
+           other value is treated as zero, i.e., no required alignment.
+
+PARAMETER3:
+   type - This parameter is only meaningful on boards with more than one
+          type of RAM.  For example, boards with a fast RAM and a slower
+          battery-backed RAM.  Use one of the following values, any other
+          value will have undefined results:
+            XALLOC_ANY (0) - any type of SRAM storage allowed;
+            XALLOC_BB (1) - must be battery-backed (slow) SRAM;
+            XALLOC_NOTBB (2) - return non-battery-backed (fast) SRAM only;
+            XALLOC_MAYBBB (3) - return non-battery-backed SRAM in
+                                preference to battery-backed SRAM.
+RETURN VALUE:
+   On success, the physical address of the allocated data.
+
+   On error, a runtime exception (ERR_BADXALLOC) occurs, as when _xalloc
+   can not allocate requested storage or if negative size is requested.
+END DESCRIPTION *********************************************************/
 _rk_mem_debug
 _system long _rs_xalloc(long * szp, word alignm, word type)
 {

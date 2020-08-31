@@ -188,7 +188,7 @@ FSLXnum	fs_ext;
 #use "dcrtcp.lib"
 #use "http.lib"
 
-#use REMOTEUPLOADDEFS.LIB
+#use "ZNETSUPPORT.LIB"
 
 #use "zconsole.lib"
 

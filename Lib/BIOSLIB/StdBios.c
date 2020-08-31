@@ -404,9 +404,16 @@ struct _errLogInfo
 
 #define SID_XMEMORYSIZE SID_64KADJUSTMENT-SID_XCODE_START
 
-#if (RAM_COMPILE || FAST_RAM_COMPILE)
-	// Calculate available Xmem size for RAM compile modes
+#if RAM_COMPILE
+	// Calculate available Xmem size for RAM compile mode
 	#define XMEMORYSIZE RAM_SIZE*4096L-(XMEM_RAM_RESERVE)
+#elif FAST_RAM_COMPILE
+ #ifndef FLASH_USERBLOCK_SIZE
+	#define FLASH_USERBLOCK_SIZE MAX_USERBLOCK_SIZE
+ #endif
+	// Calculate available Xmem size for fast RAM compile mode
+	#define XMEMORYSIZE FLASH_SIZE * 4096L - \
+	                     (SID_64KADJUSTMENT + XCODE_START + FLASH_USERBLOCK_SIZE)
 #endif
 
 #if FAST_RAM_COMPILE

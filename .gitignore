@@ -3,6 +3,7 @@
 *.bmp
 *.bpl
 *.chm
+*.chw
 *.cnt
 *.dat
 *.dll
@@ -36,6 +37,7 @@
 !Bios/*.bin
 
 codelog.txt
+DC.OUT
 DCW.CFG
 dcwd.ctx
 Default.dcp

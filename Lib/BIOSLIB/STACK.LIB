@@ -538,6 +538,7 @@ unsigned _Get_Stack_Size(long ptr) {
 		ex de, hl
 		ld (sp+@sp+ptr), hl
 	#endasm
+	ptr &= 0xfffffL;   // only compare bottom 20 bits to entries in freeStacks
 	for(i = 1; i < TOTAL_STACK_CNT ; i++) {
 		if(ptr > (freeStacks[i] & 0xfffffL) && ptr <= (freeStacks[i-1] & 0xfffffL)) {
 #if (DK_ENABLE_STACK_TRACING == 1)

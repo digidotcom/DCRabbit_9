@@ -14,6 +14,14 @@
  *	Defines:
  *		TCP_VERBOSE - Print messages depending on runtime value of debug_on variable
  *		TCP_DEBUG - turn off any "nodebugs" so one can step into TCP functions
+ *
+ * Change History:
+ *   2014/09/10  SJH  Fixed keepalive handling (Issue DC-215)
+ *  2015-03-27  SJH  Added test for non-zero length in tcp_write() to prevent
+ *                   interference with retransmission in the case that
+ *                   there is unacknowledged data, and the socket buffer
+ *                   is also full.
+ *                   This fix associated with Jira DC-220.
  */
 /*** BeginHeader */
 #ifndef TCP_H
@@ -1403,6 +1411,13 @@ _tcp_nodebug void tcp_Retransmitter( void )
 				else if (s->kflags & TCP_KF_SENDSOON)
 					s->sendsoons++;
 #endif
+				if (s->kflags & TCP_KF_DUPACK_SS) {
+#ifdef TCP_VERBOSE_DUPACK
+					printf("TCP: sendsoon dupack triggered\n");
+#endif
+					s->kflags &= ~TCP_KF_DUPACK_SS;
+					s->kflags |= TCP_KF_DUPACK;
+				}
             tcp_send(s, 20);
          }
 
@@ -1948,7 +1963,7 @@ _tcp_nodebug int tcp_write( _rs_tcp_Socket *s, long dp, int len )
          #endif
                tcp_send( s, 41 );
             }
-            else {
+            else if (len) {
             	// Otherwise, we have unack'd data and less than one MTU to send.  Normally,
                // an ACK for the unacknowledged data we sent will arrive before this, which
                // will keep things moving.  Otherwise, we rely on timeout.
@@ -2236,6 +2251,11 @@ ll_prefix * tcp_handler(ll_prefix * LL, byte * hdrbuf);
 
 _tcp_nodebug int _tcp_process_ack(_rs_tcp_Socket * s, int diff)
 {
+   if (s->kflags & TCP_KF_SYN && diff > 0) {
+   	s->kflags &= ~TCP_KF_SYN;
+      --diff;
+		s->seqnum++;	// Account for the acked syn
+   }
 	// Cannot have acked more than we sent (except +1 for FIN if we sent it)
 	if (diff == s->unacked + 1 && s->kflags & TCP_KF_FIN) {
 		diff--;
@@ -2259,9 +2279,25 @@ _tcp_nodebug int _tcp_process_ack(_rs_tcp_Socket * s, int diff)
       	s->startpt = 0;
       s->window -= diff;
       s->seqnum += diff;
-   	if (s->kflags & TCP_KF_UNHAPPY)
-   		// Any advance extends the timeout timer.
-   		s->rtt_time = _SET_TIMEOUT(s->rto);
+   	if (s->kflags & TCP_KF_UNHAPPY) {
+   		//v24366 - this test added to suppress some unnecessary ACKs
+   		// being generated...
+   		// If everything now ack'd, turn off unhappy provided we are not
+   		// unhappy for a different reason
+			if (!s->unacked &&
+			    !(s->kflags & (TCP_KF_SYN | TCP_KF_FIN) ||
+   	         /*!s->window &&*/ s->wr.len))
+				s->kflags &= ~TCP_KF_UNHAPPY;
+			else {
+	         // Any advance extends the timeout timer.
+	         s->rtt_time = _SET_TIMEOUT(s->rto);
+         	if (!s->unacked && s->wr.len) {
+            	// End of a nagle delay, since nothing unacked yet more data
+               // to send, so sendsoon.
+					tcp_sendsoon(s, TCP_MINRTO, 99);
+            }
+         }
+   	}
    #ifdef TCP_DATAHANDLER
    	if (s->dataHandler)
    		s->dataHandler(TCP_DH_OUTBUF, s, NULL, NULL);
@@ -2549,18 +2585,10 @@ _tcp_nodebug ll_prefix * tcp_handler(ll_prefix * LL, byte * hdrbuf)
          );
 #endif
 
-	/*
-		Got something from the remote host, reset the keepalive timer if active
-		and a connection is either not yet established or it's not an attempt to
-		establish a bogus connection (e.g. a re-booted remote host has re-used its
-		previous port number and resends SYN) that should be timed out.
-	*/
-	if (s->keepalive_time && (s->state < tcp_StateESTAB || !(flags&tcp_FlagSYN)))
-		tcp_reset_keepalive(s);
 
 	/* reset code */
    if( flags & tcp_FlagRST ) {
-   	// Resets ignored in listen state, or if no ACK provided.
+   	// Resets ignored in listen or time_wait states, or if no ACK provided.
   		// Also, check that reset is "believable" i.e. should have no ACK or
   		// have an ACK somewhere between s->seqnum and s->seqnum+s->unacked.
   		// If no ACK, then his sequence number must be at the right place.
@@ -2568,9 +2596,11 @@ _tcp_nodebug ll_prefix * tcp_handler(ll_prefix * LL, byte * hdrbuf)
       // Note: we allow his seq number to be one more than unacked, to account
       // for cases where we just sent a SYN or FIN.  This is not strictly
       // correct, but is near enough for practical cases.
-   	if (!(s->state & tcp_StateLISTEN) &&
+      // Also, his ack number may be one less than our seq, since it may be
+      // a response to a keepalive packet we sent.
+   	if (!(s->state & (tcp_StateLISTEN|tcp_StateTIMEWT)) &&
    	    (flags & tcp_FlagACK
-   	       && (long)(hisack - s->seqnum) >= 0L
+   	       && (long)(hisack - s->seqnum) >= -1L
    	       && (long)(hisack - (s->seqnum+s->unacked)) <= 1L
    	     || !(flags & tcp_FlagACK) && hisseq == s->acknum)) {
 #ifdef TCP_VERBOSE
@@ -2591,6 +2621,15 @@ _tcp_nodebug ll_prefix * tcp_handler(ll_prefix * LL, byte * hdrbuf)
       }
       goto _th_finish;
    }
+
+	/*
+		Got something from the remote host, reset the keepalive timer if active
+		and a connection is either not yet established or it's not an attempt to
+		establish a bogus connection (e.g. a re-booted remote host has re-used its
+		previous port number and resends SYN) that should be timed out.
+	*/
+	if (s->keepalive_time && (s->state < tcp_StateESTAB || !(flags&tcp_FlagSYN)))
+		tcp_reset_keepalive(s);
 
    if( sock_inactive )
       s->inactive_to = _SET_TIMEOUT( sock_inactive*1000L );
@@ -2622,8 +2661,14 @@ _tcp_nodebug ll_prefix * tcp_handler(ll_prefix * LL, byte * hdrbuf)
    	if ((long)(winright - (s->seqnum + s->window)) > 0) {
    		winadv = 1;
    		winright -= s->seqnum;
-   		if (winright > 32767)
-   			s->window = 32767;	// the most we are interested in
+   		//v24366 - 32k test removed, since it causes error when peer has
+   		//  >32k window.  s->window is unsigned so code must be careful.
+   		//v25834 - test put back, except with 64k-1 limit, since peers with
+   		//  window size of 65535 can cause problems with arithmetic overflow.
+   		//  This may occur at start-up, since "previous window size" is not
+   		//  meaningful.
+   		if (winright > 65535uL)
+   			s->window = 65535u;	// the most we are interested in
    		else
    			s->window = (unsigned)winright;
 	   	// The window has been advanced.  If there is at least one MSS worth
@@ -2651,11 +2696,22 @@ _tcp_nodebug ll_prefix * tcp_handler(ll_prefix * LL, byte * hdrbuf)
    		// If no advance (but not probing or just a window advance) do duplicate ack processing
    		if (!diff && s->window > 1 && !winadv) {
    			s->ackdupct++;
-#ifdef TCP_VERBOSE
-	         if (debug_on > 3)
-	            printf("%s duplicate ack %d\n", printsock(s), s->ackdupct);
+#ifdef TCP_VERBOSE_DUPACK
+		 		printf("TCP: dupack count now %d\n", s->ackdupct);
 #endif
-   			if (s->ackdupct == TCP_DUPACKS) {
+   			s->kflags |= TCP_KF_DUPACK_SS;
+   			tcp_sendsoon(s, 1000 /*TCP_MINRTO*/, 42);
+				// v24366 - this used to be a simple equality test, however it needs to be
+				// a modular comparison since it is possible for the peer to also miss our initial
+				// fast retransmit.  Thus, do the retransmit every N times the dupack count.
+   			if (!(s->ackdupct % TCP_DUPACKS)) {
+#ifdef TCP_VERBOSE_DUPACK
+					printf("TCP: - dupack count mod %d == 0\n", TCP_DUPACKS);
+#endif
+#ifdef TCP_VERBOSE
+	         	if (debug_on > 3)
+	            	printf("%s duplicate ack %d\n", printsock(s), s->ackdupct);
+#endif
    				// Got too many duplicate ACKs i.e. it seems that the
    				// peer missed one of our segments and he is trying to
    				// tell us!  Set a special retransmit flag
@@ -2684,6 +2740,12 @@ _tcp_nodebug ll_prefix * tcp_handler(ll_prefix * LL, byte * hdrbuf)
    		}
    		else if (diff > 0) {
    			// Got advance, turn off pending dup ack processing
+   			if (s->kflags & TCP_KF_DUPACK_SS) {
+#ifdef TCP_VERBOSE_DUPACK
+					printf("TCP: sendsoon dupack cancelled, advanced %d\n", diff);
+#endif
+   				s->kflags &= ~(TCP_KF_DUPACK_SS | TCP_KF_SENDSOON);
+				}
    			// Perform VJ slow start/congestion avoidance (sender flow control)
    			if (s->ackdupct >= TCP_DUPACKS) {
 #ifdef TCP_VERBOSE
@@ -2694,6 +2756,9 @@ _tcp_nodebug ll_prefix * tcp_handler(ll_prefix * LL, byte * hdrbuf)
   					s->cwnd = s->ssthresh - s->frunack;
   					if ((int)s->cwnd < (int)s->mss)
   						s->cwnd = s->mss;
+#ifdef TCP_VERBOSE_DUPACK
+					printf("TCP: dupack cancelled, advanced %d, ackdupct %d\n", diff, s->ackdupct);
+#endif
    				s->kflags &= ~TCP_KF_DUPACK;
    				s->ackdupct = 0;
 	   		}
@@ -2905,12 +2970,14 @@ _th_SYNDATA_JUMP:
       }
    }
 	else if (s->state & tcp_StateSYNREC) {   /* recSYNSENT, sentACK, waiting  EST */
+	   send_ack |= tcp_ProcessData(s, tp, len, LL, &flags, hdrbuf);
+
       if( flags & tcp_FlagSYN && !(flags & tcp_FlagACK)) {
       	// He retransmitted SYN
          send_ack = 1;
          s->timeout = _SET_TIMEOUT( TCP_CONNTIMEOUT );
       }
-      else if (diff == 1) {	// Must have got ACK of our SYN
+      else if (diff >= 1) {	// Must have got ACK of our SYN
          tcp_setstate(s, tcp_StateESTAB);
          s->seqnum++;
          s->timeout = 0;     /* never timeout */
@@ -3380,9 +3447,13 @@ xmem _tcp_nodebug void _tcp_send( _rs_tcp_Socket *s )
    g.data1 = &ph;		// Initial, for checksum computation
    g.len1 = sizeof(ph);
 
-   if (s->kflags & TCP_KF_DUPACK)
+   if (s->kflags & TCP_KF_DUPACK) {
    	// Duplicate ACK processing; restart from beginning, but only send one segment.
+#ifdef TCP_VERBOSE_DUPACK
+		printf("TCP: dupack retransmit!\n");
+#endif
    	startdata = 0;
+	}
    else
    	// Otherwise continue from where left off -- may be retransmission if startpt < unacked.
    	startdata = s->startpt;
@@ -3535,6 +3606,11 @@ xmem _tcp_nodebug void _tcp_send( _rs_tcp_Socket *s )
    	printf("%s retransmitting back %u from unack\n", printsock(s), s->unacked - startdata);
 #endif
 
+#ifdef TCP_VERBOSE_DUPACK
+//	printf(".\n");
+	if (senddatalen == 1460)
+		printf("big!\n");
+#endif
    if (pkt_gather(&g)) {
      	// Transmit error.  Short sendsoon.
 #ifdef TCP_VERBOSE
@@ -3714,6 +3790,9 @@ _tcp_nodebug void tcp_rst(ll_prefix * LL, byte * hdrbuf, tcp_Header *oldtcpp )
 	   printf("TCP: sending RST ack=%lu from %u to %08lX:%u\n",
       	acknum, intel16(tcpp->srcPort), intel(inp->destination), intel16(tcpp->dstPort));
 #endif
+#ifdef TCP_VERBOSE_DUPACK
+	printf(".r\n");
+#endif
    pkt_gather(&g);
 }
 
@@ -3791,6 +3870,9 @@ _tcp_nodebug void tcp_pendingpkt(tcp_Pending *p, word flags, int windowsize)
    ph.checksum = fchecksum(&pkt->tcp, sendtotlen - sizeof(in_Header));
    tcpp->checksum =  ~fchecksum(&ph, sizeof(ph));
 
+#ifdef TCP_VERBOSE_DUPACK
+	printf(".p\n");
+#endif
    g.len1 = sendtotlen + ((byte *)inp - (byte *)g.data1);
 #ifdef TCP_VERBOSE
 	if (debug_on > 4)
@@ -4895,7 +4977,7 @@ void sock_update( _rs_tcp_Socket *s );
 /*** EndHeader */
 
 /*
- * sock_update - update the socket window size to the other guy
+ * sock_update - update this socket window size to the peer
  */
 _tcp_nodebug void sock_update( _rs_tcp_Socket *s )
 {

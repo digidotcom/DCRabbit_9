@@ -1,0 +1,105 @@
+[Targetless Compile]
+Board ID=0x0102
+CPU ID=2000
+Crystal Speed MHz=11.0592
+RAM Size KBytes=128
+Flash Size KBytes=128
+Description=14MHz BL1820, 128K SRAM, 128K Flash
+CPU Revision=3
+[COMM]
+port=1
+coldload baud=2400
+pilot baud=57600
+bios baud=115200
+stop bits=0
+use TCP=0
+TCP Port=4244
+Serial Response Timeout=100
+Ethernet Response Timeout=8000
+Serial Retry Count=10
+Ethernet Retry Count=0
+TCP Name=
+Net Address=
+Serial Poll Interval=3000
+Ethernet Poll Interval=30000
+Verify DSR=1
+Use USB to Serial Converter=0
+USB to Serial Delay=2000
+Debug Tag RAM Offset=0x1002
+Disable Baud Negotiation=0
+Pilot Bios Physical Address=0x4000
+Max Negotiated Baud=460800
+Flash erase timeout=10000
+port list=COM1,COM2,COM3,COM4,COM5,COM6,COM7,COM8
+[Compiler Options]
+All Serious None=A
+RTC Indices=0
+RTC Pointers=0
+Optimize For Size=0
+Prototypes=1
+Demotion=1
+Pointers=1
+Separate Instruction and Data=0
+Max Errors Shown=30
+Max Warnings Shown=30
+In RAM=1
+Restrict Watch Expressions=1
+Default Compile Mode=1
+BIOS Memory Mode=1
+Generate List Files=1
+Inline Internal IO Functions=0
+[Dynamic C Files]
+Use Lib File=0
+Use BIOS File=1
+LIB File=
+BIOS File=.\rabbitbios_use_to_compile_pilot.c
+RTI File=
+Cold Loader File=..\Bios\coldload.bin
+Pilot BIOS File=..\Bios\pilot.bin
+Use Default Source File=0
+Default Source File=
+[Debug Options]
+Enable Breakpoints=0
+Enable Instruction Level Single Step=0
+Enable Watch Expressions=0
+Max Breakpoints=32
+Max Watch Expressions=8
+Watch Memory for Structs=0
+Enable Tracing=0
+Trace Buf Size=8
+Enable Trace Buf Wrap=0
+Enable Trace RST=1
+Enable Trace Functions=1
+Trace Info Func=1
+Trace Info Action=1
+Trace Info Time=1
+Trace Info File=1
+Trace Info Line/Col=1
+Trace Info Repeat=1
+Trace Info Reg=1
+Enable Trace Auto Save=1
+Trace Auto Save File=
+Enable Stack Tracing=0
+Stack Tracing Memory=4096
+Enable debug kernel=0
+[Include BIOS]
+Include BIOS=0
+[Output File]
+Auto open STDIO=1
+Log STDIO=0
+Append=0
+Output File Name=DC.OUT
+[MRU File List]
+FileList=
+[Open Files]
+Number Open=0
+[Include RST 28]
+Include RST=0
+[Poll Target]
+Poll target while running=0
+[MRU Files]
+FileCount=0
+[Compression Utility]
+Zimport External Utility=ZCOMPRESS.EXE
+[DEFINES]
+Defines=PILOT_BIOS ; FLASHWR_ALL_USE_ACTUAL_WRITEMODE=1 ; atmelFORCED_BYTEMODEERASECMD=0x30 ; winbondFORCED_BYTEMODEERASECMD=0x50 ; sstFORCED_BYTEMODEERASECMD=0x20 ;ÿ_SYSTEM=0 ; _USER=0 ; _system ; _stub ;

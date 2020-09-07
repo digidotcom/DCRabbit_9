@@ -1,8 +1,14 @@
 /*
+   Copyright (c) 2020 Digi International Inc.
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
+/*
  *		makecold.cpp
- *		Copyright (C) Z-World (jjb)
  *		This program builds a "tripletized" coldloader file from
- *		a *.bin file.
+ *		a *.bin file. (jjb)
  *
  *
  *		To make this work you have to change a couple of the compiler

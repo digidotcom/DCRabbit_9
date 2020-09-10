@@ -178,6 +178,11 @@ KNOWN ISSUES
     TLS 1.0, or switch to Rabbit 4000 or 6000-based hardware and make use of
     Dynamic C 10's TLS 1.2 support.
 
+18. When generating .HEX files, the compiler incorrectly pads the length to
+    a multiple of 32, using bytes from the previous block of 32 bytes.  The
+    generated .BIN file is the correct length and contains a complete
+    firmware image.
+
 UPDATE CONSIDERATIONS
 ---------------------
 If updating an existing installation of 9.62 or earlier via the Dynamic C 9

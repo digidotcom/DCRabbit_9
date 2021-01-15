@@ -4959,12 +4959,13 @@ _system int _rs_sock_puts( _rs_tcp_Socket *s, byte *dp )
         	s->sock_mode |= TCP_LOCAL;
       	_rs_sock_noflush(s);
       	if (len)
-      		_rs_sock_write(s, dp, len );
+      		len = _rs_sock_write(s, dp, len );
       	_rs_sock_flushnext(s);
-      	_rs_sock_write(s, (byte *)"\r\n", 2 );
+      	if (len >= 0 && _rs_sock_write(s, (byte *)"\r\n", 2 ) < 0)
+      		len = -1;
    	} else {
       	_rs_sock_flushnext(s);
-      	_rs_sock_write( s, dp, len );
+      	len = _rs_sock_write( s, dp, len );
    	}
    } else
    	len = -1;
@@ -5307,3 +5308,4 @@ char *sockstate( void *s )
 /*** BeginHeader */
 #endif
 /*** EndHeader */
+

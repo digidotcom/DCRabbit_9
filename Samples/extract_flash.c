@@ -55,22 +55,38 @@
 	the IDE running, be sure to choose "Close Connection" from the "Run" menu
 	to free up the serial port.
 	
-		C:\DCRABBIT_9.62>dccl_cmp Samples\extract_flash.c
-		
+		C:\DCRABBIT_9.62>dccl_cmp Samples\extract_flash.c -mr -d VERBOSE
+
+	If extract_flash can't determine the size of the firmware image, you can try
+	defining the following macros (by adding "-d MACRONAME" to the command line):
+	
+		ALTERNATE_PATTERN: Try another pattern to find prog_param on firmware
+		                   built with "Separate I&D" disabled.
+
+		SCAN_FOR_END: Skip over the System ID Block and User Blocks at the upper
+		              end of the flash, then skip over 0xFF bytes to find the
+		              end of the actual firmware image.
+
 	Then run again with DUMP_FIRMWARE defined to create a base64-encoded file.
 	NOTE: This will take minutes to complete -- be patient!  You can monitor
 	progress by checking the file size in another window.
 	
-		C:\DCRABBIT_9.62>dccl_cmp Samples\extract_flash.c -d DUMP_FIRMWARE > firmware.b64
+		C:\DCRABBIT_9.62>dccl_cmp Samples\extract_flash.c -mr -d DUMP_FIRMWARE > firmware.b64
 
 	Then use the Windows program CERTUTIL.EXE to convert it to a binary file:
 	
 		C:\DCRABBIT_9.62>certutil -decode firmware.b64 firmware.bin
 
+	Note that you may need to edit the .b64 file to remove any compiler warnings
+	written before the base64-encoded data.
+	
 	You should now be able to program a new board with firmware.bin using RFU.
 	
 	If you want an image of the entire flash, define the macro DUMP_FLASH
-	instead of DUMP_FIRMWARE.
+	instead of DUMP_FIRMWARE.  In this case, you'll need to locate the end
+	of the actual firmware and truncate the file.  Expect to see a System ID
+	Block at the top of the flash, User Data Blocks below that, and then a
+	run of 0xFF bytes before the actual firmware image.
 
 	Configuration Options
 	=====================
@@ -86,7 +102,8 @@
 /*
 	
 /*	(Optional) Define the macro ALTERNATE_PATTERN to search for the prog_param
-	structure using the XDB/XDE fields instead of the RCDB/RCDE fields. */
+	structure using the RCDB/RCDE fields instead of the XDB/XDE fields.  Note
+	that this pattern is not present if compiled with Separate I&D enabled. */
 //#define ALTERNATE_PATTERN
 
 /* (Optional) Define the macro VERBOSE to print contents of prog_param. */
@@ -115,7 +132,9 @@
 
 // Dynamic C 9 does not support defined() in preprocessor
 #ifndef DUMP_FLASH
-	#define SEARCH_PROG_PARAM
+	#ifndef SCAN_FOR_END
+		#define SEARCH_PROG_PARAM
+	#endif
 #endif
 #ifdef DUMP_FIRMWARE
 	#define DUMPING_BASE64
@@ -125,8 +144,9 @@
 	#endif
 #endif
 
-#ifndef ALTERNATE_PATTERN
-// Search for this signature from the prog_param.RCDB/RCDE
+#ifdef ALTERNATE_PATTERN
+// Search for this signature from the prog_param.RCDB/RCDE (will not work for
+// images with Separate I&D enabled).
 const char search_pattern[] = { 0xFF, 0xFF, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00 };
 #define PATTERN_OFFSET 32
 #else
@@ -139,6 +159,40 @@ const char search_pattern[] = { 0x00, 0xE0, 0x7E, 0x00, 0x00, 0xE0, 0x7E, 0x00 }
 // keep a buffer of the start of flash so we can hopefully find the prog_param
 char flash_start[12*1024];
 
+
+unsigned long try_sysid_block(void)
+{
+	struct userBlockInfo uBI;
+	unsigned long search_addr, value;
+
+	GetUserBlockInfo(&uBI);
+	if (!uBI.addrA) {
+		#ifdef VERBOSE
+			printf("\nNo valid User block found on this board!\n");
+		#endif
+		return 0;
+	}
+	#ifdef VERBOSE
+		printf("Searching for end of firmware before UserBlock @ 0x%08LX\n", uBI.addrA);
+	#endif
+	search_addr = (uBI.addrB ? uBI.addrB : uBI.addrA) - 4;
+	for (; search_addr > 0; search_addr -= 4) {
+		value = xgetlong(BASE_ADDR + search_addr);
+		if (value != 0xFFFFFFFF) {
+			#ifdef VERBOSE
+				printf("found last portion @0x%06lX = 0x%08lX\n", search_addr, value);
+			#endif
+			return search_addr + 4;
+		}
+	}
+	
+   #ifdef VERBOSE
+      printf("Flash mapping error?  All bytes are 0xFF\n");
+   #endif
+	return 0;
+}
+
+
 #define PRINT_ADDR24(x, desc) \
 	printf(desc " %02X:%04X to %02X:%04X\n", \
 	flash_prog_param->x##B.aaa.a.base, flash_prog_param->x##B.aaa.a.addr, \
@@ -150,10 +204,12 @@ int main()
 	char flash_buffer[CHUNK_SIZE];
 	char *p, *end;
 	struct progStruct *flash_prog_param;
+	int i;
 	unsigned int copy;
 	unsigned long addr;
 	unsigned long dump_bytes, firmware_size;
 	
+	dump_bytes = 0;
 	flash_prog_param = NULL;
 	
 #if FLASH_SIZE == 512>>2
@@ -166,24 +222,36 @@ int main()
 	WrPortI(MB3CR, &MB3CRShadow, FLASH_WSTATES | 0x00);
 	_InitFlashDriver(0x08);
 #endif
-	
-	dump_bytes = FLASH_BYTES;
 
+#ifdef SCAN_FOR_END
+	dump_bytes = try_sysid_block();
+#endif
+
+	if (dump_bytes == 0) {
+		dump_bytes = FLASH_BYTES;
+	}
+	
 #ifdef SEARCH_PROG_PARAM
-	xmem2root(flash_start, BASE_ADDR, sizeof flash_start);
-	end = &flash_start[sizeof flash_start - 8];
-	for (p = flash_start; p < end; ++p) {
-		p = memchr(p, search_pattern[0], end - p);
-		if (p == NULL) {
+	// Check for struct progStruct from 0x0000 to 0x3000 or 0x10000 to 0x13000
+	// (which is the location if Separate Instruction & Data enabled).
+	flash_prog_param = NULL;
+	for (i = 0; flash_prog_param == NULL && i < 2; ++i) {
+		xmem2root(flash_start, BASE_ADDR + (i * 0x10000ul), sizeof flash_start);
+		end = &flash_start[sizeof flash_start - 8];
+		for (p = flash_start; p < end; ++p) {
+			p = memchr(p, search_pattern[0], end - p);
+			if (p == NULL) {
+				break;
+			}
+			if (memcmp(p, search_pattern, 8)) {
+				continue;
+			}
+			flash_prog_param = (void *)(p - PATTERN_OFFSET);
+			dump_bytes = flash_prog_param->HPA.aaa.a.addr +
+				(flash_prog_param->HPA.aaa.a.base << 12lu);
+			dump_bytes &= 0xFFFFF;	// mask to 20 bits
 			break;
 		}
-		if (memcmp(p, search_pattern, 8)) {
-			continue;
-		}
-		flash_prog_param = (void *)(p - PATTERN_OFFSET);
-		dump_bytes = flash_prog_param->HPA.aaa.a.addr +
-			(flash_prog_param->HPA.aaa.a.base << 12lu);
-		break;
 	}
 
 #ifndef DUMPING_BASE64
@@ -208,7 +276,7 @@ int main()
 			PRINT_ADDR24(RD, "root data");
 			PRINT_ADDR24(XD, "extended data");
 			PRINT_ADDR24(RCD, "root constant data");
-			printf("HPA 0x%06lX (%lu bytes)\n", dump_bytes, dump_bytes);
+			printf("HPA 0x%05lX (%lu bytes)\n", dump_bytes, dump_bytes);
 			printf("auxStk 0x%04X to 0x%04X\n",
 				flash_prog_param->auxStkB, flash_prog_param->auxStkE);
 			printf("stk 0x%04X to 0x%04X\n",
@@ -219,20 +287,23 @@ int main()
 				flash_prog_param->heapB, flash_prog_param->heapE);
 			printf("\n");
 		#endif // VERBOSE
-		if (dump_bytes > FLASH_BYTES) {
-			printf("Calculated %lu-byte firmware larger than %lu-byte flash\n",
-				dump_bytes, FLASH_BYTES);
-		} else {
-			printf("Define DUMP_FIRMWARE to extract %lu-byte firmware image.\n",
-				dump_bytes);
-		}
+	}
+#endif // ! DUMPING_BASE64
+#endif // SEARCH_PROG_PARAM
+
+#ifndef DUMPING_BASE64
+	if (dump_bytes > FLASH_BYTES) {
+		printf("Calculated %lu-byte firmware larger than %lu-byte flash\n",
+			dump_bytes, FLASH_BYTES);
+	} else if (dump_bytes != FLASH_BYTES) {
+		printf("Define DUMP_FIRMWARE to extract %lu-byte firmware image.\n",
+			dump_bytes);
 	}
 	printf("Define DUMP_FLASH to extract entire %uKB flash.\n",
 		(unsigned)FLASH_SIZE << 2);
 	return 0;
 #endif // ! DUMPING_BASE64
-#endif // SEARCH_PROG_PARAM
-
+	
 	addr = BASE_ADDR;
 	while (dump_bytes) {
 		copy = CHUNK_SIZE;

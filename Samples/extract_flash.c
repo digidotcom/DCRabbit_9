@@ -116,20 +116,6 @@
 
 #use "base64.lib"
 
-#if FLASH_SIZE == 512>>2
-	#define BASE_ADDR   0x80000ul
-	#define FLASH_BYTES 0x80000ul
-#elif FLASH_SIZE == 256>>2
-	#define BASE_ADDR   0xC0000ul
-	#define FLASH_BYTES 0x40000ul
-#elif FLASH_SIZE == 128>>2
-	#warns "128KB flash untested and based on guesses about the memory map!"
-	#define BASE_ADDR   0xC0000ul
-	#define FLASH_BYTES 0x20000ul
-#else
-	#fatal "Unexpected flash size."
-#endif
-
 // Dynamic C 9 does not support defined() in preprocessor
 #ifndef DUMP_FLASH
 	#ifndef SCAN_FOR_END
@@ -160,7 +146,7 @@ const char search_pattern[] = { 0x00, 0xE0, 0x7E, 0x00, 0x00, 0xE0, 0x7E, 0x00 }
 char flash_start[12*1024];
 
 
-unsigned long try_sysid_block(void)
+unsigned long try_sysid_block(unsigned long base_addr)
 {
 	struct userBlockInfo uBI;
 	unsigned long search_addr, value;
@@ -177,7 +163,7 @@ unsigned long try_sysid_block(void)
 	#endif
 	search_addr = (uBI.addrB ? uBI.addrB : uBI.addrA) - 4;
 	for (; search_addr > 0; search_addr -= 4) {
-		value = xgetlong(BASE_ADDR + search_addr);
+		value = xgetlong(base_addr + search_addr);
 		if (value != 0xFFFFFFFF) {
 			#ifdef VERBOSE
 				printf("found last portion @0x%06lX = 0x%08lX\n", search_addr, value);
@@ -209,26 +195,32 @@ int main()
 	unsigned long addr;
 	unsigned long dump_bytes, firmware_size;
 	
+	unsigned long flash_bytes;
+	unsigned long base_addr;
+		
+	flash_bytes = (SysIDBlock.flashSize + SysIDBlock.flash2Size) << 12ul;
+	if (flash_bytes == 512ul * 1024) {
+		// 512KB of flash (single or 2x256KB) mapped to MB2 and MB3
+		base_addr = 0x80000ul;
+		WrPortI(MB2CR, &MB2CRShadow, FLASH_WSTATES | 0x00);
+		WrPortI(MB3CR, &MB3CRShadow, FLASH_WSTATES | 0x00);
+		_InitFlashDriver(0x0C);
+	} else {
+		// single flash (256KB or 128KB?) mapped to MB3
+		base_addr = 0xC0000ul;
+		WrPortI(MB3CR, &MB3CRShadow, FLASH_WSTATES | 0x00);
+		_InitFlashDriver(0x08);
+	}
+
 	dump_bytes = 0;
 	flash_prog_param = NULL;
 	
-#if FLASH_SIZE == 512>>2
-	// 512KB of flash (single or 2x256KB?) mapped to MB2 and MB3
-	WrPortI(MB2CR, &MB2CRShadow, FLASH_WSTATES | 0x00);
-	WrPortI(MB3CR, &MB3CRShadow, FLASH_WSTATES | 0x00);
-	_InitFlashDriver(0x0C);
-#elif FLASH_SIZE == 256>>2 || FLASH_SIZE == 128>>2
-	// single flash (256KB or 128KB?) mapped to MB3
-	WrPortI(MB3CR, &MB3CRShadow, FLASH_WSTATES | 0x00);
-	_InitFlashDriver(0x08);
-#endif
-
 #ifdef SCAN_FOR_END
-	dump_bytes = try_sysid_block();
+	dump_bytes = try_sysid_block(base_addr);
 #endif
 
 	if (dump_bytes == 0) {
-		dump_bytes = FLASH_BYTES;
+		dump_bytes = flash_bytes;
 	}
 	
 #ifdef SEARCH_PROG_PARAM
@@ -236,7 +228,7 @@ int main()
 	// (which is the location if Separate Instruction & Data enabled).
 	flash_prog_param = NULL;
 	for (i = 0; flash_prog_param == NULL && i < 2; ++i) {
-		xmem2root(flash_start, BASE_ADDR + (i * 0x10000ul), sizeof flash_start);
+		xmem2root(flash_start, base_addr + (i * 0x10000ul), sizeof flash_start);
 		end = &flash_start[sizeof flash_start - 8];
 		for (p = flash_start; p < end; ++p) {
 			p = memchr(p, search_pattern[0], end - p);
@@ -292,19 +284,19 @@ int main()
 #endif // SEARCH_PROG_PARAM
 
 #ifndef DUMPING_BASE64
-	if (dump_bytes > FLASH_BYTES) {
+	if (dump_bytes > flash_bytes) {
 		printf("Calculated %lu-byte firmware larger than %lu-byte flash\n",
-			dump_bytes, FLASH_BYTES);
-	} else if (dump_bytes != FLASH_BYTES) {
+			dump_bytes, flash_bytes);
+	} else if (dump_bytes != flash_bytes) {
 		printf("Define DUMP_FIRMWARE to extract %lu-byte firmware image.\n",
 			dump_bytes);
 	}
 	printf("Define DUMP_FLASH to extract entire %uKB flash.\n",
-		(unsigned)FLASH_SIZE << 2);
+		(unsigned)(flash_bytes / 1024));
 	return 0;
 #endif // ! DUMPING_BASE64
 	
-	addr = BASE_ADDR;
+	addr = base_addr;
 	while (dump_bytes) {
 		copy = CHUNK_SIZE;
 		if (copy > dump_bytes) {

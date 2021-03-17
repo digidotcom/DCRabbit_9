@@ -7,18 +7,8 @@
 */
 /*** BeginHeader **************************************************************/
 #ifndef CLOCK_DOUBLED            // Set to 1 to double clock if
-	#ifdef _DC_CLK_DBL_
-   	#define CLOCK_DOUBLED _DC_CLK_DBL_
-   #else
-		#define CLOCK_DOUBLED 1    //   Rabbit 2000:  crystal <= 12.9024 MHz,
-   #endif                        //   Rabbit 3000:  crystal <= 26.4192 MHz,
-#else                            //   or to 0 to always disable clock doubler
-   #ifdef _DC_CLK_DBL_
-		#if _DC_CLK_DBL_ != CLOCK_DOUBLED
-			#warnt "Your current CLOCK_DOUBLED setting is not recommended for this board."
-		#endif
-	#endif
-#endif
+#define CLOCK_DOUBLED 1          //   Rabbit 2000:  crystal <= 12.9024 MHz,
+#endif                           //   Rabbit 3000:  crystal <= 26.4192 MHz,
 
 #ifndef CS1_ALWAYS_ON            // Keeping CS1 active is useful if your
 #define CS1_ALWAYS_ON 0          // system is pushing the limits of RAM

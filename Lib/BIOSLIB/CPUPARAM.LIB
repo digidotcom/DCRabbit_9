@@ -162,14 +162,7 @@ END DESCRIPTION ***************************************************************/
 #asm xmem nodebug
 _enableClockModulation::
 	bool	hl
-#if _CPU_ID_ < R2000_R3
-	ld		l, h
-	lret
-#elif ENABLE_SPREADER == 0	// spreader disabled
-	xor	a
-	ld		(MTCRShadow), a
-;	ioi	ld (MTCR), a		// normal /OE0 and /OE1 timing
-	IOWRITE_A(MTCR)
+#if _CPU_ID_ < R2000_R3 || ENABLE_SPREADER == 0
 	ld		l, h
 	lret
 #else

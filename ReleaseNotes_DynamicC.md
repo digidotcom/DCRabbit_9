@@ -486,10 +486,10 @@ products as web browsers deprecate support of TLS 1.0.
 - Defect 27230 patched. The Modbus (former module) `Samples\Modbus` standard
   sample programs and a Modbus-related executable utility program are
   supplied.
-- Defect 27289 patched. `The Samples\FileSystem\FAT\fat_write_mbr.c` standard
+- Defect 27289 patched. The `Samples\FileSystem\FAT\fat_write_mbr.c` standard
   sample program now explicitly disallows partitioning of an SD card flash
   memory device.
-- Defect 36077 patched. `The Samples\OP7200\Calib_Save_Retrieve\savecalib.c`
+- Defect 36077 patched. The `Samples\OP7200\Calib_Save_Retrieve\savecalib.c`
   standard sample program's serial cable connection instructions now refer to
   the appropriate header (J10).
 - Defect 38736 patched. The `Samples\OP7200\LCD_TouchScreen\cal_touchscreen.c`

@@ -55,7 +55,7 @@
 	the IDE running, be sure to choose "Close Connection" from the "Run" menu
 	to free up the serial port.
 	
-		C:\DCRABBIT_9.62>dccl_cmp Samples\extract_flash.c -mr -d VERBOSE
+		C:\DCRABBIT_9.62>dccl_cmp Samples\extract_flash.c -mr -wn -d VERBOSE
 
 	If extract_flash can't determine the size of the firmware image, you can try
 	defining the following macros (by adding "-d MACRONAME" to the command line):
@@ -71,15 +71,12 @@
 	NOTE: This will take minutes to complete -- be patient!  You can monitor
 	progress by checking the file size in another window.
 	
-		C:\DCRABBIT_9.62>dccl_cmp Samples\extract_flash.c -mr -d DUMP_FIRMWARE > firmware.b64
+		C:\DCRABBIT_9.62>dccl_cmp Samples\extract_flash.c -mr -wn -d DUMP_FIRMWARE > firmware.b64
 
 	Then use the Windows program CERTUTIL.EXE to convert it to a binary file:
 	
 		C:\DCRABBIT_9.62>certutil -decode firmware.b64 firmware.bin
 
-	Note that you may need to edit the .b64 file to remove any compiler warnings
-	written before the base64-encoded data.
-	
 	You should now be able to program a new board with firmware.bin using RFU.
 	
 	If you want an image of the entire flash, define the macro DUMP_FLASH

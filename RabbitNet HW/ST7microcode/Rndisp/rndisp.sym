@@ -1,0 +1,182 @@
+001297;00156;
+'CONSTANTS' 
+
+'periph' D
+      6F ADCDRL
+      70 ADCDRH
+      71 ADCCSR
+      60 DMCR
+      61 DMSR
+      62 DMBK1H
+      63 DMBK1L
+      64 DMBK2H
+      65 DMBK2L
+      72 FCSR
+      1C ISPR0
+      1D ISPR1
+      1E ISPR2
+      1F ISPR3
+      28 I2CCR
+      29 I2CSR1
+      2A I2CSR2
+      2B I2CCCR
+      2C I2COAR1
+      2D I2COAR2
+      2E I2CDR
+      20 MISCR1
+      26 MCCSR
+      40 MISCR2
+      00 PCDR
+      01 PCDDR
+      02 PCOR
+      04 PBDR
+      05 PBDDR
+      06 PBOR
+      08 PADR
+      09 PADDR
+      0A PAOR
+      21 SPIDR
+      22 SPICR
+      23 SPICSR
+      25 SICSR
+      50 SCISR
+      51 SCIDR
+      52 SCIBRR
+      53 SCICR1
+      54 SCICR2
+      55 SCIERPR
+      56 SCIETPR
+      31 TACR2
+      32 TACR1
+      33 TACSR
+      34 TAIC1HR
+      35 TAIC1LR
+      36 TAOC1HR
+      37 TAOC1LR
+      38 TACHR
+      39 TACLR
+      3A TAACHR
+      3B TAACLR
+      3C TAIC2HR
+      3D TAIC2LR
+      3E TAOC2HR
+      3F TAOC2LR
+      41 TBCR2
+      42 TBCR1
+      43 TBCSR
+      44 TBIC1HR
+      45 TBIC1LR
+      46 TBOC1HR
+      47 TBOC1LR
+      48 TBCHR
+      49 TBCLR
+      4A TBACHR
+      4B TBACLR
+      4C TBIC2HR
+      4D TBIC2LR
+      4E TBOC2HR
+      4F TBOC2LR
+      24 WDGCR
+
+'Application_ram' D
+      85 act_tmr
+      80 ch_sum
+      8A cmd07_stat
+      8B comm_stat
+      8C pend
+      88 rn_cmd
+      89 rn_stat
+      83 start_page
+      86 swdt_reload
+      87 swdt_tmr
+      8D temp
+
+'iap_buffer_ram' D
+      FC cnt
+      FD ck_sum
+      DC e2data
+      D7 flashkey1
+      D8 flashkey2
+      DA flashaddr
+      FE fptrCal
+      D9 nbytes
+
+'iap_&_stack_ram' D
+
+'Checksum' S
+    E000 CS0
+    E001 CS1
+    E002 CS2
+
+'Application_code' CS
+    E325 brd_hard_init
+    E326 brd_soft_init
+    E327 brd_init
+    E241 cmd_exit
+    E053 c0r00
+    E05A c0r02
+    E07C c0r03
+    E092 c0r04
+    E0C3 c0r05
+    E0CF c0r07
+    E0EA c1r00
+    E156 c1r01
+    E165 c1r02
+    E16E c1r03
+    E17D c1r04
+    E198 c1r05
+    E1A0 c1r06
+    E1AA c1r07
+    E238 cmd_rej
+    E2DC dummy
+    E1E8 exitcmd
+    E010 hard_reset
+    E32F interval_tmr
+    E2DD main
+    E2C4 mcc_rt
+    E1B8 rn_xfer
+    E7D9 spi_jtbl
+    E017 soft_reset
+    E214 spi_nc
+    E227 spi_pc
+    E2A2 spi_rt
+    E32E user_handler
+
+'Relocatable_vectors' C
+    F612 avd_jp
+    F621 css_jp
+    F624 ext1_jp
+    F627 ext0_jp
+    F606 i2c_jp
+    F618 mcc_jp
+    F62D reset_jp
+    F609 sci_jp
+    F61E spi_jp
+    F615 timb_jp
+    F61B tima_jp
+    F62A trap_jp
+    F600 unused1_jp
+    F603 unused2_jp
+    F60C unused3_jp
+    F60F unused4_jp
+
+'Application_parms_1' S
+    F635 code_rev
+    F630 sig_regs
+    F637 swdt_ival
+
+'Application_parms_2' S
+    F704 prod_id
+    F706 prod_rev
+    F700 prod_sn
+
+'Application_parms_3' V
+
+'Protected' C
+    FE1D crcEnable
+    FC50 flashwrite
+    FC00 spi_init
+    FC8F uC
+
+'Fixed_vectors' S
+

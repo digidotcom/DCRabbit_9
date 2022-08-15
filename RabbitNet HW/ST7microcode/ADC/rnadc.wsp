@@ -1,0 +1,157 @@
+[DebugState_v1inDART-Debug.AddOn.St7McuOptionsMemMap]
+McuConfigurationDone=1
+McuName=ST72F264G2B
+inDARTName=INDART-ST7F/264
+McuOption=54468
+CommunicationParameters=RESET_TIME10ENTRY_MODE1CPU_FREQ1
+[DebugState_v1HDS3-Debug.AddOn.St7McuOptionsMemMap]
+CurrentEmuTypeAndName=ST7 EMU3
+McuConfigurationDone=1
+McuName=ST72264G2
+NbMcuOption=4
+McuOption0=gdi mcuoption -set Fosc 8 MHz
+McuOption1=gdi mcuoption -set EXTIT PC_EI1
+McuOption2=gdi mcuoption -set WDG SOFT
+McuOption3=gdi mcuoption -set WDG_HALT NO RESET
+NbRange=44
+Range0=mcumap -set [0x0000-0x0002]:"PERIPH (RW)"
+Range1=mcumap -set [0x0003-0x0003]:"NER"
+Range2=mcumap -set [0x0004-0x0006]:"PERIPH (RW)"
+Range3=mcumap -set [0x0007-0x0007]:"NER"
+Range4=mcumap -set [0x0008-0x000a]:"PERIPH (RW)"
+Range5=mcumap -set [0x000b-0x001b]:"NER"
+Range6=mcumap -set [0x001c-0x0026]:"PERIPH (RW)"
+Range7=mcumap -set [0x0027-0x0027]:"NER"
+Range8=mcumap -set [0x0028-0x0028]:"PERIPH (RW)"
+Range9=mcumap -set [0x0029-0x002a]:"PERIPH (R)"
+Range10=mcumap -set [0x002b-0x002e]:"PERIPH (RW)"
+Range11=mcumap -set [0x002f-0x0030]:"NER"
+Range12=mcumap -set [0x0031-0x0033]:"PERIPH (RW)"
+Range13=mcumap -set [0x0034-0x0035]:"PERIPH (R)"
+Range14=mcumap -set [0x0036-0x0037]:"PERIPH (RW)"
+Range15=mcumap -set [0x0038-0x0038]:"PERIPH (R)"
+Range16=mcumap -set [0x0039-0x0039]:"PERIPH (RW)"
+Range17=mcumap -set [0x003a-0x003a]:"PERIPH (R)"
+Range18=mcumap -set [0x003b-0x003b]:"PERIPH (RW)"
+Range19=mcumap -set [0x003c-0x003d]:"PERIPH (R)"
+Range20=mcumap -set [0x003e-0x0043]:"PERIPH (RW)"
+Range21=mcumap -set [0x0044-0x0045]:"PERIPH (R)"
+Range22=mcumap -set [0x0046-0x0047]:"PERIPH (RW)"
+Range23=mcumap -set [0x0048-0x0048]:"PERIPH (R)"
+Range24=mcumap -set [0x0049-0x0049]:"PERIPH (RW)"
+Range25=mcumap -set [0x004a-0x004a]:"PERIPH (R)"
+Range26=mcumap -set [0x004b-0x004b]:"PERIPH (RW)"
+Range27=mcumap -set [0x004c-0x004d]:"PERIPH (R)"
+Range28=mcumap -set [0x004e-0x004f]:"PERIPH (RW)"
+Range29=mcumap -set [0x0050-0x0050]:"PERIPH (R)"
+Range30=mcumap -set [0x0051-0x0056]:"PERIPH (RW)"
+Range31=mcumap -set [0x0057-0x005f]:"NER"
+Range32=mcumap -set [0x0060-0x0065]:"PERIPH (RW)"
+Range33=mcumap -set [0x0066-0x006e]:"NER"
+Range34=mcumap -set [0x006f-0x0070]:"PERIPH (R)"
+Range35=mcumap -set [0x0071-0x0071]:"PERIPH (RW)"
+Range36=mcumap -set [0x0072-0x007f]:"NER"
+Range37=mcumap -set [0x0080-0x00ff]:"RAM"
+Range38=mcumap -set [0x0180-0xdfff]:"NEM"
+Range39=mcumap -set [0xe000-0xffdf]:"ROM"
+Range40=mcumap -set [0xffe0-0xffe3]:"NEM"
+Range41=mcumap -set [0xffe4-0xffe7]:"VECTORS"
+Range42=mcumap -set [0xffe8-0xffeb]:"NEM"
+Range43=mcumap -set [0xffec-0xffff]:"VECTORS"
+Range44=mcumap -set [0xffe8-0xffeb]:"NEM"
+Range45=mcumap -set [0xffec-0xffff]:"VECTORS"
+McuOption4=gdi mcuoption -set WDG_HALT NO RESET
+[DebugState_v1HDS3-Debug.AddOn.ST7LoadSaveConfiguration]
+RestoreMcuName=1
+RestoreMcuOption=1
+RestoreMcuMemoryMap=1
+[DebugState_v1HDS3-Debug.DebugContext]
+DumpRWOnFly=0
+WatchVariables1=rn_cmd!1;
+FormatWatch1=1
+FormatViewType1=1
+FormatViewAddress1=1
+WatchRWOnFlyTab1=0
+WatchVariables2=
+FormatWatch2=0
+FormatViewType2=1
+FormatViewAddress2=1
+WatchRWOnFlyTab2=0
+WatchVariables3=
+FormatWatch3=0
+FormatViewType3=1
+FormatViewAddress3=1
+WatchRWOnFlyTab3=0
+WatchVariables4=
+FormatWatch4=0
+FormatViewType4=1
+FormatViewAddress4=1
+WatchRWOnFlyTab4=0
+FormatLocals=0
+FormatParameters=0
+[DebugState_v1HDS3-Debug.AddOn.Trace]
+Trace Settings=14;70;140;30;40;120;140;120;120;70;120;20;20;70;140;14;0;0;0;0;0;0;0;0;0;0;0;0;0;0;14;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;14;1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;-1;0;1;2;3;4;5;6;7;8;9;10;11;12;13;
+Trace Status=off
+[DebugState_v1HDS3-Debug.AddOn.St7Registers]
+ActiveTab=1
+[DebugState_v1HDS3-Debug.AddOn.St7PeripheralRegister]
+DisplayFormat=1
+ShowPeriphAddress=0
+ShowRegisterAddress=1
+
+[DebugState_v1HDS3-Debug.AddOn.PerfAnalysis]
+Passes=1
+FirstAddr=0
+LastAddr=0
+
+[DebugState_v1INDART-Debug.DebugContext]
+DumpRWOnFly=0
+WatchVariables1=
+FormatWatch1=0
+FormatViewType1=1
+FormatViewAddress1=1
+WatchRWOnFlyTab1=0
+WatchVariables2=
+FormatWatch2=0
+FormatViewType2=1
+FormatViewAddress2=1
+WatchRWOnFlyTab2=0
+WatchVariables3=
+FormatWatch3=0
+FormatViewType3=1
+FormatViewAddress3=1
+WatchRWOnFlyTab3=0
+WatchVariables4=
+FormatWatch4=0
+FormatViewType4=1
+FormatViewAddress4=1
+WatchRWOnFlyTab4=0
+FormatLocals=0
+FormatParameters=0
+[DebugState_v1INDART-Debug.AddOn.St7Registers]
+ActiveTab=1
+[DebugState_v1INDART-Debug.AddOn.St7PeripheralRegister]
+DisplayFormat=1
+ShowPeriphAddress=0
+ShowRegisterAddress=1
+[DebugState_v1INDART-Debug.AddOn.IcdBreak]
+CR=0x10
+BK1=0x10
+BK2=0x10
+
+[DebugState_v1HDS3-Debug.AddOn.BEM]
+gdi bem begin -nowarning -notrace
+gdi bem end
+gdi bem off
+[.ProjectInfo]
+ToolchainName=ST7 Assembly Chain
+BuilderName=ST7 Assembler Batch File
+ExternalBuilderName=c:\program files\indart-st7\stvd7\gmake.exe
+ExecutableFilename=rnadc.s19
+BuildFilename=rnadc.bat
+BuildCmdLine=rnadc.bat
+RebuildAllCmdLine=rnadc.bat
+BuildStartupDir=
+DirectoryAndFilters-0=.\;*.*
+DirectoryAndFilters-1=I:\Projects\Rabbitnet_Common\Microcode\Rev_101\;*.*
+DirectoryAndFilters-2=.\;*.c ;*.h;*.asm ;*.s ;*.inc;*.spp

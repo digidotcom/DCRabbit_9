@@ -183,6 +183,20 @@ KNOWN ISSUES
     generated .BIN file is the correct length and contains a complete
     firmware image.
 
+19. Since Dynamic C 9.30, assigning an 8-bit value to a 16-bit variable via
+    a pointer will generate a bad opcode sequence, similar to the following
+    example:
+
+        3A18BA   ld a, (0xBA18)                 9
+        6F       ld l, a                        2
+        2600     ld h, 0x00                     4
+        DDF400   ld (hl + 0), hl                13	
+
+    Please see https://github.com/digidotcom/DCRabbit_9/issues/9 for details
+    on the issue, including methods to identify .BIN or .LST files with the
+    sequence, along with source code workarounds and a method to patch .BIN
+    files if recompiling isn't an option.
+
 UPDATE CONSIDERATIONS
 ---------------------
 If updating an existing installation of 9.62 or earlier via the Dynamic C 9

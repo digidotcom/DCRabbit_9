@@ -14,7 +14,7 @@
    OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 */
 /*
-	extract_flash.c
+	extract_flash.c          v9.2.0
 	
 	A program you can compile to RAM on Rabbit hardware in order to dump a copy
 	of the firmware stored on the flash.  You can use the Rabbit Field Utility
@@ -33,7 +33,8 @@
 	to calculate image size) worked on firmware built with Dynamic C versions
 	from 8.61 to 9.62.
 	
-	Appears to work with 512KB flash, but not dual-256K flash boards (RCM2260).
+	Older versions failed with dual-256K flash boards (e.g., RCM2100, RCM2260),
+	but v9.2.0 should dump them correctly.
 	
 	Not designed/tested for systems using the DLM/DLP or "COMPILE_SECONDARY_PROG"
 	compiler option.
@@ -54,6 +55,10 @@
 	Then run from the command line and confirm that it still works.  If you leave
 	the IDE running, be sure to choose "Close Connection" from the "Run" menu
 	to free up the serial port.
+	
+	The -mr option runs the program from RAM (to preserve flash contents) and
+	the -wn option disables compiler warnings which would interfere with the
+	base64 encoding of the output file.
 	
 		C:\DCRABBIT_9.62>dccl_cmp Samples\extract_flash.c -mr -wn -d VERBOSE
 
@@ -199,13 +204,13 @@ int main()
 	if (flash_bytes == 512ul * 1024) {
 		// 512KB of flash (single or 2x256KB) mapped to MB2 and MB3
 		base_addr = 0x80000ul;
-		WrPortI(MB2CR, &MB2CRShadow, FLASH_WSTATES | 0x00);
-		WrPortI(MB3CR, &MB3CRShadow, FLASH_WSTATES | 0x00);
+		WrPortI(MB2CR, &MB2CRShadow, FLASH_WSTATES | CS_FLASH);
+		WrPortI(MB3CR, &MB3CRShadow, FLASH_WSTATES | CS_FLASH2);
 		_InitFlashDriver(0x0C);
 	} else {
 		// single flash (256KB or 128KB?) mapped to MB3
 		base_addr = 0xC0000ul;
-		WrPortI(MB3CR, &MB3CRShadow, FLASH_WSTATES | 0x00);
+		WrPortI(MB3CR, &MB3CRShadow, FLASH_WSTATES | CS_FLASH);
 		_InitFlashDriver(0x08);
 	}
 

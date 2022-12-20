@@ -14,7 +14,7 @@
    OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 */
 /*
-	extract_flash.c          v9.2.0
+	extract_flash.c          v9.2.1
 	
 	A program you can compile to RAM on Rabbit hardware in order to dump a copy
 	of the firmware stored on the flash.  You can use the Rabbit Field Utility
@@ -205,7 +205,13 @@ int main()
 		// 512KB of flash (single or 2x256KB) mapped to MB2 and MB3
 		base_addr = 0x80000ul;
 		WrPortI(MB2CR, &MB2CRShadow, FLASH_WSTATES | CS_FLASH);
-		WrPortI(MB3CR, &MB3CRShadow, FLASH_WSTATES | CS_FLASH2);
+		if (SysIDBlock.flash2Size != 0) {
+			// Dual-flash board usew alternate chip select for second 256K
+			WrPortI(MB3CR, &MB3CRShadow, FLASH_WSTATES | CS_FLASH2);
+		} else {
+			// Single-flash board uses the same chip select for the full 512KB
+			WrPortI(MB3CR, &MB3CRShadow, FLASH_WSTATES | CS_FLASH);
+		}
 		_InitFlashDriver(0x0C);
 	} else {
 		// single flash (256KB or 128KB?) mapped to MB3

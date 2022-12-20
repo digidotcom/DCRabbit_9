@@ -191,7 +191,7 @@ int main()
 	unsigned int copy;
 	unsigned long addr;
 	unsigned long dump_bytes, firmware_size;
-	
+	unsigned long t0;
 	unsigned long flash_bytes;
 	unsigned long base_addr;
 		
@@ -306,6 +306,11 @@ int main()
 		
 		dump_bytes -= copy;
 		addr += copy;
+		
+		// Adding a delay slows down the process, but results in a more reliable
+		// dump.  512KB flash dumps often came up short.
+		t0 = TICK_TIMER;
+		while (TICK_TIMER - t0 < 25);
 	}
 	
 	return 0;

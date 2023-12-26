@@ -111,7 +111,7 @@
 /* (Optional) Define the macro VERBOSE to print contents of prog_param. */
 //#define VERBOSE
 
-#ifndef RAM_COMPILE
+#if !RAM_COMPILE
 #error "Must compile to RAM so you don't overwrite the flash!"
 #fatal "Choose Options/Project Options/Compiler/BIOS Memory Setting/Code and BIOS in RAM"
 #endif

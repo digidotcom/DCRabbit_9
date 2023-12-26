@@ -4119,6 +4119,9 @@ _fat_debug int _fat_FormatDevice( mbr_dev *dev, int mode )
 _fat_debug int fat_FormatDevice( mbr_dev *dev, int mode )
 #endif
 {
+#ifndef FAT_WRITEACCESS
+	return -EPERM;
+#else
 	auto int rc, sec_clust, type, retcode;
    auto long sc;
 
@@ -4173,6 +4176,7 @@ _fat_debug int fat_FormatDevice( mbr_dev *dev, int mode )
    rc = mbr_FormatDevice(dev);
 
 	return rc;
+#endif
 }
 
 

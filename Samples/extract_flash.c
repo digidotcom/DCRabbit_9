@@ -58,7 +58,8 @@
 	
 	The -mr option runs the program from RAM (to preserve flash contents) and
 	the -wn option disables compiler warnings which would interfere with the
-	base64 encoding of the output file.
+	base64 encoding of the output file.  Some boards (e.g., RCM3710) require
+	disabling Separate I&D Space by using the "-id-" command-line option.
 	
 		C:\DCRABBIT_9.62>dccl_cmp Samples\extract_flash.c -mr -wn -d VERBOSE
 

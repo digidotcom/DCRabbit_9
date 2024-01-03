@@ -221,76 +221,85 @@ int main()
 		_InitFlashDriver(0x08);
 	}
 
-	dump_bytes = 0;
 	flash_prog_param = NULL;
 	
 #ifdef SCAN_FOR_END
 	dump_bytes = try_sysid_block(base_addr);
+#else
+	dump_bytes = 0;
 #endif
 
-	if (dump_bytes == 0) {
-		dump_bytes = flash_bytes;
-	}
-	
+	t0 = xgetlong(base_addr + 0x60);
+	if (t0 == *(unsigned long *)"SIBM") {
+		printf("Flash contains program of unknown length compiled with Softools WinIDE.\n");
+		if (dump_bytes == 0) {
+			dump_bytes = flash_bytes;
+		}
+	} else {
+		if (dump_bytes == 0) {
+			dump_bytes = flash_bytes;
+		}
+
 #ifdef SEARCH_PROG_PARAM
-	// Check for struct progStruct from 0x0000 to 0x3000 or 0x10000 to 0x13000
-	// (which is the location if Separate Instruction & Data enabled).
-	flash_prog_param = NULL;
-	for (i = 0; flash_prog_param == NULL && i < 2; ++i) {
-		xmem2root(flash_start, base_addr + (i * 0x10000ul), sizeof flash_start);
-		end = &flash_start[sizeof flash_start - 8];
-		for (p = flash_start; p < end; ++p) {
-			p = memchr(p, search_pattern[0], end - p);
-			if (p == NULL) {
+		// Check for struct progStruct from 0x0000 to 0x3000 or 0x10000 to 0x13000
+		// (which is the location if Separate Instruction & Data enabled).
+		flash_prog_param = NULL;
+		for (i = 0; flash_prog_param == NULL && i < 2; ++i) {
+			xmem2root(flash_start, base_addr + (i * 0x10000ul), sizeof flash_start);
+			end = &flash_start[sizeof flash_start - 8];
+			for (p = flash_start; p < end; ++p) {
+				p = memchr(p, search_pattern[0], end - p);
+				if (p == NULL) {
+					break;
+				}
+				if (memcmp(p, search_pattern, 8)) {
+					continue;
+				}
+				flash_prog_param = (void *)(p - PATTERN_OFFSET);
+				dump_bytes = flash_prog_param->HPA.aaa.a.addr +
+					(flash_prog_param->HPA.aaa.a.base << 12lu);
+				dump_bytes &= 0xFFFFF;	// mask to 20 bits
 				break;
 			}
-			if (memcmp(p, search_pattern, 8)) {
-				continue;
-			}
-			flash_prog_param = (void *)(p - PATTERN_OFFSET);
-			dump_bytes = flash_prog_param->HPA.aaa.a.addr +
-				(flash_prog_param->HPA.aaa.a.base << 12lu);
-			dump_bytes &= 0xFFFFF;	// mask to 20 bits
-			break;
 		}
-	}
 
 #ifndef DUMPING_BASE64
-	if (flash_prog_param == NULL) {
-		printf("Did not locate prog_param in first %uKB; unknown image size.\n",
-			sizeof(flash_start)/1024);
+		if (flash_prog_param == NULL) {
+			printf("Did not locate prog_param in first %uKB; unknown image size.\n",
+				sizeof(flash_start)/1024);
 #ifndef ALTERNATE_PATTERN
-		printf("You could try again with ALTERNATE_PATTERN defined.\n");
+			printf("You could try again with ALTERNATE_PATTERN defined.\n");
 #endif
-	} else {
-		printf("Found prog_param at 0x%04X (using %s pattern).\n",
-			(char *)flash_prog_param - flash_start,
-			#ifdef ALTERNATE_PATTERN
-				"alternate"
-			#else
-				"primary"
-			#endif
-			);
-		#ifdef VERBOSE
-			PRINT_ADDR24(RC, "root code");
-			PRINT_ADDR24(XC, "extended code");
-			PRINT_ADDR24(RD, "root data");
-			PRINT_ADDR24(XD, "extended data");
-			PRINT_ADDR24(RCD, "root constant data");
-			printf("HPA 0x%05lX (%lu bytes)\n", dump_bytes, dump_bytes);
-			printf("auxStk 0x%04X to 0x%04X\n",
-				flash_prog_param->auxStkB, flash_prog_param->auxStkE);
-			printf("stk 0x%04X to 0x%04X\n",
-				flash_prog_param->stkB, flash_prog_param->stkE);
-			printf("free 0x%04X to 0x%04X\n",
-				flash_prog_param->freeB, flash_prog_param->freeE);
-			printf("heap 0x%04X to 0x%04X\n",
-				flash_prog_param->heapB, flash_prog_param->heapE);
-			printf("\n");
-		#endif // VERBOSE
-	}
+		} else {
+			printf("Found prog_param at 0x%04X (using %s pattern).\n",
+				(char *)flash_prog_param - flash_start,
+				#ifdef ALTERNATE_PATTERN
+					"alternate"
+				#else
+					"primary"
+				#endif
+				);
+			#ifdef VERBOSE
+				PRINT_ADDR24(RC, "root code");
+				PRINT_ADDR24(XC, "extended code");
+				PRINT_ADDR24(RD, "root data");
+				PRINT_ADDR24(XD, "extended data");
+				PRINT_ADDR24(RCD, "root constant data");
+				printf("HPA 0x%05lX (%lu bytes)\n", dump_bytes, dump_bytes);
+				printf("auxStk 0x%04X to 0x%04X\n",
+					flash_prog_param->auxStkB, flash_prog_param->auxStkE);
+				printf("stk 0x%04X to 0x%04X\n",
+					flash_prog_param->stkB, flash_prog_param->stkE);
+				printf("free 0x%04X to 0x%04X\n",
+					flash_prog_param->freeB, flash_prog_param->freeE);
+				printf("heap 0x%04X to 0x%04X\n",
+					flash_prog_param->heapB, flash_prog_param->heapE);
+				printf("\n");
+			#endif // VERBOSE
+		}
 #endif // ! DUMPING_BASE64
 #endif // SEARCH_PROG_PARAM
+	}
 
 #ifndef DUMPING_BASE64
 	if (dump_bytes > flash_bytes) {
@@ -304,6 +313,10 @@ int main()
 		(unsigned)(flash_bytes / 1024));
 	return 0;
 #endif // ! DUMPING_BASE64
+
+#ifdef DUMP_FLASH
+	dump_bytes = flash_bytes;
+#endif
 	
 	addr = base_addr;
 	while (dump_bytes) {

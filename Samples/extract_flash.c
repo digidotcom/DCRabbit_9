@@ -231,7 +231,9 @@ int main()
 
 	t0 = xgetlong(base_addr + 0x60);
 	if (t0 == *(unsigned long *)"SIBM") {
+#ifdef VERBOSE
 		printf("Flash contains program of unknown length compiled with Softools WinIDE.\n");
+#endif
 		if (dump_bytes == 0) {
 			dump_bytes = flash_bytes;
 		}

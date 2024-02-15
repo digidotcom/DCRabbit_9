@@ -39,7 +39,7 @@ Gotchas and general information:
   is likely to result in a total data loss for the active partition(s) or the
   whole device..
 
-- In order to understand the API and implementation propperly some terms need
+- In order to understand the API and implementation properly some terms need
   to be defined more precisely.
   - We speak about a DRIVER as a software driver which works with the
   	 underlying hardware & media to create a storage system that can host
@@ -51,7 +51,7 @@ Gotchas and general information:
 	 and therefore no partition table, these are not currently supported in this
     library.  You may partition such removeable media and then it would be
     useable with this library.  A real world example of such media is a
-    CompactFlash card.
+    CompactFlash or SD card.
   - We speak about a PARTITION as a range of logical sectors on a device which
 	 hold a file system. If this filesystem is a FAT filesystem we can operate
 	 on it. Real world examples of what we understand as a partition is what's
@@ -149,7 +149,9 @@ END DESCRIPTION **********************************************************/
 
 #define FAT_FAT12 				// comment out to disable FAT12 support
 #define FAT_FAT16 				// comment out to disable FAT16 support
+#ifndef FAT_READ_ONLY
 #define FAT_WRITEACCESS 		// comment out to disable write operations
+#endif
 
 //#define FAT_BLOCK 	         // sets library to 'blocking' mode
 //#define FAT_DEBUG 				// outputs debug printf statements etc.
@@ -160,6 +162,17 @@ END DESCRIPTION **********************************************************/
 
 //#define FAT_USE_FORWARDSLASH  	// Sets forward slash instead of back slash
 											//  as the path separator
+
+// Min/max cluster counts and FAT16 sector count per Microsoft:
+//   https://technet.microsoft.com/en-us/library/cc776720(v=ws.10).aspx
+#define FAT16_MAX_CLUSTERS 65524
+#define FAT32_MIN_CLUSTERS 65527
+
+// Maximum partition based on 32KB cluster size, 512 byte sector size.
+// Calculation underestimates actual maximum, since it doesn't take into
+// account space for reserved sectors, FATs and root directory.  Changes
+// here require changes to sectors/cluster calculation in fat_FormatPartition().
+#define FAT16_MAX_PARTSECSIZE (FAT16_MAX_CLUSTERS * 32UL * 1024 / 512)
 
 /***********************************************************************/
 /* END OF CONFIGURATION - END OF CONFIGURATION - END OF CONFIGURATION  */
@@ -289,7 +302,14 @@ END DESCRIPTION **********************************************************/
 #define FAT_BRK_POS		-2    // Break file at current position pointer
 
 /* Some fixed FAT constants */
+/* Note that FAT_MAX_PARTITIONS defines the number of supported partitions
+	on a device.  The similarly-named macro FAT_MAXPARTITIONS limits the
+	number of partitions mounted at any one time, and because it's used in
+	the BIOS you must define it in your Project Options.
+*/
+#ifndef FAT_MAX_PARTITIONS
 #define FAT_MAX_PARTITIONS	4	/* Deal only with primary partitions */
+#endif
 #define FAT_DIRPS		16			/* number of directory entries per sector */
 #define FAT_DIRSZ		32			/* size in bytes of a directory entry */
 #define FAT_ROOTSZ	512		/* default max entries in root directory */
@@ -341,6 +361,7 @@ typedef struct
 	unsigned long cluster;			/* temporary cluster */
 	unsigned long offset;	 		/* offset within cluster */
 
+	// 32-bit sector * 512bytes/sector = 2 terabytes, beyond SDHC max of 32GB
 	unsigned long sector;			/* sector of entry/file (for access speed) */
 	unsigned int sofs;				/* sector offset */
 
@@ -373,7 +394,7 @@ typedef struct _FATfile
 	struct _fat_part *part;		/* partition on which this file resides */
 	int type;						/* type of file see FAT_FILE etc. */
 	char flag;						/* flag: see below */
-		#define FAT_ACCESSED	0x01	/* this file was accsessed - set the time
+		#define FAT_ACCESSED	0x01	/* this file was accessed - set the time
 														at close */
 		#define FAT_MODIFIED	0x02	/* this file was modified - set the time
 														and date at close */
@@ -531,7 +552,7 @@ typedef struct _fat_part
 typedef struct
 {
 	char		jmpBoot[3];		// Jump instuction to Boot Code
-	char		OEMname[8];		// OS Name string
+	char		OEMname[8];		// OS Name string (typically "MSWIN4.1")
    word		byte_sec;		// Bytes per sector
    char		sec_clust;		// Sectors per cluster
    word		res_sec;			// Reserved sector count (FAT12/16=1 FAT32=32)
@@ -1160,6 +1181,7 @@ _fat_debug int _fat_new_clust( fat_part *part, unsigned long clust,
 	// Compute ending offset of FAT table
    fat_end_offset = (part->type == FAT_TYPE_12 ? ( part->fat_len +
 	    	((part->fat_len + 1) >> 1)) : (part->fat_len << 1)) % part->byte_sec;
+   // TODO: DC10 doesn't have the "-1" in this calculation.
    fat_end_offset = (fat_end_offset ? fat_end_offset : part->byte_sec) - 1;
 #ifdef FAT_BLOCK
 	if ( !count )
@@ -1170,7 +1192,7 @@ _fat_debug int _fat_new_clust( fat_part *part, unsigned long clust,
 		part->freecluster = 0L;		// Count cycle requested, clear counts
 		part->totcluster = part->fat_len - 2;  // Set total clusters in data area
       part->nextcluster = 2L;                // Set next cluster to allocate
-      if (part->badcluster = 0xFFFFFFFFL)
+      if (part->badcluster == 0xFFFFFFFFL)
       	part->badcluster = 0;
       myclust = 2;
       fat_sector = 0;
@@ -2279,11 +2301,7 @@ _fat_debug int _fat_getname( char *fname, char *buf )
    auto word len, i, c, plen;
 
 	strcpy(buf, "           ");	// 11 blanks plus null
-#ifdef USE_FAR_STRING_LIB
-   slash = _n_strchr(fname, FAT_SLASH_CH);
-#else
    slash = strchr(fname, FAT_SLASH_CH);
-#endif
    if (slash)
    	len = slash - fname;
    else
@@ -2315,11 +2333,7 @@ _fat_debug int _fat_getname( char *fname, char *buf )
    	name[0] = 0x05;
    // Now we use 'name'...
 
-#ifdef USE_FAR_STRING_LIB
-	dot = _n_strchr(name, '.');
-#else
 	dot = strchr(name, '.');
-#endif
    if (dot) {
    	// Have extension
       *dot++ = 0;		// Null out the dot
@@ -3052,24 +3066,24 @@ _fat_debug int _fat_PartCalc( fat_part *part )
 	c = ((part->mpart->startsector + part->mpart->partsecsize - part->datastart)
    		 		/ part->sec_clust ) + 2;
 	rc = 0;
-	if( c < 4087 )
-	{
+	if (c <= CLUST_12MAX) {
 		part->type |= FAT_TYPE_12;		/* Volume is FAT12 */
 		part->fat_len = (unsigned)((c + ( c >> 1 ) + 1) >> 1);
 #ifndef FAT_FAT12
 		rc = -ENOSYS;						// Error if FAT 12 code not included
 #endif
 	}
-	else if( c < 65527 )
-	{
+	else if(c <= FAT16_MAX_CLUSTERS) {
 		part->type |= FAT_TYPE_16;		/* Volume is FAT16 */
 		part->fat_len = (unsigned)c;
 	}
-	else
-	{
+	else if (c >= FAT32_MIN_CLUSTERS) {
 		part->type |= FAT_TYPE_32;		/* Volume is FAT32 */
 		part->fat_len = (unsigned)c << 1;
 		rc = -ENOSYS;						/* FAT32 is not supported at this time */
+	}
+	else {
+		rc = -ENOSYS;   // too many clusters for FAT16, but not enough for FAT32
 	}
 
 	return rc;
@@ -3418,16 +3432,12 @@ int _fat_automount(word nDrvs, word nDevs,
 #ifdef FAT_NAND_DEVICE_USED  // NAND specific initialization check
 #ifdef FAT_ALLOW_HOTSWAP  // #define'd in fat_config.lib
 #ifndef FAT_NOHOTSWAP     // #define'able by user
-         // A NULL default volume label indicates that this isa removable
+         // A NULL default volume label indicates that this is a removable
          // device. _fat_driver_table[0].type[j] == 0 means that the driver
          // initialization for this device wasn't complete the last time
          // through automount.
          if(strlen(devdesc->sig)==0&&_fat_driver_table[0].type[j]==0 &&
-#ifdef USE_FAR_STRING_LIB
-           devdesc->sig && !_n_strcmp(_fatConfig[j].type, "NF"))
-#else
            devdesc->sig && !strcmp(_fatConfig[j].type, "NF"))
-#endif
          {
             // This is to allow autotmount to succeed to mount a removable XD
             // card after automount was already called with no XD present. This
@@ -3513,11 +3523,7 @@ int _fat_automount(word nDrvs, word nDevs,
             ladrDev = xalloc(16384);
             //*** Set offset if not NAND flash ***
             while((driver->xxx_ReadSector(0L,NULL,dev,ladrDev,0L)) == -EBUSY);
-#ifdef USE_FAR_STRING_LIB
-			   if (_n_strcmp(_fatConfig[i].type, "NF")) {
-#else
 			   if (strcmp(_fatConfig[i].type, "NF")) {
-#endif
             while((driver->xxx_ReadSector(1L,NULL,dev,ladrDev+512,0L))==-EBUSY);
             }
             // Read the volume serial number
@@ -3547,11 +3553,7 @@ int _fat_automount(word nDrvs, word nDevs,
                //*** Create volume label from the volume serial number
                sprintf(devVolLabel, "%08lx", serial);
                //*** Compare volume label from device to cache
-#ifdef USE_FAR_STRING_LIB
-               if(_n_memcmp(devVolLabel,cacheVolLabel,8)){
-#else
                if(memcmp(devVolLabel,cacheVolLabel,8)){
-#endif
                   newVolume = 1;
 #ifdef FAT_VERBOSE
                   printf(
@@ -3975,11 +3977,7 @@ int fat_EnumDevice( mbr_drvr *driver, mbr_dev *dev, int devnum,
 
       // If NAND flash driver, verify that MBR was created by this libray -
       //     xD factory formatted MBRs aren't valid with this FAT.
-#ifdef USE_FAR_STRING_LIB
-		if (rc || (!_n_strcmp(_fatConfig[dev->dev_num].type, "NF") &&
-#else
       if (rc || (!strcmp(_fatConfig[dev->dev_num].type, "NF") &&
-#endif
             xmemcmp(mbr_start, temp, 0xE0)) || (xgetint(xptr+510) != 0xAA55))
       {
 #ifdef FAT_VERBOSE
@@ -4160,8 +4158,11 @@ _fat_debug int fat_FormatDevice( mbr_dev *dev, int mode )
       sec_clust = dev->byte_page / dev->byte_sec;
       // Sectors in entire device (less first cluster for MBR)
       dev->part[0].partsecsize = dev->seccount - sec_clust;
+      if (dev->part[0].partsecsize > FAT16_MAX_PARTSECSIZE) {
+      	dev->part[0].partsecsize = FAT16_MAX_PARTSECSIZE;
+      }
       dev->part[0].parttype = ((dev->part[0].partsecsize / sec_clust)
-                                                      < CLUST_12MAX) ? 1 : 6;
+                                                      <= CLUST_12MAX) ? 1 : 6;
       if ((mode == 3) && (retcode != -EUNFORMAT)) {
          rc = mbr_CreatePartition(dev, 0, type);
          if (rc)
@@ -5518,7 +5519,8 @@ _fat_debug int fat_FormatPartition( mbr_dev *dev, fat_part *part, int pnum,
                while (part->mpart->partsecsize > (((long)part->sec_clust) << 16))
                {
                   part->sec_clust <<= 1;
-                  if (part->sec_clust >= 32) break;
+                  // go up to a maximum sec_clust value of 64
+                  if (part->sec_clust > 32) break;
                }
             }
          }
@@ -5551,11 +5553,7 @@ _fat_debug int fat_FormatPartition( mbr_dev *dev, fat_part *part, int pnum,
                 dev->driver != &(_fat_driver_table[i]); i++);
          if (i >= num_fat_drivers) return -EIO;
          //Set part->res_sec based on whether SD card or other device
-#ifdef USE_FAR_STRING_LIB
-			part->res_sec = (_n_strcmp(_fatConfig[i].type, "SD") ? 1 : 4);
-#else
          part->res_sec = (strcmp(_fatConfig[i].type, "SD") ? 1 : 4);
-#endif
 
 		   // calculate available clusters for data and FAT
 			x = (part->mpart->partsecsize - (FAT_ROOTSZ / FAT_DIRPS)) /
@@ -5683,16 +5681,18 @@ _fat_debug int fat_FormatPartition( mbr_dev *dev, fat_part *part, int pnum,
 
          // Set Volume Label
      	   // Copy label to vol_label and pad with spaces
-         if (label)
-         {
+         if (label) {
 	         i = strlen(label);
          	strncpy(bpb_dat.vol_label, label, 11);
-            if(i<11)bpb_dat.vol_label[i]=0x20;
          }
-         else{
-            bpb_dat.vol_label[0] = 0x20;
+         else {
+            // If no label provided, create one using the volume ID.
+            i = sprintf(bpb_dat.vol_label, "%08lX", bpb_dat.vol_ID);
          }
-
+         while (i < 11) {
+            // pad volume label with spaces
+            bpb_dat.vol_label[i++] = ' ';
+         }
    		if ((rc = fatwtc_write(part->wtc_prt, part->mpart->startsector, 0, 62,
 		   			  paddrSS(&bpb_dat), FAT_BLOCK_FLAGS | WTC_NO_PREIMAGE)) != 62)
             return rc;

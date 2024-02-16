@@ -888,75 +888,6 @@ int sdspi_initDevice(int indx, sd_dev_interface *sd_dev)
    return rc;
 }
 
-/*** BeginHeader sdspi_bitrev */
-void sdspi_bitrev(char *buffer, int len);
-
-/*************************************************************************
-sdspi_bitrev                 <SDFLASH.LIB>
-
-SYNTAX: int sdspi_bitrev(char *buffer, int len)
-
-DESCRIPTION:   Translates in place a number of bytes in a root buffer
-					into their bit-reversed equivelants. (e.g. 0x34 -> 0x2C)
-
-PARAMETER1:		buffer - root buffer with bytes to be altered
-PARAMETER2:		len - number of bytes to bit reverse
-
-**************************************************************************/
-
-/*** EndHeader */
-
-_sdflash_nodebug void sdspi_bitrev(char *buffer, int len)
-{
-
-   while(len > 0)
-   {
-	#asm
-		ld		hl,BitRevTable
-   	ex		de',hl			; DE' has table address
-   	ld		hl,(sp+@sp+len)
-		ld		b, 0				; reset b to zero
-		ld		a,h            ; get upper byte of len
-      and 	a              ; check if zero
-      jr		nz,.sdnoload   ; don't load b if greater than 255
-	   ld		b,L				; Count in B (1..256)
-.sdnoload:
-   	ld		hl,(sp+@sp+buffer)
-   	_XMEM_XLAT				; This won't care about the value of A, since not xmem.
-   	; Residual HL value is returned.
-	#endasm
-      len    -= 256;
-      buffer += 256;
-   }
-}
-
-/*** BeginHeader _xmem_xlat */
-/*=== Do NOT call this function from C! ===*/
-/*
-_xmem_xlat translates bytes in a buffer using a supplied translation table
-hl - logical address of bytes to translate
-'de - translation table in root memory
-b - number of bytes to translate, 0 means 256
-*/
-root char * _xmem_xlat(/* register params */void);
-/*** EndHeader */
-#asm root nodebug
-_xmem_xlat::
-	ld		xpc,a
-.loop:
-	ld		a,(hl)
-   exx
-   bool	hl
-   ld		L,a
-   add	hl,de
-   ld		a,(hl)
-   exx
-   ld		(hl),a
-   inc	hl
-   djnz	.loop
-	lret
-#endasm
-
 
 /*** BeginHeader sdspi_print_dev */
 void sdspi_print_dev(sd_device *dev);
@@ -1408,16 +1339,10 @@ int sdspi_process_command(sd_device *sd, SD_CMD_REPLY * cmd_reply, int mode)
 {
     static const unsigned char _cmd55[8] =
         { 0xFF, 0x77, 0x00, 0x00, 0x00, 0x00, 0x65, 0xFF };
-    static unsigned char _cmd55_rev[8];	// bit reversed version of _cmd55
     int rc, i, j;
     unsigned short crc7, crc16;
     unsigned char request[8];
     unsigned char r1, r2;
-
-#GLOBAL_INIT {
-    memcpy(_cmd55_rev, _cmd55, sizeof(_cmd55));
-	 sdspi_bitrev(_cmd55_rev, sizeof(_cmd55_rev));
-}
 
 #ifdef SDFLASH_VERBOSE
     if (cmd_reply) {
@@ -1473,13 +1398,12 @@ int sdspi_process_command(sd_device *sd, SD_CMD_REPLY * cmd_reply, int mode)
     SD_ENABLECS(sd->SDintf);
     if (cmd_reply->cmd & CMD_START) {
         // send CMD55 prefix for ACMD
-        _sdspi_write_block(_cmd55_rev, sizeof(_cmd55_rev), sd->port);
+        _sdspi_write_block(_cmd55, sizeof(_cmd55), sd->port);
         _sdspi_read_block(&r1, 1, sd->port, REPLY_TIMEOUT_MS);
 #ifdef SDFLASH_VERBOSE
         printf("%s:   (CMD55's R1=0x%02X)\n", "sdspi_process_command", r1);
 #endif
     }
-    sdspi_bitrev(request, sizeof(request));
     _sdspi_write_block(request, 8, sd->port);
     rc = _sdspi_read_block(cmd_reply->reply_buffer, cmd_reply->reply_size,
         sd->port, REPLY_TIMEOUT_MS);
@@ -2152,7 +2076,6 @@ int sdspi_write_sector(sd_device *sd, unsigned long  sector_number,
     rx_buffer[514] = (char)crc16 | 1 ;		// LSB | 0x01
     rx_buffer[513] = (char)(crc16>>8);		// MSB
 
-    sdspi_bitrev(rx_buffer, 515);
     _sdspi_write_block(rx_buffer, 515, sd->port);
     result = _sdspi_read_block(rx_buffer, 1, sd->port, sd->write_timeout_ms);
 
@@ -2523,6 +2446,7 @@ void _sdspi_write_block(char *buffer, unsigned int len, int port)
 #asm
 ; set up the registers
       ex     de,hl            ; save src in de
+      ld     de', BitRevTable ; use de' to reverse bytes when written
 		ld		 hl, (sp+@SP+len)	; get the number of bytes
       ld     c,L
       ld     b,H
@@ -2533,6 +2457,13 @@ void _sdspi_write_block(char *buffer, unsigned int len, int port)
 
 _SPIWriteA0:
 		ld		a, (de)				; get a byte
+      ; reverse bit order before sending  a = BitRevTable[a]
+      exx
+      bool  hl
+      ld    L, a
+      add   hl, de
+      ld    a, (hl)
+      exx		
 ioi	ld		(iy), a	      	; 	load it
 
 		ld		a, SD_SPI_CONTROL_VALUE | SD_SPI_TXMASK
@@ -2585,7 +2516,7 @@ root int _sdspi_read_block(char *buffer, unsigned int len, int port,
 {
 #asm
 ; set up the registers
-         ex     de,hl                  ; save dest in de
+         ex     de, hl                    ; save dest in de
          ld     hl, (sp+@SP+timeout_ms) 	; get timeout count
          ld     bc, (MS_TIMER) 				; ...add it to low half of MS_TIMER
          scf                              ; set carry flag for additional 1ms
@@ -2625,6 +2556,7 @@ _Rx0Wait:
          jr    _Rx0Exit       ; And exit
 
 _RxGetData:
+         ld    de', BitRevTable   ; use de' to reverse bytes as read
    		ld		hl, (sp+@SP+len)	 ; get the number of bytes to receive
          ld    c,L
          ld    b,H                ; Replace timeout count with byte count
@@ -2643,6 +2575,13 @@ _Rx1Wait:
 
 	ioi	ld		a, (iy)	   	; get the byte
 _RxSaveByte:
+	      ; reverse bit order before storing  (de) = BitRevTable[a]
+	      exx
+	      bool  hl
+	      ld    L, a
+	      add   hl, de
+	      ld    a, (hl)
+	      exx
 		   ld		(de), a 	 		; store the byte
 		   inc	de			 		; point to next byte
 	    	dec	bc			 		; decrement bytes remaining to receive
@@ -2651,8 +2590,6 @@ _RxSaveByte:
 		   jr		nz, _Rx1Loop 	; jump if not done
 _Rx0Exit:
 #endasm
-   // TODO: reverse bytes as they're read
-   sdspi_bitrev(buffer, len);		// automatically reverse
    return *buffer == 0xFF ? -EIO : len;
 }
 

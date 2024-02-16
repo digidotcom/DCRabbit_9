@@ -1181,8 +1181,11 @@ _fat_debug int _fat_new_clust( fat_part *part, unsigned long clust,
 	// Compute ending offset of FAT table
    fat_end_offset = (part->type == FAT_TYPE_12 ? ( part->fat_len +
 	    	((part->fat_len + 1) >> 1)) : (part->fat_len << 1)) % part->byte_sec;
-   // TODO: DC10 doesn't have the "-1" in this calculation.
-   fat_end_offset = (fat_end_offset ? fat_end_offset : part->byte_sec) - 1;
+   // Note: Next line contains backported bugfix from Dynamic C 10.64 that
+   // removed an unnecessary "-1" from this calculation.  Range checks use a
+   // >= comparison to fat_end_offset, so it should be the first "out of range"
+   // value.
+   fat_end_offset = (fat_end_offset ? fat_end_offset : part->byte_sec);
 #ifdef FAT_BLOCK
 	if ( !count )
 #else

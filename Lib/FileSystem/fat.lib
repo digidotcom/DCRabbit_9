@@ -9,7 +9,7 @@
 #ifndef __FAT_LIB
 #define __FAT_LIB
 
-#define FAT_VERSION 0x0215
+#define FAT_VERSION 0x0216
 
 /*** EndHeader */
 

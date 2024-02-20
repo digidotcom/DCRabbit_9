@@ -14,7 +14,9 @@ The functions are:
 
 sdspi_initDevice
 sdspi_read_sector
+_sdspi_read_sector
 sdspi_write_sector
+_sdspi_write_sector
 sdspi_WriteContinue
 sdspi_notbusy
 sdspi_print_cid
@@ -40,18 +42,6 @@ Revision History:	Rev 1.0 Initial Release
 
 #ifndef __SDFLASH_LIB__
 #define __SDFLASH_LIB__
-
-/*
-_XMEM_XLAT is a macro to jump to the assembly routine _xmem_xlat from non-root
-code
-*/
-// Expects A to contain the relevant XPC value;
-// HL contains a logical address in 0xE000-0xEFFF range of the data to translate,
-// B contains number of bytes to translate (1 <= B <= 255, or 0 for 256 bytes),
-// DE' points to a 256-byte translation table in root memory.
-// On return, AF and HL' trashed; B set to zero, HL points to first byte after
-// translated section.  Other regs preserved.
-#define _XMEM_XLAT	db 0xCF $ dw _xmem_xlat $ db 0
 
 // Number of SD sockets available, NOT the number of supported devices.
 // All standard SD memory cards are supported.
@@ -501,8 +491,6 @@ typedef struct sd_device_st
    unsigned int pagesize;      // size (in bytes) of pages in flash device
    int pagebitshift;           // # of 'don't care' bits following page addr.
    int write_state;            // state for write timeout (used by FAT)
-   unsigned long write_sector; // current sector being written (used by FAT)
-   char *bptr;                 // pointer to current write source buffer
    unsigned int read_timeout_ms;   // Computed data timeout value
    unsigned int write_timeout_ms;  // Computed data timeout value
    sd_cspin cspin;             // Structure with Pin for Chip Select info
@@ -726,7 +714,6 @@ int sdspi_initDevice(int indx, sd_dev_interface *sd_dev)
    sd->cspin.pin =  sd_dev->cspin;
 
    sd->write_state = 0;      // Used by FAT, just set to zero
-   sd->write_sector = 0;
    // set default read/write timeouts for SDHC cards, updated 
    // for SD cards after reading CSD.
    sd->read_timeout_ms = 100;
@@ -913,7 +900,6 @@ void sdspi_print_dev(sd_device *dev)
    printf("\tpagesize: %d\n", dev->pagesize);
    printf("\tpagebitshift: %d\n", dev->pagebitshift);
    printf("\twrite_state: %d\n", dev->write_state);
-   printf("\twrite_sector: %lu\n", dev->write_sector);
    printf("\tcs_pin:\n");
    printf("\t  port: 0x%x\n", dev->cspin.port);
    printf("\t  shadow: 0x%x\n", (unsigned int)(dev->cspin.shadow) );
@@ -1916,9 +1902,10 @@ int sdspi_get_scr(sd_device *sd)
 }
 
 
-/*** Beginheader sdspi_read_sector ***/
-int sdspi_read_sector(sd_device *sd, unsigned long sector_number,
-                             void * data_buffer);
+/*** Beginheader _sdspi_read_sector ***/
+#define sdspi_read_sector(sd, n, buffer)  _sdspi_read_sector(sd, n, buffer, 0)
+int _sdspi_read_sector(sd_device *sd, unsigned long sector_number,
+                             void * data_buffer, long xbuffer);
 /*** endheader ***/
 
 /* START FUNCTION DESCRIPTION ********************************************
@@ -1941,10 +1928,34 @@ RETURN VALUE:    0                Success
                -ESHAREDBUSY       Shared SPI port busy
 
 END DESCRIPTION **********************************************************/
+/* START FUNCTION DESCRIPTION ********************************************
+_sdspi_read_sector             <SDFLASH.LIB>
+
+SYNTAX: int _sdspi_read_sector(sd_device *sd, unsigned long sector_number,
+                                    void * data_buffer, long xbuffer)
+
+DESCRIPTION: This function is called to execute protocol command 17 to
+             read a 512 byte block of data from the SD card.
+             
+             Pass NULL and 0 for the last two parameters to drop the data.
+
+PARAMETER1: sd             The device structure for the SD card.
+PARAMETER2: sector_number  The sector number to read.
+PARAMETER3: data_buffer    Pointer to a buffer for the 512 bytes read, or
+                           NULL to read into xbuffer.
+PARAMETER4: xbuffer        Pointer to an xmem buffer for the 512 bytes read
+
+RETURN VALUE:    0                Success
+               -EIO               I/O Error
+               -EINVAL            Invalid parameter given
+               -ENOMEDIUM         No SD card in socket
+               -ESHAREDBUSY       Shared SPI port busy
+
+END DESCRIPTION **********************************************************/
 
 _sdflash_nodebug
-int sdspi_read_sector(sd_device *sd, unsigned long sector_number,
-                             void * data_buffer)
+int _sdspi_read_sector(sd_device *sd, unsigned long sector_number,
+                             void * data_buffer, long xbuffer)
 {
     int result;
     SD_CMD_REPLY cmd_reply;
@@ -1982,15 +1993,21 @@ int sdspi_read_sector(sd_device *sd, unsigned long sector_number,
         }
     }
 
-    memcpy(data_buffer, &cmd_reply.data_buffer[1], BLOCK_SIZE);
-
+    if (data_buffer) {
+        memcpy(data_buffer, &cmd_reply.data_buffer[1], BLOCK_SIZE);
+    } else if (xbuffer) {
+        root2xmem(xbuffer, &cmd_reply.data_buffer[1], BLOCK_SIZE);
+    }
+    
     return 0;
 }
 
 
-/*** Beginheader sdspi_write_sector ***/
-int sdspi_write_sector(sd_device *sd, unsigned long sector_number,
-                           char * data_buffer);
+
+/*** Beginheader _sdspi_write_sector ***/
+#define sdspi_write_sector(sd, n, buffer) _sdspi_write_sector(sd, n, buffer, 0)
+int _sdspi_write_sector(sd_device *sd, unsigned long  sector_number,
+                             char * data_buffer, long xbuffer);
 /*** endheader ***/
 
 /* START FUNCTION DESCRIPTION ********************************************
@@ -2017,10 +2034,36 @@ RETURN VALUE:     0             Success
                                 (Only when SD_NON_BLOCK is defined)
 
 END DESCRIPTION **********************************************************/
+/* START FUNCTION DESCRIPTION ********************************************
+_sdspi_write_sector            <SDFLASH.LIB>
+
+SYNTAX: int _sdspi_write_sector(sd_device *sd, unsigned long sector_number,
+                                char * data_buffer, long xbuffer)
+
+DESCRIPTION: This function is called to execute protocol command 24 to
+             write a 512 byte block of data to the SD card.
+
+PARAMETER1: sd            The device structure for the SD card.
+PARAMETER2: sector_number The sector number to write.
+PARAMETER3: data_buffer   Pointer to a buffer of 512 bytes to write, or NULL
+                          to use xbuffer instead.
+PARAMETER4: xbuffer       Pointer to an xmem buffer of 512 bytes to write.
+
+RETURN VALUE:     0             Success
+               -EIO             I/O Error
+               -EACCES          Write protected block, no write access
+               -EINVAL          Invalid parameter given
+               -ENOMEDIUM       No SD card in socket
+               -ESHAREDBUSY     Shared SPI port busy
+               -EBUSY           SD card is busy with write operation,
+                                call sdspi_WriteContinue to complete
+                                (Only when SD_NON_BLOCK is defined)
+
+END DESCRIPTION **********************************************************/
 
 _sdflash_nodebug
-int sdspi_write_sector(sd_device *sd, unsigned long  sector_number,
-                             char * data_buffer)
+int _sdspi_write_sector(sd_device *sd, unsigned long  sector_number,
+                             char * data_buffer, long xbuffer)
 {
     int result, j, k, status;
     char * read_data_ptr;
@@ -2069,8 +2112,12 @@ int sdspi_write_sector(sd_device *sd, unsigned long  sector_number,
     rx_buffer[0] = READ_WRITE_START_BLOCK;
 
     // Copy data_buffer to rx_buffer and calculate crc
-    memcpy( &rx_buffer[1], data_buffer, 512);
-    crc16 = crc16_calc( data_buffer, 512, 0);
+    if (data_buffer) {
+        memcpy(&rx_buffer[1], data_buffer, 512);
+    } else {
+        xmem2root(&rx_buffer[1], xbuffer, 512);
+    }
+    crc16 = crc16_calc(&rx_buffer[1], 512, 0);
 
     // Last bit of CRC must be set or we get CRC error back from the card
     rx_buffer[514] = (char)crc16 | 1 ;		// LSB | 0x01

@@ -16,8 +16,6 @@
 /*****************************************************************************
         Samples\FileSystem\FAT\fat_write_mbr.c
 
-        Requires the FAT file system module to be installed.
-
         Requires that you run this on a core module with a FAT compatible
         flash memory device.  This sample works with the primary device
         defined by MBR_DRIVER_INIT as the default.  If you need to work
@@ -148,6 +146,11 @@ if (rc == -ENOMEDIUM) {
       if (megs > 0.01) {
          partsize = (unsigned long) (megs * 2048.0);
          if (partsize > sectors) partsize = sectors;
+         if (partsize > FAT16_MAX_PARTSECSIZE) {
+            partsize = FAT16_MAX_PARTSECSIZE;
+            printf("Partition %d limited to FAT16 maximum of %6.1fMB\n",
+                   i + 1, (float)partsize / 2048.0);
+         }
          my_device.part[i].starthead = 254;
          my_device.part[i].parttype = 6;
          my_device.part[i].endhead = 254;

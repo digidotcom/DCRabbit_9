@@ -27,9 +27,6 @@ The only function that will need to be called directly is sd_InitDriver()
  #define SD_NON_BLOCK
 #endif
 
-#if (RCM4300_SERIES)
-  #use "RCM43xx.lib"   // Needed for SPI port sharing routines
-#endif
 #use "sdflash.lib"
 #use "part_defs.lib"
 
@@ -233,11 +230,8 @@ END DESCRIPTION **********************************************************/
 
 /*** BeginHeader sd_InitDriver */
 int sd_InitDriver(mbr_drvr *driver, void *device_list);
-extern char scratch[512];
 
 /*** EndHeader */
-
-char scratch[512];
 
 _sdfat_debug
 int sd_InitDriver(mbr_drvr *driver, void *device_list)
@@ -260,7 +254,7 @@ int sd_InitDriver(mbr_drvr *driver, void *device_list)
    driver->maxdev = 1;
    driver->dlist = NULL;
    driver->next = NULL;
-   driver->type[0] = 0x80;
+   driver->type[0] = MBRTYPE_FLASH;
    if(device_list == NULL)
    {
       rc = sdspi_initDevice(0, &SD_dev0);  //use compile-time default device
@@ -347,17 +341,10 @@ int sd_ReadSector(unsigned long sector,
    }
 
    // Auto retry read calls once if an I/O error is received
-   if(buffer){
-      if ((rc = sdspi_read_sector(dev, sector, buffer)) == -EIO) {
-         rc = sdspi_read_sector(dev, sector, buffer);
-      }
+   if ((rc = _sdspi_read_sector(dev, sector, buffer, xbuffer)) == -EIO) {
+      rc = _sdspi_read_sector(dev, sector, buffer, xbuffer);
    }
-   else if(xbuffer){
-      if ((rc = sdspi_read_sector(dev, sector, scratch)) == -EIO) {
-         rc = sdspi_read_sector(dev, sector, scratch);
-      }
-      root2xmem(xbuffer, scratch, 512);
-   }
+
 #ifdef SDFLASH_VERBOSE
    printf("Read Sector %08lx\n", sector);
 #endif
@@ -433,20 +420,12 @@ int sd_WriteSector( unsigned long sector,
    }
    else {  // Otherwise, start new write to SD card
 #endif
-	   rc = 0;
-	   dev->write_sector  = sector;
 	   dev->write_state = 1;
-	   if(xbuffer){
-	      xmem2root(scratch, xbuffer, 512);
-   	   dev->bptr = scratch;
-	   }
-   	else
-	      dev->bptr = buffer;
 
 #ifdef SDFLASH_VERBOSE
    	printf("Write sector %08lx\n", sector);
 #endif
-	   rc = sdspi_write_sector(dev, dev->write_sector, dev->bptr);
+	   rc = _sdspi_write_sector(dev, sector, buffer, xbuffer);
 #ifdef SD_NON_BLOCK
 	}
    if (rc == -EBUSY) return -EBUSY;

@@ -2452,12 +2452,19 @@ _more_inits02::
    ld    hl, GCSRShadow
    ld    (hl), a
 
-   lcall   _getDoublerSetting
+   lcall   _getDoublerSetting   ; get doubler setting value into L (h always 0)
+   ld      a, L
+   or      a                    ; update the Zero flag
+   jr      z, .notDoubled
 
-   ld      a, l
+   ld      a, 0x0C              ; value to set both /OE0 and /OE1 early output
+   ioi ld  (MTCR), a            ; first, update /OE0, /OE1 early output enable
+   ld      (MTCRShadow), a
+
+.notDoubled:
+   ld      a, L                 ; recover the doubler setting value
+   ioi ld  (GCDR), a            ; next, update clock doubler setting
    ld      (GCDRShadow), a
-   ioi   ld (GCDR), a      ; set clock doubler now
-
 
 #if _CPU_ID_ >= R2000_R3
    lcall   _enableClockModulation	; enables spreader

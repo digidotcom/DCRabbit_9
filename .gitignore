@@ -50,6 +50,9 @@ Drivers/*
 Schemes/*
 Utilities/*
 
+# Allow for managing C files in the Utilities directory.
+!Utilities/*.C
+
 # Libraries and some Samples for uC/OS-II are not covered by MPL license
 Lib/UCOS2/*
 Samples/UCos-II/ucosdemo*

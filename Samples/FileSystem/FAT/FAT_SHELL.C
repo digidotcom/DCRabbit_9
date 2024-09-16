@@ -109,33 +109,66 @@ void pdump()
 	int i;
    FATfile * f;
 
-	printf("sec_clust = %u\n", fat_part_mounted[active_part]->sec_clust);
-	printf("fat_cnt = %u\n", fat_part_mounted[active_part]->fat_cnt);
-	printf("fat_len = %u\n", fat_part_mounted[active_part]->fat_len);
-	printf("root_cnt = %u\n", fat_part_mounted[active_part]->root_cnt);
-	printf("res_sec = %u\n", fat_part_mounted[active_part]->res_sec);
-	printf("byte_sec = %u\n", fat_part_mounted[active_part]->byte_sec);
-	printf("sec_fat = %lu\n", fat_part_mounted[active_part]->sec_fat);
-	printf("serialnumber = %lu\n", fat_part_mounted[active_part]->serialnumber);
-	printf("totcluster = %lu\n", fat_part_mounted[active_part]->totcluster);
-	printf("badcluster = %lu\n", fat_part_mounted[active_part]->badcluster);
-	printf("freecluster = %lu\n", fat_part_mounted[active_part]->freecluster);
-	printf("nextcluster = %lu\n\n", fat_part_mounted[active_part]->nextcluster);
-	printf("fatstart = %lu\n", fat_part_mounted[active_part]->fatstart);
-	printf("rootstart = %lu\n", fat_part_mounted[active_part]->rootstart);
-	printf("datastart = %lu\n", fat_part_mounted[active_part]->datastart);
-	printf("clustlen = %lu\n", fat_part_mounted[active_part]->clustlen);
-	printf("type = %d\n", fat_part_mounted[active_part]->type);
-	printf("wtc_prt = %d\n", fat_part_mounted[active_part]->wtc_prt);
-	printf("pnum = %d\n\n", fat_part_mounted[active_part]->pnum);
-//	printf("opstate = %d\n", fat_part_mounted[active_part]->opstate);
-//	printf("clust1 = %u\n", fat_part_mounted[active_part]->clust1);
-//	printf("clust2 = %u\n", fat_part_mounted[active_part]->clust2);
-//	printf("linkclust = %u\n", fat_part_mounted[active_part]->linkclust);
-   for (f = fat_part_mounted[active_part]->first, i = 0; f; f = f->next, ++i);
-   printf("open files = %d\n", i);
+	printf("partition number %d, type %d\n",
+		fat_part_mounted[active_part]->pnum,
+		fat_part_mounted[active_part]->type);
+	printf("serialnumber = %lu (0x%08lx)\n",
+		fat_part_mounted[active_part]->serialnumber,
+		fat_part_mounted[active_part]->serialnumber);
+	printf("journal number (wtc_prt) = %d\n",
+		fat_part_mounted[active_part]->wtc_prt);
 
-   printf("\nmpart.bootflag = %02X\n",
+	printf("\n");
+
+	printf("%10u FATs (fat_cnt)\n",
+		fat_part_mounted[active_part]->fat_cnt);
+	printf("%10lu bytes in a FAT (fat_len * 2)\n",
+		2L * fat_part_mounted[active_part]->fat_len);
+	printf("%10lu sectors per FAT (sec_fat)\n",
+		fat_part_mounted[active_part]->sec_fat);
+	printf("%10u entries in root directory (root_cnt)\n",
+		fat_part_mounted[active_part]->root_cnt);
+	printf("%10u reserved sectors (res_sect)\n",
+		fat_part_mounted[active_part]->res_sec);
+
+	printf("\n");
+
+	printf("%10u sectors per cluster (sec_clust)\n",
+		fat_part_mounted[active_part]->sec_clust);
+	printf("%10u bytes per sector (byte_sec)\n",
+		fat_part_mounted[active_part]->byte_sec);
+	printf("%10lu bytes per cluster (clustlen)\n",
+		fat_part_mounted[active_part]->clustlen);
+
+	printf("%10lu total clusters (totcluster) (%.3fMB)\n",
+		fat_part_mounted[active_part]->totcluster,
+		(float) fat_part_mounted[active_part]->totcluster
+		* fat_part_mounted[active_part]->clustlen / (1024L * 1024));
+
+	printf("%10lu bad clusters (badcluster) (%.3fKB)\n",
+		fat_part_mounted[active_part]->badcluster,
+		(float) fat_part_mounted[active_part]->badcluster
+		* fat_part_mounted[active_part]->clustlen / 1024);
+
+	printf("%10lu free clusters (freecluster) (%.3fMB)\n",
+		fat_part_mounted[active_part]->freecluster,
+		(float) fat_part_mounted[active_part]->freecluster
+		* fat_part_mounted[active_part]->clustlen / (1024L * 1024));
+
+	printf("%10lu is next cluster (nextcluster)\n\n",
+		fat_part_mounted[active_part]->nextcluster);
+
+	printf("%10lu is first sector of first FAT (fatstart)\n",
+		fat_part_mounted[active_part]->fatstart);
+	printf("%10lu is first sector of root dir (rootstart)\n",
+		fat_part_mounted[active_part]->rootstart);
+	printf("%10lu is first sector of data area (datastart)\n",
+		fat_part_mounted[active_part]->datastart);
+
+   for (f = fat_part_mounted[active_part]->first, i = 0; f; f = f->next, ++i);
+   printf("%10d open files\n", i);
+
+   printf("\nmpart.bootflag = 0x%02X\n",
           fat_part_mounted[active_part]->mpart->bootflag);
    printf("mpart.starthead = %u\n",
           fat_part_mounted[active_part]->mpart->starthead);
@@ -687,6 +720,8 @@ int main()
 		strcpy(pwd[i], "");
 	}
 
+	printf("Calling fat_AutoMount()...\n");
+	
 	// Auto-mount the FAT filesystem
 	rc = fat_AutoMount(FDDF_USE_DEFAULT);
    if (rc == -EIO || rc == -ENOMEDIUM) {

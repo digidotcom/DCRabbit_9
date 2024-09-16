@@ -18,9 +18,7 @@
 
    Formats the configured device(s) for use with the FAT file system.
 
-   Requires the FAT filesystem module be installed.
-
-   Also requires that you run this on a board with a compatible
+   Requires that you run this on a board with a compatible
    storage medium (serial flash, NAND flash or SD card).
 
    IMPORTANT!!!!  Please use with caution.
@@ -371,6 +369,8 @@ void main(void)
 	fat_print_config();
 #endif
 
+	printf("Calling fat_AutoMount()...\n");
+	
 	rc = fat_AutoMount(FDDF_MOUNT_DEV_ALL | FDDF_MOUNT_PART_ALL);
 	if (rc) {
 		printf("\nfat_AutoMount() error (%d) %ls.\n", rc, error_message(rc));
